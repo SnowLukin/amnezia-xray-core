@@ -63,7 +63,9 @@ func (b *bind) Open(port uint16) (fns []conn.ReceiveFunc, actualPort uint16, err
 					errors.LogErrorInner(context.Background(), err, "bind recv err")
 					continue
 				}
-				if n > 3 {
+				// Strip the reserved field only when it is in use (WARP):
+				// AmneziaWG keeps its magic header in these bytes.
+				if n > 3 && len(b.reserved) == 3 {
 					bufs[0][1] = 0
 					bufs[0][2] = 0
 					bufs[0][3] = 0
