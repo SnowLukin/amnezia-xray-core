@@ -26,6 +26,10 @@ jobs:
           go-version-file: go.mod
           check-latest: true
 
+      # windowsgui: Windows never gives the sidecar a console of its own, so a
+      # launch that skips CREATE_NO_WINDOW (an antivirus re-running the file for
+      # a scan) cannot flash a terminal at the user. The client still talks to
+      # the core over redirected stdin/stdout.
       - name: Build xray.exe
         env:
           GOOS: windows
@@ -35,8 +39,20 @@ jobs:
           mkdir -p build_assets
           COMMIT=$(git rev-parse --short HEAD)
           go build -o build_assets/xray.exe -trimpath -buildvcs=false \
-            -ldflags "-X github.com/xtls/xray-core/core.build=${COMMIT} -s -w -buildid=" \
+            -ldflags "-H windowsgui -X github.com/xtls/xray-core/core.build=${COMMIT} -s -w -buildid=" \
             ./main
+
+      - name: Verify the binary is a GUI-subsystem executable
+        run: |
+          exe=build_assets/xray.exe
+          pe_offset=$(od -An -tu4 -j60 -N4 "$exe" | tr -d ' ')
+          signature=$(od -An -c -j"$pe_offset" -N2 "$exe" | tr -d ' ')
+          subsystem=$(od -An -tu2 -j$((pe_offset + 92)) -N2 "$exe" | tr -d ' ')
+          echo "PE signature: $signature, subsystem: $subsystem"
+          if [ "$signature" != "PE" ] || [ "$subsystem" != "2" ]; then
+            echo "::error::xray.exe subsystem is $subsystem, expected 2 (Windows GUI)"
+            exit 1
+          fi
 
       - name: Verify the AmneziaWG dependency is linked in
         run: |
