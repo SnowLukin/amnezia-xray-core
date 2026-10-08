@@ -605,8 +605,17 @@ class Client:
         counters = vars_["stats"]["outbound"].get(tag, {})
         return counters.get("uplink", 0), counters.get("downlink", 0)
 
-    def gc_memory(self):
-        urllib.request.urlopen(f"http://127.0.0.1:{METRICS_PORT}/debug/pprof/heap?gc=1", timeout=5).read()
+    def gc_memory(self, label=None):
+        """Heap and goroutines after GC. With a label, the goroutine and heap
+        profiles are saved next to the log to compare where growth sits."""
+        heap = urllib.request.urlopen(f"http://127.0.0.1:{METRICS_PORT}/debug/pprof/heap?gc=1", timeout=5).read()
+        if label:
+            base = self.log_path.replace(".log", f"-{label}")
+            with open(base + "-heap.pb.gz", "wb") as f:
+                f.write(heap)
+            g = urllib.request.urlopen(f"http://127.0.0.1:{METRICS_PORT}/debug/pprof/goroutine?debug=1", timeout=5).read()
+            with open(base + "-goroutines.txt", "wb") as f:
+                f.write(g)
         return self.memory()
 
     def mechanism_heap(self, label):
@@ -622,6 +631,18 @@ class Client:
             if line.startswith("Showing nodes accounting for"):
                 return parse_size(line.split("for ", 1)[1].split(",")[0])
         return 0
+
+    def mechanism_goroutines(self):
+        """Goroutines whose stack runs through the health observatory. User
+        connections stuck in a dial of Xray itself are not among them."""
+        text = urllib.request.urlopen(f"http://127.0.0.1:{METRICS_PORT}/debug/pprof/goroutine?debug=1",
+                                      timeout=5).read().decode(errors="replace")
+        n = 0
+        for block in text.split("\n\n"):
+            head = block.split(" @", 1)[0].strip()
+            if head.isdigit() and "observatory/health" in block:
+                n += int(head)
+        return n
 
     def _poll(self):
         while not self._stop.wait(1.0):

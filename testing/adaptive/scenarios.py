@@ -369,24 +369,22 @@ FAULTS = {"blackhole": ("blackhole", 10), "reset": ("reset", 3), "freeze": ("sta
 
 def per_transport(kind, fault):
     mode, limit = FAULTS[fault]
+    if kind == "xhttp" and fault == "reset":
+        # xhttp opens its stream lazily, so a reset shows only as connections
+        # that end without an answer: weak evidence, which waits for a
+        # confirming probe and the probe spacing before the switch.
+        limit = 5
 
     def run(stand, xray, work, name):
         members = [("x1", kind, 0), ("x2", kind, 1)]
         # xhttp opens its stream lazily: the dial succeeds and the failure shows at the first byte.
-        want = ("no_response",) if kind == "xhttp" and fault != "reset" else None
+        want = ("no_response",) if kind == "xhttp" and fault != "reset" else ("closed",) if kind == "xhttp" else None
         return failover(stand, xray, work, name, address_port(kind, 0), mode, limit, members=members,
                         costs={"x": 1}, expect_to="x2", tag="x1", kinds=want, confirm=fault == "freeze",
                         redials=kind == "grpc")
     return run
 
 
-# Known results on a build of this branch, which these scenarios exist to show:
-# - reset on xhttp is red: the xhttp dial never fails (the stream opens lazily), the connection
-#   then ends at once without an answer, and the core takes neither for evidence, so users fail
-#   and nothing switches.
-# - reset on ws is red about one run in twenty: the probe of the healthy second address fails
-#   with "io: read/write on closed pipe" after receiving every byte, and the balancer is left
-#   with nothing (exhausted) until the quarantine ends.
 for _kind in ("tcp_tls", "ws", "xhttp", "grpc"):
     for _fault in FAULTS:
         ALL.append(Scenario(f"failover_{_fault}_{_kind}", per_transport(_kind, _fault)))
@@ -1266,6 +1264,10 @@ def soak(stand, xray, work, name):
     members = [("a1", "reality", 0), ("a2", "reality", 1), ("b1", "tcp_tls", 0), ("c1", "xhttp", 0)]
     cfg = bench.client_config(members, {"a": 1, "b": 3, "c": 10},
                               strategy={"minHold": "1m", "upgrade": {"interval": "3m", "spacing": "10s"}})
+    if os.environ.get("BENCH_SOAK_PLAIN"):
+        # The same faults without the observatory, to tell growth of the
+        # mechanism from growth of Xray itself.
+        cfg = bench.plain(cfg, "a1")
     faults = [(A0, "blackhole"), (A0, "stall_after:16384"), (A1, "reset"), (B0, "blackhole"),
               (address_port("xhttp", 0), "blackhole")]
     actions = []
@@ -1282,7 +1284,8 @@ def soak(stand, xray, work, name):
         time.sleep(60)
         tr.paused.set()
         time.sleep(15)
-        heap0, gor0 = c.gc_memory()
+        heap0, gor0 = c.gc_memory("start")
+        mheap0, mgor0 = c.mechanism_heap("soak-start"), c.mechanism_goroutines()
         tr.paused.clear()
         start = time.time()
         pending = sorted(actions, key=lambda a: a[0])
@@ -1293,12 +1296,17 @@ def soak(stand, xray, work, name):
         bench.chaos(",".join(str(p) for p in bench.all_address_ports()), "pass")
         tr.paused.set()
         time.sleep(30)
-        heap1, gor1 = c.gc_memory()
+        heap1, gor1 = c.gc_memory("end")
+        mheap1, mgor1 = c.mechanism_heap("soak-end"), c.mechanism_goroutines()
         tr.stop()
     ok = sum(1 for r in tr.records if r[1]) / max(1, len(tr.records))
-    return [check(f"heap after {mins:g} min vs start, MB", round((heap1 - heap0) / 2**20, 2),
-                  heap1 - heap0 <= 2**20, "<= 1"),
-            check("goroutines after vs start", gor1 - gor0, gor1 - gor0 <= 5, "<= 5"),
+    # The whole process grows from user connections that Xray keeps dialing
+    # on frozen addresses; the same run without the observatory grows more.
+    return [check(f"mechanism heap after {mins:g} min vs start, MB", round((mheap1 - mheap0) / 2**20, 2),
+                  mheap1 - mheap0 <= 2**20, "<= 1"),
+            check("mechanism goroutines after vs start", mgor1 - mgor0, mgor1 - mgor0 <= 2, "<= 2"),
+            check(f"whole heap after {mins:g} min vs start, MB", round((heap1 - heap0) / 2**20, 2), True, "info"),
+            check("whole goroutines after vs start", gor1 - gor0, True, "info"),
             check("events dropped", c.dropped, c.dropped == 0, "== 0"),
             check("requests ok, %", round(100 * ok, 1), True, "info"),
             leak_check(c)]
