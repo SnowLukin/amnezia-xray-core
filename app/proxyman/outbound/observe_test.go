@@ -2,6 +2,7 @@ package outbound_test
 
 import (
 	"context"
+	"io"
 	gonet "net"
 	"strconv"
 	"strings"
@@ -57,7 +58,7 @@ func (t *countingTracker) Finished() {
 	}
 }
 
-func startInstance(t *testing.T, js string) *core.Instance {
+func startInstance(t testing.TB, js string) *core.Instance {
 	t.Helper()
 	cfg, err := serial.DecodeJSONConfig(strings.NewReader(js))
 	if err != nil {
@@ -207,5 +208,51 @@ func TestPreconnectionsAreFinished(t *testing.T) {
 	time.Sleep(300 * time.Millisecond)
 	if c.finished.Load() < n {
 		t.Errorf("%d connections ended, %d trackers finished", n, c.finished.Load())
+	}
+}
+
+// BenchmarkConnection measures what the observer adds to one proxied
+// connection: run it and compare the plain and observed lines.
+func BenchmarkConnection(b *testing.B) {
+	ln, err := gonet.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer ln.Close()
+	body := make([]byte, 32*1024)
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				buf := make([]byte, 512)
+				c.Read(buf)
+				c.Write(body)
+				c.Close()
+			}()
+		}
+	}()
+	dest := net.TCPDestination(net.LocalHostIP, net.Port(ln.Addr().(*gonet.TCPAddr).Port))
+	for _, tc := range []struct{ name, health string }{
+		{"plain", ""},
+		{"observed", `, "healthObservatory": {"subjectSelector": ["a"]}`},
+	} {
+		inst := startInstance(b, `{"log": {"loglevel": "none"},
+			"outbounds": [{"tag": "a1", "protocol": "freedom", "settings": {"finalRules": [{"action": "allow"}]}}]`+tc.health+`}`)
+		b.Run(tc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				conn, err := core.Dial(context.Background(), inst, dest)
+				if err != nil {
+					b.Fatal(err)
+				}
+				conn.Write([]byte("GET / HTTP/1.1\r\n\r\n"))
+				io.Copy(io.Discard, conn)
+				conn.Close()
+			}
+		})
+		inst.Close()
 	}
 }

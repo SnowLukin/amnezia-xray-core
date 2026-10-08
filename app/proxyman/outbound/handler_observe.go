@@ -48,6 +48,8 @@ type observedDialer struct {
 	*Handler
 	mu       sync.Mutex
 	trackers []outbound.DialTracker
+	// Most connections dial once; their tracker needs no slice allocation.
+	first    [1]outbound.DialTracker
 	finished bool
 	// Stands for the user connection when the context carries no session,
 	// so that retries of one dial count once.
@@ -89,6 +91,9 @@ func (d *observedDialer) Dial(ctx context.Context, dest net.Destination) (stat.C
 		return conn, nil
 	}
 	d.mu.Lock()
+	if d.trackers == nil {
+		d.trackers = d.first[:0]
+	}
 	d.trackers = append(d.trackers, tracker)
 	d.mu.Unlock()
 	if read == nil && write == nil {

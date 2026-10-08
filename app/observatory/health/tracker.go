@@ -75,6 +75,9 @@ type connTracker struct {
 	dialedConn net.Conn
 	read       stats.Counter
 	write      stats.Counter
+	// The counters handed to the connection live here to save allocations.
+	readCounter  trackerReadCounter
+	writeCounter trackerWriteCounter
 }
 
 func (t *connTracker) mark(flag uint32) bool {
@@ -118,7 +121,8 @@ func (t *connTracker) Dialed(conn net.Conn, err error, read, write stats.Counter
 	t.read = read
 	t.write = write
 	t.state.Store(trackerOpen)
-	return &trackerReadCounter{t}, &trackerWriteCounter{t}
+	t.readCounter.t, t.writeCounter.t = t, t
+	return &t.readCounter, &t.writeCounter
 }
 
 func (t *connTracker) onSpliced() {
