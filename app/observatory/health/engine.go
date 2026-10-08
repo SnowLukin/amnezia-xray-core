@@ -790,11 +790,15 @@ func (e *engine) probeCandidates(s *selector, now time.Time, avoid map[string]bo
 	cur := s.current()
 	ranked := e.ranked(s, now, func(t string) bool { return t == cur || avoid[t] })
 	if tag := e.failoverChoice(s, ranked); tag != "" {
-		// A balancer leaving a working outbound tells why; one that failed
-		// is a failover.
+		// A balancer leaving an outbound that left its set tells so, as it
+		// did before leases; one leaving an expired outbound tells so while
+		// the outbound works, since a failure of it is found as usual.
 		reason := "failover"
-		if e.leaving(cur) && e.path(cur).status != statusDown {
-			reason = e.leaveReason(cur)
+		switch {
+		case e.retiring[cur]:
+			reason = "retired"
+		case e.expired[cur] && e.path(cur).status != statusDown:
+			reason = "expired"
 		}
 		e.switchTo(s, tag, reason, now)
 		return true

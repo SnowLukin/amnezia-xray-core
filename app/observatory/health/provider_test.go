@@ -600,6 +600,23 @@ func TestRetiredOutboundHandsOverAfterProbe(t *testing.T) {
 	}
 }
 
+// A balancer that leaves an outbound that left its set tells so also when
+// the outbound failed meanwhile, as it did before leases; only an expired
+// one that failed is left as a failover.
+func TestRetiredOutboundThatFailedIsLeftAsRetired(t *testing.T) {
+	te := newProviderEngine(t, quietProvider(nil), &SelectorConfig{Costs: costs("p-x", 1, "p-y", 2)}, "p-x", "p-y")
+	te.failN(3, "p-x", failDial, t0)
+	te.applyProviderSet(te.prov(), providerChange{tags: []string{"p-y"}, retire: []string{"p-x"}}, at(time.Second))
+	if te.path("p-x").status != statusDown || te.sel.current() != "p-x" {
+		t.Fatalf("setup: p-x %v, active %q", te.path("p-x").status, te.sel.current())
+	}
+	te.run(t, at(2*time.Second), nil)
+	sw := te.eventsOf(t, "switch")
+	if te.sel.current() != "p-y" || sw[len(sw)-1].Fields["reason"] != "retired" {
+		t.Fatalf("active %q after %+v", te.sel.current(), sw[len(sw)-1].Fields)
+	}
+}
+
 func TestRetiredOutboundStaysWhenNothingElseWorks(t *testing.T) {
 	te := newProviderEngine(t, quietProvider(nil), &SelectorConfig{Costs: costs("p-", 1)}, "p-x", "p-y")
 	te.applyProviderSet(te.prov(), providerChange{retire: []string{"p-x"}}, at(time.Second))
