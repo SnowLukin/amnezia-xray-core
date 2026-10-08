@@ -45,9 +45,11 @@ type Handler struct {
 
 	// The stack and the device are created by the first connection, so an
 	// outbound that carries none holds neither. Both are set or both are nil.
+	// active counts the connections using them; Sleep releases them at zero.
 	mu     sync.Mutex
 	tnet   *Net
 	dev    *device.Device
+	active int
 	closed bool
 }
 
@@ -158,6 +160,7 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
 	if err != nil {
 		return err
 	}
+	defer h.release()
 
 	var addr netip.Addr
 	if ob.Target.Address.Family().IsDomain() {
@@ -272,7 +275,7 @@ func (h *Handler) closeLocked() {
 }
 
 // acquire returns the stack for one connection, creating the stack and the
-// device on first use.
+// device on first use. The stack stays until the connection calls release.
 func (h *Handler) acquire(ctx context.Context) (*Net, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -288,6 +291,7 @@ func (h *Handler) acquire(ctx context.Context) (*Net, error) {
 	if err := h.dev.Up(); err != nil {
 		return nil, err
 	}
+	h.active++
 	return h.tnet, nil
 }
 
@@ -360,7 +364,8 @@ func (h *Handler) init(ctx context.Context) (err error) {
 			})
 		},
 	}
-	dev := device.NewDevice(t, bind, logger)
+	rt := newReadyTun(t)
+	dev := device.NewDevice(rt, bind, logger)
 	defer func() {
 		if err != nil {
 			dev.Close()
@@ -387,6 +392,7 @@ func (h *Handler) init(ctx context.Context) (err error) {
 	if err != nil {
 		return err
 	}
+	rt.open()
 	err = dev.Up()
 	if err != nil {
 		return err

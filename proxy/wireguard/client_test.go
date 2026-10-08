@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	goerrors "errors"
 	"fmt"
+	"io"
 	stdnet "net"
 	"net/netip"
 	"runtime"
@@ -45,6 +46,11 @@ var testParams = &AmneziaParameters{
 // testServerAddr is where the test server echoes, inside the tunnel.
 var testServerAddr = netip.MustParseAddr("10.9.0.1")
 
+// handshakeGap separates the handshakes of a device and of the next one: the
+// server drops an initiation that comes within 20 ms of the previous one, and
+// the client retries only after 5 s.
+const handshakeGap = 50 * time.Millisecond
+
 func testKeys(t testing.TB) (priv, pub string) {
 	t.Helper()
 	var k [32]byte
@@ -66,8 +72,7 @@ type testPeer struct {
 }
 
 // testServer is an AmneziaWG peer on loopback. Behind it, a gVisor stack
-// answers TCP and UDP on port 7 of testServerAddr: TCP with one echo of the
-// first read, then it closes; UDP with an echo of every datagram.
+// echoes TCP and UDP on port 7 of testServerAddr.
 type testServer struct {
 	endpoint string
 	pub      string
@@ -76,7 +81,10 @@ type testServer struct {
 	listener *gonet.TCPListener
 	udp      *gonet.UDPConn
 	wg       sync.WaitGroup
-	conns    sync.WaitGroup
+
+	mu    sync.Mutex
+	conns map[stdnet.Conn]struct{}
+	done  chan struct{} // closed when conns becomes empty
 }
 
 func startTestServer(t testing.TB, params *AmneziaParameters, peers ...testPeer) *testServer {
@@ -90,7 +98,8 @@ func startTestServer(t testing.TB, params *AmneziaParameters, peers ...testPeer)
 		t.Fatal(err)
 	}
 	priv, pub := testKeys(t)
-	dev := device.NewDevice(tun, &bind{
+	rt := newReadyTun(tun)
+	dev := device.NewDevice(rt, &bind{
 		listenFunc: func() (net.PacketConn, error) { return conn, nil },
 	}, device.NewLogger(device.LogLevelSilent, ""))
 	var cfg strings.Builder
@@ -103,10 +112,11 @@ func startTestServer(t testing.TB, params *AmneziaParameters, peers ...testPeer)
 	if err := dev.IpcSet(cfg.String()); err != nil {
 		t.Fatal(err)
 	}
+	rt.open()
 	if err := dev.Up(); err != nil {
 		t.Fatal(err)
 	}
-	s := &testServer{endpoint: conn.LocalAddr().String(), pub: pub, dev: dev}
+	s := &testServer{endpoint: conn.LocalAddr().String(), pub: pub, dev: dev, conns: map[stdnet.Conn]struct{}{}}
 
 	full := tcpip.FullAddress{NIC: 1, Addr: tcpip.AddrFrom4(testServerAddr.As4()), Port: 7}
 	s.listener, err = gonet.ListenTCP(stk, full, ipv4.ProtocolNumber)
@@ -125,16 +135,22 @@ func startTestServer(t testing.TB, params *AmneziaParameters, peers ...testPeer)
 			if err != nil {
 				return
 			}
-			s.conns.Add(1)
-			go func() {
-				defer s.conns.Done()
-				defer c.Close()
-				b := make([]byte, 2048)
-				n, err := c.Read(b)
-				if err == nil {
-					c.Write(b[:n])
+			s.mu.Lock()
+			if len(s.conns) == 0 {
+				s.done = make(chan struct{})
+			}
+			s.conns[c] = struct{}{}
+			s.mu.Unlock()
+			s.wg.Go(func() {
+				io.Copy(c, c)
+				c.Close()
+				s.mu.Lock()
+				delete(s.conns, c)
+				if len(s.conns) == 0 {
+					close(s.done)
 				}
-			}()
+				s.mu.Unlock()
+			})
 		}
 	}()
 	go func() {
@@ -155,20 +171,31 @@ func startTestServer(t testing.TB, params *AmneziaParameters, peers ...testPeer)
 func (s *testServer) close() {
 	s.listener.Close()
 	s.udp.Close()
-	s.conns.Wait()
+	s.closeConns()
 	s.dev.Close()
 	s.wg.Wait()
 }
 
-// waitConns waits until the server has answered every TCP connection, so
+// closeConns ends the TCP connections whose client went away without
+// closing them.
+func (s *testServer) closeConns() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for c := range s.conns {
+		c.Close()
+	}
+}
+
+// waitConns waits until the clients have closed every TCP connection, so
 // nothing is in flight inside the tunnel.
 func (s *testServer) waitConns(t testing.TB) {
 	t.Helper()
-	done := make(chan struct{})
-	go func() {
-		s.conns.Wait()
-		close(done)
-	}()
+	s.mu.Lock()
+	done := s.done
+	s.mu.Unlock()
+	if done == nil {
+		return
+	}
 	select {
 	case <-done:
 	case <-time.After(15 * time.Second):
@@ -238,13 +265,13 @@ func dial(oh outbound.Handler, dest net.Destination) *testConn {
 	return c
 }
 
-// echo sends payload and checks that it comes back.
-func (c *testConn) echo(payload []byte) error {
+// echo sends payload and checks that it comes back within timeout.
+func (c *testConn) echo(payload []byte, timeout time.Duration) error {
 	if err := c.up.WriteMultiBuffer(buf.MultiBuffer{buf.FromBytes(append([]byte(nil), payload...))}); err != nil {
 		return err
 	}
 	var got []byte
-	deadline := time.Now().Add(15 * time.Second)
+	deadline := time.Now().Add(timeout)
 	for len(got) < len(payload) {
 		mb, err := c.down.ReadMultiBufferTimeout(time.Until(deadline))
 		if err != nil {
@@ -280,7 +307,7 @@ func (c *testConn) wait() error {
 
 func tcpEcho(oh outbound.Handler, payload string) error {
 	c := dial(oh, net.TCPDestination(net.IPAddress(testServerAddr.AsSlice()), 7))
-	err := c.echo([]byte(payload))
+	err := c.echo([]byte(payload), 15*time.Second)
 	return goerrors.Join(err, c.close())
 }
 
