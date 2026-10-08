@@ -32,8 +32,9 @@ func TestAnswerSectionsTheCoreCannotChangeAskForARestart(t *testing.T) {
 func testRouting(raw json.RawMessage) (*router.Config, error) {
 	var in struct {
 		Rules []struct {
-			To  string `json:"to"`
-			Via string `json:"via"`
+			To      string `json:"to"`
+			Via     string `json:"via"`
+			Webhook string `json:"webhook"`
 		} `json:"rules"`
 		Balancers []struct {
 			Tag      string   `json:"tag"`
@@ -49,6 +50,9 @@ func testRouting(raw json.RawMessage) (*router.Config, error) {
 		rule := &router.RoutingRule{Networks: []net.Network{net.Network_TCP}, TargetTag: &router.RoutingRule_Tag{Tag: r.To}}
 		if r.Via != "" {
 			rule.TargetTag = &router.RoutingRule_BalancingTag{BalancingTag: r.Via}
+		}
+		if r.Webhook != "" {
+			rule.Webhook = &router.WebhookConfig{Url: r.Webhook}
 		}
 		rc.Rule = append(rc.Rule, rule)
 	}
@@ -80,6 +84,8 @@ func TestApplyRoutingWithTheSet(t *testing.T) {
 		{"balancer of the provider dropped", `{"rules": [{"to": "p-x1"}], "balancers": []}`, false, "drops"},
 		{"balancer choosing what nothing observes", `{"rules": [], "balancers": [` + own + `,
 			{"tag": "b", "selector": ["z"], "strategy": "leastcost"}]}`, false, "nothing observes"},
+		{"rule with a webhook", `{"rules": [{"via": "auto", "webhook": "https://hook.test/"}], "balancers": [` + own + `]}`,
+			false, "webhook"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newApplyFixture(t, time.Minute)

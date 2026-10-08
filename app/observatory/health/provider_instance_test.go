@@ -170,11 +170,13 @@ func TestProviderRefreshInRunningCore(t *testing.T) {
 	if ev.Fields["added"] != 1.0 || ev.Fields["removed"] != 1.0 || ev.Fields["unchanged"] != 3.0 {
 		t.Fatalf("second apply %v", ev.Fields)
 	}
-	if ohm.GetHandler("p-x2") != x2 || ohm.GetHandler("p-x6") != x6 || ohm.GetHandler("p-x7") != x7 ||
-		ohm.GetHandler("p-x1") == nil {
-		t.Fatal("an unchanged outbound was replaced, or a removed one dropped before its drain")
+	if ohm.GetHandler("p-x2") != x2 || ohm.GetHandler("p-x6") != x6 || ohm.GetHandler("p-x7") != x7 {
+		t.Fatal("an unchanged outbound was replaced")
 	}
-	w.until("provider_drained", func(e health.Event) bool { return e.Fields["outbound"] == "p-x1" })
+	// Nobody used p-x1, so its drain ends with the apply.
+	if len(w.since(from, "provider_drained")) == 0 {
+		w.until("provider_drained", func(e health.Event) bool { return e.Fields["outbound"] == "p-x1" })
+	}
 	if ohm.GetHandler("p-x1") != nil {
 		t.Fatal("p-x1 is still registered after its drain")
 	}

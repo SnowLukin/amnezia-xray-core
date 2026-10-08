@@ -2,6 +2,7 @@ package health
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -9,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"math"
 	"net/http"
 	"net/url"
@@ -39,6 +41,7 @@ type providerRuntime struct {
 	// unchanged outbound from a changed one.
 	built    map[string]*core.OutboundHandlerConfig
 	draining map[outbound.Handler]*drainingOutbound
+	drains   uint64
 }
 
 type drainingOutbound struct {
@@ -49,13 +52,20 @@ type drainingOutbound struct {
 	// connections.
 	registered bool
 	timer      *time.Timer
+	// Order of the drain among the drains of the provider, oldest first.
+	seq uint64
+	// Connections through the tag that started later went to the handler
+	// that replaced this one.
+	since int64
 }
 
 // providerAnswer is a parsed provider response:
 //
 //	{"outbounds": [...], "costs": {"tag": 1}, "nextRefreshIn": "2h", "version": "..."}
 type providerAnswer struct {
-	outbounds     []json.RawMessage
+	// The outbounds as sent, handed to the config loader in one piece.
+	outbounds     json.RawMessage
+	heads         []outboundHead
 	costs         map[string]float64
 	nextRefreshIn time.Duration
 	version       string
@@ -65,64 +75,87 @@ type providerAnswer struct {
 	restart []string
 }
 
+type outboundHead struct {
+	Tag      string `json:"tag"`
+	Protocol string `json:"protocol"`
+}
+
 // Answer keys applied without a restart, and keys that only name the answer.
 var answerKeys = map[string]bool{"outbounds": true, "costs": true, "routing": true, "nextRefreshIn": true, "version": true, "hash": true}
 
+// parseAnswer decodes the body once into its sections; everything else reads
+// a section, and the outbounds stay one piece of the answer until they are
+// built.
 func parseAnswer(body []byte) (*providerAnswer, error) {
-	var raw struct {
-		Outbounds     []json.RawMessage  `json:"outbounds"`
-		Costs         map[string]float64 `json:"costs"`
-		NextRefreshIn json.RawMessage    `json:"nextRefreshIn"`
-		Version       string             `json:"version"`
-		Hash          string             `json:"hash"`
-	}
 	var sections map[string]json.RawMessage
-	if err := json.Unmarshal(body, &raw); err != nil {
-		return nil, err
-	}
 	if err := json.Unmarshal(body, &sections); err != nil {
 		return nil, err
 	}
-	if len(raw.Outbounds) == 0 {
+	a := &providerAnswer{outbounds: sections["outbounds"]}
+	if isNull(a.outbounds) {
 		return nil, errors.New("no outbounds")
 	}
-	next, err := parseRefreshIn(raw.NextRefreshIn)
+	if err := json.Unmarshal(a.outbounds, &a.heads); err != nil {
+		return nil, fmt.Errorf("outbounds: %w", err)
+	}
+	if len(a.heads) == 0 {
+		return nil, errors.New("no outbounds")
+	}
+	if c := sections["costs"]; !isNull(c) {
+		if err := json.Unmarshal(c, &a.costs); err != nil {
+			return nil, fmt.Errorf("costs: %w", err)
+		}
+	}
+	next, err := parseRefreshIn(sections["nextRefreshIn"])
 	if err != nil {
 		return nil, err
 	}
-	a := &providerAnswer{outbounds: raw.Outbounds, costs: raw.Costs, nextRefreshIn: next, version: raw.Version}
+	a.nextRefreshIn = next
+	for _, key := range []string{"version", "hash"} {
+		if v := sections[key]; a.version == "" && !isNull(v) {
+			if err := json.Unmarshal(v, &a.version); err != nil {
+				return nil, fmt.Errorf("%s: %w", key, err)
+			}
+		}
+	}
 	for key := range sections {
 		if !answerKeys[key] {
 			a.restart = append(a.restart, key)
 		}
 	}
-	if r := sections["routing"]; len(r) > 0 && string(r) != "null" {
+	if r := sections["routing"]; !isNull(r) {
 		var parts map[string]json.RawMessage
 		if err := json.Unmarshal(r, &parts); err != nil {
 			return nil, fmt.Errorf("routing: %w", err)
 		}
+		a.routing = r
+		atStart := false
 		for key := range parts {
 			if key != "rules" && key != "balancers" {
-				// The domain strategy and the like are read once at start.
 				a.restart = append(a.restart, "routing."+key)
 				delete(parts, key)
+				atStart = true
 			}
 		}
-		a.routing, _ = json.Marshal(parts)
+		if atStart {
+			// The domain strategy and the like are read once at start.
+			a.routing, _ = json.Marshal(parts)
+		}
 	}
 	sort.Strings(a.restart)
 	if a.version == "" {
-		a.version = raw.Hash
-	}
-	if a.version == "" {
-		a.version = setHash(raw.Outbounds, raw.Costs, sections)
+		a.version = setHash(sections)
 	}
 	return a, nil
 }
 
+func isNull(raw json.RawMessage) bool {
+	return len(raw) == 0 || string(raw) == "null"
+}
+
 // parseRefreshIn accepts a duration string such as "90m" or seconds.
 func parseRefreshIn(raw json.RawMessage) (time.Duration, error) {
-	if len(raw) == 0 || string(raw) == "null" {
+	if isNull(raw) {
 		return 0, nil
 	}
 	var s string
@@ -140,48 +173,57 @@ func parseRefreshIn(raw json.RawMessage) (time.Duration, error) {
 	return max(time.Duration(secs*float64(time.Second)), 0), nil
 }
 
-func setHash(outbounds []json.RawMessage, costs map[string]float64, sections map[string]json.RawMessage) string {
-	h := sha256.New()
-	var b bytes.Buffer
-	for _, o := range outbounds {
-		b.Reset()
-		if json.Compact(&b, o) != nil {
-			b.Write(o)
-		}
-		h.Write(b.Bytes())
-		h.Write([]byte{0})
-	}
-	c, _ := json.Marshal(costs)
-	h.Write(c)
+// setHash names an answer by everything in it except nextRefreshIn, so the
+// same set sent again, however formatted, is known as the applied one.
+func setHash(sections map[string]json.RawMessage) string {
 	keys := make([]string, 0, len(sections))
 	for key := range sections {
-		if key != "outbounds" && key != "costs" && key != "nextRefreshIn" {
+		if key != "nextRefreshIn" {
 			keys = append(keys, key)
 		}
 	}
 	sort.Strings(keys)
+	h := sha256.New()
 	for _, key := range keys {
-		b.Reset()
-		if json.Compact(&b, sections[key]) != nil {
-			b.Write(sections[key])
-		}
 		h.Write([]byte(key))
-		h.Write(b.Bytes())
+		h.Write([]byte{0})
+		writeCompact(h, sections[key])
 		h.Write([]byte{0})
 	}
 	return "sha256:" + hex.EncodeToString(h.Sum(nil))[:16]
 }
 
+// writeCompact writes valid JSON without the whitespace between its tokens,
+// as json.Compact does, without a copy of it.
+func writeCompact(w io.Writer, v []byte) {
+	inString, escaped := false, false
+	from := 0
+	for i, c := range v {
+		switch {
+		case escaped:
+			escaped = false
+		case inString:
+			switch c {
+			case '\\':
+				escaped = true
+			case '"':
+				inString = false
+			}
+		case c == '"':
+			inString = true
+		case c == ' ' || c == '\t' || c == '\n' || c == '\r':
+			w.Write(v[from:i])
+			from = i + 1
+		}
+	}
+	w.Write(v[from:])
+}
+
 // loadOutbounds builds outbound configs with the JSON config loader of the
 // core, the same code that reads the config file.
-func loadOutbounds(raw []json.RawMessage) ([]*core.OutboundHandlerConfig, error) {
-	doc, err := json.Marshal(struct {
-		Outbounds []json.RawMessage `json:"outbounds"`
-	}{raw})
-	if err != nil {
-		return nil, err
-	}
-	c, err := core.LoadConfig("json", bytes.NewReader(doc))
+func loadOutbounds(raw json.RawMessage) ([]*core.OutboundHandlerConfig, error) {
+	c, err := core.LoadConfig("json", io.MultiReader(
+		strings.NewReader(`{"outbounds":`), bytes.NewReader(raw), strings.NewReader(`}`)))
 	if err != nil {
 		return nil, err
 	}
@@ -205,21 +247,13 @@ func loadRouting(raw json.RawMessage) (*router.Config, error) {
 	for _, b := range head.Balancers {
 		observe = append(observe, b.Selector...)
 	}
-	type observatory struct {
-		SubjectSelector []string `json:"subjectSelector"`
-	}
-	var obs *observatory
+	health := []byte{}
 	if len(observe) > 0 {
-		obs = &observatory{observe}
+		subjects, _ := json.Marshal(observe)
+		health = append(append([]byte(`,"healthObservatory":{"subjectSelector":`), subjects...), '}')
 	}
-	doc, err := json.Marshal(struct {
-		Routing json.RawMessage `json:"routing"`
-		Health  *observatory    `json:"healthObservatory,omitempty"`
-	}{raw, obs})
-	if err != nil {
-		return nil, err
-	}
-	c, err := core.LoadConfig("json", bytes.NewReader(doc))
+	c, err := core.LoadConfig("json", io.MultiReader(
+		strings.NewReader(`{"routing":`), bytes.NewReader(raw), bytes.NewReader(health), strings.NewReader(`}`)))
 	if err != nil {
 		return nil, err
 	}
@@ -235,7 +269,9 @@ func loadRouting(raw json.RawMessage) (*router.Config, error) {
 
 // checkRouting refuses rules that would send traffic to an outbound or a
 // balancer that does not exist: Xray would take its default outbound for
-// them, which may be outside the tunnel.
+// them, which may be outside the tunnel. It refuses webhooks too: a webhook
+// posts every matching connection, with its destination, from a goroutine
+// of its own.
 func (o *Observer) checkRouting(rt *providerRuntime, rc *router.Config, setTags []string) error {
 	exists := func(tag string) bool {
 		return slices.Contains(setTags, tag) || (o.ohm != nil && o.ohm.GetHandler(tag) != nil)
@@ -259,6 +295,9 @@ func (o *Observer) checkRouting(rt *providerRuntime, rc *router.Config, setTags 
 		return fmt.Errorf("routing drops the leastCost balancer %s the provider feeds", rt.cfg.balancer)
 	}
 	for i, r := range rc.Rule {
+		if r.GetWebhook() != nil {
+			return fmt.Errorf("rule %d has a webhook", i+1)
+		}
 		if tag := r.GetTag(); tag != "" && !exists(tag) {
 			return fmt.Errorf("rule %d goes to unknown outbound %s", i+1, tag)
 		}
@@ -455,7 +494,7 @@ func (o *Observer) applySet(rt *providerRuntime, a *providerAnswer, j *refreshJo
 	if a.version == rt.version {
 		fields["ok"] = true
 		fields["changed"] = false
-		fields["unchanged"] = len(a.outbounds)
+		fields["unchanged"] = len(a.heads)
 		o.emit("provider_apply", fields)
 		return false, nil
 	}
@@ -611,6 +650,7 @@ func (o *Observer) applySet(rt *providerRuntime, a *providerAnswer, j *refreshJo
 		o.e.emit(now, "provider_restart_needed", map[string]any{"provider": rt.cfg.tag, "version": a.version, "sections": restart})
 	}
 	o.mu.Unlock()
+	o.settleDrains(rt)
 	return true, nil
 }
 
@@ -618,22 +658,18 @@ func (o *Observer) applySet(rt *providerRuntime, a *providerAnswer, j *refreshJo
 // new or changed. It returns them and the tags of outbounds that stay as
 // they are. On error every created handler is closed.
 func (o *Observer) buildSet(rt *providerRuntime, a *providerAnswer) ([]*outboundChange, []string, error) {
-	if len(a.outbounds) > rt.cfg.maxOutbounds {
-		return nil, nil, fmt.Errorf("set of %d outbounds, at most %d allowed", len(a.outbounds), rt.cfg.maxOutbounds)
+	if len(a.heads) > rt.cfg.maxOutbounds {
+		return nil, nil, fmt.Errorf("set of %d outbounds, at most %d allowed", len(a.heads), rt.cfg.maxOutbounds)
 	}
 	for tag, c := range a.costs {
 		if math.IsNaN(c) || math.IsInf(c, 0) || c <= 0 {
 			return nil, nil, fmt.Errorf("cost of %s must be a number above zero", tag)
 		}
 	}
-	tags := make([]string, len(a.outbounds))
+	tags := make([]string, len(a.heads))
 	seen := map[string]bool{}
-	for i, raw := range a.outbounds {
-		var head struct {
-			Tag      string `json:"tag"`
-			Protocol string `json:"protocol"`
-		}
-		if err := json.Unmarshal(raw, &head); err != nil || head.Tag == "" {
+	for i, head := range a.heads {
+		if head.Tag == "" {
 			return nil, nil, fmt.Errorf("outbound %d has no tag", i+1)
 		}
 		if !slices.Contains(rt.cfg.protocols, strings.ToLower(head.Protocol)) {
@@ -752,22 +788,81 @@ func sameMessage(a, b interface {
 // startDrain closes the outbound after the drain time. A registered one is
 // taken out of the outbound manager first.
 func (o *Observer) startDrain(rt *providerRuntime, tag string, h outbound.Handler, registered bool) {
-	d := &drainingOutbound{tag: tag, handler: h, registered: registered}
+	rt.drains++
+	d := &drainingOutbound{tag: tag, handler: h, registered: registered, seq: rt.drains, since: o.nowNano()}
 	rt.draining[h] = d
 	d.timer = time.AfterFunc(rt.cfg.drain, func() { o.finishDrain(rt, d) })
+}
+
+// settleDrains ends at once the drains nothing waits for: outbounds without
+// open connections that no balancer chooses. Beyond maxOutbounds draining
+// outbounds the oldest drains end early, so sets replaced one after another
+// do not pile up handlers. The caller holds applyMu.
+func (o *Observer) settleDrains(rt *providerRuntime) {
+	open := o.oldestConnections()
+	var idle []*drainingOutbound
+	o.mu.Lock()
+	for _, d := range rt.draining {
+		started, ok := open[d.tag]
+		// Connections through a replaced tag that started later went to the
+		// new handler.
+		busy := ok && (d.registered || started <= d.since)
+		if !busy && !(d.registered && o.e.active(d.tag)) {
+			idle = append(idle, d)
+		}
+	}
+	o.mu.Unlock()
+	for _, d := range idle {
+		o.endDrain(rt, d)
+	}
+	if over := len(rt.draining) - rt.cfg.maxOutbounds; over > 0 {
+		oldest := slices.SortedFunc(maps.Values(rt.draining), func(a, b *drainingOutbound) int { return cmp.Compare(a.seq, b.seq) })
+		for _, d := range oldest[:over] {
+			o.endDrain(rt, d)
+		}
+	}
+}
+
+// oldestConnections returns, per outbound, when its oldest open user
+// connection started.
+func (o *Observer) oldestConnections() map[string]int64 {
+	o.trackMu.Lock()
+	defer o.trackMu.Unlock()
+	m := map[string]int64{}
+	for t := range o.trackers {
+		if s, ok := m[t.tag]; !ok || t.started < s {
+			m[t.tag] = t.started
+		}
+	}
+	return m
 }
 
 func (o *Observer) finishDrain(rt *providerRuntime, d *drainingOutbound) {
 	o.applyMu.Lock()
 	defer o.applyMu.Unlock()
-	if rt.draining[d.handler] != d || o.applyClosed {
+	if o.applyClosed {
 		return
 	}
+	o.endDrain(rt, d)
+}
+
+// endDrain removes and closes a draining outbound. The caller holds applyMu.
+func (o *Observer) endDrain(rt *providerRuntime, d *drainingOutbound) {
+	if rt.draining[d.handler] != d {
+		return
+	}
+	d.timer.Stop()
 	delete(rt.draining, d.handler)
 	registered := d.registered && o.ohm.GetHandler(d.tag) == d.handler
 	if registered {
 		_ = o.ohm.RemoveHandler(o.ctx, d.tag)
 		delete(rt.built, d.tag)
+		// The handler registered its traffic counters by tag; they go with it.
+		if o.stats != nil {
+			for _, dir := range [...]string{"uplink", "downlink"} {
+				_ = o.stats.UnregisterCounter("outbound>>>" + d.tag + ">>>traffic>>>" + dir)
+			}
+		}
 	}
 	o.mu.Lock()
 	if registered {

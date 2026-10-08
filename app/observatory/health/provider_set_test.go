@@ -3,6 +3,8 @@ package health
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -13,6 +15,7 @@ import (
 	"github.com/xtls/xray-core/common/serial"
 	"github.com/xtls/xray-core/core"
 	"github.com/xtls/xray-core/features/outbound"
+	"github.com/xtls/xray-core/features/stats"
 	"github.com/xtls/xray-core/transport"
 )
 
@@ -132,13 +135,13 @@ func newApplyFixture(t *testing.T, drain time.Duration) *applyFixture {
 	t.Cleanup(func() { o.Close() })
 	f := &applyFixture{o: o, rt: o.providers[0], m: newFakeManager()}
 	o.ohm = f.m
-	o.parseOutbounds = func(raw []json.RawMessage) ([]*core.OutboundHandlerConfig, error) {
+	o.parseOutbounds = func(raw json.RawMessage) ([]*core.OutboundHandlerConfig, error) {
+		var set []fakeOutbound
+		if err := json.Unmarshal(raw, &set); err != nil {
+			return nil, err
+		}
 		var out []*core.OutboundHandlerConfig
-		for _, r := range raw {
-			var fo fakeOutbound
-			if err := json.Unmarshal(r, &fo); err != nil {
-				return nil, err
-			}
+		for _, fo := range set {
 			if fo.Tag == "unparsable" {
 				return nil, errors.New("unknown protocol")
 			}
@@ -246,6 +249,7 @@ func TestApplyReplacesChangedOutboundUnderSameTag(t *testing.T) {
 		t.Fatal(err)
 	}
 	old := f.m.GetHandler("p-x1").(*fakeHandler)
+	f.open("p-x1")
 	if _, err := f.apply(t, answer(t, fakeOutbound{Tag: "x1", V: 2})); err != nil {
 		t.Fatal(err)
 	}
@@ -383,6 +387,7 @@ func TestCloseStopsDrainsAndClosesReplacedHandlers(t *testing.T) {
 		t.Fatal(err)
 	}
 	old := f.m.GetHandler("p-x1").(*fakeHandler)
+	f.open("p-x1")
 	if _, err := f.apply(t, answer(t, fakeOutbound{Tag: "x1", V: 2})); err != nil {
 		t.Fatal(err)
 	}
@@ -471,5 +476,180 @@ func TestDrainedOutboundLeavesNothingBehind(t *testing.T) {
 	f.o.mu.Unlock()
 	if path || penalty || f.o.serverName("p-x1") != "p-x1" {
 		t.Fatalf("after the drain of p-x1: path kept %v, penalty kept %v, server %q", path, penalty, f.o.serverName("p-x1"))
+	}
+}
+
+// follow makes the balancer see the outbounds of the provider as the router
+// would and leave a retired one without probing.
+func (f *applyFixture) follow(tags ...string) {
+	f.o.mu.Lock()
+	s := f.o.e.addSelector("auto", newSelectorSettings(&SelectorConfig{Costs: costs("p-", 1), SwitchWithoutProbe: true}))
+	f.o.e.updateCandidates(s, tags, time.Now())
+	f.o.mu.Unlock()
+}
+
+// open starts a user connection through the outbound and leaves it open.
+func (f *applyFixture) open(tag string) {
+	tr := f.o.StartDial(context.Background(), tag, net.TCPDestination(net.ParseAddress("192.0.2.7"), 443), nil)
+	tr.Dialed(nil, nil, nil, nil)
+}
+
+func TestDrainWithoutConnectionsEndsAtOnce(t *testing.T) {
+	f := newApplyFixture(t, time.Hour)
+	if _, err := f.apply(t, answer(t, fakeOutbound{Tag: "x1", V: 1}, fakeOutbound{Tag: "x2", V: 1})); err != nil {
+		t.Fatal(err)
+	}
+	f.follow("p-x1", "p-x2")
+	x1 := f.m.GetHandler("p-x1").(*fakeHandler)
+	x2 := f.m.GetHandler("p-x2").(*fakeHandler)
+	if _, err := f.apply(t, answer(t, fakeOutbound{Tag: "x2", V: 2})); err != nil {
+		t.Fatal(err)
+	}
+	if x1.closes() != 1 || x2.closes() != 1 || f.m.tags() != "p-x2" || len(f.rt.draining) != 0 {
+		t.Fatalf("without connections: removed closed %d, replaced closed %d, manager %s, %d draining",
+			x1.closes(), x2.closes(), f.m.tags(), len(f.rt.draining))
+	}
+}
+
+func TestDrainWaitsForOpenConnections(t *testing.T) {
+	f := newApplyFixture(t, 100*time.Millisecond)
+	if _, err := f.apply(t, answer(t, fakeOutbound{Tag: "x1", V: 1}, fakeOutbound{Tag: "x2", V: 1})); err != nil {
+		t.Fatal(err)
+	}
+	f.follow("p-x1", "p-x2")
+	x1 := f.m.GetHandler("p-x1").(*fakeHandler)
+	x2 := f.m.GetHandler("p-x2").(*fakeHandler)
+	f.open("p-x1")
+	f.open("p-x2")
+	if _, err := f.apply(t, answer(t, fakeOutbound{Tag: "x2", V: 2})); err != nil {
+		t.Fatal(err)
+	}
+	if x1.closes() != 0 || x2.closes() != 0 {
+		t.Fatalf("closed with open connections: removed %d, replaced %d", x1.closes(), x2.closes())
+	}
+	time.Sleep(300 * time.Millisecond)
+	if x1.closes() != 1 || x2.closes() != 1 {
+		t.Fatalf("after the drain: removed closed %d, replaced closed %d", x1.closes(), x2.closes())
+	}
+}
+
+// Sets that keep being replaced, as during a wave of blocks, do not pile up
+// handlers: past maxOutbounds the oldest drains end early.
+func TestDrainsAreCappedAtMaxOutbounds(t *testing.T) {
+	f := newApplyFixture(t, time.Hour)
+	f.rt.cfg.maxOutbounds = 2
+	var handlers []*fakeHandler
+	for gen := 0; gen < 3; gen++ {
+		a, b := fmt.Sprintf("x%d", 2*gen+1), fmt.Sprintf("x%d", 2*gen+2)
+		if _, err := f.apply(t, answer(t, fakeOutbound{Tag: a, V: 1}, fakeOutbound{Tag: b, V: 1})); err != nil {
+			t.Fatal(err)
+		}
+		f.follow("p-"+a, "p-"+b)
+		f.open("p-" + a)
+		f.open("p-" + b)
+		handlers = append(handlers, f.m.GetHandler("p-"+a).(*fakeHandler), f.m.GetHandler("p-"+b).(*fakeHandler))
+	}
+	var closed []int
+	for _, h := range handlers {
+		closed = append(closed, h.closes())
+	}
+	if fmt.Sprint(closed) != "[1 1 0 0 0 0]" || len(f.rt.draining) != 2 {
+		t.Fatalf("closes by age %v, %d draining; want the two oldest closed and two draining", closed, len(f.rt.draining))
+	}
+}
+
+type fakeStats struct {
+	stats.NoopManager
+	mu      sync.Mutex
+	removed []string
+}
+
+func (s *fakeStats) UnregisterCounter(name string) error {
+	s.mu.Lock()
+	s.removed = append(s.removed, name)
+	s.mu.Unlock()
+	return nil
+}
+
+// Traffic counters of an outbound go with its tag, not with a handler that
+// was replaced under it.
+func TestDrainedOutboundLeavesNoCounters(t *testing.T) {
+	f := newApplyFixture(t, 50*time.Millisecond)
+	sm := &fakeStats{}
+	f.o.stats = sm
+	if _, err := f.apply(t, answer(t, fakeOutbound{Tag: "x1", V: 1}, fakeOutbound{Tag: "x2", V: 1})); err != nil {
+		t.Fatal(err)
+	}
+	f.follow("p-x1", "p-x2")
+	if _, err := f.apply(t, answer(t, fakeOutbound{Tag: "x2", V: 2})); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(200 * time.Millisecond)
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	if strings.Join(sm.removed, ",") != "outbound>>>p-x1>>>traffic>>>uplink,outbound>>>p-x1>>>traffic>>>downlink" {
+		t.Fatalf("counters removed: %v", sm.removed)
+	}
+}
+
+func TestAnswerLimitFollowsTheSetSize(t *testing.T) {
+	for _, tc := range []struct {
+		outbounds int32
+		maxBytes  int64
+		want      int64
+	}{
+		{0, 0, 256 << 10},
+		{16, 0, 64 << 10},
+		{128, 0, 512 << 10},
+		{0, 300_000, 300_000},
+	} {
+		p := newProviderSettings(quietProvider(func(p *ProviderConfig) {
+			p.Apply.MaxOutbounds = tc.outbounds
+			p.MaxBytes = tc.maxBytes
+		}))
+		if p.maxBytes != tc.want {
+			t.Errorf("maxOutbounds %d, maxBytes %d: limit %d, want %d", tc.outbounds, tc.maxBytes, p.maxBytes, tc.want)
+		}
+	}
+}
+
+// The answer is read once: what it holds after parsing is about one copy of
+// the body, not one per step.
+func TestAnswerIsParsedInOnePass(t *testing.T) {
+	pad := strings.Repeat("x", 4000)
+	var outs []string
+	for i := 0; i < 100; i++ {
+		outs = append(outs, fmt.Sprintf(`{"tag": "x%d", "protocol": "vless", "settings": {"pad": %q}}`, i, pad))
+	}
+	body := []byte(`{"outbounds": [` + strings.Join(outs, ",") + `], "costs": {"x1": 2},
+		"routing": {"rules": [], "balancers": []}, "dns": {"servers": ["1.1.1.1"]}}`)
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	a, err := parseAnswer(body)
+	runtime.ReadMemStats(&after)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := after.TotalAlloc - before.TotalAlloc
+	t.Logf("parsing a %d byte answer allocated %d bytes", len(body), got)
+	if got > uint64(len(body))*3/2 {
+		t.Fatalf("parsing a %d byte answer allocated %d bytes", len(body), got)
+	}
+	runtime.KeepAlive(a)
+}
+
+func TestTooManyOutboundsAreRefusedBeforeBuilding(t *testing.T) {
+	f := newApplyFixture(t, time.Minute)
+	f.rt.cfg.maxOutbounds = 2
+	parse := f.o.parseOutbounds
+	parsed := false
+	f.o.parseOutbounds = func(raw json.RawMessage) ([]*core.OutboundHandlerConfig, error) {
+		parsed = true
+		return parse(raw)
+	}
+	_, err := f.apply(t, answer(t, fakeOutbound{Tag: "x1"}, fakeOutbound{Tag: "x2"}, fakeOutbound{Tag: "x3"}))
+	if err == nil || !strings.Contains(err.Error(), "at most 2") || parsed {
+		t.Fatalf("three outbounds with a limit of two: %v, built %v", err, parsed)
 	}
 }

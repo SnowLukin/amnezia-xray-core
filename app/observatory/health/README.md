@@ -187,7 +187,7 @@ triggers are judged on what the observatory knows about the balancer.
       "url": "https://api.example.com/set",
       "headers": { "Authorization": "Bearer <token>" },
       "via": ["auto", "backup", "direct"],
-      "timeout": "10s", "maxBytes": 1048576,
+      "timeout": "10s", "maxBytes": 262144,
       "triggers": {
         "interval": "2h", "jitter": 0.2, "minHealthy": 2, "whenExhausted": true,
         "whenCostAbove": { "cost": 10, "for": "15m" }, "maxAge": "6h",
@@ -204,7 +204,7 @@ triggers are judged on what the observatory knows about the balancer.
 ```
 
 The values above are the defaults, except `whenCostAbove`, which is off
-unless set. `tag`, `url`, `apply.balancer` and `apply.tagPrefix` are
+unless set, and `maxBytes`, which is 4 KiB per outbound of `maxOutbounds`. `tag`, `url`, `apply.balancer` and `apply.tagPrefix` are
 required. A trigger or a limit set to an explicit zero (`"0s"`, `0`) is off.
 
 **Request.** A GET of `url` with `headers`; credentials belong in a header,
@@ -245,8 +245,9 @@ replaces all rules and balancers at once, without a restart, when
 The answer is refused when a rule or a fallback goes to an outbound or a
 balancer that does not exist (Xray would take its default outbound for it,
 which may be outside the tunnel), when the leastCost balancer of the
-provider is gone, or when a leastCost balancer chooses outbounds nothing
-observes. Balancers the new routing no longer has are forgotten, with the
+provider is gone, when a leastCost balancer chooses outbounds nothing
+observes, or when a rule has a webhook, which would post every matching
+connection with its destination. Balancers the new routing no longer has are forgotten, with the
 outbounds they remembered per network. Everything else in an answer, such as `dns`, `inbounds`, `policy`
 or `routing.domainStrategy`, is read by Xray only at start: the core leaves
 it alone and reports it in `provider_restart_needed`, and the host restarts
@@ -266,9 +267,13 @@ does not build changes nothing. Outbounds whose settings did not change are
 not touched and keep their connections. An outbound whose settings changed
 is replaced under the same tag. An outbound that left the set is no longer
 a candidate, keeps its connections for `drain` and is then removed and
-closed, and what the observatory knew about it is forgotten; if the
-balancer uses it, the balancer moves to another candidate the
-usual way and stays where it is while there is nothing else.
+closed, and what the observatory knew about it and its traffic counters are
+forgotten; if the balancer uses it, the balancer moves to another candidate
+the usual way and stays where it is while there is nothing else. The old
+handler of a replaced outbound drains the same way. A drain ends at once
+when the outbound has no open connections and no balancer chooses it, and
+at most `maxOutbounds` outbounds drain at a time: beyond that the oldest
+drains end early.
 
 **Triggers.** Any trigger may start a refresh:
 
@@ -347,7 +352,7 @@ changed its settings). `kinds` counts failures by kind: `dial_failed`, `dial_tim
 | `provider_apply` | `provider`, `trigger`, `ok`, `changed`, `added`, `replaced`, `removed`, `unchanged`, `version`, `exhausted`, `rules`, `routing_error`, `error` | The answer was applied (`changed`), was the applied set already, or was rejected (`ok` false with `error`). `exhausted` tells whether the balancer had nothing usable at that moment. `rules` counts the routing rules applied with the set. |
 | `provider_restart_needed` | `provider`, `version`, `sections` | The applied answer also changes sections the core reads only at start. |
 | `provider_skip` | `provider`, `trigger`, `reason`, `wait_ms` | A trigger wants a refresh that cannot start yet. `reason`: `min_interval`, `backoff`, `max_per_hour`, `idle`, `network_down`. Reported once per trigger and reason until a refresh starts. |
-| `provider_drained` | `provider`, `outbound`, `replaced` | An outbound that left the set, or the old handler of a replaced one, was closed after `drain`. |
+| `provider_drained` | `provider`, `outbound`, `replaced` | An outbound that left the set, or the old handler of a replaced one, was closed: after `drain`, at once without connections, or early to keep at most `maxOutbounds` draining. |
 
 ## Status
 

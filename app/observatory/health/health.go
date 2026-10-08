@@ -23,6 +23,7 @@ import (
 	"github.com/xtls/xray-core/features/extension"
 	"github.com/xtls/xray-core/features/outbound"
 	"github.com/xtls/xray-core/features/routing"
+	"github.com/xtls/xray-core/features/stats"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -34,6 +35,7 @@ type Observer struct {
 
 	dispatcher routing.Dispatcher
 	ohm        outbound.Manager
+	stats      stats.Manager
 
 	mu      sync.Mutex
 	e       *engine
@@ -62,7 +64,7 @@ type Observer struct {
 	// Serializes changes of provider outbounds in the outbound manager.
 	applyMu        sync.Mutex
 	applyClosed    bool
-	parseOutbounds func([]json.RawMessage) ([]*core.OutboundHandlerConfig, error)
+	parseOutbounds func(json.RawMessage) ([]*core.OutboundHandlerConfig, error)
 	newHandler     func(*core.OutboundHandlerConfig) (outbound.Handler, error)
 	parseRouting   func(json.RawMessage) (*router.Config, error)
 	replaceRules   func(*router.Config) error
@@ -77,9 +79,10 @@ type Observer struct {
 // New creates the observer.
 func New(ctx context.Context, config *Config) (*Observer, error) {
 	o := newObserver(ctx, config)
-	err := core.RequireFeatures(ctx, func(dispatcher routing.Dispatcher, ohm outbound.Manager, r routing.Router) error {
+	err := core.RequireFeatures(ctx, func(dispatcher routing.Dispatcher, ohm outbound.Manager, r routing.Router, sm stats.Manager) error {
 		o.dispatcher = dispatcher
 		o.ohm = ohm
+		o.stats = sm
 		if rr, ok := r.(interface{ ReplaceRules(*router.Config) error }); ok {
 			o.replaceRules = rr.ReplaceRules
 		}

@@ -53,7 +53,6 @@ const (
 	maxJitter                = 0.9
 
 	defaultProviderTimeout      = 10 * time.Second
-	defaultProviderMaxBytes     = 1 << 20
 	defaultRefreshInterval      = 2 * time.Hour
 	defaultRefreshJitter        = 0.2
 	defaultMinHealthy           = 2
@@ -65,6 +64,9 @@ const (
 	defaultRefreshesPerHour     = 6
 	defaultDrain                = 5 * time.Minute
 	defaultMaxOutbounds         = 64
+	// Without maxBytes an answer may take this much per outbound it may
+	// carry. An outbound in the format of the config file takes 1-2 KiB.
+	answerBytesPerOutbound = 4 << 10
 
 	// Ceilings of config values: the memory the observer may take stays
 	// bounded even when a config asks for more.
@@ -235,13 +237,14 @@ func newProviderSettings(c *ProviderConfig) *providerSettings {
 	t := c.GetTriggers()
 	l := c.GetLimits()
 	a := c.GetApply()
+	maxOutbounds := min(num(a.GetMaxOutbounds(), defaultMaxOutbounds), maxProviderOutbounds)
 	p := &providerSettings{
 		tag:      c.GetTag(),
 		url:      c.GetUrl(),
 		headers:  c.GetHeaders(),
 		via:      c.GetVia(),
 		timeout:  dur(c.GetTimeout(), defaultProviderTimeout),
-		maxBytes: min(size(c.GetMaxBytes(), defaultProviderMaxBytes), maxAnswerBytes),
+		maxBytes: min(size(c.GetMaxBytes(), int64(maxOutbounds)*answerBytesPerOutbound), maxAnswerBytes),
 
 		interval:      optional(t.GetInterval(), defaultRefreshInterval),
 		minHealthy:    optionalNum(t.GetMinHealthy(), defaultMinHealthy),
@@ -258,7 +261,7 @@ func newProviderSettings(c *ProviderConfig) *providerSettings {
 		balancer:     a.GetBalancer(),
 		prefix:       a.GetTagPrefix(),
 		drain:        min(dur(a.GetDrain(), defaultDrain), maxDrain),
-		maxOutbounds: min(num(a.GetMaxOutbounds(), defaultMaxOutbounds), maxProviderOutbounds),
+		maxOutbounds: maxOutbounds,
 		protocols:    stringsOr(a.GetProtocols(), defaultProviderProtocols),
 		routing:      a.GetRouting(),
 	}
