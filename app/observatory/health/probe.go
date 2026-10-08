@@ -22,7 +22,7 @@ import (
 // on a wrong status, a short body, or no progress for progressTimeout.
 func (o *Observer) probe(tag string, ps *probeSettings) probeResult {
 	var bytes atomic.Int64
-	ctx, cancel := context.WithTimeout(withProbe(o.ctx, &bytes), ps.timeout)
+	ctx, cancel := context.WithTimeout(withProbe(o.runCtx, &bytes), ps.timeout)
 	defer cancel()
 
 	// Keep-alive stays on: a server told to close the connection after the
@@ -46,6 +46,9 @@ func (o *Observer) probe(tag string, ps *probeSettings) probeResult {
 		},
 	}
 	fail := func(err string) probeResult {
+		if o.runCtx.Err() != nil {
+			return probeResult{canceled: true, err: "canceled", bytes: bytes.Load()}
+		}
 		return probeResult{err: err, bytes: bytes.Load()}
 	}
 
@@ -134,7 +137,7 @@ func (o *Observer) serverName(tag string) string {
 			}
 		}
 	}
-	if v, ok := o.lastServer.Load(tag); ok {
+	if v, ok := o.e.lastServer.Load(tag); ok {
 		return v.(string)
 	}
 	return tag

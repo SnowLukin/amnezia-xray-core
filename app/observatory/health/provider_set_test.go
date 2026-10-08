@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/xtls/xray-core/common/errors"
+	"github.com/xtls/xray-core/common/net"
 	"github.com/xtls/xray-core/common/serial"
 	"github.com/xtls/xray-core/core"
 	"github.com/xtls/xray-core/features/outbound"
@@ -128,6 +129,7 @@ func newApplyFixture(t *testing.T, drain time.Duration) *applyFixture {
 	t.Helper()
 	pc := quietProvider(func(p *ProviderConfig) { p.Apply.Drain = int64(drain) })
 	o := newObserver(context.Background(), &Config{Providers: []*ProviderConfig{pc}})
+	t.Cleanup(func() { o.Close() })
 	f := &applyFixture{o: o, rt: o.providers[0], m: newFakeManager()}
 	o.ohm = f.m
 	o.parseOutbounds = func(raw []json.RawMessage) ([]*core.OutboundHandlerConfig, error) {
@@ -418,5 +420,56 @@ func TestParseAnswer(t *testing.T) {
 	a3, _ := parseAnswer([]byte(`{"outbounds": [{"tag": "x", "v": 2}]}`))
 	if a1.version != a2.version || a1.version == a3.version {
 		t.Fatalf("hashes: %s %s %s; want equal for the same set and different for another", a1.version, a2.version, a3.version)
+	}
+}
+
+// An outbound replaced under its tag may stand for another server: the
+// address learned from the old one is forgotten.
+func TestReplacedOutboundForgetsItsServer(t *testing.T) {
+	f := newApplyFixture(t, 50*time.Millisecond)
+	if _, err := f.apply(t, answer(t, fakeOutbound{Tag: "x1", V: 1})); err != nil {
+		t.Fatal(err)
+	}
+	f.o.StartDial(context.Background(), "p-x1", net.TCPDestination(net.ParseAddress("192.0.2.7"), 443), nil)
+	if got := f.o.serverName("p-x1"); got != "192.0.2.7" {
+		t.Fatalf("setup: server of p-x1 %q", got)
+	}
+	if _, err := f.apply(t, answer(t, fakeOutbound{Tag: "x1", V: 2})); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.o.serverName("p-x1"); got != "p-x1" {
+		t.Fatalf("p-x1 was replaced, yet probes still count it as server %q", got)
+	}
+}
+
+// An outbound gone from the set leaves nothing behind once its drain ends.
+func TestDrainedOutboundLeavesNothingBehind(t *testing.T) {
+	f := newApplyFixture(t, 50*time.Millisecond)
+	f.o.e.addSelector("auto", newSelectorSettings(&SelectorConfig{Costs: costs("p-", 1), SwitchWithoutProbe: true}))
+	if _, err := f.apply(t, answer(t, fakeOutbound{Tag: "x1", V: 1}, fakeOutbound{Tag: "x2", V: 1})); err != nil {
+		t.Fatal(err)
+	}
+	f.o.mu.Lock()
+	s := f.o.e.selectors["auto"]
+	f.o.e.updateCandidates(s, []string{"p-x1", "p-x2"}, time.Now())
+	s.penalty["p-x1"] = 2
+	f.o.mu.Unlock()
+	tr := f.o.StartDial(context.Background(), "p-x1", net.TCPDestination(net.ParseAddress("192.0.2.7"), 443), nil)
+	tr.Dialed(nil, nil, nil, nil)
+	tr.Finished(nil)
+	if _, err := f.apply(t, answer(t, fakeOutbound{Tag: "x2", V: 1})); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(200 * time.Millisecond)
+	// A later outbound under the same tag.
+	f.m.mu.Lock()
+	f.m.handlers["p-x1"] = &fakeHandler{tag: "p-x1"}
+	f.m.mu.Unlock()
+	f.o.mu.Lock()
+	_, path := f.o.e.paths["p-x1"]
+	_, penalty := s.penalty["p-x1"]
+	f.o.mu.Unlock()
+	if path || penalty || f.o.serverName("p-x1") != "p-x1" {
+		t.Fatalf("after the drain of p-x1: path kept %v, penalty kept %v, server %q", path, penalty, f.o.serverName("p-x1"))
 	}
 }

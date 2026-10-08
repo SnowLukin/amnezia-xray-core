@@ -257,6 +257,10 @@ func (t *connTracker) Finished(err error) {
 		t.o.failure(t, failClosed)
 	}
 	t.o.untrack(t)
+	// The proxy is done with the connection; a reference to the tracker left
+	// somewhere must not keep it and its buffers alive.
+	t.dialedConn = nil
+	t.socket.Store(nil)
 	t.o.finished(t)
 }
 

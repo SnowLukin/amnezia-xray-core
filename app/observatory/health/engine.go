@@ -5,6 +5,7 @@ import (
 	"math/rand"
 	"slices"
 	"sort"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -58,6 +59,8 @@ type probeResult struct {
 	rtt   time.Duration
 	bytes int64
 	err   string
+	// The observer ended the probe on close; it tells nothing about the outbound.
+	canceled bool
 }
 
 // Outbounds no balancer offers any more are forgotten after this long.
@@ -72,6 +75,9 @@ type engine struct {
 	paths     map[string]*path
 	selectors map[string]*selector
 	events    *eventLog
+	// Last server address dialed per tag, for outbounds without a server
+	// name. Dials write it without the observer lock.
+	lastServer sync.Map
 
 	queue   []*probeJob
 	running map[uint64]*probeJob
@@ -1112,6 +1118,12 @@ func (e *engine) maybeUpgrade(s *selector, now time.Time) time.Time {
 
 func (e *engine) onProbeResult(j *probeJob, r probeResult, now time.Time) {
 	delete(e.running, j.id)
+	if r.canceled {
+		if p := e.paths[j.tag]; p != nil {
+			p.probing = false
+		}
+		return
+	}
 	if j.reason == reasonConnectivity {
 		e.onConnectivity(r, now)
 		return
@@ -1597,14 +1609,51 @@ func (e *engine) gc(now time.Time) {
 	}
 	for tag, p := range e.paths {
 		if !offered[tag] && !p.probing && now.Sub(p.statusSince) > staleAfter {
-			delete(e.paths, tag)
+			e.forget(tag)
 		}
 	}
+	// A dial records the server before the outbound has a path.
+	e.lastServer.Range(func(tag, _ any) bool {
+		if e.paths[tag.(string)] == nil {
+			e.lastServer.Delete(tag)
+		}
+		return true
+	})
 	for name, ts := range e.startsByName {
 		if len(pruneTimes(ts, now)) == 0 {
 			delete(e.startsByName, name)
 		}
 	}
+}
+
+// forget drops everything kept about an outbound that is gone.
+func (e *engine) forget(tag string) {
+	delete(e.paths, tag)
+	e.lastServer.Delete(tag)
+	for _, s := range e.selectors {
+		delete(s.penalty, tag)
+	}
+	e.queue = slices.DeleteFunc(e.queue, func(j *probeJob) bool { return j.tag == tag })
+}
+
+// keepSelectors forgets balancers that the routing no longer has, with what
+// they remembered per network.
+func (e *engine) keepSelectors(keep map[string]bool) {
+	for tag := range e.selectors {
+		if keep[tag] {
+			continue
+		}
+		delete(e.selectors, tag)
+		delete(e.costs, tag)
+		for id, m := range e.networks {
+			delete(m, tag)
+			if len(m) == 0 {
+				delete(e.networks, id)
+				e.netOrder = slices.DeleteFunc(e.netOrder, func(n string) bool { return n == id })
+			}
+		}
+	}
+	e.dropUnclaimedFailover()
 }
 
 func minFloat(a, b float64) float64 {

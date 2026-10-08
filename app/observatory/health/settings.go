@@ -65,6 +65,17 @@ const (
 	defaultRefreshesPerHour     = 6
 	defaultDrain                = 5 * time.Minute
 	defaultMaxOutbounds         = 64
+
+	// Ceilings of config values: the memory the observer may take stays
+	// bounded even when a config asks for more.
+	maxProbeTimeout      = 30 * time.Second
+	maxConcurrent        = 8
+	maxEvents            = 4096
+	maxEventBytes        = 256 << 10
+	maxNetworks          = 64
+	maxAnswerBytes       = 1 << 20
+	maxProviderOutbounds = 128
+	maxDrain             = 30 * time.Minute
 )
 
 var (
@@ -230,7 +241,7 @@ func newProviderSettings(c *ProviderConfig) *providerSettings {
 		headers:  c.GetHeaders(),
 		via:      c.GetVia(),
 		timeout:  dur(c.GetTimeout(), defaultProviderTimeout),
-		maxBytes: size(c.GetMaxBytes(), defaultProviderMaxBytes),
+		maxBytes: min(size(c.GetMaxBytes(), defaultProviderMaxBytes), maxAnswerBytes),
 
 		interval:      optional(t.GetInterval(), defaultRefreshInterval),
 		minHealthy:    optionalNum(t.GetMinHealthy(), defaultMinHealthy),
@@ -246,8 +257,8 @@ func newProviderSettings(c *ProviderConfig) *providerSettings {
 
 		balancer:     a.GetBalancer(),
 		prefix:       a.GetTagPrefix(),
-		drain:        dur(a.GetDrain(), defaultDrain),
-		maxOutbounds: num(a.GetMaxOutbounds(), defaultMaxOutbounds),
+		drain:        min(dur(a.GetDrain(), defaultDrain), maxDrain),
+		maxOutbounds: min(num(a.GetMaxOutbounds(), defaultMaxOutbounds), maxProviderOutbounds),
 		protocols:    stringsOr(a.GetProtocols(), defaultProviderProtocols),
 		routing:      a.GetRouting(),
 	}
@@ -340,15 +351,15 @@ func newSettings(c *Config) *settings {
 			method:          strings.ToUpper(stringOr(pp.GetMethod(), "GET")),
 			expectStatus:    pp.GetExpectStatus(),
 			minBytes:        pp.GetMinBytes(),
-			timeout:         dur(pp.GetTimeout(), defaultProbeTimeout),
-			progressTimeout: dur(pp.GetProgressTimeout(), defaultProbeProgress),
+			timeout:         min(dur(pp.GetTimeout(), defaultProbeTimeout), maxProbeTimeout),
+			progressTimeout: min(dur(pp.GetProgressTimeout(), defaultProbeProgress), maxProbeTimeout),
 		})
 	}
 	if cc := c.GetConnectivity(); cc != nil && cc.GetOutbound() != "" && cc.GetDestination() != "" {
 		s.connectivity = &connectivitySettings{
 			outbound:    cc.GetOutbound(),
 			destination: cc.GetDestination(),
-			timeout:     dur(cc.GetTimeout(), defaultConnectivityTimeout),
+			timeout:     min(dur(cc.GetTimeout(), defaultConnectivityTimeout), maxProbeTimeout),
 			recheck:     toBackoff(cc.GetRecheck(), defaultConnRecheck),
 			maxPause:    dur(cc.GetMaxPause(), defaultMaxPause),
 			witnesses:   cc.GetWitnesses(),
@@ -358,17 +369,17 @@ func newSettings(c *Config) *settings {
 	s.schedule = scheduleSettings{
 		pauseWhenIdle:   dur(sc.GetPauseWhenIdle(), defaultPauseWhenIdle),
 		quarantine:      toBackoff(sc.GetQuarantine(), defaultQuarantine),
-		concurrent:      num(sc.GetConcurrent(), defaultConcurrent),
+		concurrent:      min(num(sc.GetConcurrent(), defaultConcurrent), maxConcurrent),
 		spacing:         dur(sc.GetSpacing(), defaultSpacing),
 		spacingJitter:   jitter(sc.GetSpacingJitter(), defaultSpacingJitter),
 		perServerName:   num(sc.GetPerServerNamePerMinute(), defaultPerServerName),
 		perMinute:       num(sc.GetPerMinute(), defaultPerMinute),
 		suspectCooldown: dur(sc.GetSuspectCooldown(), defaultSuspectCooldown),
 	}
-	s.maxEvents = num(c.GetEvents().GetMaxEvents(), defaultMaxEvents)
-	s.maxBytes = int(size(c.GetEvents().GetMaxBytes(), defaultMaxEventBytes))
+	s.maxEvents = min(num(c.GetEvents().GetMaxEvents(), defaultMaxEvents), maxEvents)
+	s.maxBytes = int(min(size(c.GetEvents().GetMaxBytes(), defaultMaxEventBytes), maxEventBytes))
 	s.remember = !c.GetNetwork().GetNoMemory()
-	s.maxNetworks = num(c.GetNetwork().GetMaxNetworks(), defaultMaxNetworks)
+	s.maxNetworks = min(num(c.GetNetwork().GetMaxNetworks(), defaultMaxNetworks), maxNetworks)
 	for _, pc := range c.GetProviders() {
 		ps := newProviderSettings(pc)
 		s.providers = append(s.providers, ps)

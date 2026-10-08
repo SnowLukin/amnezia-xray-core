@@ -49,8 +49,6 @@ type Observer struct {
 	sweeping bool
 	tracked  uint64
 
-	// Last server address dialed per tag, for outbounds without a server name.
-	lastServer sync.Map
 	// The engine's network generation, readable without the lock.
 	generation atomic.Uint64
 	// Names this run of the core, so that a host request meant for a
@@ -58,9 +56,9 @@ type Observer struct {
 	run string
 
 	providers []*providerRuntime
-	// Ends provider requests still running when the observer closes.
-	fetchCtx  context.Context
-	stopFetch context.CancelFunc
+	// Ends probes and provider requests still running when the observer closes.
+	runCtx  context.Context
+	stopRun context.CancelFunc
 	// Serializes changes of provider outbounds in the outbound manager.
 	applyMu        sync.Mutex
 	applyClosed    bool
@@ -113,7 +111,7 @@ func newObserver(ctx context.Context, config *Config) *Observer {
 	var id [8]byte
 	_, _ = rand.Read(id[:])
 	o.run = hex.EncodeToString(id[:])
-	o.fetchCtx, o.stopFetch = context.WithCancel(ctx)
+	o.runCtx, o.stopRun = context.WithCancel(ctx)
 	o.newHandler = o.createHandler
 	for i, ps := range s.providers {
 		o.providers = append(o.providers, &providerRuntime{
@@ -153,7 +151,7 @@ func (o *Observer) Start() error {
 func (o *Observer) Close() error {
 	running.CompareAndSwap(o, nil)
 	o.once.Do(func() { close(o.done) })
-	o.stopFetch()
+	o.stopRun()
 	o.closeProviders()
 	return nil
 }
@@ -253,8 +251,8 @@ func (o *Observer) StartDial(ctx context.Context, tag string, server net.Destina
 		started: o.nowNano(),
 		network: o.generation.Load(),
 	}
-	if _, ok := o.lastServer.Load(tag); !ok && t.server != "" {
-		o.lastServer.Store(tag, t.server)
+	if _, ok := o.e.lastServer.Load(tag); !ok && t.server != "" {
+		o.e.lastServer.Store(tag, t.server)
 	}
 	o.track(t)
 	return t
@@ -330,9 +328,16 @@ func (o *Observer) untrack(t *connTracker) {
 	o.trackMu.Lock()
 	delete(o.trackers, t)
 	delete(o.watching, t)
+	// Nothing ends an untracked connection, and abort would keep its whole
+	// session reachable. closePending reads it under trackMu.
+	t.abort = nil
 	o.trackMu.Unlock()
 	t.watched.Store(false)
 }
+
+// A sweep batch larger than this is let go after the pass instead of being
+// kept for the next one.
+const sweepBatchKeep = 256
 
 // sweepLoop runs only while some connection has a deadline to check, so a
 // device with idle long-lived connections is not woken up.
@@ -377,6 +382,12 @@ func (o *Observer) sweepLoop(done chan struct{}) {
 					t.watch()
 				}
 			}
+		}
+		// Kept between passes, the batch would hold ended connections
+		// reachable for as long as the sweep runs, which is under load.
+		clear(batch)
+		if cap(batch) > sweepBatchKeep {
+			batch = nil
 		}
 	}
 }

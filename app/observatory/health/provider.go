@@ -485,6 +485,8 @@ func (e *engine) replacingTags(tags []string) {
 
 // resetPath forgets what was learned about an outbound whose settings changed.
 func (e *engine) resetPath(tag string, now time.Time) {
+	// The new settings may point to another server.
+	e.lastServer.Delete(tag)
 	p := e.paths[tag]
 	if p == nil {
 		return
@@ -520,4 +522,5 @@ func (e *engine) dropProviderOutbound(tag string, now time.Time) {
 			s.snapshot.Store(&next)
 		}
 	}
+	e.forget(tag)
 }

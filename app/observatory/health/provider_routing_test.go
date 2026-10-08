@@ -2,6 +2,7 @@ package health
 
 import (
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -114,5 +115,42 @@ func TestRoutingNotAllowedAsksForARestart(t *testing.T) {
 	raw, _ := f.o.DrainEvents()
 	if called || !strings.Contains(string(raw), `"provider_restart_needed"`) || !strings.Contains(string(raw), `"routing"`) {
 		t.Fatalf("routing applied %v; events %s", called, raw)
+	}
+}
+
+// Balancers the new routing does not have stop being judged and forget what
+// they remembered per network.
+func TestRoutingForgetsBalancersItNoLongerHas(t *testing.T) {
+	own := `{"tag": "auto", "selector": ["p-"], "strategy": "leastcost"}`
+	for _, refused := range []bool{false, true} {
+		f := newApplyFixture(t, time.Minute)
+		f.rt.cfg.routing = true
+		f.o.parseRouting = testRouting
+		f.o.replaceRules = func(*router.Config) error {
+			if refused {
+				return errors.New("refused")
+			}
+			return nil
+		}
+		f.o.e.addSelector("old", newSelectorSettings(&SelectorConfig{}))
+		f.o.e.networks["home"] = map[string]string{"auto": "p-x1", "old": "p-x1"}
+		f.o.e.networks["work"] = map[string]string{"old": "p-x1"}
+		f.o.e.netOrder = []string{"home", "work"}
+		if _, err := f.apply(t, routingAnswer(t, `{"rules": [{"via": "auto"}], "balancers": [`+own+`]}`)); err != nil {
+			t.Fatal(err)
+		}
+		_, kept := f.o.e.selectors["old"]
+		if kept != refused {
+			t.Fatalf("routing refused %v: balancer old kept %v", refused, kept)
+		}
+		if refused {
+			continue
+		}
+		if _, ok := f.o.e.networks["home"]["old"]; ok || f.o.e.networks["home"]["auto"] != "p-x1" {
+			t.Fatalf("networks after the balancer left: %v", f.o.e.networks)
+		}
+		if _, ok := f.o.e.networks["work"]; ok || len(f.o.e.netOrder) != 1 {
+			t.Fatalf("a network that remembered only the gone balancer is kept: %v %v", f.o.e.networks, f.o.e.netOrder)
+		}
 	}
 }

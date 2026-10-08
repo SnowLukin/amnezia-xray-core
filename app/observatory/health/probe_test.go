@@ -3,6 +3,7 @@ package health_test
 import (
 	"bytes"
 	"compress/gzip"
+	"encoding/json"
 	gonet "net"
 	"net/http"
 	"net/http/httptest"
@@ -136,5 +137,73 @@ func TestProbeFailsOnFrozenBodyAndWrongStatus(t *testing.T) {
 	}
 	if ok, _, _ := health.Probe(o, "a1", srv.URL+"/teapot", 0, 200); ok {
 		t.Fatal("status 418 passed a probe expecting 200")
+	}
+}
+
+// Closing the observer ends its probes at once, and a probe ended that way
+// says nothing about the outbound.
+func TestCloseEndsRunningProbesWithoutCountingThem(t *testing.T) {
+	ln, err := gonet.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			defer c.Close()
+		}
+	}()
+	cfg, err := serial.LoadJSONConfig(strings.NewReader(`{
+		"log": {"loglevel": "none"},
+		"outbounds": [{"tag": "a1", "protocol": "freedom", "settings": {"finalRules": [{"action": "allow"}]}}],
+		"healthObservatory": {"subjectSelector": ["a"],
+			"probes": [{"destination": "http://` + ln.Addr().String() + `/silent", "timeout": "3s", "progressTimeout": "3s"}]}
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	inst, err := core.New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := inst.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer inst.Close()
+	o := health.FromInstance(inst)
+	var st struct {
+		Running int `json:"probes_running"`
+		Paths   []struct {
+			Outbound     string `json:"outbound"`
+			State        string `json:"state"`
+			ProbesFailed int    `json:"probes_failed"`
+		} `json:"paths"`
+	}
+	status := func() {
+		if err := json.Unmarshal(o.Status(), &st); err != nil {
+			t.Fatal(err)
+		}
+	}
+	health.QueueProbe(o, "a1")
+	for status(); st.Running == 0; status() {
+		time.Sleep(10 * time.Millisecond)
+	}
+	time.Sleep(200 * time.Millisecond)
+	start := time.Now()
+	o.Close()
+	for status(); st.Running > 0 && time.Since(start) < 5*time.Second; status() {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if took := time.Since(start); took > time.Second {
+		t.Fatalf("the probe ran %v after the observer closed", took)
+	}
+	for _, p := range st.Paths {
+		if p.Outbound == "a1" && (p.State == "down" || p.ProbesFailed != 0) {
+			t.Fatalf("a probe ended by close counted against a1: %+v", p)
+		}
 	}
 }

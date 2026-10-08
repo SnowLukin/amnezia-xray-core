@@ -70,7 +70,8 @@ least `spacing` apart. They stay within `perMinute` in total and
 `perServerNamePerMinute` per TLS or REALITY server name, and two probes of
 one server name never run at once: several near-simultaneous handshakes to
 one server name are a known censor signal. Without user traffic for
-`pauseWhenIdle` there are no probes and no timers.
+`pauseWhenIdle` there are no probes and no timers. Closing the core ends the
+probes still running, and their outcome is not held against the outbound.
 
 Existing connections stay where they are; only new connections move. The
 exception is an outbound found down: its connections that have received
@@ -137,6 +138,11 @@ The values above are the defaults, except `subjectSelector`, `probes`,
 `connectivity`, `costs`, `lazy` and `startPinned`, which have none. Without a
 matching probe profile an outbound is probed with a GET of
 `https://www.gstatic.com/generate_204`.
+
+Values that size what the observatory keeps have ceilings, and a larger
+value is taken as the ceiling: probe and network check timeouts 30 s,
+`concurrent` 8, `maxEvents` 4096, events `maxBytes` 256 KiB, `maxNetworks`
+64; for a provider `maxBytes` 1 MiB, `maxOutbounds` 128 and `drain` 30 min.
 
 - `costs` uses the format of `leastLoad`: a substring or a `regexp` of the
   tag and a value above zero. Lower is preferred. Equal costs prefer
@@ -240,7 +246,8 @@ The answer is refused when a rule or a fallback goes to an outbound or a
 balancer that does not exist (Xray would take its default outbound for it,
 which may be outside the tunnel), when the leastCost balancer of the
 provider is gone, or when a leastCost balancer chooses outbounds nothing
-observes. Everything else in an answer, such as `dns`, `inbounds`, `policy`
+observes. Balancers the new routing no longer has are forgotten, with the
+outbounds they remembered per network. Everything else in an answer, such as `dns`, `inbounds`, `policy`
 or `routing.domainStrategy`, is read by Xray only at start: the core leaves
 it alone and reports it in `provider_restart_needed`, and the host restarts
 the core with a fresh config when it suits, for example once everything is
@@ -259,7 +266,8 @@ does not build changes nothing. Outbounds whose settings did not change are
 not touched and keep their connections. An outbound whose settings changed
 is replaced under the same tag. An outbound that left the set is no longer
 a candidate, keeps its connections for `drain` and is then removed and
-closed; if the balancer uses it, the balancer moves to another candidate the
+closed, and what the observatory knew about it is forgotten; if the
+balancer uses it, the balancer moves to another candidate the
 usual way and stays where it is while there is nothing else.
 
 **Triggers.** Any trigger may start a refresh:

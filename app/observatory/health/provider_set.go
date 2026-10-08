@@ -364,7 +364,7 @@ func (o *Observer) fetchSet(rt *providerRuntime, j *refreshJob) (*providerAnswer
 func (o *Observer) fetchOnce(cfg *providerSettings, tag string) (*providerAnswer, int, int, error) {
 	// Counted like a probe, so the request is not taken for user traffic.
 	var wire atomic.Int64
-	ctx, cancel := context.WithTimeout(withProbe(o.fetchCtx, &wire), cfg.timeout)
+	ctx, cancel := context.WithTimeout(withProbe(o.runCtx, &wire), cfg.timeout)
 	defer cancel()
 	// Keep-alive stays on: a server told to close the connection after the
 	// answer may lose its last bytes on some transports. The connection is
@@ -569,6 +569,13 @@ func (o *Observer) applySet(rt *providerRuntime, a *providerAnswer, j *refreshJo
 			fields["routing_error"] = err.Error()
 		} else {
 			fields["rules"] = len(routing.Rule)
+			keep := map[string]bool{}
+			for _, b := range routing.BalancingRule {
+				keep[b.Tag] = true
+			}
+			o.mu.Lock()
+			o.e.keepSelectors(keep)
+			o.mu.Unlock()
 		}
 	}
 
