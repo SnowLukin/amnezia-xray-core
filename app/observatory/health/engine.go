@@ -378,7 +378,7 @@ type selector struct {
 	upgradeAt        time.Time
 	upgradeTarget    string
 	upgradeSuccesses int
-	// The extra wait for a penalized target was already served.
+	// The longer wait for a penalized target was already served.
 	penaltyServed bool
 
 	// A failed return multiplies the wait before the next return to that
