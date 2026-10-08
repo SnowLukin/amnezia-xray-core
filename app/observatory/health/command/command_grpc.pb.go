@@ -24,6 +24,7 @@ const (
 	HealthService_NetworkChanged_FullMethodName = "/xray.core.app.observatory.health.command.HealthService/NetworkChanged"
 	HealthService_Pin_FullMethodName            = "/xray.core.app.observatory.health.command.HealthService/Pin"
 	HealthService_Refresh_FullMethodName        = "/xray.core.app.observatory.health.command.HealthService/Refresh"
+	HealthService_GetReport_FullMethodName      = "/xray.core.app.observatory.health.command.HealthService/GetReport"
 )
 
 // HealthServiceClient is the client API for HealthService service.
@@ -35,6 +36,7 @@ type HealthServiceClient interface {
 	NetworkChanged(ctx context.Context, in *NetworkChangedRequest, opts ...grpc.CallOption) (*NetworkChangedResponse, error)
 	Pin(ctx context.Context, in *PinRequest, opts ...grpc.CallOption) (*PinResponse, error)
 	Refresh(ctx context.Context, in *RefreshRequest, opts ...grpc.CallOption) (*RefreshResponse, error)
+	GetReport(ctx context.Context, in *GetReportRequest, opts ...grpc.CallOption) (*GetReportResponse, error)
 }
 
 type healthServiceClient struct {
@@ -95,6 +97,16 @@ func (c *healthServiceClient) Refresh(ctx context.Context, in *RefreshRequest, o
 	return out, nil
 }
 
+func (c *healthServiceClient) GetReport(ctx context.Context, in *GetReportRequest, opts ...grpc.CallOption) (*GetReportResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetReportResponse)
+	err := c.cc.Invoke(ctx, HealthService_GetReport_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // HealthServiceServer is the server API for HealthService service.
 // All implementations must embed UnimplementedHealthServiceServer
 // for forward compatibility.
@@ -104,6 +116,7 @@ type HealthServiceServer interface {
 	NetworkChanged(context.Context, *NetworkChangedRequest) (*NetworkChangedResponse, error)
 	Pin(context.Context, *PinRequest) (*PinResponse, error)
 	Refresh(context.Context, *RefreshRequest) (*RefreshResponse, error)
+	GetReport(context.Context, *GetReportRequest) (*GetReportResponse, error)
 	mustEmbedUnimplementedHealthServiceServer()
 }
 
@@ -128,6 +141,9 @@ func (UnimplementedHealthServiceServer) Pin(context.Context, *PinRequest) (*PinR
 }
 func (UnimplementedHealthServiceServer) Refresh(context.Context, *RefreshRequest) (*RefreshResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Refresh not implemented")
+}
+func (UnimplementedHealthServiceServer) GetReport(context.Context, *GetReportRequest) (*GetReportResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetReport not implemented")
 }
 func (UnimplementedHealthServiceServer) mustEmbedUnimplementedHealthServiceServer() {}
 func (UnimplementedHealthServiceServer) testEmbeddedByValue()                       {}
@@ -240,6 +256,24 @@ func _HealthService_Refresh_Handler(srv interface{}, ctx context.Context, dec fu
 	return interceptor(ctx, in, info, handler)
 }
 
+func _HealthService_GetReport_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetReportRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(HealthServiceServer).GetReport(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: HealthService_GetReport_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(HealthServiceServer).GetReport(ctx, req.(*GetReportRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // HealthService_ServiceDesc is the grpc.ServiceDesc for HealthService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -266,6 +300,10 @@ var HealthService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Refresh",
 			Handler:    _HealthService_Refresh_Handler,
+		},
+		{
+			MethodName: "GetReport",
+			Handler:    _HealthService_GetReport_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

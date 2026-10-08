@@ -67,6 +67,19 @@ func (s *service) Refresh(_ context.Context, r *RefreshRequest) (*RefreshRespons
 	return &RefreshResponse{Ok: s.observer.RequestRefresh(r.Provider)}, nil
 }
 
+func (s *service) GetReport(_ context.Context, r *GetReportRequest) (*GetReportResponse, error) {
+	if err := s.ready(); err != nil {
+		return nil, err
+	}
+	var report []byte
+	if r.Take || r.Final {
+		report = s.observer.TakeReport(r.Final)
+	} else {
+		report = s.observer.Report()
+	}
+	return &GetReportResponse{Json: string(report)}, nil
+}
+
 func (s *service) Register(server *grpc.Server) {
 	RegisterHealthServiceServer(server, s)
 }

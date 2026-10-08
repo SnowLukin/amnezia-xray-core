@@ -9,7 +9,7 @@ import (
 
 var cmdHealth = &base.Command{
 	CustomFlags: true,
-	UsageLine:   "{{.Exec}} api health [--server=127.0.0.1:8080] <status|events|network [id]|lost|pin <balancer> <outbound> [run]|release <balancer> [run]|refresh [provider]>",
+	UsageLine:   "{{.Exec}} api health [--server=127.0.0.1:8080] <status|events|network [id]|lost|pin <balancer> <outbound> [run]|release <balancer> [run]|refresh [provider]|report [take|final]>",
 	Short:       "Query and control the health observatory",
 	Long: `
 Query and control the health observatory. Output is JSON.
@@ -28,6 +28,11 @@ Commands:
 	                            with run (from status), a core started
 	                            again in the meantime ignores the request
 	refresh [provider]          fetch the outbounds of a provider, or of all
+	report [take|final]         the report a stop would bring now, without
+	                            closing the window; take returns it when
+	                            it is due and starts a new window, final
+	                            is the last one before the core stops;
+	                            null when there is nothing to report
 
 Arguments:
 
@@ -103,6 +108,27 @@ func executeHealth(cmd *base.Command, args []string) {
 			base.Fatalf("health refresh: %s", err)
 		}
 		fmt.Printf("{\"ok\":%t}\n", r.Ok)
+	case "report":
+		req := &healthService.GetReportRequest{}
+		if len(a) > 1 {
+			switch a[1] {
+			case "take":
+				req.Take = true
+			case "final":
+				req.Final = true
+			default:
+				base.Fatalf("health report: unknown argument %s", a[1])
+			}
+		}
+		r, err := client.GetReport(ctx, req)
+		if err != nil {
+			base.Fatalf("health report: %s", err)
+		}
+		if r.Json == "" {
+			fmt.Println("null")
+		} else {
+			fmt.Println(r.Json)
+		}
 	default:
 		base.Fatalf("health: unknown command %s", a[0])
 	}

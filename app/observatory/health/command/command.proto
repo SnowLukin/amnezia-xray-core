@@ -55,12 +55,27 @@ message RefreshResponse {
   bool ok = 1;
 }
 
+message GetReportRequest {
+  // Take the report when one is due and start a new window. Without it the
+  // report is a snapshot of what a stop would bring, and nothing changes.
+  bool take = 1;
+  // The host is about to stop the core: the last report of this run. It
+  // implies take.
+  bool final = 2;
+}
+
+message GetReportResponse {
+  // The report as JSON; empty when there is nothing to report.
+  string json = 1;
+}
+
 service HealthService {
   rpc GetStatus(GetStatusRequest) returns (GetStatusResponse) {}
   rpc DrainEvents(DrainEventsRequest) returns (DrainEventsResponse) {}
   rpc NetworkChanged(NetworkChangedRequest) returns (NetworkChangedResponse) {}
   rpc Pin(PinRequest) returns (PinResponse) {}
   rpc Refresh(RefreshRequest) returns (RefreshResponse) {}
+  rpc GetReport(GetReportRequest) returns (GetReportResponse) {}
 }
 
 message Config {}
