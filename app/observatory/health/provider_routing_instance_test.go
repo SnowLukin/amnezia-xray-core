@@ -110,8 +110,15 @@ func TestProviderRoutingAppliesInRunningCore(t *testing.T) {
 	  "routing": {"rules": [{"domain": ["full:a.test"], "outboundTag": "nowhere"}],
 	    "balancers": [{"tag": "auto", "selector": ["p-"], "strategy": {"type": "leastCost", "settings": {}}}]}}`)
 	obs.RequestRefresh("fresh")
-	ev = w.until("provider_apply", nil)
-	if ev.Fields["ok"] != false || pick("blocked.test") != "block" {
+	// The refused answer with dns is asked for again after the short
+	// backoff, and its refusal may come first: the apply of this answer is
+	// the first one about something else.
+	ev = w.until("provider_apply", func(e health.Event) bool {
+		reason, _ := e.Fields["error"].(string)
+		return !strings.Contains(reason, `"dns"`)
+	})
+	if reason, _ := ev.Fields["error"].(string); ev.Fields["ok"] != false || !strings.Contains(reason, "unknown outbound nowhere") ||
+		pick("blocked.test") != "block" {
 		t.Fatalf("a routing to an unknown outbound: apply %v, blocked.test now goes to %q", ev.Fields, pick("blocked.test"))
 	}
 }
