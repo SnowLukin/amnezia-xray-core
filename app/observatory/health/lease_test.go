@@ -951,6 +951,34 @@ func TestSameEndKeepsTheRenewalPoint(t *testing.T) {
 	}
 }
 
+// An answer may shorten a lease: the shorter end is its value from then on.
+// The backend answered about it, so it is not asked about again, and a
+// later answer that extends it past that end, though not past the end it
+// had before, renews it.
+func TestShorterEndIsTheValueALaterAnswerRenews(t *testing.T) {
+	te := leaseEngine(t, renewing(func(e *ExpiryTrigger) { e.Jitter = -1 }), &SelectorConfig{Costs: costs("p-", 1)}, "p-x1")
+	te.lease(t0, map[string]time.Duration{"p-x1": 10 * time.Hour}, "p-x1")
+	j := expectRefresh(t, te, at(5*time.Hour), "expiry")
+	c := te.sameSet(at(5*time.Hour), map[string]time.Time{"p-x1": at(6 * time.Hour)})
+	te.onRefreshDone(j, refreshOutcome{ok: true}, at(5*time.Hour))
+	l := te.prov().leases["p-x1"]
+	if c.renewed != 0 || !l.end.Equal(at(6*time.Hour)) || !l.asked || l.left(at(5*time.Hour)) != time.Hour {
+		t.Fatalf("shortened: counts %+v, end %v, asked %v, left %v", c, l.end.Sub(t0), l.asked, l.left(at(5*time.Hour)))
+	}
+	for now := at(5*time.Hour + time.Minute); now.Before(at(5*time.Hour + 30*time.Minute)); now = now.Add(time.Minute) {
+		expectNoRefresh(t, te, now)
+	}
+	c = te.sameSet(at(5*time.Hour+30*time.Minute), map[string]time.Time{"p-x1": at(8 * time.Hour)})
+	if l = te.prov().leases["p-x1"]; c.renewed != 1 || !l.end.Equal(at(8*time.Hour)) || l.asked {
+		t.Fatalf("extended past the shorter end: counts %+v, end %v, asked %v", c, l.end.Sub(t0), l.asked)
+	}
+	j, when := te.firstRefresh(t, at(5*time.Hour+31*time.Minute), at(8*time.Hour))
+	if when != at(6*time.Hour+45*time.Minute) || j.trigger != triggerExpiry ||
+		fmt.Sprint(j.asked) != fmt.Sprint([]askedLease{{"p-x1", at(8 * time.Hour)}}) {
+		t.Fatalf("%s refresh at %v asks about %+v; want the renewal of the 8 h value at half of it", j.trigger, when.Sub(t0), j.asked)
+	}
+}
+
 // Any answer renews what it names, and a refresh of any trigger asks about
 // the leases due: no separate renewal follows.
 func TestAnyRefreshRenews(t *testing.T) {

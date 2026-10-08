@@ -401,9 +401,11 @@ longer of the monotonic clock, which stands while the device sleeps, and
 the wall clock, so it ends early rather than late. A refresh renews it
 before that, see the `expiry` trigger. Every answer is the whole truth
 about the outbounds in it: a later end renews a lease, the same end only
-brings a fresher clock and moves neither the end nor the renewal, and an
-outbound that leaves the set takes its lease along. An answer with a time
-the core cannot read is refused, and a refused answer changes no lease.
+brings a fresher clock and moves neither the end nor the renewal, an
+earlier end shortens the lease without moving the renewal, so a later
+answer that extends it again renews it, and an outbound that leaves the
+set takes its lease along. An answer with a time the core cannot read is
+refused, and a refused answer changes no lease.
 
 An outbound whose lease ended stays a candidate, the last resort: new
 connections go to it only while no other usable candidate is left, so when

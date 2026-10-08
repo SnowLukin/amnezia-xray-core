@@ -10,7 +10,8 @@ import (
 // arrived, not as a moment on the clock of the device, which may be off by
 // any amount.
 type lease struct {
-	// expiresAt of the answer: it names the value of the lease.
+	// expiresAt of the answer: it names the value of the lease in force,
+	// which an answer may shorten as well as renew.
 	end time.Time
 	// When the answer that named it last arrived, with the monotonic reading.
 	// Each lease has its own: a moment shared by the provider would stretch
@@ -20,8 +21,8 @@ type lease struct {
 	// at most maxLease either way.
 	ttl time.Duration
 	// From at: when a refresh renews it, spread per value, and when that
-	// renewal becomes urgent. An answer with the same end keeps both points
-	// where they were.
+	// renewal becomes urgent. An answer with the same or an earlier end
+	// keeps both points where they were.
 	renewIn  time.Duration
 	urgentIn time.Duration
 	// A refresh asked the backend about this value and got an answer, so it
@@ -97,9 +98,9 @@ func leaseRef(serverTime, date, wall time.Time) (time.Time, string) {
 }
 
 // acceptLeases takes the leases of an applied answer, the whole truth about
-// the outbounds of its set: a later end renews a lease, the same or an
-// earlier one brings only a fresher clock, and an outbound without one has
-// no lease. Leases of outbounds that left the set go with them. It reports
+// the outbounds of its set: a later end renews a lease, the same one brings
+// only a fresher clock, an earlier one shortens it, and an outbound without
+// one has no lease. Leases of outbounds that left the set go with them. It reports
 // whether an outbound expired or came back, which the balancers have yet to
 // see.
 func (e *engine) acceptLeases(p *provider, tags []string, a leaseAnswer, now time.Time) (leaseCounts, bool) {
@@ -144,10 +145,16 @@ func (e *engine) acceptLeases(p *provider, tags []string, a leaseAnswer, now tim
 				l.renewIn = min(e.jitter(time.Duration(p.cfg.renewAt*float64(ttl)), p.cfg.renewJitter), l.urgentIn)
 			}
 		} else {
-			// The same value: the renewal stays where it was, or an answer
-			// for another trigger would put it off again and again.
+			// The same value or a shorter one: the renewal stays where it
+			// was, or an answer for another trigger would put it off again
+			// and again. A shorter end is the value from now on, so that a
+			// later answer that extends it past that end renews it, though
+			// not past the end it had before.
 			gone := l.elapsed(at)
 			l.renewIn, l.urgentIn = max(l.renewIn-gone, 0), max(l.urgentIn-gone, 0)
+			if end.Before(l.end) {
+				l.end = end
+			}
 		}
 		// A fresh clock of the server is more exact than what the device
 		// counted, which may have slept.
@@ -302,13 +309,13 @@ func (p *provider) askLeases(now time.Time) []askedLease {
 
 // answeredLeases settles the leases a refresh asked about. After an answer
 // the backend knows about them: a lease it did not renew is not asked about
-// again, so a backend that keeps a lease short gets no stream of requests.
-// After a failure, a Retry-After or a refused answer they are asked about
-// again, after the backoff or the pause.
+// again, also when it shortened it, so a backend that keeps a lease short
+// gets no stream of requests. After a failure, a Retry-After or a refused
+// answer they are asked about again, after the backoff or the pause.
 func (p *provider) answeredLeases(asked []askedLease, ok bool) {
 	for _, a := range asked {
 		l := p.leases[a.tag]
-		if l == nil || !l.end.Equal(a.end) {
+		if l == nil || l.end.After(a.end) {
 			// Renewed by the answer, or gone with its outbound.
 			continue
 		}
