@@ -96,10 +96,15 @@ var (
 // backend.
 type answerError struct{ msg string }
 
-func (e *answerError) Error() string { return "invalid answer: " + e.msg }
+const answerErrorPrefix = "invalid answer: "
 
+func (e *answerError) Error() string { return answerErrorPrefix + e.msg }
+
+// answerErrorf words the refusal of an answer. A reason may quote a value of
+// the answer, which may be as large as the answer; it goes into events,
+// Status and the next request, so it is cut to maxFailureText in all.
 func answerErrorf(format string, args ...any) error {
-	return &answerError{msg: fmt.Sprintf(format, args...)}
+	return &answerError{msg: cutText(fmt.Sprintf(format, args...), maxFailureText-len(answerErrorPrefix))}
 }
 
 func isAnswerError(err error) bool {
@@ -675,6 +680,9 @@ func (o *Observer) applySet(rt *providerRuntime, a *providerAnswer, j *refreshJo
 	defer o.applyMu.Unlock()
 	fields := map[string]any{"provider": rt.cfg.tag, "trigger": j.trigger.String(), "version": a.version}
 	fail := func(err error) (bool, error) {
+		// Building quotes tags, protocols and what the config loader found
+		// wrong, all from the answer: cut like the reason of an answerError.
+		err = errors.New(cutText(err.Error(), maxFailureText))
 		fields["ok"] = false
 		fields["error"] = err.Error()
 		o.emit("provider_apply", fields)
@@ -800,7 +808,7 @@ func (o *Observer) applySet(rt *providerRuntime, a *providerAnswer, j *refreshJo
 	// for their selectors.
 	if routing != nil {
 		if err := o.replaceRules(routing, a.withStrategy); err != nil {
-			fields["routing_error"] = err.Error()
+			fields["routing_error"] = cutText(err.Error(), maxFailureText)
 		} else {
 			fields["rules"] = len(routing.Rule)
 			keep := map[string]bool{}

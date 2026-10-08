@@ -62,7 +62,8 @@ const (
 	providerProtocol = 1
 	// How much of an answer that is not 200 is read for its error code.
 	maxErrorBody = 4 << 10
-	// The reason of the previous failure the next request tells the provider.
+	// The reason an answer was refused, as events, Status and the next
+	// request tell it.
 	maxFailureText = 200
 
 	defaultProviderTimeout      = 10 * time.Second

@@ -273,6 +273,8 @@ func TestApplyBrokenSetChangesNothing(t *testing.T) {
 		"build:":        {{Tag: "x2", V: 1}, {Tag: "unparsable"}},
 		"build p-x3":    {{Tag: "x2", V: 1}, {Tag: "x3", Bad: true}},
 		"not allowed":   {{Tag: "x2", V: 1}, {Tag: "x3", Protocol: "freedom"}},
+		// The reason quotes the tag, as large as the answer allows.
+		"outbound " + strings.Repeat("x", 40): {{Tag: "x2", V: 1}, {Tag: strings.Repeat("x", 100_000), Protocol: "freedom"}},
 	}
 	for name, set := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -282,11 +284,14 @@ func TestApplyBrokenSetChangesNothing(t *testing.T) {
 			}
 			before := f.m.GetHandler("p-x1")
 			f.created = nil
-			if _, err := f.apply(t, answer(t, set...)); err == nil {
+			_, err := f.apply(t, answer(t, set...))
+			if err == nil {
 				t.Fatal("broken set applied")
 			}
 			if ev := f.lastApply(t); ev["ok"] != false || !strings.Contains(ev["error"].(string), name) {
-				t.Fatalf("event %v, want an error about %q", ev, name)
+				t.Fatalf("event %.300v, want an error about %q", ev, name)
+			} else if len(ev["error"].(string)) > maxFailureText || len(err.Error()) > maxFailureText {
+				t.Fatalf("a reason of %d bytes", len(err.Error()))
 			}
 			if f.m.tags() != "p-x1" || f.m.GetHandler("p-x1") != before {
 				t.Fatalf("manager changed: %s", f.m.tags())
@@ -431,6 +436,8 @@ func TestParseAnswer(t *testing.T) {
 			t.Errorf("%s: %v, want a broken answer", body, err)
 		}
 	}
+	// The error of the duration parser quotes the whole value.
+	longRefresh := `{"outbounds": [{"tag": "x"}], "nextRefreshIn": "` + strings.Repeat("soon", 50_000) + `"}`
 	for body, want := range map[string]string{
 		`{"outbounds": []}`:                                                     "no outbounds",
 		`{"protocol": 2, "outbounds": [{"tag": "x"}]}`:                          "protocol 2 is not supported",
@@ -444,9 +451,10 @@ func TestParseAnswer(t *testing.T) {
 		`{"outbounds": [{"tag": "x"}], "nextRefreshIn": "soon"}`:                "nextRefreshIn",
 		`{"outbounds": [{"tag": "x"}], "` + strings.Repeat("k", 1000) + `": 1}`: "...",
 		`{"outbounds": {"tag": "x"}}`:                                           "outbounds:",
+		longRefresh:                                                             "nextRefreshIn",
 	} {
 		_, err := parseAnswer([]byte(body))
-		if err == nil || !isAnswerError(err) || !strings.Contains(err.Error(), want) || len(err.Error()) > 200 {
+		if err == nil || !isAnswerError(err) || !strings.Contains(err.Error(), want) || len(err.Error()) > maxFailureText {
 			t.Errorf("%.80s: %v, want a refusal about %q", body, err, want)
 		}
 	}

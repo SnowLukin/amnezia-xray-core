@@ -328,7 +328,7 @@ here, a section of the config such as `dns`, `inbounds` or `policy`, and
 `healthObservatory` refuse the whole answer, so a backend never takes a key
 for applied that the core threw away; a new key is a new protocol. A refused
 answer changes nothing and is reported in `provider_apply` with `ok` false
-and the reason.
+and the reason, cut to 200 bytes like every reason that quotes the answer.
 
 `outbounds` use the format of the config file and need unique tags. Their
 protocols must be in `apply.protocols`; by default `vless`, `vmess`,
