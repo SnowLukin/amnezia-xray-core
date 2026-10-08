@@ -104,6 +104,8 @@ type engine struct {
 	connectivityIgnored bool
 	lastSuccess         time.Time
 	pendingSuspicion    map[string]verdict
+	// Outbounds found down whose waiting connections the observer is to end.
+	downs []downMark
 
 	// Costs that providers sent for their outbounds, by balancer and outbound.
 	costs map[string]map[string]float64
@@ -341,6 +343,7 @@ func (e *engine) markDown(p *path, reason string, now time.Time) {
 	p.failures = p.failures[:0]
 	delete(e.pendingSuspicion, p.tag)
 	e.emitPath(p, now)
+	e.noteDown(p, now)
 	for _, s := range e.sortedSelectors() {
 		if s.returnedTo == p.tag && now.Sub(s.returnedAt) < s.cfg.upgrade.penaltyWindow {
 			base := maxDuration(s.cfg.upgrade.interval, s.cfg.minHold)
@@ -353,6 +356,29 @@ func (e *engine) markDown(p *path, reason string, now time.Time) {
 			e.failover(s, now)
 		}
 	}
+}
+
+// downMark is an outbound found down: its connections that started before
+// at and have received nothing will receive nothing.
+type downMark struct {
+	tag    string
+	at     time.Time
+	reason string
+}
+
+// noteDown asks the observer to end what waits on p. While the network
+// itself is in doubt, waiting connections may still be answered once it is
+// back, so they are kept.
+func (e *engine) noteDown(p *path, now time.Time) {
+	if p.status == statusDown && !p.provisional && !e.s.passive.keepPending {
+		e.downs = append(e.downs, downMark{tag: p.tag, at: now, reason: p.reason})
+	}
+}
+
+func (e *engine) takeDowns() []downMark {
+	d := e.downs
+	e.downs = nil
+	return d
 }
 
 func (e *engine) markUp(p *path, reason string, now time.Time) {
@@ -553,6 +579,11 @@ func (e *engine) switchTo(s *selector, tag string, reason string, now time.Time)
 	from := s.current()
 	if from != "" && from != tag && !s.activeSince.IsZero() {
 		e.path(from).stats.activeTime += now.Sub(s.activeSince)
+	}
+	if from != "" && from != tag {
+		// Connections kept going to the dead outbound while its replacement
+		// was being probed.
+		e.noteDown(e.path(from), now)
 	}
 	held := time.Duration(0)
 	if !s.activeSince.IsZero() {

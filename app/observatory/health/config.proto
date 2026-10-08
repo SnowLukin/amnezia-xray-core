@@ -58,6 +58,10 @@ message PassiveConfig {
   // A partial stall needs at least this much read, so idle keep-alive
   // connections with small answers do not count.
   int64 partial_stall_min_bytes = 13;
+  // When an outbound is found down, its connections that have not received
+  // anything yet are ended right away, so applications retry on the outbound
+  // chosen now instead of waiting for their own timeout. This keeps them.
+  bool keep_pending_on_down = 14;
 }
 
 message ProbeProfile {

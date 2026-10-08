@@ -2,6 +2,7 @@ package health
 
 import (
 	"context"
+	"encoding/json"
 	goerrors "errors"
 	gonet "net"
 	"testing"
@@ -199,10 +200,10 @@ func TestWitnessConnectionEndsTheNetworkPause(t *testing.T) {
 	if !o.e.networkDown {
 		t.Fatal("a failed check did not pause decisions")
 	}
-	if tr := o.StartDial(context.Background(), "proxy", net.Destination{}); tr != nil {
+	if tr := o.StartDial(context.Background(), "proxy", net.Destination{}, nil); tr != nil {
 		t.Fatalf("an outbound that is neither observed nor a witness is followed")
 	}
-	tr := o.StartDial(context.Background(), "direct", net.Destination{})
+	tr := o.StartDial(context.Background(), "direct", net.Destination{}, nil)
 	r, _ := tr.Dialed(nil, nil, nil, nil)
 	r.Add(10 * 1024)
 	if !o.e.networkDown {
@@ -271,6 +272,49 @@ func TestSplicedProgressCountsFromTheSplice(t *testing.T) {
 	}
 }
 
+func TestDownOutboundEndsConnectionsThatGotNothing(t *testing.T) {
+	o, clk := newTestObserver()
+	ended := map[string]bool{}
+	dial := func(tag, name string) *connTracker {
+		return o.StartDial(context.Background(), tag, net.Destination{}, func() { ended[name] = true }).(*connTracker)
+	}
+	dialing := dial("a1", "dialing")
+	waiting := dial("a1", "waiting")
+	waiting.Dialed(nil, nil, nil, nil)
+	answered := dial("a1", "answered")
+	r, _ := answered.Dialed(nil, nil, nil, nil)
+	r.Add(100)
+	other := dial("a2", "other")
+	other.Dialed(nil, nil, nil, nil)
+	clk.advance(time.Second)
+	decided := clk.now()
+	clk.advance(time.Second)
+	dial("a1", "later")
+
+	o.closePending(downMark{tag: "a1", at: decided, reason: "traffic"})
+	want := map[string]bool{"dialing": true, "waiting": true}
+	for _, name := range []string{"dialing", "waiting", "answered", "other", "later"} {
+		if ended[name] != want[name] {
+			t.Errorf("%s: ended %v, want %v", name, ended[name], want[name])
+		}
+	}
+
+	// How they end is the observer's doing, not a failure of a1.
+	dialing.Dialed(nil, goerrors.New("dial tcp: i/o timeout"), nil, nil)
+	waiting.Finished(goerrors.New("io: read/write on closed pipe"))
+	clk.advance(time.Minute)
+	waiting.sweep(o.nowNano())
+	if n := failures(o, failDial) + failures(o, failClosed) + failures(o, failNoResponse); n != 0 {
+		t.Fatalf("ended connections counted as %d failures", n)
+	}
+	raw, _ := o.e.events.drain()
+	var evs []Event
+	_ = json.Unmarshal(raw, &evs)
+	if len(evs) != 1 || evs[0].Type != "pending_closed" || evs[0].Fields["connections"] != float64(2) {
+		t.Fatalf("events %s, want one pending_closed for two connections", raw)
+	}
+}
+
 func TestDialsStartedInThePauseDoNotJudgeAfterIt(t *testing.T) {
 	s := newSettings(&Config{
 		SubjectSelector: []string{"a"},
@@ -285,7 +329,7 @@ func TestDialsStartedInThePauseDoNotJudgeAfterIt(t *testing.T) {
 	}
 	var dials []*connTracker
 	for i := 0; i < 3; i++ {
-		dials = append(dials, o.StartDial(context.Background(), "a1", net.Destination{}).(*connTracker))
+		dials = append(dials, o.StartDial(context.Background(), "a1", net.Destination{}, nil).(*connTracker))
 		clk.advance(time.Second)
 	}
 	o.e.sawSuccess("traffic", clk.now())
@@ -299,7 +343,7 @@ func TestDialsStartedInThePauseDoNotJudgeAfterIt(t *testing.T) {
 	if n := failures(o, failDialTimeout); n != 0 {
 		t.Fatalf("%d dials that started in the pause counted against a1 after it", n)
 	}
-	fresh := o.StartDial(context.Background(), "a1", net.Destination{}).(*connTracker)
+	fresh := o.StartDial(context.Background(), "a1", net.Destination{}, nil).(*connTracker)
 	clk.advance(7 * time.Second)
 	fresh.sweep(o.nowNano())
 	if n := failures(o, failDialTimeout); n != 1 {
@@ -375,7 +419,7 @@ func TestDialsOfThePreviousNetworkDoNotJudgeTheNewOne(t *testing.T) {
 	o.e.updateCandidates(o.e.addSelector("auto", newSelectorSettings(&SelectorConfig{})), []string{"a1", "b1"}, clk.now())
 	var dials []*connTracker
 	for i := 0; i < 3; i++ {
-		dials = append(dials, o.StartDial(context.Background(), "a1", net.Destination{}).(*connTracker))
+		dials = append(dials, o.StartDial(context.Background(), "a1", net.Destination{}, nil).(*connTracker))
 	}
 	o.NetworkChanged("lte")
 	clk.advance(7 * time.Second)
@@ -385,7 +429,7 @@ func TestDialsOfThePreviousNetworkDoNotJudgeTheNewOne(t *testing.T) {
 	if n := failures(o, failDialTimeout); n != 0 {
 		t.Fatalf("%d dials started on the old network counted against a1", n)
 	}
-	fresh := o.StartDial(context.Background(), "a1", net.Destination{}).(*connTracker)
+	fresh := o.StartDial(context.Background(), "a1", net.Destination{}, nil).(*connTracker)
 	clk.advance(7 * time.Second)
 	fresh.sweep(o.nowNano())
 	if n := failures(o, failDialTimeout); n != 1 {

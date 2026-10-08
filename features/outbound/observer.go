@@ -15,8 +15,10 @@ import (
 // Implementations must not block: the calls happen on the dialing goroutine.
 type ConnectionObserver interface {
 	// StartDial is called right before a handler dials server. It returns nil
-	// when the observer is not interested in this connection.
-	StartDial(ctx context.Context, tag string, server net.Destination) DialTracker
+	// when the observer is not interested in this connection. abort ends the
+	// user connection the dial belongs to, whether it is still dialing or
+	// already open; it is nil for dials no user connection waits for.
+	StartDial(ctx context.Context, tag string, server net.Destination, abort func()) DialTracker
 }
 
 // DialTracker follows one dial and the connection it produced.

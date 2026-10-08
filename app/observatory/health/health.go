@@ -173,7 +173,13 @@ func (o *Observer) loop(done chan struct{}) {
 		now := o.now()
 		jobs, wake := o.e.tick(now)
 		refreshes, refreshWake := o.e.tickProviders(now)
+		downs := o.e.takeDowns()
 		o.mu.Unlock()
+		// Ending a connection reports back to the observer, so it happens
+		// outside the lock.
+		for _, d := range downs {
+			o.closePending(d)
+		}
 		if !refreshWake.IsZero() && (wake.IsZero() || refreshWake.Before(wake)) {
 			wake = refreshWake
 		}
@@ -225,7 +231,7 @@ func (o *Observer) runProbe(j *probeJob) {
 // ---- outbound.ConnectionObserver ------------------------------------------
 
 // StartDial implements outbound.ConnectionObserver.
-func (o *Observer) StartDial(ctx context.Context, tag string, server net.Destination) outbound.DialTracker {
+func (o *Observer) StartDial(ctx context.Context, tag string, server net.Destination, abort func()) outbound.DialTracker {
 	if bytes := probeBytesFrom(ctx); bytes != nil {
 		return &probeTracker{bytes: bytes}
 	}
@@ -243,6 +249,7 @@ func (o *Observer) StartDial(ctx context.Context, tag string, server net.Destina
 		server:  destString(server),
 		conn:    connFrom(ctx),
 		udp:     udp,
+		abort:   abort,
 		started: o.nowNano(),
 		network: o.generation.Load(),
 	}
@@ -286,6 +293,37 @@ func (o *Observer) watch(t *connTracker) {
 	if start {
 		go o.sweepLoop(done)
 	}
+}
+
+// closePending ends the connections of an outbound found down that started
+// before the decision and have received nothing: applications retry on the
+// outbound chosen now instead of waiting for their own timeout, and the
+// memory the stuck connections hold is freed. Connections that received
+// something keep going: an address that refuses new connections may still
+// serve old ones.
+func (o *Observer) closePending(d downMark) {
+	before := int64(d.at.Sub(o.base))
+	var aborts []func()
+	o.trackMu.Lock()
+	for t := range o.trackers {
+		if t.tag != d.tag || t.abort == nil || t.started > before ||
+			t.state.Load() == trackerFinished || t.firstRead.Load() != 0 || t.spliced.Load() {
+			continue
+		}
+		if t.mark(reportedAborted) {
+			aborts = append(aborts, t.abort)
+		}
+	}
+	o.trackMu.Unlock()
+	for _, abort := range aborts {
+		abort()
+	}
+	if len(aborts) == 0 {
+		return
+	}
+	o.mu.Lock()
+	o.e.emit(o.now(), "pending_closed", map[string]any{"outbound": d.tag, "connections": len(aborts), "reason": d.reason})
+	o.mu.Unlock()
 }
 
 func (o *Observer) untrack(t *connTracker) {

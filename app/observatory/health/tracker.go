@@ -27,6 +27,8 @@ const (
 	reportedStall
 	reportedPartialStall
 	reportedSuccess
+	// The observer ended the connection itself; how it ends tells nothing.
+	reportedAborted
 )
 
 // Trackers without any traffic for this long are dropped. This covers
@@ -46,6 +48,8 @@ type connTracker struct {
 	network uint64
 	// UDP flows have no request and answer to wait for; only their dial is judged.
 	udp bool
+	// Ends the user connection; nil when none waits for this dial.
+	abort func()
 
 	started int64
 	dialed  atomic.Int64
@@ -109,7 +113,7 @@ func (t *connTracker) Dialed(conn net.Conn, err error, read, write stats.Counter
 	if err != nil {
 		t.state.Store(trackerFinished)
 		t.o.untrack(t)
-		if goerrors.Is(err, context.Canceled) {
+		if goerrors.Is(err, context.Canceled) || t.has(reportedAborted) {
 			return nil, nil
 		}
 		if !t.has(reportedDialTimeout) {
@@ -248,7 +252,7 @@ func (t *connTracker) Finished(err error) {
 	// Ended by a failure before any answer: a transport that connects
 	// lazily, such as XHTTP, shows a dead server this way. A connection the
 	// user closed ends canceled and tells nothing.
-	if err != nil && !goerrors.Is(err, context.Canceled) && !t.udp && !t.spliced.Load() &&
+	if err != nil && !goerrors.Is(err, context.Canceled) && !t.udp && !t.spliced.Load() && !t.has(reportedAborted) &&
 		t.firstRead.Load() == 0 && t.mark(reportedNoResponse) {
 		t.o.failure(t, failClosed)
 	}
@@ -260,6 +264,9 @@ func (t *connTracker) Finished(err error) {
 // connection still has a deadline to watch, and whether to drop it.
 func (t *connTracker) sweep(now int64) (watching, drop bool) {
 	p := &t.o.s.passive
+	if t.has(reportedAborted) {
+		return false, false
+	}
 	switch t.state.Load() {
 	case trackerDialing:
 		if now-t.started > int64(p.dialTimeout) && t.mark(reportedDialTimeout) {

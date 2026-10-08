@@ -41,7 +41,9 @@ the config.
    way, without waiting. Path failures need no further
    proof; destination failures are confirmed by a probe. A probe that clears
    the suspicion starts a cooldown that doubles with every false alarm in a
-   row.
+   row. A user connection that receives `successBytes` through the outbound
+   while the suspicion waits for its probe clears it the same way, and the
+   probe is not sent.
 4. **Failover.** The chosen outbound goes down and rests in quarantine with a
    growing, jittered backoff. The balancer moves new connections to the
    cheapest usable candidate, after probing it if `switchAfterProbe`. When
@@ -63,7 +65,15 @@ name: several near-simultaneous handshakes to one server name are a known
 censor signal. Without user traffic for `pauseWhenIdle` there are no probes
 and no timers.
 
-Existing connections stay where they are; only new connections move.
+Existing connections stay where they are; only new connections move. The
+exception is an outbound found down: its connections that have received
+nothing yet, still dialing or waiting for an answer, are ended at the
+decision and at the switch away from it. Applications see the failure at once
+and retry on the outbound chosen now instead of waiting for their own
+timeout, and the stuck connections stop holding memory. Connections that
+received something keep going, since an address that refuses new
+connections may still serve old ones. `keepPendingOnDown` turns this off. A
+decision made while the network check was failing ends nothing.
 
 ## Config
 
@@ -74,7 +84,8 @@ Existing connections stay where they are; only new connections move.
     "passive": {
       "window": "60s", "dialTimeout": "6s", "firstByteTimeout": "5s", "stallTimeout": "8s",
       "failures": 3, "distinctTargets": 2, "successBytes": 24576, "sweepInterval": "500ms",
-      "partialStallMaxAge": "30s", "ignorePartialStalls": false, "dialOnly": false
+      "partialStallMaxAge": "30s", "ignorePartialStalls": false, "dialOnly": false,
+      "keepPendingOnDown": false
     },
     "probes": [
       { "selector": ["a", "b"], "destination": "https://example.com/bytes/32768", "method": "GET",
@@ -303,6 +314,7 @@ changed its settings). `kinds` counts failures by kind: `dial_failed`, `dial_tim
 | `probe_start` | `outbound`, `reason`, `balancer` | A probe started. `reason`: `confirm`, `failover`, `network_change`, `remembered`, `recheck`, `upgrade`. |
 | `probe_result` | `outbound`, `reason`, `balancer`, `ok`, `rtt_ms`, `bytes`, `error`, `stale` | A probe finished. `bytes` counts both directions above TLS. `stale` means it was made in the previous network and was ignored. |
 | `exhausted` | `balancer`, `from`, `candidates` | No usable candidate is left; traffic goes to `fallbackTag`. |
+| `pending_closed` | `outbound`, `connections`, `reason` | Connections of an outbound found down that had received nothing were ended. `reason` is the one the outbound went down for. |
 | `upgrade_start` | `balancer`, `from`, `to` | Probing a cheaper outbound to return to it. |
 | `upgrade_failed` | `balancer`, `outbound`, `successes` | The return was abandoned after a failed probe. |
 | `upgrade_delayed` | `balancer`, `outbound`, `delay_ms` | The return waits longer because the previous one failed. |

@@ -26,14 +26,16 @@ type countingObserver struct {
 	starts, dialedOK, finished atomic.Int64
 	mu                         sync.Mutex
 	ids                        []xctx.ID
+	aborts                     []func()
 }
 
-func (c *countingObserver) StartDial(ctx context.Context, tag string, server net.Destination) obs.DialTracker {
+func (c *countingObserver) StartDial(ctx context.Context, tag string, server net.Destination, abort func()) obs.DialTracker {
 	c.starts.Add(1)
 	c.mu.Lock()
 	c.ids = append(c.ids, xctx.IDFromContext(ctx))
+	c.aborts = append(c.aborts, abort)
 	c.mu.Unlock()
-	return &countingTracker{c: c, inner: c.inner.StartDial(ctx, tag, server)}
+	return &countingTracker{c: c, inner: c.inner.StartDial(ctx, tag, server, nil)}
 }
 
 type countingTracker struct {
@@ -165,6 +167,67 @@ func TestRetriesOfOneConnectionShareAnID(t *testing.T) {
 	}
 	if len(c.ids) <= 3 || len(distinct) != 3 {
 		t.Fatalf("%d dials of 3 connections carried %d ids, want one id per connection", len(c.ids), len(distinct))
+	}
+}
+
+func TestAbortEndsAConnectionWaitingForAnAnswer(t *testing.T) {
+	ln, err := gonet.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			// Takes the request and never answers.
+			go io.Copy(io.Discard, c)
+		}
+	}()
+	inst := startInstance(t, `{
+		"log": {"loglevel": "none"},
+		"outbounds": [{"tag": "v1", "protocol": "vless",
+			"settings": {"address": "127.0.0.1", "port": `+strconv.Itoa(ln.Addr().(*gonet.TCPAddr).Port)+`,
+				"id": "27848739-7e62-4138-9fd3-098a63964b6b", "encryption": "none"}}],
+		"healthObservatory": {"subjectSelector": ["v"]}
+	}`)
+	defer inst.Close()
+	c := observe(t, inst, "v1")
+	conn, err := core.Dial(context.Background(), inst, net.TCPDestination(net.DomainAddress("example.test"), 80))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	conn.Write([]byte("GET / HTTP/1.1\r\nHost: example.test\r\n\r\n"))
+	var abort func()
+	for i := 0; i < 100 && abort == nil; i++ {
+		time.Sleep(20 * time.Millisecond)
+		c.mu.Lock()
+		if len(c.aborts) > 0 {
+			abort = c.aborts[0]
+		}
+		c.mu.Unlock()
+	}
+	if abort == nil {
+		t.Fatal("the dial of a user connection came without abort")
+	}
+	time.Sleep(200 * time.Millisecond)
+	start := time.Now()
+	abort()
+	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if _, err := conn.Read(make([]byte, 64)); err == nil {
+		t.Fatal("the connection got an answer from a server that never answers")
+	}
+	if waited := time.Since(start); waited > time.Second {
+		t.Fatalf("the connection ended %v after abort", waited)
+	}
+	for i := 0; i < 50 && c.finished.Load() == 0; i++ {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if c.finished.Load() == 0 {
+		t.Fatal("the tracker of the aborted connection was not finished")
 	}
 }
 

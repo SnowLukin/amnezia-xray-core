@@ -318,8 +318,12 @@ type PassiveConfig struct {
 	// A partial stall needs at least this much read, so idle keep-alive
 	// connections with small answers do not count.
 	PartialStallMinBytes int64 `protobuf:"varint,13,opt,name=partial_stall_min_bytes,json=partialStallMinBytes,proto3" json:"partial_stall_min_bytes,omitempty"`
-	unknownFields        protoimpl.UnknownFields
-	sizeCache            protoimpl.SizeCache
+	// When an outbound is found down, its connections that have not received
+	// anything yet are ended right away, so applications retry on the outbound
+	// chosen now instead of waiting for their own timeout. This keeps them.
+	KeepPendingOnDown bool `protobuf:"varint,14,opt,name=keep_pending_on_down,json=keepPendingOnDown,proto3" json:"keep_pending_on_down,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *PassiveConfig) Reset() {
@@ -441,6 +445,13 @@ func (x *PassiveConfig) GetPartialStallMinBytes() int64 {
 		return x.PartialStallMinBytes
 	}
 	return 0
+}
+
+func (x *PassiveConfig) GetKeepPendingOnDown() bool {
+	if x != nil {
+		return x.KeepPendingOnDown
+	}
+	return false
 }
 
 type ProbeProfile struct {
@@ -1641,7 +1652,7 @@ const file_app_observatory_health_config_proto_rawDesc = "" +
 	"\bschedule\x18\x05 \x01(\v20.xray.core.app.observatory.health.ScheduleConfigR\bschedule\x12F\n" +
 	"\x06events\x18\x06 \x01(\v2..xray.core.app.observatory.health.EventsConfigR\x06events\x12I\n" +
 	"\anetwork\x18\a \x01(\v2/.xray.core.app.observatory.health.NetworkConfigR\anetwork\x12N\n" +
-	"\tproviders\x18\b \x03(\v20.xray.core.app.observatory.health.ProviderConfigR\tproviders\"\x9e\x04\n" +
+	"\tproviders\x18\b \x03(\v20.xray.core.app.observatory.health.ProviderConfigR\tproviders\"\xcf\x04\n" +
 	"\rPassiveConfig\x12\x16\n" +
 	"\x06window\x18\x01 \x01(\x03R\x06window\x12!\n" +
 	"\fdial_timeout\x18\x02 \x01(\x03R\vdialTimeout\x12,\n" +
@@ -1656,7 +1667,8 @@ const file_app_observatory_health_config_proto_rawDesc = "" +
 	" \x01(\x03R\x12partialStallMaxAge\x122\n" +
 	"\x15ignore_partial_stalls\x18\v \x01(\bR\x13ignorePartialStalls\x121\n" +
 	"\x15stall_min_write_bytes\x18\f \x01(\x03R\x12stallMinWriteBytes\x125\n" +
-	"\x17partial_stall_min_bytes\x18\r \x01(\x03R\x14partialStallMinBytes\"\xeb\x01\n" +
+	"\x17partial_stall_min_bytes\x18\r \x01(\x03R\x14partialStallMinBytes\x12/\n" +
+	"\x14keep_pending_on_down\x18\x0e \x01(\bR\x11keepPendingOnDown\"\xeb\x01\n" +
 	"\fProbeProfile\x12\x1a\n" +
 	"\bselector\x18\x01 \x03(\tR\bselector\x12 \n" +
 	"\vdestination\x18\x02 \x01(\tR\vdestination\x12\x16\n" +

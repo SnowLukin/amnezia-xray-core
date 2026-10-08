@@ -223,6 +223,37 @@ func TestTrafficThatAnswersASuspectIsAFalseAlarm(t *testing.T) {
 	}
 }
 
+func TestDownOutboundAsksToEndWaitingConnections(t *testing.T) {
+	te := newTestEngine(t, nil, &SelectorConfig{Costs: costs("a", 1, "b", 3)}, "a1", "b1")
+	te.failN(3, "a1", failDial, at(0))
+	downs := te.takeDowns()
+	if len(downs) != 1 || downs[0].tag != "a1" || !downs[0].at.Equal(at(0)) {
+		t.Fatalf("down marks %+v, want a1 at the decision", downs)
+	}
+	// Connections still went to a1 while b1 was probed; they end at the switch.
+	te.run(t, at(time.Second), nil)
+	downs = te.takeDowns()
+	if te.sel.current() != "b1" || len(downs) != 1 || downs[0].tag != "a1" || !downs[0].at.Equal(at(time.Second)) {
+		t.Fatalf("active %q, down marks %+v, want a1 at the switch", te.sel.current(), downs)
+	}
+}
+
+func TestWaitingConnectionsAreKeptWhenAskedOrWhenTheNetworkIsInDoubt(t *testing.T) {
+	cfg := &Config{Passive: &PassiveConfig{KeepPendingOnDown: true}}
+	te := newTestEngine(t, cfg, &SelectorConfig{Costs: costs("a", 1, "b", 3)}, "a1", "b1")
+	te.failN(3, "a1", failDial, at(0))
+	te.run(t, at(time.Second), nil)
+	if downs := te.takeDowns(); len(downs) != 0 {
+		t.Fatalf("keepPendingOnDown still marked %+v", downs)
+	}
+	te = newTestEngine(t, nil, &SelectorConfig{Costs: costs("a", 1, "b", 3)}, "a1", "b1")
+	te.doubt = true
+	te.failN(3, "a1", failDial, at(0))
+	if downs := te.takeDowns(); len(downs) != 0 {
+		t.Fatalf("a provisional decision marked %+v", downs)
+	}
+}
+
 func TestStrongEvidenceIgnoresFalseAlarmCooldown(t *testing.T) {
 	te := newTestEngine(t, nil, &SelectorConfig{Costs: costs("a", 1, "b", 3)}, "a1", "b1")
 	te.path("a1").cooldownUntil = at(time.Hour)

@@ -23,7 +23,12 @@ func (h *Handler) process(ctx context.Context, link *transport.Link) error {
 	if h.observer == nil {
 		return h.proxy.Process(ctx, link, h)
 	}
-	d := &observedDialer{Handler: h}
+	// Proxies end processing when their context is canceled, during the dial
+	// and while copying, and close what they dialed: this lets the observer
+	// end a connection that will get no answer.
+	ctx, abort := context.WithCancel(ctx)
+	defer abort()
+	d := &observedDialer{Handler: h, abort: abort}
 	var err error
 	defer func() { d.finish(err) }()
 	err = h.proxy.Process(ctx, link, d)
@@ -48,6 +53,7 @@ func (p observedProxy) Process(ctx context.Context, link *transport.Link, _ inte
 
 type observedDialer struct {
 	*Handler
+	abort    func()
 	mu       sync.Mutex
 	trackers []outbound.DialTracker
 	// Most connections dial once; their tracker needs no slice allocation.
@@ -68,15 +74,17 @@ func (d *observedDialer) Dial(ctx context.Context, dest net.Destination) (stat.C
 	id := d.id
 	d.mu.Unlock()
 	observed := ctx
+	abort := d.abort
 	switch {
 	case finished:
 		// A proxy that keeps dialing for later connections, such as VLESS
 		// pre-connections: each dial is a connection of its own.
 		observed = xctx.ContextWithID(ctx, session.NewID())
+		abort = nil
 	case xctx.IDFromContext(ctx) == 0:
 		observed = xctx.ContextWithID(ctx, id)
 	}
-	tracker := d.observer.StartDial(observed, d.tag, dest)
+	tracker := d.observer.StartDial(observed, d.tag, dest, abort)
 	if tracker == nil {
 		return d.Handler.Dial(ctx, dest)
 	}
