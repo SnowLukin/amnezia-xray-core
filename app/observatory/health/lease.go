@@ -38,7 +38,15 @@ type lease struct {
 // clock jumps. A lease then ends early rather than late; an early end costs
 // one refresh, and the outbound stays the last resort meanwhile.
 func (l *lease) elapsed(now time.Time) time.Duration {
-	return max(now.Sub(l.at), now.Round(0).Sub(l.at.Round(0)), 0)
+	return longerElapsed(now.Sub(l.at), now.Round(0).Sub(l.at.Round(0)))
+}
+
+// longerElapsed takes the longer of what the monotonic and the wall clock
+// counted, never below zero. It stands apart from elapsed for the tests: a
+// time made up in a test has no monotonic reading, and Go then counts by
+// the wall clock alone, so the two clocks never disagree there.
+func longerElapsed(mono, wall time.Duration) time.Duration {
+	return max(mono, wall, 0)
 }
 
 // left is what is left of the lease, below zero once it ended.

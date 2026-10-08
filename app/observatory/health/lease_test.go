@@ -182,6 +182,21 @@ func TestLeaseElapsedTakesTheLongerClock(t *testing.T) {
 	if left := l.left(start.Round(0).Add(8 * time.Hour)); left != -7*time.Hour {
 		t.Errorf("left after the sleep %v", left)
 	}
+	// The cases above cannot make the two clocks disagree, which is when the
+	// longer one counts.
+	for _, tc := range []struct {
+		name             string
+		mono, wall, want time.Duration
+	}{
+		{"wall set back while the monotonic clock goes on", 10 * time.Minute, -time.Hour, 10 * time.Minute},
+		{"sleep: the monotonic clock stood, the wall clock went on", 0, 8 * time.Hour, 8 * time.Hour},
+		{"wall set forward", 10 * time.Minute, time.Hour, time.Hour},
+		{"both behind the answer", -time.Second, -time.Minute, 0},
+	} {
+		if got := longerElapsed(tc.mono, tc.wall); got != tc.want {
+			t.Errorf("%s: elapsed %v, want %v", tc.name, got, tc.want)
+		}
+	}
 }
 
 // A device whose clock is a day behind the backend still ends a lease of
