@@ -25,10 +25,11 @@ the config.
    is not a failure.
 3. **Confirmation.** If `connectivity` is set, the observatory first checks
    the network through that outbound (usually one that bypasses the tunnel);
-   without a network it pauses all decisions. A pause lasts at most
-   `maxPause`. After that decisions resume, but outbounds ruled out while the
-   check keeps failing are provisional: they come back as soon as a check
-   passes. A working outbound while the check fails shows that the check
+   without a network it pauses all decisions. Dials that started during a
+   pause and fail after it ended are not held against the outbound. A pause
+   lasts at most `maxPause`. After that decisions resume, but outbounds ruled
+   out while the check keeps failing are provisional: they come back as soon
+   as a check passes. A working outbound while the check fails shows that the check
    cannot reach its destination in this network; it is then not used until
    the next network change. Pick a destination that stays reachable where
    the outbounds get blocked, otherwise failover waits `maxPause` there.

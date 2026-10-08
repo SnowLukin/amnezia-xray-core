@@ -89,7 +89,10 @@ type engine struct {
 
 	lastDemand atomic.Int64
 
-	networkDown        bool
+	networkDown bool
+	// When the last pause ended: dials that started before it have waited for
+	// a network that was not there.
+	resumedAt          time.Time
 	checkFails         int
 	checkFailingSince  time.Time
 	nextConnectivity   time.Time
@@ -1140,8 +1143,7 @@ func (e *engine) onConnectivity(r probeResult, now time.Time) {
 // sawSuccess handles proof that some outbound works.
 func (e *engine) sawSuccess(how string, now time.Time) {
 	e.lastSuccess = now
-	if e.networkDown {
-		e.networkDown = false
+	if e.endPause(now) {
 		e.emit(now, "network_up", map[string]any{"by": how})
 	}
 	if e.checkFails > 0 {
@@ -1152,9 +1154,25 @@ func (e *engine) sawSuccess(how string, now time.Time) {
 	}
 }
 
+// endPause resumes decisions after a pause and reports whether there was one.
+func (e *engine) endPause(now time.Time) bool {
+	if !e.networkDown {
+		return false
+	}
+	e.networkDown = false
+	e.resumedAt = now
+	return true
+}
+
+// startedInPause tells whether a dial that began at started was already
+// waiting when the last pause ended.
+func (e *engine) startedInPause(started time.Time) bool {
+	return started.Before(e.resumedAt)
+}
+
 func (e *engine) connectivityPassed(now time.Time) {
 	resumed := e.networkDown || e.doubt
-	e.networkDown = false
+	e.endPause(now)
 	e.doubt = false
 	e.checkFails = 0
 	e.checkFailingSince = time.Time{}
@@ -1215,7 +1233,7 @@ func (e *engine) restoreProvisional(now time.Time) {
 func (e *engine) ignoreConnectivity(now time.Time) {
 	e.emit(now, "connectivity_ignored", map[string]any{"failed_checks": e.checkFails})
 	e.connectivityIgnored = true
-	e.networkDown = false
+	e.endPause(now)
 	e.doubt = false
 	e.checkFails = 0
 	e.checkFailingSince = time.Time{}
@@ -1249,7 +1267,7 @@ func (e *engine) onNetworkChange(id string, now time.Time) {
 	}
 	e.providersOnNetworkChange(known, now)
 	e.networkID = id
-	e.networkDown = false
+	e.endPause(now)
 	e.doubt = false
 	e.checkFails = 0
 	e.checkFailingSince = time.Time{}

@@ -327,10 +327,12 @@ func (o *Observer) sweepLoop(done chan struct{}) {
 }
 
 // failure and success skip connections started before the last network
-// change: they tell nothing about outbounds in the new network.
+// change, and failure skips dials that waited through a network pause:
+// neither tells anything about outbounds now.
 func (o *Observer) failure(t *connTracker, kind failureKind) {
 	o.mu.Lock()
-	if t.network == o.e.generation {
+	stale := kind.pathLevel() && o.e.startedInPause(o.base.Add(time.Duration(t.started)))
+	if t.network == o.e.generation && !stale {
 		o.e.onFailure(t.tag, kind, t.target, t.conn, o.now())
 	}
 	o.mu.Unlock()

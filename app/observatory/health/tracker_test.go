@@ -228,6 +228,42 @@ func TestSplicedProgressCountsFromTheSplice(t *testing.T) {
 	}
 }
 
+func TestDialsStartedInThePauseDoNotJudgeAfterIt(t *testing.T) {
+	s := newSettings(&Config{
+		SubjectSelector: []string{"a"},
+		Connectivity:    &ConnectivityConfig{Outbound: "direct", Destination: "http://x/204"},
+	})
+	clk := &fakeClock{t: t0}
+	o := &Observer{s: s, e: newEngine(s, 1), kick: make(chan struct{}, 1), clock: clk.now, base: t0.Add(-time.Second),
+		trackers: map[*connTracker]struct{}{}, watching: map[*connTracker]struct{}{}, sweeping: true}
+	o.e.onConnectivity(probeResult{ok: false, err: "down"}, clk.now())
+	if !o.e.networkDown {
+		t.Fatal("a failed check did not pause decisions")
+	}
+	var dials []*connTracker
+	for i := 0; i < 3; i++ {
+		dials = append(dials, o.StartDial(context.Background(), "a1", net.Destination{}).(*connTracker))
+		clk.advance(time.Second)
+	}
+	o.e.sawSuccess("traffic", clk.now())
+	if o.e.networkDown {
+		t.Fatal("a working connection did not end the pause")
+	}
+	clk.advance(6 * time.Second)
+	for _, d := range dials {
+		d.sweep(o.nowNano())
+	}
+	if n := failures(o, failDialTimeout); n != 0 {
+		t.Fatalf("%d dials that started in the pause counted against a1 after it", n)
+	}
+	fresh := o.StartDial(context.Background(), "a1", net.Destination{}).(*connTracker)
+	clk.advance(7 * time.Second)
+	fresh.sweep(o.nowNano())
+	if n := failures(o, failDialTimeout); n != 1 {
+		t.Fatalf("a dial after the pause counted %d times, want once", n)
+	}
+}
+
 func TestSplicedFreezeIsNoticedByKernelProgress(t *testing.T) {
 	c, srv := loopbackPair(t, 5*1024)
 	if _, ok := kernelReceived(rawConnOf(c)); !ok {
