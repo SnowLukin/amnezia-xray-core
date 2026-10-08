@@ -17,7 +17,7 @@ type lease struct {
 	// a lease that a later answer repeated unchanged.
 	at time.Time
 	// What was left of it then: end less the time the answer counts from,
-	// at most maxLease.
+	// at most maxLease either way.
 	ttl time.Duration
 	// From at: when a refresh renews it, spread per value, and when that
 	// renewal becomes urgent. An answer with the same end keeps both points
@@ -123,7 +123,11 @@ func (e *engine) acceptLeases(p *provider, tags []string, a leaseAnswer, now tim
 		c.leases++
 		l := p.leases[tag]
 		was := l != nil && l.expired
-		ttl := min(end.Sub(ref), maxLease)
+		// Bounded below too: an end centuries off the clock, such as the
+		// zero time a backend sends for a time it never set, saturates the
+		// difference, and what is left of the lease would overflow into a
+		// lease that never ends.
+		ttl := min(max(end.Sub(ref), -maxLease), maxLease)
 		if l == nil || end.After(l.end) {
 			if l != nil {
 				c.renewed++

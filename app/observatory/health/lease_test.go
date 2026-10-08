@@ -530,6 +530,47 @@ func TestExpiredOnArrivalStartsNoRefresh(t *testing.T) {
 	}
 }
 
+// An end centuries off the clock it counts from, such as the zero time a
+// backend sends for a time it never set, ends the lease on arrival as any
+// end in the past does. The answer arrives a moment before it is applied,
+// as over HTTP: what is left of the lease is counted down at once.
+func TestLeaseEndCenturiesOffEndsOnArrival(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		end, server time.Time
+	}{
+		{"zero end", time.Time{}, at(time.Minute)},
+		{"end in 1700", time.Date(1700, 1, 1, 0, 0, 0, 0, time.UTC), at(time.Minute)},
+		{"server time in 9999", at(time.Hour), time.Date(9999, 12, 31, 0, 0, 0, 0, time.UTC)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			te := leaseEngine(t, nil, &SelectorConfig{Costs: costs("p-x1", 1, "p-x2", 2)}, "p-x1", "p-x2")
+			te.eventsOf(t, "")
+			now := at(time.Minute)
+			tags := []string{"p-x1", "p-x2"}
+			c, _ := te.acceptLeases(te.prov(), tags, leaseAnswer{
+				ends:       map[string]time.Time{"p-x1": tc.end, "p-x2": tc.server.Add(time.Hour)},
+				serverTime: tc.server, at: now.Add(-time.Millisecond)}, now)
+			te.applyProviderSet(te.prov(), providerChange{tags: tags}, now)
+			if c.leases != 2 || c.expired != 1 || !te.expired["p-x1"] || te.expired["p-x2"] {
+				t.Fatalf("counts %+v, expired %v", c, te.expired)
+			}
+			if ev := te.lastOf(t, "provider_expired"); ev.Fields["outbound"] != "p-x1" || ev.Fields["renewal"] != "refused" {
+				t.Fatalf("expired %v", ev.Fields)
+			}
+			later := at(time.Hour)
+			for _, p := range te.status(later).Paths {
+				if p.Outbound == "p-x1" && (p.ExpiresInMs == nil || *p.ExpiresInMs >= 0 || !p.Expired) {
+					t.Fatalf("status of p-x1 an hour later: expires in %v, expired %v", p.ExpiresInMs, p.Expired)
+				}
+			}
+			for now := at(2 * time.Minute); now.Before(at(50 * time.Minute)); now = now.Add(time.Minute) {
+				expectNoRefresh(t, te, now)
+			}
+		})
+	}
+}
+
 func TestExpiryRefreshUsesExhaustedMinIntervalAndRunsUnderLowMemory(t *testing.T) {
 	te := leaseEngine(t, func(p *ProviderConfig) {
 		p.Limits.MinInterval = int64(5 * time.Minute)
