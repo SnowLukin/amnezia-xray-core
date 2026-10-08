@@ -781,9 +781,22 @@ def switches_to(events, to, since=0):
     return [e for e in bench.switches(events, since) if e["fields"]["to"] == to]
 
 
+def wait_for(fn, timeout, step=0.5):
+    """Polls fn until it gives something, for at most timeout seconds."""
+    end = time.time() + timeout
+    while time.time() < end:
+        got = fn()
+        if got:
+            return got
+        time.sleep(step)
+    return None
+
+
 @scenario()
 def upgrade_after_network_change(stand, xray, work, name):
-    strategy = {"minHold": "30s", "upgrade": {"spacing": "20s"}}
+    spacing, successes = 20, 3
+    limit = successes * spacing + 10
+    strategy = {"minHold": "30s", "upgrade": {"spacing": f"{spacing}s", "successes": successes}}
     cfg = bench.client_config(CHEAP_EXPENSIVE, CHEAP_EXPENSIVE_COSTS, strategy=strategy)
     m = Marks()
     with bench.Client(xray, cfg, work, name) as c:
@@ -797,11 +810,57 @@ def upgrade_after_network_change(stand, xray, work, name):
     held = (back[0]["ts"] - first_to_b[0]["ts"]) / 1000 if back and first_to_b else None
     upgrades = [e for e in c.events if e["type"] == "probe_start" and e["fields"].get("reason") == "upgrade"
                 and e["ts"] / 1000 >= m["net"]]
-    return [check("return after network change, s", took and round(took, 1), took is not None and took <= 70,
-                  "<= 3 x 20 + 10"),
+    return [check("return after network change, s", took and round(took, 1), took is not None and took <= limit,
+                  f"<= {successes} x {spacing} + 10"),
             check("time on the expensive path before return, s", held and round(held, 1),
                   held is not None and held >= 30, ">= minHold 30"),
-            check("probes before the return", len(upgrades), len(upgrades) == 3, "== 3")]
+            check("probes before the return", len(upgrades), len(upgrades) == successes, f"== {successes}"),
+            leak_check(c)]
+
+
+@scenario()
+def upgrade_inside_minhold(stand, xray, work, name):
+    """The cheap path is fixed and the network changes while the expensive one is still
+    inside minHold: the return must wait for minHold to end."""
+    hold, spacing, successes = 30, 5, 3
+    strategy = {"minHold": f"{hold}s", "upgrade": {"spacing": f"{spacing}s", "successes": successes}}
+    cfg = bench.client_config(CHEAP_EXPENSIVE, CHEAP_EXPENSIVE_COSTS, strategy=strategy)
+    m = Marks()
+    t_b = None
+    back = None
+    with bench.Client(xray, cfg, work, name) as c:
+        tr = bench.Traffic(rate=2, big=0.5)
+        tr.start()
+        time.sleep(5)
+        m["down"] = time.time()
+        bench.chaos(A0, "blackhole")
+        to_b = wait_for(lambda: switches_to(c.events, "b1", m["down"]), 40)
+        if to_b:
+            t_b = to_b[0]["ts"] / 1000
+            time.sleep(max(0, t_b + 6 - time.time()))
+            bench.chaos(A0, "pass")
+            time.sleep(max(0, t_b + 10 - time.time()))
+            m["net"] = time.time()
+            c.network("cafe")
+            back = wait_for(lambda: switches_to(c.events, "a1", m["net"]), hold + successes * spacing + 40)
+        tr.stop()
+    if t_b is None or not back:
+        return [check("moved to the expensive path and came back", f"b1 {t_b is not None}, a1 {bool(back)}", False,
+                      "both")]
+    t_back = back[0]["ts"] / 1000
+    starts = [e["ts"] / 1000 for e in c.events if e["type"] == "probe_start" and e["fields"].get("reason") == "upgrade"
+              and e["ts"] / 1000 >= m["net"]]
+    after_hold = t_back - (t_b + hold)
+    return [check("network change came inside minHold, s after the switch", round(m["net"] - t_b, 1),
+                  m["net"] - t_b < hold, f"< {hold}"),
+            check("first probe for the return, s after the switch", starts and round(starts[0] - t_b, 1),
+                  bool(starts) and starts[0] - t_b >= hold, f">= minHold {hold}"),
+            check("held on the expensive path at the return, s", round(back[0]["fields"]["held_ms"] / 1000, 1),
+                  back[0]["fields"]["held_ms"] >= hold * 1000, f">= minHold {hold}"),
+            check("return after minHold ended, s", round(after_hold, 1),
+                  0 <= after_hold <= successes * spacing + 10, f"0 .. {successes} x {spacing} + 10"),
+            check("probes before the return", len(starts), len(starts) == successes, f"== {successes}"),
+            leak_check(c)]
 
 
 @scenario()
@@ -833,52 +892,107 @@ def home_lte_home(stand, xray, work, name):
                   bool(switches_to(c.events, "b1", m["lte"])), "yes"),
             check("back home: on the cheap path again", active, active == "a1", "a1"),
             check("back home: return took, s", took and round(took, 1), took is not None and took <= 10, "<= 10"),
-            check("back home: probes before return", len(probes_home), len(probes_home) <= 1, "<= 1")]
+            check("back home: probes before return", len(probes_home), len(probes_home) <= 1, "<= 1"),
+            leak_check(c)]
+
+
+@scenario()
+def home_lte_home_expensive(stand, xray, work, name):
+    """At home the cheap path is blocked and the expensive one works; on LTE the cheap path is
+    open. Back home the first choice is the path that last worked there, found with one probe,
+    not the cheapest one."""
+    spacing = 5
+    strategy = {"minHold": "20s", "upgrade": {"spacing": f"{spacing}s"}}
+    cfg = bench.client_config(CHEAP_EXPENSIVE, CHEAP_EXPENSIVE_COSTS, strategy=strategy)
+    bench.chaos(A0, "blackhole")
+    m = Marks()
+    with bench.Client(xray, cfg, work, name) as c:
+        tr = bench.Traffic(rate=2, big=0.5)
+        tr.start()
+        time.sleep(2)
+        m["first_home"] = time.time()
+        c.network("home")
+        at_home = wait_for(lambda: switches_to(c.events, "b1", m["first_home"]), 45)
+        time.sleep(10)
+        m["lte"] = time.time()
+        bench.chaos(A0, "pass")
+        c.network("lte")
+        on_lte = wait_for(lambda: switches_to(c.events, "a1", m["lte"]), 90)
+        time.sleep(5)
+        m["home"] = time.time()
+        bench.chaos(A0, "blackhole")
+        c.network("home")
+        wait_for(lambda: bench.switches(c.events, m["home"]), 30)
+        time.sleep(8)
+        st = c.status()
+        tr.stop()
+    first = next(iter(bench.switches(c.events, m["home"])), None)
+    t_first = first["ts"] / 1000 if first else None
+    before = [e for e in bench.probes(c.events, m["home"]) if t_first is None or e["ts"] / 1000 <= t_first]
+    rec, _ = bench.recovery(tr.records, m["home"])
+    chosen = f"{first['fields']['to']} ({first['fields']['reason']})" if first else None
+    return [check("at home moved to the expensive path", bool(at_home), bool(at_home), "yes"),
+            check("on LTE came back to the cheap path", bool(on_lte), bool(on_lte), "yes"),
+            check("back home: first choice", chosen, chosen == "b1 (remembered)", "b1 (remembered)"),
+            check("back home: probes before it", [f"{e['fields']['outbound']} {e['fields']['reason']}" for e in before],
+                  len(before) == 1 and before[0]["fields"]["outbound"] == "b1"
+                  and before[0]["fields"]["reason"] == "remembered", "one: b1 remembered"),
+            check("back home: recovery, s", rec and round(rec, 1), rec is not None and rec <= 10, "<= 10"),
+            check("back home: stays on the expensive path", st["balancers"][0]["active"],
+                  st["balancers"][0]["active"] == "b1", "b1"),
+            leak_check(c)]
 
 
 @scenario()
 def return_penalty(stand, xray, work, name):
     """A cheap path that fails right after the return waits twice as long next time."""
-    strategy = {"minHold": "20s", "upgrade": {"interval": "40s", "randomPhase": False, "spacing": "5s",
+    interval = 40
+    strategy = {"minHold": "20s", "upgrade": {"interval": f"{interval}s", "randomPhase": False, "spacing": "5s",
                                               "successes": 2, "penaltyWindow": "2m"}}
     health = {"schedule": {"quarantine": {"initial": "10s", "jitter": 0.1}}}
     cfg = bench.client_config(CHEAP_EXPENSIVE, CHEAP_EXPENSIVE_COSTS, strategy=strategy, health=health)
-    m = Marks()
-    state = {}
-
-    def break_after_return():
-        # Wait for the first return to a1, then break it at once.
-        state["armed"] = True
-
     with bench.Client(xray, cfg, work, name) as c:
         tr = bench.Traffic(rate=2, big=0.5)
-        start = time.time()
         tr.start()
         time.sleep(5)
+        t_fault = time.time()
         bench.chaos(A0, "blackhole")
         time.sleep(15)
         bench.chaos(A0, "pass")
         t_fix = time.time()
-        while time.time() - t_fix < 120 and not switches_to(c.events, "a1", t_fix):
-            time.sleep(0.5)
-        first_return = switches_to(c.events, "a1", t_fix)
+        first_return = wait_for(lambda: switches_to(c.events, "a1", t_fix), 120)
+        # The return worked; break the cheap path at once.
         bench.chaos(A0, "blackhole")
         time.sleep(15)
         bench.chaos(A0, "pass")
         t_fix2 = time.time()
-        while time.time() - t_fix2 < 240 and not switches_to(c.events, "a1", t_fix2):
-            time.sleep(0.5)
-        second_return = switches_to(c.events, "a1", t_fix2)
+        second_return = wait_for(lambda: switches_to(c.events, "a1", t_fix2), 240)
         tr.stop()
-    penalties = [e for e in c.events if e["type"] == "upgrade_penalty"]
+    to_b = switches_to(c.events, "b1", t_fault)
+    t_b = to_b[0]["ts"] / 1000 if to_b else None
+    penalties = [e for e in c.events if e["type"] == "upgrade_penalty" and first_return
+                 and e["ts"] >= first_return[0]["ts"]]
     delayed = [e for e in c.events if e["type"] == "upgrade_delayed"]
+    starts = [e["ts"] / 1000 for e in c.events if e["type"] == "upgrade_start" and e["fields"]["to"] == "a1"]
+    # The usual wait runs from the switch to the expensive path; the doubled one from the failed return.
+    t_failed = penalties[0]["ts"] / 1000 if penalties else None
+    first_start = next((t for t in starts if t_b and t >= t_b), None)
+    second_start = next((t for t in starts if t_failed and t > t_failed), None)
+    w1 = first_start - t_b if first_start else None
+    w2 = second_start - t_failed if second_start else None
     gap1 = first_return[0]["ts"] / 1000 - t_fix if first_return else None
     gap2 = second_return[0]["ts"] / 1000 - t_fix2 if second_return else None
     return [check("penalty after a failed return", len(penalties), len(penalties) >= 1, ">= 1"),
-            check("next return delayed", len(delayed), len(delayed) >= 1, ">= 1"),
+            check("next return delayed by, s", delayed and round(delayed[0]["fields"]["delay_ms"] / 1000, 1),
+                  bool(delayed) and delayed[0]["fields"]["delay_ms"] >= interval * 1000 - 100,
+                  f">= the usual wait {interval}"),
+            check("first wait, switch to the expensive path to the first try, s", w1 and round(w1, 1), w1 is not None,
+                  "info"),
+            check("second wait, failed return to the next try, s", w2 and round(w2, 1),
+                  w1 is not None and w2 is not None and w2 >= 2 * w1 - 0.2, ">= 2 x first"),
             check("first return after fix, s", gap1 and round(gap1, 1), gap1 is not None, "info"),
-            check("second return after fix, s", gap2 and round(gap2, 1),
-                  gap1 is not None and gap2 is not None and gap2 > gap1, "> first")]
+            check("second return happened", gap2 and round(gap2, 1), gap2 is not None, "yes"),
+            leak_check(c)]
 
 
 @scenario()
@@ -892,7 +1006,8 @@ def cold_start(stand, xray, work, name):
     pr = bench.probes(c.events, start - 5)
     to = first[0]["fields"]["to"] if first else None
     return [check("started on the passed outbound", to, to == "b1", "b1"),
-            check("probes on start", len(pr), len(pr) == 0, "== 0")]
+            check("probes on start", len(pr), len(pr) == 0, "== 0"),
+            leak_check(c)]
 
 
 @scenario(slow=True)
@@ -905,24 +1020,243 @@ def healthy_no_probes(stand, xray, work, name):
     hits = stand.probe_hits(start)
     pr = bench.probes(c.events, start)
     return [check(f"probes in {mins:g} min on the cheapest working path", len(pr), len(pr) == 0, "== 0"),
-            check("probe requests at the target", len(hits), len(hits) == 0, "== 0")]
+            check("probe requests at the target", len(hits), len(hits) == 0, "== 0"),
+            leak_check(c)]
+
+
+def dead_probe_bound(mins):
+    """The most probes a dead path may get in a run of this many minutes when its
+    rests are 2, 4, 8, 16 and then 30 minutes, each cut by the 30% jitter."""
+    n, t, rest = 0, 0.0, 2.0
+    while True:
+        t += rest * 0.7
+        if t > mins:
+            return n
+        n += 1
+        rest = min(rest * 2, 30)
+
+
+def expensive_budget(stand, xray, work, name, mode):
+    """The cheap path is dead (blackhole) or passes the handshake and freezes, the traffic
+    sits on the expensive one: what checking for a return costs per hour. The cost is read
+    from the events (bytes above TLS) and from the proxy (everything on the wire, handshakes
+    included). BENCH_EXPENSIVE_MIN is the length, an hour by default; a shorter run judges
+    the cost of one probe instead. BENCH_EXPENSIVE_UPGRADE sets upgrade.interval so that a short
+    run sees probes at all; it takes the count of probes out of the judgement."""
+    mins = minutes("BENCH_EXPENSIVE_MIN", 60)
+    knob = os.environ.get("BENCH_EXPENSIVE_UPGRADE")
+    cfg = bench.client_config(CHEAP_EXPENSIVE, CHEAP_EXPENSIVE_COSTS,
+                              strategy={"upgrade": {"interval": knob}} if knob else None)
+    m = Marks()
+    with bench.Client(xray, cfg, work, name) as c, bench.ConnSampler() as cs:
+        tr = bench.Traffic(rate=2, big=0.5)
+        run_timeline(tr, [(5, m.at("fault", lambda: bench.chaos(A0, mode)))], mins * 60)
+        end = time.time()
+    to_b = switches_to(c.events, "b1", m["fault"])
+    t_b = to_b[0]["ts"] / 1000 if to_b else m["fault"]
+    results = [e for e in c.events if e["type"] == "probe_result" and e["ts"] / 1000 >= m["fault"]]
+    to_dead = [e for e in results if e["fields"]["outbound"] == "a1"]
+    # Past t_b nothing but probes uses the address of the dead path.
+    up, down = cs.traffic(A0, t_b + 5, end)
+    wire = up + down
+    events_bytes = sum(e["fields"].get("bytes", 0) for e in results)
+    full = mins >= 60
+    hours = mins / 60
+    kb = 1024
+    n = len(to_dead)
+    checks = [check("probe results of the dead path", f"{n}, all failed" if all(not e["fields"]["ok"] for e in to_dead)
+                    else f"{n}, some ok", all(not e["fields"]["ok"] for e in to_dead), "all failed")]
+    if full:
+        checks += [check("probe traffic per hour from events, KB", round(events_bytes / hours / kb, 1),
+                         events_bytes / hours <= 200 * kb, "<= 200"),
+                   check("probe traffic per hour at the proxy, KB", round(wire / hours / kb, 1),
+                         wire / hours <= 200 * kb, "<= 200")]
+    else:
+        # One probe at most six times an hour has to fit into 200 KB.
+        per_events = sum(e["fields"].get("bytes", 0) for e in to_dead) / n if n else 0
+        per_wire = wire / n if n else 0
+        checks += [check("traffic of one probe from events, KB (6 an hour <= 200)", round(per_events / kb, 1),
+                         per_events * 6 <= 200 * kb, "<= 33"),
+                   check("traffic of one probe at the proxy, KB (6 an hour <= 200)", round(per_wire / kb, 1),
+                         per_wire * 6 <= 200 * kb, "<= 33")]
+    limit = 6 if full else dead_probe_bound(mins)
+    if knob:
+        checks.append(check(f"probes of the dead path in {mins:g} min", n, True, "info (interval set)"))
+    else:
+        checks.append(check(f"probes of the dead path in {mins:g} min", n, n <= limit, f"<= {limit}"))
+    # The probe that confirms the fault runs while users are still on a1; the later ones are alone there.
+    conns, starts, detail = probe_conn_match(cs, c.events, {"a1": A0}, t_b + 1)
+    ok = conns == starts and (starts > 0 or not full)
+    checks.append(check("probe connections at the proxy vs probe_start events", f"{conns}/{starts} ({detail})", ok,
+                        "equal" + (", not zero" if full else "")))
+    checks.append(leak_check(c))
+    return checks
 
 
 @scenario(slow=True)
 def expensive_probe_budget(stand, xray, work, name):
-    """The cheap path stays dead: what checking for a return costs per hour."""
-    mins = minutes("BENCH_EXPENSIVE_MIN", 30)
-    cfg = bench.client_config(CHEAP_EXPENSIVE, CHEAP_EXPENSIVE_COSTS)
+    """The cheap path stays in a black hole."""
+    return expensive_budget(stand, xray, work, name, "blackhole")
+
+
+@scenario(slow=True)
+def expensive_probe_budget_freeze(stand, xray, work, name):
+    """The worst case: the cheap path passes the handshake and freezes after 16 KB, so every
+    probe pays for the handshake and the first kilobytes before it gives up."""
+    return expensive_budget(stand, xray, work, name, "stall_after:16384")
+
+
+# ---- 3. probe budget ----------------------------------------------------------
+
+@scenario()
+def probe_limits(stand, xray, work, name):
+    """Six paths of one server name and two of others are all down: probes keep a jittered
+    distance, one at a time, and at most three of a server name start in a minute."""
+    members = [(f"r{i}", "reality", i % 4) for i in range(1, 7)] + [("t1", "tcp_tls", 0), ("w1", "ws", 0)]
+    cfg = bench.client_config(members, {"r": 1, "t": 2, "w": 3})
+    ports = ",".join(str(address_port(k, i)) for _, k, i in members)
+    m = Marks()
+    mid = {}
+
+    def look():
+        mid["status"] = c.status()
+
     with bench.Client(xray, cfg, work, name) as c:
         tr = bench.Traffic(rate=2, big=0.5)
-        start = run_timeline(tr, [(5, lambda: bench.chaos(A0, "blackhole"))], mins * 60)
-    results = [e for e in c.events if e["type"] == "probe_result" and e["ts"] / 1000 >= start]
-    total = sum(e["fields"].get("bytes", 0) for e in results)
-    per_hour = total * 60 / mins
-    to_dead = [e for e in results if e["fields"]["outbound"] == "a1"]
-    return [check("probe traffic per hour, KB", round(per_hour / 1024, 1), per_hour <= 200 * 1024, "<= 200"),
-            check("probes of the dead path per hour", round(len(to_dead) * 60 / mins, 1),
-                  len(to_dead) * 60 / mins <= 6, "<= 6")]
+        run_timeline(tr, [(10, m.at("down", lambda: bench.chaos(ports, "refuse"))), (120, look)], 130)
+    ex = [e for e in c.events if e["type"] == "exhausted" and e["ts"] / 1000 >= m["down"]]
+    peak, gap, n = probe_checks(c.events, m["down"])
+    names = server_names(mid["status"])
+    probed = {e["fields"]["outbound"] for e in c.events if e["type"] == "probe_start"}
+    seen_names = sorted({names[o] for o in probed})
+    return [check("probes", n, n >= 6, ">= 6"),
+            check("probes at once", peak, peak <= 1, "<= 1"),
+            check("min pause between probes, s", gap and round(gap, 2), gap is not None and gap >= 1.4, ">= 1.4"),
+            per_name_check(c.events, names, m["down"]),
+            check("server names of the probed paths", seen_names,
+                  seen_names == ["example.com", "std.example.com", "ws.example.com"], "example.com, std., ws."),
+            check("exhausted at the end", len(ex), len(ex) == 1, "== 1"),
+            evidence_check(c.events, m["down"], need=False),
+            leak_check(c)]
+
+
+@scenario()
+def probe_spacing(stand, xray, work, name):
+    """A return needs eight good probes in a row. A good probe takes milliseconds, so the
+    distance between them is the pause itself: spacing with its jitter, one probe at a time.
+    (A failed probe holds the slot for about two seconds while the dial is retried.)"""
+    successes = 8
+    strategy = {"minHold": "10s", "upgrade": {"successes": successes, "spacing": "2s"}}
+    # Eight probes of one server name would meet the budget of three a minute; that is not what
+    # this scenario looks at.
+    health = {"schedule": {"perServerNamePerMinute": 30, "perMinute": 60}}
+    cfg = bench.client_config(CHEAP_EXPENSIVE, CHEAP_EXPENSIVE_COSTS, strategy=strategy, health=health)
+    m = Marks()
+    back = None
+    with bench.Client(xray, cfg, work, name) as c:
+        tr = bench.Traffic(rate=2, big=0.5)
+        tr.start()
+        time.sleep(5)
+        m["down"] = time.time()
+        bench.chaos(A0, "blackhole")
+        to_b = wait_for(lambda: switches_to(c.events, "b1", m["down"]), 40)
+        if to_b:
+            bench.chaos(A0, "pass")
+            time.sleep(2)
+            m["net"] = time.time()
+            c.network("cafe")
+            back = wait_for(lambda: switches_to(c.events, "a1", m["net"]), 80)
+        tr.stop()
+    if not back:
+        return [check("moved to the expensive path and came back", f"b1 {bool(to_b)}, a1 {bool(back)}", False, "both")]
+    upgrades = [e for e in c.events if e["type"] == "probe_start" and e["fields"].get("reason") == "upgrade"
+                and e["ts"] / 1000 >= m["net"]]
+    peak, gap, n = probe_checks(c.events, m["net"])
+    return [check("probes for the return", len(upgrades), len(upgrades) == successes, f"== {successes}"),
+            check("probes at once", peak, peak <= 1, "<= 1"),
+            check("min pause between probes, s", gap and round(gap, 2), gap is not None and gap >= 1.4, ">= 1.4"),
+            jitter_check(c.events, m["net"]),
+            leak_check(c)]
+
+
+# ---- 7. a balancer pinned by the host ---------------------------------------------
+
+@scenario()
+def pinned_start(stand, xray, work, name):
+    """The host starts the balancer pinned to a1, and a1 dies. Traffic stays on it and the
+    failure is visible to the host; nothing switches. After the host releases the balancer it
+    works by all the usual rules: it leaves for b1, and returns to a1 once that is fixed."""
+    hold, spacing, successes = 20, 5, 3
+    strategy = {"startPinned": "a1", "minHold": f"{hold}s", "upgrade": {"spacing": f"{spacing}s", "successes": successes}}
+    # The paths have different server names, so the probe budget per name is no part of this: with
+    # the same name for the path left and the path returned to, the failover probe and the check
+    # after the network change use up the three probes a minute that the return needs.
+    members = [("a1", "reality", 0), ("b1", "tcp_tls", 0), ("c1", "ws", 0)]
+    cfg = bench.client_config(members, {"a1": 1, "b1": 2, "c1": 3}, strategy=strategy)
+    m = Marks()
+    seen = {}
+    with bench.Client(xray, cfg, work, name) as c, bench.ConnSampler() as cs:
+        tr = bench.Traffic(rate=2, big=0.5)
+        tr.start()
+        time.sleep(10)
+        m["fault"] = time.time()
+        bench.chaos(A0, "blackhole")
+        time.sleep(40)
+        seen["pinned"] = c.status()["balancers"][0]
+        m["release"] = time.time()
+        seen["released"] = c.api("release", "auto")
+        wait_for(lambda: bench.switches(c.events, m["release"]), 30)
+        time.sleep(8)
+        m["fix"] = time.time()
+        bench.chaos(A0, "pass")
+        time.sleep(3)
+        m["net"] = time.time()
+        c.network("cafe")
+        back = wait_for(lambda: switches_to(c.events, "a1", m["net"]), hold + successes * spacing + 40)
+        time.sleep(3)
+        tr.stop()
+    fault, release = m["fault"], m["release"]
+    window = (fault + 15, release)
+    inside = [e for e in c.events if fault <= e["ts"] / 1000 < release]
+    pinned_down = [e for e in inside if e["type"] == "pinned_down"]
+    a1_down = [e for e in inside if e["type"] == "path_state" and e["fields"].get("outbound") == "a1"
+               and e["fields"].get("state") == "down"]
+    switched = [e for e in inside if e["type"] == "switch"]
+    on_a1 = cs.between(A0, *window)
+    others = cs.between([B0, address_port("ws", 0)], *window)
+    others_probes = [e for e in c.events if e["type"] == "probe_start" and e["fields"]["outbound"] in ("b1", "c1")
+                     and window[0] <= e["ts"] / 1000 <= window[1]]
+    served = sum(1 for r in tr.records if window[0] <= r[0] <= window[1] and r[1])
+    sent = sum(1 for r in tr.records if window[0] <= r[0] <= window[1])
+    after = bench.switches(c.events, release)
+    rec, _ = bench.recovery(tr.records, release)
+    pinned = seen["pinned"]
+    checks = [
+        check("balancer pinned and on a1 while a1 is dead", f"pinned {pinned.get('pinned')!r}, active {pinned['active']!r}",
+              pinned.get("pinned") == "a1" and pinned["active"] == "a1", "a1, a1"),
+        check("a1 reported down to the host (path_state down)", len(a1_down), len(a1_down) >= 1, ">= 1"),
+        check("pinned_down events before the release", len(pinned_down), len(pinned_down) >= 1, ">= 1"),
+        check("switches before the release", len(switched), len(switched) == 0, "== 0"),
+        check("connections to the dead pinned address, 25 s", on_a1, (on_a1 or 0) >= 20, ">= 20"),
+        check("connections to the other addresses vs their probes", f"{others}/{len(others_probes)}",
+              others == len(others_probes), "equal (0 expected)"),
+        check("requests answered while pinned to the dead path", f"{served}/{sent}", served == 0 and sent > 0, "0"),
+        check("release accepted", seen["released"], seen["released"] == {"ok": True}, "ok"),
+        check("after release: first switch", after and f"{after[0]['fields']['to']} ({after[0]['fields']['reason']})",
+              bool(after) and after[0]["fields"]["to"] == "b1" and after[0]["fields"]["reason"] == "failover",
+              "b1 (failover)"),
+        check("after release: recovery, s", rec and round(rec, 1), rec is not None and rec <= 10, "<= 10"),
+    ]
+    if back:
+        took = back[0]["ts"] / 1000 - m["net"]
+        checks += [check("return to a1 after the fix and a network change, s", round(took, 1),
+                         took <= successes * spacing + 10, f"<= {successes} x {spacing} + 10"),
+                   check("held on b1 before the return, s", round(back[0]["fields"]["held_ms"] / 1000, 1),
+                         back[0]["fields"]["held_ms"] >= hold * 1000, f">= minHold {hold}")]
+    else:
+        checks.append(check("return to a1 after the fix and a network change", None, False, "yes"))
+    checks.append(leak_check(c))
+    return checks
 
 
 @scenario(slow=True)
@@ -966,7 +1300,8 @@ def soak(stand, xray, work, name):
                   heap1 - heap0 <= 2**20, "<= 1"),
             check("goroutines after vs start", gor1 - gor0, gor1 - gor0 <= 5, "<= 5"),
             check("events dropped", c.dropped, c.dropped == 0, "== 0"),
-            check("requests ok, %", round(100 * ok, 1), True, "info")]
+            check("requests ok, %", round(100 * ok, 1), True, "info"),
+            leak_check(c)]
 
 
 @scenario()
