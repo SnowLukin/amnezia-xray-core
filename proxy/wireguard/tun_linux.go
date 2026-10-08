@@ -23,6 +23,11 @@ import (
 var (
 	tableIndex int = 10230
 	mu         sync.Mutex
+
+	// createMu serializes interface creation. Clients create the interface
+	// on first use, so two of them may do it at once and would pick the same
+	// free name.
+	createMu sync.Mutex
 )
 
 func allocateIPv6TableIndex() int {
@@ -49,6 +54,9 @@ type kernelTun struct {
 }
 
 func createKernelTun(localAddresses, dnsServers []netip.Addr, mtu int) (tdev tun.Device, tnet *Net, err error) {
+	createMu.Lock()
+	defer createMu.Unlock()
+
 	var v4, v6 *netip.Addr
 	for _, prefixes := range localAddresses {
 		if v4 == nil && prefixes.Is4() {

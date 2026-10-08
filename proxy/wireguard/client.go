@@ -6,6 +6,7 @@ import (
 	gonet "net"
 	"net/netip"
 	reflect "reflect"
+	"slices"
 	"strings"
 	"sync"
 
@@ -39,10 +40,23 @@ type Handler struct {
 	uplinkCounter   stats.Counter
 	downlinkCounter stats.Counter
 
-	tun  tun.Device
-	tnet *Net
-	dev  *device.Device
-	mu   sync.Mutex
+	localAddresses []netip.Addr
+	kernelTun      bool
+
+	// The stack and the device are created by the first connection, so an
+	// outbound that carries none holds neither. Both are set or both are nil.
+	mu     sync.Mutex
+	tnet   *Net
+	dev    *device.Device
+	closed bool
+}
+
+// dnsServers resolve domain targets inside the tunnel.
+var dnsServers = []netip.Addr{
+	netip.MustParseAddr("1.1.1.1"),
+	netip.MustParseAddr("1.0.0.1"),
+	netip.MustParseAddr("2606:4700:4700::1111"),
+	netip.MustParseAddr("2606:4700:4700::1001"),
 }
 
 func NewClient(ctx context.Context, conf *DeviceConfig) (*Handler, error) {
@@ -102,17 +116,18 @@ func NewClient(ctx context.Context, conf *DeviceConfig) (*Handler, error) {
 	if err != nil {
 		errors.LogWarningInner(context.Background(), err, "Failed to check kernel TUN support")
 	}
-	var tun tun.Device
-	var tnet *Net
-	if !conf.NoKernelTun && kernelTunSupported {
+	kernelTun := !conf.NoKernelTun && kernelTunSupported
+	if kernelTun {
 		errors.LogWarning(context.Background(), "Using kernel TUN")
-		tun, tnet, err = createKernelTun(localAddresses, []netip.Addr{netip.MustParseAddr("1.1.1.1"), netip.MustParseAddr("1.0.0.1"), netip.MustParseAddr("2606:4700:4700::1111"), netip.MustParseAddr("2606:4700:4700::1001")}, int(conf.Mtu))
 	} else {
 		errors.LogWarning(context.Background(), "Using gVisor TUN")
-		tun, tnet, _, err = CreateNetTUN(localAddresses, []netip.Addr{netip.MustParseAddr("1.1.1.1"), netip.MustParseAddr("1.0.0.1"), netip.MustParseAddr("2606:4700:4700::1111"), netip.MustParseAddr("2606:4700:4700::1001")}, int(conf.Mtu), true)
-	}
-	if err != nil {
-		return nil, err
+		// The gVisor stack refuses an address it already has. It is created
+		// on first use now, so check here to keep failing at load.
+		for i, addr := range localAddresses {
+			if slices.Contains(localAddresses[:i], addr) {
+				return nil, errors.New("duplicate address ", addr)
+			}
+		}
 	}
 
 	return &Handler{
@@ -124,8 +139,8 @@ func NewClient(ctx context.Context, conf *DeviceConfig) (*Handler, error) {
 		uplinkCounter:   uplinkCounter,
 		downlinkCounter: downlinkCounter,
 
-		tun:  tun,
-		tnet: tnet,
+		localAddresses: localAddresses,
+		kernelTun:      kernelTun,
 	}, nil
 }
 
@@ -139,13 +154,14 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
 	ob.Name = "wireguard"
 	ob.CanSpliceCopy = 3
 
-	if err := h.init(ctx); err != nil {
+	tnet, err := h.acquire(ctx)
+	if err != nil {
 		return err
 	}
 
 	var addr netip.Addr
 	if ob.Target.Address.Family().IsDomain() {
-		ip, err := h.resolveRemote(ob.Target.Address.String())
+		ip, err := h.resolveRemote(tnet, ob.Target.Address.String())
 		if err != nil {
 			return errors.New("failed to resolve domain").Base(err)
 		}
@@ -187,10 +203,10 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
 		var err error
 		if sessionPolicy.Timeouts.Handshake != 0 {
 			timeoutCtx, timeoutCancel := context.WithTimeout(ctx, sessionPolicy.Timeouts.Handshake)
-			conn, err = h.tnet.DialContextTCPAddrPort(timeoutCtx, addrPort)
+			conn, err = tnet.DialContextTCPAddrPort(timeoutCtx, addrPort)
 			timeoutCancel()
 		} else {
-			conn, err = h.tnet.DialContextTCPAddrPort(ctx, addrPort)
+			conn, err = tnet.DialContextTCPAddrPort(ctx, addrPort)
 		}
 		if err != nil {
 			return errors.New("failed to create TCP connection").Base(err)
@@ -199,15 +215,17 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
 		reader = buf.NewReader(conn)
 		writer = buf.NewWriter(conn)
 	case net.Network_UDP:
-		conn, err := h.tnet.DialUDPAddrPort(netip.AddrPort{}, addrPort)
+		conn, err := tnet.DialUDPAddrPort(netip.AddrPort{}, addrPort)
 		if err != nil {
 			return errors.New("failed to create UDP connection").Base(err)
 		}
 		defer conn.Close()
 		c := &udpConnClient{
-			PacketConn:  conn.(*internet.PacketConnWrapper).PacketConn,
-			resolveFunc: h.resolveRemote,
-			dest:        gonet.UDPAddrFromAddrPort(addrPort),
+			PacketConn: conn.(*internet.PacketConnWrapper).PacketConn,
+			resolveFunc: func(host string) (net.IP, error) {
+				return h.resolveRemote(tnet, host)
+			},
+			dest: gonet.UDPAddrFromAddrPort(addrPort),
 		}
 		reader = c
 		writer = c
@@ -235,30 +253,57 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
 	return nil
 }
 
+// Close ends the connections in flight and releases the stack and the device.
+// The handler accepts no connections afterwards.
 func (h *Handler) Close() (err error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if h.dev != nil {
-		h.dev.Close()
-		h.dev = nil
-		h.tun = nil
-	} else if h.tun != nil {
-		h.tun.Close()
-		h.tun = nil
-	}
+	h.closed = true
+	h.closeLocked()
 	return nil
 }
 
-func (h *Handler) init(ctx context.Context) error {
+func (h *Handler) closeLocked() {
+	if h.dev != nil {
+		// The device closes the stack as well.
+		h.dev.Close()
+	}
+	h.tnet, h.dev = nil, nil
+}
+
+// acquire returns the stack for one connection, creating the stack and the
+// device on first use.
+func (h *Handler) acquire(ctx context.Context) (*Net, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if h.tun == nil {
-		return errors.New("closed")
+	if h.closed {
+		return nil, errors.New("outbound closed")
 	}
-	if h.dev != nil {
-		return h.dev.Up()
+	if h.dev == nil {
+		if err := h.init(ctx); err != nil {
+			return nil, err
+		}
 	}
-	resolveFunc := h.resolveLocal
+	// The bind takes the device down when its socket closes unexpectedly.
+	if err := h.dev.Up(); err != nil {
+		return nil, err
+	}
+	return h.tnet, nil
+}
+
+// init creates the stack and the device; h.mu must be held. On failure it
+// keeps nothing, and the next connection starts over.
+func (h *Handler) init(ctx context.Context) (err error) {
+	var t tun.Device
+	var tnet *Net
+	if h.kernelTun {
+		t, tnet, err = createKernelTun(h.localAddresses, dnsServers, int(h.conf.Mtu))
+	} else {
+		t, tnet, _, err = CreateNetTUN(h.localAddresses, dnsServers, int(h.conf.Mtu), true)
+	}
+	if err != nil {
+		return err
+	}
 	listenFunc := func() (net.PacketConn, error) {
 		dest, err := net.ParseDestination("udp:" + h.conf.Peers[0].Endpoint)
 		if err != nil {
@@ -294,7 +339,13 @@ func (h *Handler) init(ctx context.Context) error {
 		}
 		return pktConn, nil
 	}
-	bind := &bind{}
+	// The device opens the bind as soon as the stack reports itself up, which
+	// can happen before NewDevice returns: fill the bind in before.
+	bind := &bind{
+		resolveFunc: h.resolveLocal,
+		listenFunc:  listenFunc,
+		reserved:    h.conf.Reserved,
+	}
 	logger := &device.Logger{
 		Verbosef: func(format string, args ...any) {
 			log.Record(&log.GeneralMessage{
@@ -309,11 +360,13 @@ func (h *Handler) init(ctx context.Context) error {
 			})
 		},
 	}
-	dev := device.NewDevice(h.tun, bind, logger)
-	bind.resolveFunc = resolveFunc
-	bind.listenFunc = listenFunc
-	bind.downFunc = dev.Down
-	bind.reserved = h.conf.Reserved
+	dev := device.NewDevice(t, bind, logger)
+	defer func() {
+		if err != nil {
+			dev.Close()
+		}
+	}()
+	bind.setDownFunc(dev.Down)
 	var cfg strings.Builder
 	cfg.WriteString("private_key=" + h.conf.SecretKey + "\n")
 	writeAmneziaParams(&cfg, h.conf.Parameters)
@@ -330,7 +383,7 @@ func (h *Handler) init(ctx context.Context) error {
 			cfg.WriteString("persistent_keepalive_interval=" + peer.KeepAlive + "\n")
 		}
 	}
-	err := dev.IpcSet(cfg.String())
+	err = dev.IpcSet(cfg.String())
 	if err != nil {
 		return err
 	}
@@ -338,7 +391,7 @@ func (h *Handler) init(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	h.dev = dev
+	h.tnet, h.dev = tnet, dev
 	return nil
 }
 
@@ -376,9 +429,9 @@ func (h *Handler) resolveLocal(host string) (net.IP, error) {
 	})
 }
 
-func (h *Handler) resolveRemote(host string) (net.IP, error) {
+func (h *Handler) resolveRemote(tnet *Net, host string) (net.IP, error) {
 	return resolveDomain(host, h.conf.DomainStrategy, func(host string) ([]net.IP, error) {
-		addrs, err := h.tnet.LookupHost(host)
+		addrs, err := tnet.LookupHost(host)
 		if err != nil {
 			return nil, err
 		}

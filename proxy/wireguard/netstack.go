@@ -47,7 +47,7 @@ type netTun struct {
 	hasV4, hasV6   bool
 }
 
-func CreateNetTUN(localAddresses, dnsServers []netip.Addr, mtu int, handleLocal bool) (tun.Device, *Net, *stack.Stack, error) {
+func CreateNetTUN(localAddresses, dnsServers []netip.Addr, mtu int, handleLocal bool) (_ tun.Device, _ *Net, _ *stack.Stack, err error) {
 	opts := stack.Options{
 		NetworkProtocols:   []stack.NetworkProtocolFactory{ipv4.NewProtocol, ipv6.NewProtocol},
 		TransportProtocols: []stack.TransportProtocolFactory{tcp.NewProtocol, udp.NewProtocol, icmp.NewProtocol6, icmp.NewProtocol4},
@@ -61,6 +61,14 @@ func CreateNetTUN(localAddresses, dnsServers []netip.Addr, mtu int, handleLocal 
 		dnsServers:     dnsServers,
 		mtu:            mtu,
 	}
+	// Clients create the stack on first use and again on the next connection
+	// when that fails: a failed stack must not keep running.
+	defer func() {
+		if err != nil {
+			dev.stack.Destroy()
+			dev.ep.Close()
+		}
+	}()
 	sackEnabledOpt := tcpip.TCPSACKEnabled(true) // TCP SACK is disabled by default
 	tcpipErr := dev.stack.SetTransportProtocolOption(tcp.ProtocolNumber, &sackEnabledOpt)
 	if tcpipErr != nil {
