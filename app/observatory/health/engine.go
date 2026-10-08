@@ -1204,6 +1204,7 @@ func (e *engine) onProbeResult(j *probeJob, r probeResult, now time.Time) {
 	}
 	p := e.path(j.tag)
 	p.probing = false
+	p.lastProbeEnd = now
 	p.stats.probes++
 	p.stats.probeBytes += r.bytes
 	if !r.ok {

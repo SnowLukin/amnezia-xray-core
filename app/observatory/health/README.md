@@ -298,10 +298,11 @@ it can answer with the right outbounds at once:
   `state`, `reason` and `stateMs` are as in `path_state`, `unknown` for an
   outbound the observatory knows nothing about yet; `seenMs` is how long its
   counters have been kept. Quarantine shows while it lasts. `failures` counts
-  by kind over the life of the outbound, `probe` is the last probe with its
-  error as a class: `timeout`, `no_progress`, `status_<N>`, `short_body`,
-  `reset`, `refused`, `eof`, `tls` or `other`. The traffic counters are those
-  of Status.
+  by kind over the life of the outbound, `probe` is the last probe that
+  finished, `agoMs` after its result, with its error as a class: `timeout`,
+  `no_progress`, `status_<N>`, `short_body`, `reset`, `refused`, `eof`,
+  `tls` or `other`. A probe still running is not in it. The traffic counters
+  are those of Status.
 
 Zero and empty values are left out, except `protocol`, `provider`, `run`,
 `refresh`, `trigger`, `retry`, `clientTime`, `network.known`, `network.up`,

@@ -101,10 +101,13 @@ type path struct {
 	// Ruled out while the connectivity check was failing.
 	provisional bool
 
-	probing   bool
-	lastProbe time.Time
-	lastRTT   time.Duration
-	lastError string
+	probing bool
+	// When the last probe started, and when the last one finished: lastRTT,
+	// lastError and lastClass are those of the probe that finished.
+	lastProbe    time.Time
+	lastProbeEnd time.Time
+	lastRTT      time.Duration
+	lastError    string
 	// The class of lastError, which a provider may see: the error itself may
 	// carry the URL of the probe.
 	lastClass string

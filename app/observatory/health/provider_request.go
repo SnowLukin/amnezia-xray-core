@@ -171,8 +171,10 @@ func describeOutbound(p *path, tag string, active time.Duration, now time.Time) 
 			o.Failures[failureKind(k).String()] = n
 		}
 	}
-	if p.stats.probes > 0 && !p.lastProbe.IsZero() {
-		o.Probe = &requestProbe{OK: p.lastError == "", AgoMs: now.Sub(p.lastProbe).Milliseconds()}
+	// Dated by its result: a probe that started in the tick that gathers
+	// the body must not make the result of an older one look fresh.
+	if !p.lastProbeEnd.IsZero() {
+		o.Probe = &requestProbe{OK: p.lastError == "", AgoMs: now.Sub(p.lastProbeEnd).Milliseconds()}
 		if o.Probe.OK {
 			o.Probe.RTTMs = p.lastRTT.Milliseconds()
 		} else {

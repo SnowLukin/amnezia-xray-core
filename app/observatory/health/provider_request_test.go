@@ -56,11 +56,11 @@ func TestRequestBodyDescribesTheSet(t *testing.T) {
 		t.Fatalf("setup: active %q", te.sel.current())
 	}
 	x1 := te.path("p-x1")
-	x1.stats.probes, x1.lastProbe, x1.lastError, x1.lastClass = 1, at(30*time.Second), "Get \"https://probe.test/\": EOF", "eof"
+	x1.stats.probes, x1.lastProbeEnd, x1.lastError, x1.lastClass = 1, at(30*time.Second), "Get \"https://probe.test/\": EOF", "eof"
 	x2 := te.path("p-x2")
 	x2.stats.connsOK, x2.stats.bytesDown, x2.stats.bytesUp = 412, 50<<20, 3<<10
 	x2.stats.ttfb.add(180 * time.Millisecond)
-	x2.stats.probes, x2.lastProbe, x2.lastRTT = 1, at(20*time.Second), 180*time.Millisecond
+	x2.stats.probes, x2.lastProbeEnd, x2.lastRTT = 1, at(20*time.Second), 180*time.Millisecond
 	te.prov().version = "v7"
 
 	now := at(time.Minute)
@@ -112,6 +112,24 @@ func TestRequestBodyDescribesTheSet(t *testing.T) {
 	}
 }
 
+// The probe in the body is the last one that finished, dated by its result:
+// a probe that starts in the tick that gathers the body does not make an old
+// result look fresh.
+func TestRequestProbeIsDatedByItsResult(t *testing.T) {
+	te := setEngine(t)
+	j := te.enqueue("p-x2", reasonConfirm, "auto", t0)
+	te.begin(j, at(time.Second))
+	te.onProbeResult(j, probeResult{ok: true, rtt: 180 * time.Millisecond}, at(3*time.Second))
+	now := at(10 * time.Minute)
+	te.begin(te.enqueue("p-x2", reasonFailover, "auto", now), now)
+	m, _, _ := requestOf(t, te, now)
+	x2 := m["outbounds"].([]any)[0].(map[string]any)
+	if p := x2["probe"].(map[string]any); p["ok"] != true || p["rttMs"] != 180.0 ||
+		p["agoMs"] != float64((10*time.Minute-3*time.Second).Milliseconds()) {
+		t.Fatalf("probe of x2 while another one runs: %v", p)
+	}
+}
+
 // The balancer on an outbound of another provider or of the config is no
 // business of the backend: it learns only that its outbounds are not chosen.
 func TestRequestBodyHidesAPathOfOthers(t *testing.T) {
@@ -134,7 +152,7 @@ func TestRequestBodyHoldsNoDestination(t *testing.T) {
 	}
 	te.path("p-x1").serverName = "203.0.113.9"
 	x2 := te.path("p-x2")
-	x2.stats.probes, x2.lastProbe, x2.lastClass = 1, at(20*time.Second), "eof"
+	x2.stats.probes, x2.lastProbeEnd, x2.lastClass = 1, at(20*time.Second), "eof"
 	x2.lastError = "Get \"https://probe.example/bytes/32768\": unexpected EOF"
 	_, body, _ := requestOf(t, te, at(time.Minute))
 	for _, s := range []string{"secret", ".example", "203.0.113.9", "bytes/32768", "Home", "4f1c0de2a9b87765", "p-x"} {
@@ -215,7 +233,7 @@ func TestRequestBodyBounded(t *testing.T) {
 		for _, k := range []failureKind{failDialTimeout, failNoResponse, failStall} {
 			p.stats.failuresByKind[k] = 1_000_000
 		}
-		p.stats.probes, p.lastProbe, p.lastError, p.lastClass = 1, t0, strings.Repeat("e", 4096), "status_503"
+		p.stats.probes, p.lastProbeEnd, p.lastError, p.lastClass = 1, t0, strings.Repeat("e", 4096), "status_503"
 		p.stats.connsOK, p.stats.connsFailed, p.stats.bytesUp, p.stats.bytesDown = 1_000_000, 1_000_000, 1<<40, 1<<40
 		p.stats.activeTime = 24 * time.Hour
 		p.stats.ttfb.add(10 * time.Second)
