@@ -312,6 +312,21 @@ func TestSlowSplicedDownloadIsNotAStall(t *testing.T) {
 	}
 }
 
+func TestRequestOfAnotherRunIsIgnored(t *testing.T) {
+	o, clk := newTestObserver()
+	o.run = "r2"
+	o.e.updateCandidates(o.e.addSelector("auto", newSelectorSettings(&SelectorConfig{StartPinned: "a1"})), []string{"a1", "b1"}, clk.now())
+	if o.Release("auto", "r1") || o.e.selectors["auto"].pinned != "a1" {
+		t.Fatal("a release meant for the previous run lifted the pin")
+	}
+	if !o.Release("auto", "r2") || o.e.selectors["auto"].pinned != "" {
+		t.Fatal("a release for this run did not lift the pin")
+	}
+	if !o.Pin("auto", "b1", "") || o.e.selectors["auto"].pinned != "b1" {
+		t.Fatal("a pin without a run was refused")
+	}
+}
+
 func TestDialsOfThePreviousNetworkDoNotJudgeTheNewOne(t *testing.T) {
 	o, clk := newTestObserver()
 	o.e.updateCandidates(o.e.addSelector("auto", newSelectorSettings(&SelectorConfig{})), []string{"a1", "b1"}, clk.now())

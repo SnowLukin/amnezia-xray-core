@@ -287,7 +287,10 @@ type PinRequest struct {
 	state    protoimpl.MessageState `protogen:"open.v1"`
 	Balancer string                 `protobuf:"bytes,1,opt,name=balancer,proto3" json:"balancer,omitempty"`
 	// Outbound to keep the balancer on. Empty releases the pin.
-	Outbound      string `protobuf:"bytes,2,opt,name=outbound,proto3" json:"outbound,omitempty"`
+	Outbound string `protobuf:"bytes,2,opt,name=outbound,proto3" json:"outbound,omitempty"`
+	// Run of the core the request is meant for, from the status; a request
+	// for another run is ignored. Empty skips the check.
+	Run           string `protobuf:"bytes,3,opt,name=run,proto3" json:"run,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -332,6 +335,13 @@ func (x *PinRequest) GetBalancer() string {
 func (x *PinRequest) GetOutbound() string {
 	if x != nil {
 		return x.Outbound
+	}
+	return ""
+}
+
+func (x *PinRequest) GetRun() string {
+	if x != nil {
+		return x.Run
 	}
 	return ""
 }
@@ -521,11 +531,12 @@ const file_app_observatory_health_command_command_proto_rawDesc = "" +
 	"\x15NetworkChangedRequest\x12\x18\n" +
 	"\anetwork\x18\x01 \x01(\tR\anetwork\x12\x12\n" +
 	"\x04lost\x18\x02 \x01(\bR\x04lost\"\x18\n" +
-	"\x16NetworkChangedResponse\"D\n" +
+	"\x16NetworkChangedResponse\"V\n" +
 	"\n" +
 	"PinRequest\x12\x1a\n" +
 	"\bbalancer\x18\x01 \x01(\tR\bbalancer\x12\x1a\n" +
-	"\boutbound\x18\x02 \x01(\tR\boutbound\"\x1d\n" +
+	"\boutbound\x18\x02 \x01(\tR\boutbound\x12\x10\n" +
+	"\x03run\x18\x03 \x01(\tR\x03run\"\x1d\n" +
 	"\vPinResponse\x12\x0e\n" +
 	"\x02ok\x18\x01 \x01(\bR\x02ok\",\n" +
 	"\x0eRefreshRequest\x12\x1a\n" +

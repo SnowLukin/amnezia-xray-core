@@ -55,9 +55,9 @@ func (s *service) Pin(_ context.Context, r *PinRequest) (*PinResponse, error) {
 		return nil, err
 	}
 	if r.Outbound == "" {
-		return &PinResponse{Ok: s.observer.Release(r.Balancer)}, nil
+		return &PinResponse{Ok: s.observer.Release(r.Balancer, r.Run)}, nil
 	}
-	return &PinResponse{Ok: s.observer.Pin(r.Balancer, r.Outbound)}, nil
+	return &PinResponse{Ok: s.observer.Pin(r.Balancer, r.Outbound, r.Run)}, nil
 }
 
 func (s *service) Refresh(_ context.Context, r *RefreshRequest) (*RefreshResponse, error) {

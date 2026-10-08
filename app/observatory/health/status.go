@@ -58,6 +58,8 @@ type providerStatusView struct {
 }
 
 type statusView struct {
+	// Names this run of the core; pin and release requests may carry it.
+	Run       string `json:"run,omitempty"`
 	Network   string `json:"network,omitempty"`
 	NetworkUp bool   `json:"network_up"`
 	// "ok", "paused", "doubt" or "ignored"; empty without a connectivity check.

@@ -36,6 +36,9 @@ message PinRequest {
   string balancer = 1;
   // Outbound to keep the balancer on. Empty releases the pin.
   string outbound = 2;
+  // Run of the core the request is meant for, from the status; a request
+  // for another run is ignored. Empty skips the check.
+  string run = 3;
 }
 
 message PinResponse {

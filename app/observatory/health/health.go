@@ -5,6 +5,8 @@ package health
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"sort"
 	"sync"
@@ -50,6 +52,9 @@ type Observer struct {
 	lastServer sync.Map
 	// The engine's network generation, readable without the lock.
 	generation atomic.Uint64
+	// Names this run of the core, so that a host request meant for a
+	// previous run is told apart.
+	run string
 
 	providers []*providerRuntime
 	// Ends provider requests still running when the observer closes.
@@ -98,6 +103,9 @@ func newObserver(ctx context.Context, config *Config) *Observer {
 	}
 	// A second back, so that zero stays free to mean "not yet".
 	o.base = o.clock().Add(-time.Second)
+	var id [8]byte
+	_, _ = rand.Read(id[:])
+	o.run = hex.EncodeToString(id[:])
 	o.fetchCtx, o.stopFetch = context.WithCancel(ctx)
 	o.newHandler = o.createHandler
 	for i, ps := range s.providers {
@@ -488,21 +496,31 @@ func (o *Observer) NetworkLost() {
 }
 
 // Pin keeps the balancer on tag until Release.
-func (o *Observer) Pin(balancer, tag string) bool {
+// run is the run of the core the request is meant for, as Status reports
+// it; a request for another run is ignored. An empty run skips the check.
+func (o *Observer) Pin(balancer, tag, run string) bool {
 	o.mu.Lock()
-	ok := o.e.pin(balancer, tag, o.now())
+	ok := o.forThisRun("pin", balancer, run) && o.e.pin(balancer, tag, o.now())
 	o.mu.Unlock()
 	o.wake()
 	return ok
 }
 
-// Release lets the balancer choose again.
-func (o *Observer) Release(balancer string) bool {
+// Release lets the balancer choose again. run works as in Pin.
+func (o *Observer) Release(balancer, run string) bool {
 	o.mu.Lock()
-	ok := o.e.release(balancer, o.now())
+	ok := o.forThisRun("release", balancer, run) && o.e.release(balancer, o.now())
 	o.mu.Unlock()
 	o.wake()
 	return ok
+}
+
+func (o *Observer) forThisRun(what, balancer, run string) bool {
+	if run == "" || run == o.run {
+		return true
+	}
+	o.e.emit(o.now(), "stale_request", map[string]any{"request": what, "balancer": balancer, "run": run})
+	return false
 }
 
 // DrainEvents returns kept events as a JSON array and the number of events
@@ -517,6 +535,7 @@ func (o *Observer) DrainEvents() ([]byte, uint64) {
 func (o *Observer) Status() []byte {
 	o.mu.Lock()
 	view := o.e.status(o.now())
+	view.Run = o.run
 	o.mu.Unlock()
 	out, _ := json.Marshal(view)
 	return out

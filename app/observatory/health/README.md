@@ -257,11 +257,16 @@ methods directly (`health.FromInstance(instance)`):
 | --- | --- |
 | `NetworkChanged(id)` / `xray api health network <id>` | The device moved to another network. `id` lets the observatory remember working outbounds per network; empty when the host cannot tell networks apart. |
 | `NetworkLost()` / `lost` | No network; decisions pause until the next change. |
-| `Pin(balancer, outbound)` / `pin` | Keep the balancer on an outbound. |
-| `Release(balancer)` / `release` | Let the balancer choose again. |
+| `Pin(balancer, outbound, run)` / `pin` | Keep the balancer on an outbound. |
+| `Release(balancer, run)` / `release` | Let the balancer choose again. |
 | `RequestRefresh(provider)` / `refresh [provider]` | Fetch the set of a provider, or of every provider when empty, as soon as the limits allow. False when there is no such provider. |
 | `Status()` / `status` | Current state as JSON, see below. |
 | `DrainEvents()` / `events` | Events since the previous drain as a JSON array, and how many were dropped because the buffer was full. |
+
+`run` names the run of the core the request is meant for, as `Status()`
+reports it; a request for another run is ignored, so a release sent to a
+core that was started again in the meantime does not lift its new pin.
+An empty `run` skips the check.
 
 ## Events
 
@@ -281,6 +286,7 @@ changed its settings). `kinds` counts failures by kind: `dial_failed`, `dial_tim
 | `upgrade_delayed` | `balancer`, `outbound`, `delay_ms` | The return waits longer because the previous one failed. |
 | `upgrade_penalty` | `balancer`, `outbound`, `multiplier` | A return failed within `penaltyWindow`. |
 | `pin`, `release` | `balancer`, `outbound` | The host pinned or released a balancer. |
+| `stale_request` | `request`, `balancer`, `run` | A pin or release meant for another run of the core was ignored. |
 | `pinned_down` | `balancer`, `outbound` | The pinned outbound failed; the balancer stays on it. |
 | `connectivity` | `ok`, `rtt_ms`, `error` | Result of a network check. |
 | `network_down` | `error` | The network check failed; decisions paused. `error` is `host` when the host reported the loss. |
@@ -295,7 +301,7 @@ changed its settings). `kinds` counts failures by kind: `dial_failed`, `dial_tim
 
 ## Status
 
-`Status()` returns the network (`network`, `network_up`, `connectivity`:
+`Status()` returns the run of the core (`run`), the network (`network`, `network_up`, `connectivity`:
 `ok`, `paused`, `doubt` or `ignored`, `generation`, `idle`), probe queue sizes, per outbound the state and its age, failures in
 the window, quarantine, last probe RTT and error, connections, bytes, time to
 first byte (p50, p90), failures by kind, probes and their bytes, and time as
