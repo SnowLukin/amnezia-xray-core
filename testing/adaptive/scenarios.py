@@ -1878,13 +1878,15 @@ def lease_ends(events, tag, since=0):
 
 @scenario()
 def provider_lease_expiry(stand, xray, work, name):
-    """The lease of the chosen outbound ends while the provider is down: the
-    balancer moves to the outbound whose lease runs on, without a probe of the
-    expired one or ruling it out, and a long download on it goes on."""
+    """The lease of the chosen outbound ends while the provider is down: its
+    renewal at half the lease fails, the balancer moves to the outbound whose
+    lease runs on, without a probe of the expired one or ruling it out, and a
+    long download on it goes on."""
     size, seconds = 16 << 20, 40
     stand.answer([("x1", "reality", 1), ("x2", "reality", 2)], costs={"x1": 1, "x2": 2},
                  expires={"x1": "@+30s", "x2": "@+300s"}, server_time="@+0s")
-    prov = bench.provider_config(["direct"], limits={"exhaustedMinInterval": "1s", "backoff": {"initial": "5s"}})
+    prov = bench.provider_config(["direct"], limits={"exhaustedMinInterval": "1s",
+                                                     "backoff": {"initial": "5s", "max": "5s"}})
     cfg = bench.client_config([("p-x1", "reality", 1)], {"p-": 1}, providers=[prov])
     m = Marks()
     got = {}
@@ -1917,8 +1919,8 @@ def provider_lease_expiry(stand, xray, work, name):
         check("lease of p-x1 ended after the answer, s", t_end and t_apply and round(t_end - t_apply, 1),
               t_end is not None and t_apply is not None and 29 <= t_end - t_apply <= 33, "30 .. 33"),
         check("expired event (active, renewal)", ended and (ended[0]["fields"]["active"], ended[0]["fields"]["renewal"]),
-              bool(ended) and ended[0]["fields"]["active"] is True and ended[0]["fields"]["renewal"] == "pending",
-              "(True, pending)"),
+              bool(ended) and ended[0]["fields"]["active"] is True and ended[0]["fields"]["renewal"] == "failed",
+              "(True, failed)"),
         check("balancer left the expired outbound", left and f"{left[0]['fields']['to']} {left[0]['fields']['reason']}",
               bool(left) and left[0]["fields"]["to"] == "p-x2" and left[0]["fields"]["reason"] == "expired"
               and t_end is not None and left[0]["ts"] / 1000 - t_end <= 5, "p-x2 expired within 5 s"),
@@ -1993,4 +1995,38 @@ def provider_clock_skew(stand, xray, work, name):
         check("clock", first["fields"].get("clock"), first["fields"].get("clock") == "server", "server"),
         check("lease ended after the answer, s", took and round(took, 1), took is not None and 37 <= took <= 43,
               "40 +- 3"),
+    ]
+
+
+@scenario()
+def provider_lease_renewal(stand, xray, work, name):
+    """Leases of 40 seconds and no user traffic at all: the provider is asked
+    to renew them at half their length, and they never end."""
+    stand.answer(FRESH, version="v1", expires={"x1": "@+40s", "x2": "@+40s"}, server_time="@+0s")
+    # The leases come with a host request; the default minInterval of five
+    # minutes after it would hold the planned renewal until the urgent point.
+    prov = bench.provider_config(["direct"], triggers={"expiry": {"renewAt": 0.5}}, limits={"minInterval": "1s"})
+    cfg = bench.client_config(BANNED[:1], {"a": 1, "p-": 1}, providers=[prov])
+    m = Marks()
+    with bench.Client(xray, cfg, work, name) as c:
+        run_timeline(None, [(2, m.at("answer", lambda: refresh(c)))], 50)
+        st = c.status()
+    applies = [e for e in bench.events_of(c.events, "provider_apply", m["answer"]) if e["fields"].get("ok")]
+    t_apply = applies[0]["ts"] / 1000 if applies else None
+    renewals = [e for e in bench.events_of(c.events, "provider_fetch", m["answer"]) if e["fields"].get("trigger") == "expiry"]
+    took = renewals[0]["ts"] / 1000 - t_apply if renewals and t_apply else None
+    second = applies[1]["fields"] if len(applies) > 1 else {}
+    ended = bench.events_of(c.events, "provider_expired", m["answer"])
+    reqs = stand.provider_requests(m["answer"])
+    counted = sum(r.get("provider_renewals", 0) for r in c.reports)
+    return [
+        check("core idle throughout", st.get("idle"), st.get("idle") is True, "True"),
+        check("renewal after the answer, s", took and round(took, 1), took is not None and 17.5 <= took <= 22.5,
+              "20 +- 2"),
+        check("renewal applied (changed, renewed)", (second.get("changed"), second.get("renewed")),
+              second.get("changed") is False and second.get("renewed") == 2, "(False, 2)"),
+        check("leases ended", len(ended), not ended, "== 0"),
+        check("provider requests", len(reqs), len(reqs) == 1 + len(renewals) and len(renewals) <= 3,
+              "the answer and the renewals"),
+        check("report provider_renewals", counted, counted >= 1, ">= 1"),
     ]
