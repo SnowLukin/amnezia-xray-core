@@ -2,6 +2,7 @@ package conf_test
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -84,6 +85,102 @@ func TestHealthObservatoryConfigRejects(t *testing.T) {
 		}
 		if _, err := c.Build(); err == nil {
 			t.Fatalf("accepted %s", input)
+		}
+	}
+}
+
+func buildHealth(t *testing.T, raw string) (*health.Config, error) {
+	t.Helper()
+	c := &HealthObservatoryConfig{}
+	if err := json.Unmarshal([]byte(raw), c); err != nil {
+		t.Fatal(err)
+	}
+	m, err := c.Build()
+	if err != nil {
+		return nil, err
+	}
+	return m.(*health.Config), nil
+}
+
+func TestHealthProvidersBuild(t *testing.T) {
+	cfg, err := buildHealth(t, `{
+	  "subjectSelector": ["a"],
+	  "providers": [{
+	    "tag": "fresh", "url": "https://api.example/set", "headers": {"Authorization": "Bearer x"},
+	    "via": ["auto", "direct"], "timeout": "5s",
+	    "triggers": {"interval": "0s", "jitter": 0, "minHealthy": 3, "whenExhausted": false,
+	                 "whenCostAbove": {"cost": 10, "for": "15m"}, "onNetworkChange": "unknown"},
+	    "limits": {"minInterval": "1m", "maxPerHour": 0, "backoff": {"initial": "10s"}},
+	    "apply": {"balancer": "auto", "tagPrefix": "p-", "drain": "1m"}
+	  }]
+	}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := cfg.Providers[0]
+	tr := p.Triggers
+	if tr.Interval != -1 || tr.Jitter != -1 || tr.MinHealthy != 3 || !tr.SkipWhenExhausted || tr.MaxAge != 0 {
+		t.Fatalf("triggers %+v: explicit zero must turn off, missing must keep the default", tr)
+	}
+	if tr.CostAbove.Cost != 10 || tr.CostAbove.After != int64(15*time.Minute) || tr.OnNetworkChange != health.RefreshOnNetwork_REFRESH_UNKNOWN {
+		t.Fatalf("triggers %+v", tr)
+	}
+	if l := p.Limits; l.MinInterval != int64(time.Minute) || l.MaxPerHour != -1 || l.ExhaustedMinInterval != 0 || l.Backoff.Initial != int64(10*time.Second) {
+		t.Fatalf("limits %+v", l)
+	}
+	if p.Apply.TagPrefix != "p-" || p.Headers["Authorization"] != "Bearer x" || len(p.Via) != 2 {
+		t.Fatalf("provider %+v", p)
+	}
+}
+
+func TestHealthProvidersReject(t *testing.T) {
+	cases := map[string]string{
+		"no apply":         `{"tag": "a", "url": "https://x.test/"}`,
+		"no prefix":        `{"tag": "a", "url": "https://x.test/", "apply": {"balancer": "auto"}}`,
+		"token in url":     `{"tag": "a", "url": "https://user:pw@x.test/", "apply": {"balancer": "auto", "tagPrefix": "p-"}}`,
+		"not http":         `{"tag": "a", "url": "ftp://x.test/", "apply": {"balancer": "auto", "tagPrefix": "p-"}}`,
+		"bad network mode": `{"tag": "a", "url": "https://x.test/", "apply": {"balancer": "auto", "tagPrefix": "p-"}, "triggers": {"onNetworkChange": "sometimes"}}`,
+		"overlap": `{"tag": "a", "url": "https://x.test/", "apply": {"balancer": "auto", "tagPrefix": "p-"}},
+		            {"tag": "b", "url": "https://x.test/", "apply": {"balancer": "auto", "tagPrefix": "p-x"}}`,
+		"zero cost trigger": `{"tag": "a", "url": "https://x.test/", "apply": {"balancer": "auto", "tagPrefix": "p-"},
+		            "triggers": {"whenCostAbove": {"cost": 0, "for": "15m"}}}`,
+		"empty via": `{"tag": "a", "url": "https://x.test/", "via": ["auto", ""], "apply": {"balancer": "auto", "tagPrefix": "p-"}}`,
+	}
+	for name, providers := range cases {
+		if _, err := buildHealth(t, `{"subjectSelector": ["a"], "providers": [`+providers+`]}`); err == nil {
+			t.Errorf("%s: accepted", name)
+		} else if !strings.Contains(err.Error(), "healthObservatory") {
+			t.Errorf("%s: error %v does not name the section", name, err)
+		}
+	}
+}
+
+func TestHealthProvidersNeedTheirBalancer(t *testing.T) {
+	provider := func(balancer, prefix string) string {
+		return `, "healthObservatory": {"subjectSelector": ["a"], "providers": [{"tag": "fresh",
+			"url": "https://x.test/", "apply": {"balancer": "` + balancer + `", "tagPrefix": "` + prefix + `"}}]}`
+	}
+	random := `{
+		"outbounds": [{"tag": "a1", "protocol": "freedom"}],
+		"routing": {"balancers": [{"tag": "auto", "selector": ["a", "p-"], "strategy": {"type": "random"}}]}` +
+		provider("auto", "p-") + `}`
+	for _, tc := range []struct {
+		name, input string
+		ok          bool
+	}{
+		{"prefix observed and picked up", leastCostConfig(provider("auto", "p-"), `{}`, "a", "p-"), true},
+		{"selector wider than the observed prefix", leastCostConfig(provider("auto", "p-x"), `{}`, "a", "p-"), false},
+		{"no such balancer", leastCostConfig(provider("main", "p-"), `{}`, "a", "p-"), false},
+		{"balancer misses the prefix", leastCostConfig(provider("auto", "p-"), `{}`, "a", "p-x"), false},
+		{"balancer without leastCost", random, false},
+	} {
+		c := new(Config)
+		if err := json.Unmarshal([]byte(tc.input), c); err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		_, err := c.Build()
+		if (err == nil) != tc.ok {
+			t.Errorf("%s: build error %v, want ok %v", tc.name, err, tc.ok)
 		}
 	}
 }
