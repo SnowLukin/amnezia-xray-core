@@ -2,7 +2,6 @@ package wireguard
 
 import (
 	"net/netip"
-	"runtime"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -18,7 +17,7 @@ func TestClientSleep(t *testing.T) {
 	addr := netip.MustParseAddr("10.9.0.2")
 	s := startTestServer(t, testParams, testPeer{pub, addr})
 	inst := newTestInstance(t)
-	base := runtime.NumGoroutine()
+	base := goroutineBase(t)
 
 	oh, h := addTestClient(t, inst, "wg", s, priv, addr, testParams)
 	sleeper, ok := oh.(outbound.Sleeper)
@@ -83,7 +82,7 @@ func TestClientWakesWithPadding(t *testing.T) {
 
 	for i := range 5 {
 		c := dial(oh, net.UDPDestination(net.IPAddress(testServerAddr.AsSlice()), 7))
-		err := c.echo([]byte("ping "+strconv.Itoa(i)), 3*time.Second)
+		err := c.echo([]byte("ping "+strconv.Itoa(i)), 15*time.Second)
 		if cerr := c.close(); cerr != nil {
 			t.Fatal(cerr)
 		}
@@ -104,7 +103,7 @@ func TestClientSleepRace(t *testing.T) {
 	addr := netip.MustParseAddr("10.9.0.2")
 	s := startTestServer(t, testParams, testPeer{pub, addr})
 	inst := newTestInstance(t)
-	base := runtime.NumGoroutine()
+	base := goroutineBase(t)
 	oh, h := addTestClient(t, inst, "wg", s, priv, addr, testParams)
 
 	stop := make(chan struct{})

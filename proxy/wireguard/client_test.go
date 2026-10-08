@@ -21,6 +21,7 @@ import (
 	"github.com/xtls/xray-core/app/proxyman"
 	_ "github.com/xtls/xray-core/app/proxyman/outbound"
 	"github.com/xtls/xray-core/common/buf"
+	"github.com/xtls/xray-core/common/errors"
 	"github.com/xtls/xray-core/common/net"
 	"github.com/xtls/xray-core/common/serial"
 	"github.com/xtls/xray-core/common/session"
@@ -320,6 +321,27 @@ func roundTrip(t testing.TB, oh outbound.Handler, s *testServer) {
 	s.waitConns(t)
 }
 
+// goroutineBase returns the goroutine count a test comes back to once its
+// outbounds are closed. It logs first: the first log line starts a writer
+// goroutine that outlives the test. Then it waits for the count to hold
+// still, since the stacks of earlier tests may still be stopping.
+func goroutineBase(t testing.TB) int {
+	t.Helper()
+	errors.LogWarning(context.Background(), "goroutine base of ", t.Name())
+	n := runtime.NumGoroutine()
+	held := time.Now()
+	for deadline := held.Add(10 * time.Second); time.Since(held) < 200*time.Millisecond; {
+		if time.Now().After(deadline) {
+			t.Fatalf("the goroutine count does not settle: %d", n)
+		}
+		time.Sleep(20 * time.Millisecond)
+		if m := runtime.NumGoroutine(); m != n {
+			n, held = m, time.Now()
+		}
+	}
+	return n
+}
+
 // waitGoroutines waits for the goroutine count to fall to want: stacks and
 // devices stop some of their goroutines after Close returns.
 func waitGoroutines(t testing.TB, want int) {
@@ -349,7 +371,7 @@ func TestClientCreatesStackOnFirstUse(t *testing.T) {
 	addr := netip.MustParseAddr("10.9.0.2")
 	s := startTestServer(t, testParams, testPeer{pub, addr})
 	inst := newTestInstance(t)
-	base := runtime.NumGoroutine()
+	base := goroutineBase(t)
 
 	oh, h := addTestClient(t, inst, "wg", s, priv, addr, testParams)
 	if h.holds() {
@@ -408,7 +430,7 @@ func TestClientRefusesConnectionsAfterClose(t *testing.T) {
 	addr := netip.MustParseAddr("10.9.0.2")
 	s := startTestServer(t, testParams, testPeer{pub, addr})
 	inst := newTestInstance(t)
-	base := runtime.NumGoroutine()
+	base := goroutineBase(t)
 
 	oh, h := addTestClient(t, inst, "wg", s, priv, addr, testParams)
 	h.Close()
@@ -427,7 +449,7 @@ func TestClientFailedInitKeepsNothing(t *testing.T) {
 	addr := netip.MustParseAddr("10.9.0.2")
 	s := startTestServer(t, testParams, testPeer{pub, addr})
 	inst := newTestInstance(t)
-	base := runtime.NumGoroutine()
+	base := goroutineBase(t)
 
 	// The device refuses an invalid parameter only once it is configured,
 	// after the stack and the device exist.

@@ -47,8 +47,8 @@ func TestWriteAmneziaParams(t *testing.T) {
 			expect: "jc=3\ni5=<t>\nrandom_trailers=true\ndisable_cookies=true\n",
 		},
 		{
-			// A server without random trailers drops every handshake that
-			// carries them, so unset flags must not reach the device.
+			// Unset flags are not written, so that existing configs produce
+			// the same IPC text as before the flags existed.
 			name: "unset 3.1 flags emit nothing",
 			params: &AmneziaParameters{
 				Jc: "3",

@@ -1,6 +1,7 @@
 package wireguard
 
 import (
+	"context"
 	"net/netip"
 	"os"
 	"runtime"
@@ -8,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/xtls/xray-core/common/errors"
 	"github.com/xtls/xray-core/features/outbound"
 )
 
@@ -51,6 +53,8 @@ func TestMeasureClients(t *testing.T) {
 			kib(m.HeapInuse, first.HeapInuse), kib(m.HeapAlloc, first.HeapAlloc), kib(m.StackInuse, first.StackInuse))
 	}
 
+	// The first log line starts a writer goroutine; count it from the start.
+	errors.LogWarning(context.Background(), "measuring ", n, " outbounds")
 	t.Logf("NumCPU %d, GOMAXPROCS %d, %d outbounds; KiB relative to the first line", runtime.NumCPU(), runtime.GOMAXPROCS(0), n)
 	measure("before the outbounds")
 	ohs := make([]outbound.Handler, n)
