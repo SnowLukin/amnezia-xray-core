@@ -62,8 +62,11 @@ type Handler struct {
 	// so that each of them does not try again.
 	initErr     error
 	initErrTime time.Time
-	// inits counts the devices created, for tests.
+	// inits counts the devices the outbound took into use, for tests.
 	inits int
+	// ifName is the name of the kernel interface, kept across wakes. init
+	// sets it while initDone is set; mu guards it otherwise.
+	ifName string
 }
 
 // initRetryDelay is how long connections fail with the error of the last init
@@ -280,6 +283,11 @@ func (h *Handler) Close() (err error) {
 	defer h.mu.Unlock()
 	h.closed = true
 	h.closeLocked()
+	// A running init releases the name once it finds the outbound closed.
+	if h.initDone == nil {
+		releaseKernelTunName(h.ifName)
+		h.ifName = ""
+	}
 	return nil
 }
 
@@ -326,6 +334,16 @@ func (h *Handler) acquire(ctx context.Context) (*Net, error) {
 		h.mu.Lock()
 		h.initDone = nil
 		close(done)
+		if h.closed {
+			// Close left what the init created to it.
+			releaseKernelTunName(h.ifName)
+			h.ifName = ""
+			h.mu.Unlock()
+			if dev != nil {
+				dev.Close()
+			}
+			return nil, errors.New("outbound closed")
+		}
 		if err != nil {
 			h.initErr, h.initErrTime = err, time.Now()
 			h.mu.Unlock()
@@ -333,11 +351,6 @@ func (h *Handler) acquire(ctx context.Context) (*Net, error) {
 		}
 		h.initErr = nil
 		h.inits++
-		if h.closed {
-			h.mu.Unlock()
-			dev.Close()
-			return nil, errors.New("outbound closed")
-		}
 		h.tnet, h.dev = tnet, dev
 	}
 	h.active++
@@ -365,7 +378,9 @@ func (h *Handler) init(ctx context.Context) (_ *Net, _ *device.Device, err error
 	var t tun.Device
 	var tnet *Net
 	if h.kernelTun {
-		t, tnet, err = createKernelTun(h.localAddresses, dnsServers, int(h.conf.Mtu))
+		// The interface keeps its name across wakes, so that the wake of
+		// another outbound cannot take it in between.
+		t, tnet, h.ifName, err = createKernelTun(h.ifName, h.localAddresses, dnsServers, int(h.conf.Mtu))
 	} else {
 		t, tnet, _, err = CreateNetTUN(h.localAddresses, dnsServers, int(h.conf.Mtu), true)
 	}

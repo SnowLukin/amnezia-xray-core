@@ -40,7 +40,8 @@ func CalculateInterfaceName(name string) (tunName string) {
 	for _, netInterface := range interfaces {
 		if strings.HasPrefix(netInterface.Name, tunName) {
 			index, parseErr := strconv.ParseInt(netInterface.Name[len(tunName):], 10, 16)
-			if parseErr == nil {
+			// Interfaces do not come in the order of their index.
+			if parseErr == nil && int(index) >= tunIndex {
 				tunIndex = int(index) + 1
 			}
 		}

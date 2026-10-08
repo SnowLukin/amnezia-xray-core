@@ -223,7 +223,13 @@ func newTestInstance(t testing.TB) *core.Instance {
 // returns it with its proxy.
 func addTestClient(t testing.TB, inst *core.Instance, tag string, s *testServer, priv string, addr netip.Addr, params *AmneziaParameters) (outbound.Handler, *Handler) {
 	t.Helper()
-	conf := &DeviceConfig{
+	return addTestClientConf(t, inst, tag, testClientConf(s, priv, addr, params))
+}
+
+// testClientConf is the config of a gVisor client outbound that connects to
+// s from addr.
+func testClientConf(s *testServer, priv string, addr netip.Addr, params *AmneziaParameters) *DeviceConfig {
+	return &DeviceConfig{
 		IsClient:    true,
 		SecretKey:   priv,
 		Endpoint:    []string{addr.String()},
@@ -236,6 +242,10 @@ func addTestClient(t testing.TB, inst *core.Instance, tag string, s *testServer,
 		}},
 		Parameters: params,
 	}
+}
+
+func addTestClientConf(t testing.TB, inst *core.Instance, tag string, conf *DeviceConfig) (outbound.Handler, *Handler) {
+	t.Helper()
 	err := core.AddOutboundHandler(inst, &core.OutboundHandlerConfig{
 		Tag:            tag,
 		SenderSettings: serial.ToTypedMessage(&proxyman.SenderConfig{}),
@@ -553,6 +563,16 @@ func TestClientWakeHoldsNoLock(t *testing.T) {
 	conn, err := r1.tnet.DialContextTCPAddrPort(ctx, netip.AddrPortFrom(testServerAddr, 7))
 	if err != nil {
 		t.Fatal(err)
+	}
+	// An echo also makes sure that the server has the connection, which
+	// waitConns waits for.
+	conn.SetDeadline(time.Now().Add(15 * time.Second))
+	got := make([]byte, 4)
+	if _, err := conn.Write([]byte("ping")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.ReadFull(conn, got); err != nil || string(got) != "ping" {
+		t.Fatalf("echo: got %q, %v", got, err)
 	}
 	conn.Close()
 	h.release()
