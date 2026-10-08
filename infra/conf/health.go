@@ -117,6 +117,7 @@ type HealthProviderApplyConfig struct {
 	Drain        duration.Duration `json:"drain"`
 	MaxOutbounds int32             `json:"maxOutbounds"`
 	Protocols    StringList        `json:"protocols"`
+	Routing      bool              `json:"routing"`
 }
 
 type HealthProviderConfig struct {
@@ -197,6 +198,7 @@ func (c *HealthProviderConfig) build() (*health.ProviderConfig, error) {
 			Drain:        int64(a.Drain),
 			MaxOutbounds: a.MaxOutbounds,
 			Protocols:    a.Protocols,
+			Routing:      a.Routing,
 		},
 	}
 	if t := c.Triggers; t != nil {

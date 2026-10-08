@@ -170,7 +170,7 @@ triggers are judged on what the observatory knows about the balancer.
         "minInterval": "5m", "exhaustedMinInterval": "30s", "maxPerHour": 6,
         "backoff": { "initial": "30s", "multiplier": 2, "max": "30m", "jitter": 0.3 }
       },
-      "apply": { "balancer": "auto", "tagPrefix": "p-", "drain": "5m", "maxOutbounds": 64 }
+      "apply": { "balancer": "auto", "tagPrefix": "p-", "drain": "5m", "maxOutbounds": 64, "routing": false }
     }]
   }
 }
@@ -195,6 +195,7 @@ redirects are not followed.
 {
   "outbounds": [ { "tag": "x1", "protocol": "vless", "settings": {}, "streamSettings": {} } ],
   "costs": { "x1": 1 },
+  "routing": { "rules": [], "balancers": [] },
   "nextRefreshIn": "90m",
   "version": "2026-10-08.3"
 }
@@ -208,8 +209,22 @@ answer cannot send traffic straight out with `freedom`.
 balancer for them.
 `nextRefreshIn` (a duration or seconds) replaces `interval` until the next
 refresh. `version` (or `hash`) names the set; without it the set is named by
-a hash of `outbounds` and `costs`. A set with the same name as the applied
-one changes nothing.
+a hash of everything in the answer except `nextRefreshIn`. A set with the
+same name as the applied one changes nothing.
+
+`routing` takes `rules` and `balancers` in the format of the config file and
+replaces all rules and balancers at once, without a restart, when
+`apply.routing` is on. Rules refer to the final tags, `tagPrefix` included.
+The answer is refused when a rule or a fallback goes to an outbound or a
+balancer that does not exist (Xray would take its default outbound for it,
+which may be outside the tunnel), when the leastCost balancer of the
+provider is gone, or when a leastCost balancer chooses outbounds nothing
+observes. Everything else in an answer, such as `dns`, `inbounds`, `policy`
+or `routing.domainStrategy`, is read by Xray only at start: the core leaves
+it alone and reports it in `provider_restart_needed`, and the host restarts
+the core with a fresh config when it suits, for example once everything is
+exhausted or nobody uses the tunnel. So does `routing` while
+`apply.routing` is off.
 
 **Apply.** Every outbound gets `tagPrefix` in front of its tag.
 `apply.balancer` has to be a `leastCost` balancer with a selector that
@@ -298,7 +313,8 @@ changed its settings). `kinds` counts failures by kind: `dial_failed`, `dial_tim
 | `connectivity_ignored` | `failed_checks` | The check failed while an outbound worked; it is not used until the next network change. |
 | `network_change` | `network`, `known`, `generation` | The host reported a network change. |
 | `provider_fetch` | `provider`, `trigger`, `retry`, `attempt`, `via`, `outbound`, `ok`, `status`, `ms`, `bytes`, `error` | One request of a refresh through one `via` entry; `outbound` is what the entry resolved to, `bytes` the size of the answer. A skipped entry has `ok` false and only `error`: `balancer exhausted`, `outbound down` or `no such outbound`. `error` never holds the URL. `trigger`: `host`, `exhausted`, `min_healthy`, `cost_above`, `network_change`, `next_refresh`, `max_age`, `interval`; `retry` counts failed refreshes before this one. |
-| `provider_apply` | `provider`, `trigger`, `ok`, `changed`, `added`, `replaced`, `removed`, `unchanged`, `version`, `exhausted`, `error` | The answer was applied (`changed`), was the applied set already, or was rejected (`ok` false with `error`). `exhausted` tells whether the balancer had nothing usable at that moment. |
+| `provider_apply` | `provider`, `trigger`, `ok`, `changed`, `added`, `replaced`, `removed`, `unchanged`, `version`, `exhausted`, `rules`, `routing_error`, `error` | The answer was applied (`changed`), was the applied set already, or was rejected (`ok` false with `error`). `exhausted` tells whether the balancer had nothing usable at that moment. `rules` counts the routing rules applied with the set. |
+| `provider_restart_needed` | `provider`, `version`, `sections` | The applied answer also changes sections the core reads only at start. |
 | `provider_skip` | `provider`, `trigger`, `reason`, `wait_ms` | A trigger wants a refresh that cannot start yet. `reason`: `min_interval`, `backoff`, `max_per_hour`, `idle`, `network_down`. Reported once per trigger and reason until a refresh starts. |
 | `provider_drained` | `provider`, `outbound`, `replaced` | An outbound that left the set, or the old handler of a replaced one, was closed after `drain`. |
 

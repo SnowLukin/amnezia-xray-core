@@ -18,6 +18,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/xtls/xray-core/app/router"
 	"github.com/xtls/xray-core/common"
 	"github.com/xtls/xray-core/common/net"
 	"github.com/xtls/xray-core/core"
@@ -58,7 +59,14 @@ type providerAnswer struct {
 	costs         map[string]float64
 	nextRefreshIn time.Duration
 	version       string
+	// Rules and balancers in the format of the config file.
+	routing json.RawMessage
+	// Sections the core cannot change while it runs, such as dns.
+	restart []string
 }
+
+// Answer keys applied without a restart, and keys that only name the answer.
+var answerKeys = map[string]bool{"outbounds": true, "costs": true, "routing": true, "nextRefreshIn": true, "version": true, "hash": true}
 
 func parseAnswer(body []byte) (*providerAnswer, error) {
 	var raw struct {
@@ -68,7 +76,11 @@ func parseAnswer(body []byte) (*providerAnswer, error) {
 		Version       string             `json:"version"`
 		Hash          string             `json:"hash"`
 	}
+	var sections map[string]json.RawMessage
 	if err := json.Unmarshal(body, &raw); err != nil {
+		return nil, err
+	}
+	if err := json.Unmarshal(body, &sections); err != nil {
 		return nil, err
 	}
 	if len(raw.Outbounds) == 0 {
@@ -79,11 +91,31 @@ func parseAnswer(body []byte) (*providerAnswer, error) {
 		return nil, err
 	}
 	a := &providerAnswer{outbounds: raw.Outbounds, costs: raw.Costs, nextRefreshIn: next, version: raw.Version}
+	for key := range sections {
+		if !answerKeys[key] {
+			a.restart = append(a.restart, key)
+		}
+	}
+	if r := sections["routing"]; len(r) > 0 && string(r) != "null" {
+		var parts map[string]json.RawMessage
+		if err := json.Unmarshal(r, &parts); err != nil {
+			return nil, fmt.Errorf("routing: %w", err)
+		}
+		for key := range parts {
+			if key != "rules" && key != "balancers" {
+				// The domain strategy and the like are read once at start.
+				a.restart = append(a.restart, "routing."+key)
+				delete(parts, key)
+			}
+		}
+		a.routing, _ = json.Marshal(parts)
+	}
+	sort.Strings(a.restart)
 	if a.version == "" {
 		a.version = raw.Hash
 	}
 	if a.version == "" {
-		a.version = setHash(raw.Outbounds, raw.Costs)
+		a.version = setHash(raw.Outbounds, raw.Costs, sections)
 	}
 	return a, nil
 }
@@ -108,7 +140,7 @@ func parseRefreshIn(raw json.RawMessage) (time.Duration, error) {
 	return max(time.Duration(secs*float64(time.Second)), 0), nil
 }
 
-func setHash(outbounds []json.RawMessage, costs map[string]float64) string {
+func setHash(outbounds []json.RawMessage, costs map[string]float64, sections map[string]json.RawMessage) string {
 	h := sha256.New()
 	var b bytes.Buffer
 	for _, o := range outbounds {
@@ -121,6 +153,22 @@ func setHash(outbounds []json.RawMessage, costs map[string]float64) string {
 	}
 	c, _ := json.Marshal(costs)
 	h.Write(c)
+	keys := make([]string, 0, len(sections))
+	for key := range sections {
+		if key != "outbounds" && key != "costs" && key != "nextRefreshIn" {
+			keys = append(keys, key)
+		}
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		b.Reset()
+		if json.Compact(&b, sections[key]) != nil {
+			b.Write(sections[key])
+		}
+		h.Write([]byte(key))
+		h.Write(b.Bytes())
+		h.Write([]byte{0})
+	}
 	return "sha256:" + hex.EncodeToString(h.Sum(nil))[:16]
 }
 
@@ -138,6 +186,104 @@ func loadOutbounds(raw []json.RawMessage) ([]*core.OutboundHandlerConfig, error)
 		return nil, err
 	}
 	return c.Outbound, nil
+}
+
+// loadRouting builds rules and balancers with the JSON config loader of the
+// core, like loadOutbounds.
+func loadRouting(raw json.RawMessage) (*router.Config, error) {
+	// The loader accepts leastCost balancers only next to an observatory that
+	// observes their selectors; the real check is checkRouting.
+	var head struct {
+		Balancers []struct {
+			Selector []string `json:"selector"`
+		} `json:"balancers"`
+	}
+	if err := json.Unmarshal(raw, &head); err != nil {
+		return nil, err
+	}
+	observe := []string{}
+	for _, b := range head.Balancers {
+		observe = append(observe, b.Selector...)
+	}
+	type observatory struct {
+		SubjectSelector []string `json:"subjectSelector"`
+	}
+	var obs *observatory
+	if len(observe) > 0 {
+		obs = &observatory{observe}
+	}
+	doc, err := json.Marshal(struct {
+		Routing json.RawMessage `json:"routing"`
+		Health  *observatory    `json:"healthObservatory,omitempty"`
+	}{raw, obs})
+	if err != nil {
+		return nil, err
+	}
+	c, err := core.LoadConfig("json", bytes.NewReader(doc))
+	if err != nil {
+		return nil, err
+	}
+	for _, app := range c.App {
+		if inst, err := app.GetInstance(); err == nil {
+			if rc, ok := inst.(*router.Config); ok {
+				return rc, nil
+			}
+		}
+	}
+	return nil, errors.New("no routing in the answer")
+}
+
+// checkRouting refuses rules that would send traffic to an outbound or a
+// balancer that does not exist: Xray would take its default outbound for
+// them, which may be outside the tunnel.
+func (o *Observer) checkRouting(rt *providerRuntime, rc *router.Config, setTags []string) error {
+	exists := func(tag string) bool {
+		return slices.Contains(setTags, tag) || (o.ohm != nil && o.ohm.GetHandler(tag) != nil)
+	}
+	balancers := map[string]*router.BalancingRule{}
+	for _, b := range rc.BalancingRule {
+		balancers[b.Tag] = b
+		if b.FallbackTag != "" && !exists(b.FallbackTag) {
+			return fmt.Errorf("balancer %s falls back to unknown outbound %s", b.Tag, b.FallbackTag)
+		}
+		if !strings.EqualFold(b.Strategy, "leastcost") {
+			continue
+		}
+		for _, sel := range b.OutboundSelector {
+			if !o.observedSelector(sel) {
+				return fmt.Errorf("balancer %s chooses %s, which nothing observes", b.Tag, sel)
+			}
+		}
+	}
+	if b := balancers[rt.cfg.balancer]; b == nil || !strings.EqualFold(b.Strategy, "leastcost") {
+		return fmt.Errorf("routing drops the leastCost balancer %s the provider feeds", rt.cfg.balancer)
+	}
+	for i, r := range rc.Rule {
+		if tag := r.GetTag(); tag != "" && !exists(tag) {
+			return fmt.Errorf("rule %d goes to unknown outbound %s", i+1, tag)
+		}
+		if tag := r.GetBalancingTag(); tag != "" && balancers[tag] == nil {
+			return fmt.Errorf("rule %d goes to unknown balancer %s", i+1, tag)
+		}
+		if _, err := r.BuildCondition(); err != nil {
+			return fmt.Errorf("rule %d: %w", i+1, err)
+		}
+	}
+	return nil
+}
+
+func (o *Observer) observedSelector(sel string) bool {
+	for _, p := range o.s.subjects {
+		if strings.HasPrefix(sel, p) {
+			return true
+		}
+	}
+	for _, rt := range o.providers {
+		if strings.HasPrefix(sel, rt.cfg.prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func (o *Observer) runtimeFor(p *provider) *providerRuntime {
@@ -317,6 +463,28 @@ func (o *Observer) applySet(rt *providerRuntime, a *providerAnswer, j *refreshJo
 	if err != nil {
 		return fail(err)
 	}
+	restart := a.restart
+	var routing *router.Config
+	if len(a.routing) > 0 {
+		if !rt.cfg.routing || o.replaceRules == nil {
+			restart = append(restart, "routing")
+		} else {
+			setTags := make([]string, 0, len(changes)+len(unchanged))
+			for _, c := range changes {
+				setTags = append(setTags, c.tag)
+			}
+			setTags = append(setTags, unchanged...)
+			if routing, err = o.parseRouting(a.routing); err == nil {
+				err = o.checkRouting(rt, routing, setTags)
+			}
+			if err != nil {
+				for _, c := range changes {
+					common.Close(c.handler)
+				}
+				return fail(fmt.Errorf("routing: %w", err))
+			}
+		}
+	}
 
 	owned := map[string]outbound.Handler{}
 	for _, h := range o.ohm.ListHandlers(o.ctx) {
@@ -394,6 +562,15 @@ func (o *Observer) applySet(rt *providerRuntime, a *providerAnswer, j *refreshJo
 		o.startDrain(rt, tag, owned[tag], true)
 	}
 	rt.version = a.version
+	// Outside the observer lock: rebuilt leastCost balancers ask the observer
+	// for their selectors.
+	if routing != nil {
+		if err := o.replaceRules(routing); err != nil {
+			fields["routing_error"] = err.Error()
+		} else {
+			fields["rules"] = len(routing.Rule)
+		}
+	}
 
 	costs := map[string]float64{}
 	for tag, c := range a.costs {
@@ -422,6 +599,10 @@ func (o *Observer) applySet(rt *providerRuntime, a *providerAnswer, j *refreshJo
 	fields["unchanged"] = len(unchanged)
 	fields["exhausted"] = exhausted
 	o.e.emit(now, "provider_apply", fields)
+	if len(restart) > 0 {
+		sort.Strings(restart)
+		o.e.emit(now, "provider_restart_needed", map[string]any{"provider": rt.cfg.tag, "version": a.version, "sections": restart})
+	}
 	o.mu.Unlock()
 	return true, nil
 }

@@ -1537,7 +1537,10 @@ type ProviderApply struct {
 	// Protocols the set may use. Empty allows the protocols that carry traffic
 	// to a server; an outbound that sends traffic straight out, such as
 	// freedom, is refused unless listed here.
-	Protocols     []string `protobuf:"bytes,5,rep,name=protocols,proto3" json:"protocols,omitempty"`
+	Protocols []string `protobuf:"bytes,5,rep,name=protocols,proto3" json:"protocols,omitempty"`
+	// Applies the routing rules and balancers of an answer without a restart.
+	// Off, they only ask the host for a restart like other sections do.
+	Routing       bool `protobuf:"varint,6,opt,name=routing,proto3" json:"routing,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1605,6 +1608,13 @@ func (x *ProviderApply) GetProtocols() []string {
 		return x.Protocols
 	}
 	return nil
+}
+
+func (x *ProviderApply) GetRouting() bool {
+	if x != nil {
+		return x.Routing
+	}
+	return false
 }
 
 var File_app_observatory_health_config_proto protoreflect.FileDescriptor
@@ -1736,14 +1746,15 @@ const file_app_observatory_health_config_proto_rawDesc = "" +
 	"\x16exhausted_min_interval\x18\x02 \x01(\x03R\x14exhaustedMinInterval\x12 \n" +
 	"\fmax_per_hour\x18\x03 \x01(\x05R\n" +
 	"maxPerHour\x12C\n" +
-	"\abackoff\x18\x04 \x01(\v2).xray.core.app.observatory.health.BackoffR\abackoff\"\xa3\x01\n" +
+	"\abackoff\x18\x04 \x01(\v2).xray.core.app.observatory.health.BackoffR\abackoff\"\xbd\x01\n" +
 	"\rProviderApply\x12\x1a\n" +
 	"\bbalancer\x18\x01 \x01(\tR\bbalancer\x12\x1d\n" +
 	"\n" +
 	"tag_prefix\x18\x02 \x01(\tR\ttagPrefix\x12\x14\n" +
 	"\x05drain\x18\x03 \x01(\x03R\x05drain\x12#\n" +
 	"\rmax_outbounds\x18\x04 \x01(\x05R\fmaxOutbounds\x12\x1c\n" +
-	"\tprotocols\x18\x05 \x03(\tR\tprotocols*.\n" +
+	"\tprotocols\x18\x05 \x03(\tR\tprotocols\x12\x18\n" +
+	"\arouting\x18\x06 \x01(\bR\arouting*.\n" +
 	"\vConfirmMode\x12\b\n" +
 	"\x04AUTO\x10\x00\x12\n" +
 	"\n" +

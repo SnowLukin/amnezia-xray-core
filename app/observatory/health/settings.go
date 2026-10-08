@@ -200,6 +200,7 @@ type providerSettings struct {
 	drain        time.Duration
 	maxOutbounds int
 	protocols    []string
+	routing      bool
 }
 
 // optional maps a config value where zero means the default and a negative
@@ -247,6 +248,7 @@ func newProviderSettings(c *ProviderConfig) *providerSettings {
 		drain:        dur(a.GetDrain(), defaultDrain),
 		maxOutbounds: num(a.GetMaxOutbounds(), defaultMaxOutbounds),
 		protocols:    stringsOr(a.GetProtocols(), defaultProviderProtocols),
+		routing:      a.GetRouting(),
 	}
 	if t.GetJitter() >= 0 {
 		p.jitter = jitter(t.GetJitter(), defaultRefreshJitter)

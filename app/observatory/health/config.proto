@@ -286,4 +286,7 @@ message ProviderApply {
   // to a server; an outbound that sends traffic straight out, such as
   // freedom, is refused unless listed here.
   repeated string protocols = 5;
+  // Applies the routing rules and balancers of an answer without a restart.
+  // Off, they only ask the host for a restart like other sections do.
+  bool routing = 6;
 }

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/xtls/xray-core/app/observatory"
+	"github.com/xtls/xray-core/app/router"
 	"github.com/xtls/xray-core/common"
 	"github.com/xtls/xray-core/common/errors"
 	"github.com/xtls/xray-core/common/net"
@@ -65,6 +66,8 @@ type Observer struct {
 	applyClosed    bool
 	parseOutbounds func([]json.RawMessage) ([]*core.OutboundHandlerConfig, error)
 	newHandler     func(*core.OutboundHandlerConfig) (outbound.Handler, error)
+	parseRouting   func(json.RawMessage) (*router.Config, error)
+	replaceRules   func(*router.Config) error
 
 	clock func() time.Time
 	// Connection times count from here on the monotonic clock, so a jump of
@@ -76,9 +79,12 @@ type Observer struct {
 // New creates the observer.
 func New(ctx context.Context, config *Config) (*Observer, error) {
 	o := newObserver(ctx, config)
-	err := core.RequireFeatures(ctx, func(dispatcher routing.Dispatcher, ohm outbound.Manager) error {
+	err := core.RequireFeatures(ctx, func(dispatcher routing.Dispatcher, ohm outbound.Manager, r routing.Router) error {
 		o.dispatcher = dispatcher
 		o.ohm = ohm
+		if rr, ok := r.(interface{ ReplaceRules(*router.Config) error }); ok {
+			o.replaceRules = rr.ReplaceRules
+		}
 		return nil
 	})
 	if err != nil {
@@ -98,6 +104,7 @@ func newObserver(ctx context.Context, config *Config) *Observer {
 		trackers:       map[*connTracker]struct{}{},
 		watching:       map[*connTracker]struct{}{},
 		parseOutbounds: loadOutbounds,
+		parseRouting:   loadRouting,
 		clock:          time.Now,
 		done:           make(chan struct{}),
 	}
