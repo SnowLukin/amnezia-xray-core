@@ -119,18 +119,21 @@ func parseAnswer(body []byte) (*providerAnswer, error) {
 	if sections == nil {
 		return nil, errors.New("not a JSON object")
 	}
+	// The protocol first: an answer of a later one brings keys of its own,
+	// and the backend has to learn which protocol the core speaks, not which
+	// of those keys it does not know.
+	if p := sections["protocol"]; !isNull(p) {
+		var n float64
+		if p[0] == '"' || json.Unmarshal(p, &n) != nil || n != providerProtocol {
+			return nil, answerErrorf("protocol %s is not supported", cut(string(p)))
+		}
+	}
 	for _, key := range slices.Sorted(maps.Keys(sections)) {
 		switch {
 		case key == "healthObservatory":
 			return nil, answerErrorf("healthObservatory is not accepted in an answer")
 		case !setKeys[key] && !metaKeys[key]:
 			return nil, answerErrorf("unknown key %q", cut(key))
-		}
-	}
-	if p := sections["protocol"]; !isNull(p) {
-		var n float64
-		if p[0] == '"' || json.Unmarshal(p, &n) != nil || n != providerProtocol {
-			return nil, answerErrorf("protocol %s is not supported", cut(string(p)))
 		}
 	}
 	a := &providerAnswer{outbounds: sections["outbounds"]}

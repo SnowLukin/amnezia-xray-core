@@ -322,7 +322,8 @@ fields it does not know: protocol 1 may gain fields in the body.
 }
 ```
 
-The answer is read strictly. `protocol` is 1 or left out. A key not shown
+The answer is read strictly. `protocol` is 1 or left out; an answer of
+another protocol is refused for that, whatever keys it has. A key not shown
 here, a section of the config such as `dns`, `inbounds` or `policy`, and
 `healthObservatory` refuse the whole answer, so a backend never takes a key
 for applied that the core threw away; a new key is a new protocol. A refused

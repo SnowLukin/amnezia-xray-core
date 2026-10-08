@@ -434,6 +434,7 @@ func TestParseAnswer(t *testing.T) {
 	for body, want := range map[string]string{
 		`{"outbounds": []}`:                                                     "no outbounds",
 		`{"protocol": 2, "outbounds": [{"tag": "x"}]}`:                          "protocol 2 is not supported",
+		`{"protocol": 2, "outbounds": [{"tag": "x"}], "leases": {}}`:            "protocol 2 is not supported",
 		`{"protocol": 0, "outbounds": [{"tag": "x"}]}`:                          "protocol 0 is not supported",
 		`{"protocol": "1", "outbounds": [{"tag": "x"}]}`:                        `protocol "1" is not supported`,
 		`{"outbounds": [{"tag": "x"}], "dns": {}}`:                              `unknown key "dns"`,
