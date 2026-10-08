@@ -177,7 +177,8 @@ unless set. `tag`, `url`, `apply.balancer` and `apply.tagPrefix` are
 required. A trigger or a limit set to an explicit zero (`"0s"`, `0`) is off.
 
 **Request.** A GET of `url` with `headers`; credentials belong in a header,
-the URL must not carry them. The request goes through the `via` entries in
+the URL must not carry them. The URL must be `https`; `allowPlainHttp: true`
+permits `http`, and the headers then cross the network unencrypted. The request goes through the `via` entries in
 order until one brings a well-formed answer: an outbound tag, or the tag of a
 `leastCost` balancer, which means its current choice. An exhausted balancer,
 an outbound in quarantine and a tag with no outbound are skipped. Without `via` the request is
@@ -195,7 +196,10 @@ redirects are not followed.
 }
 ```
 
-`outbounds` use the format of the config file and need unique tags.
+`outbounds` use the format of the config file and need unique tags. Their
+protocols must be in `apply.protocols`; by default `vless`, `vmess`,
+`trojan`, `shadowsocks`, `wireguard`, `hysteria`, `socks` and `http`, so an
+answer cannot send traffic straight out with `freedom`.
 `costs` are by those tags, above zero, and override the costs of the
 balancer for them.
 `nextRefreshIn` (a duration or seconds) replaces `interval` until the next

@@ -12,6 +12,7 @@ import (
 	"math"
 	"net/http"
 	"net/url"
+	"slices"
 	"sort"
 	"strings"
 	"sync/atomic"
@@ -439,10 +440,14 @@ func (o *Observer) buildSet(rt *providerRuntime, a *providerAnswer) ([]*outbound
 	seen := map[string]bool{}
 	for i, raw := range a.outbounds {
 		var head struct {
-			Tag string `json:"tag"`
+			Tag      string `json:"tag"`
+			Protocol string `json:"protocol"`
 		}
 		if err := json.Unmarshal(raw, &head); err != nil || head.Tag == "" {
 			return nil, nil, fmt.Errorf("outbound %d has no tag", i+1)
+		}
+		if !slices.Contains(rt.cfg.protocols, strings.ToLower(head.Protocol)) {
+			return nil, nil, fmt.Errorf("outbound %s: protocol %q is not allowed", head.Tag, head.Protocol)
 		}
 		if seen[head.Tag] {
 			return nil, nil, fmt.Errorf("duplicate tag %s", head.Tag)

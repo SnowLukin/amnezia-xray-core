@@ -282,4 +282,8 @@ message ProviderApply {
   int64 drain = 3;
   // Larger sets are rejected.
   int32 max_outbounds = 4;
+  // Protocols the set may use. Empty allows the protocols that carry traffic
+  // to a server; an outbound that sends traffic straight out, such as
+  // freedom, is refused unless listed here.
+  repeated string protocols = 5;
 }

@@ -68,6 +68,7 @@ const (
 )
 
 var (
+	defaultProviderProtocols = []string{"vless", "vmess", "trojan", "shadowsocks", "wireguard", "hysteria", "socks", "http"}
 	// A censor that froze a server keeps it frozen for about two minutes and
 	// longer if it sees new handshakes, so a failed outbound rests at least
 	// that long.
@@ -198,6 +199,7 @@ type providerSettings struct {
 	prefix       string
 	drain        time.Duration
 	maxOutbounds int
+	protocols    []string
 }
 
 // optional maps a config value where zero means the default and a negative
@@ -244,6 +246,7 @@ func newProviderSettings(c *ProviderConfig) *providerSettings {
 		prefix:       a.GetTagPrefix(),
 		drain:        dur(a.GetDrain(), defaultDrain),
 		maxOutbounds: num(a.GetMaxOutbounds(), defaultMaxOutbounds),
+		protocols:    stringsOr(a.GetProtocols(), defaultProviderProtocols),
 	}
 	if t.GetJitter() >= 0 {
 		p.jitter = jitter(t.GetJitter(), defaultRefreshJitter)
@@ -468,6 +471,13 @@ func matchesAny(tag string, prefixes []string) bool {
 		}
 	}
 	return false
+}
+
+func stringsOr(v, def []string) []string {
+	if len(v) == 0 {
+		return def
+	}
+	return v
 }
 
 func stringOr(v, def string) string {

@@ -1533,7 +1533,11 @@ type ProviderApply struct {
 	// Outbounds that left the set keep serving their connections this long.
 	Drain int64 `protobuf:"varint,3,opt,name=drain,proto3" json:"drain,omitempty"`
 	// Larger sets are rejected.
-	MaxOutbounds  int32 `protobuf:"varint,4,opt,name=max_outbounds,json=maxOutbounds,proto3" json:"max_outbounds,omitempty"`
+	MaxOutbounds int32 `protobuf:"varint,4,opt,name=max_outbounds,json=maxOutbounds,proto3" json:"max_outbounds,omitempty"`
+	// Protocols the set may use. Empty allows the protocols that carry traffic
+	// to a server; an outbound that sends traffic straight out, such as
+	// freedom, is refused unless listed here.
+	Protocols     []string `protobuf:"bytes,5,rep,name=protocols,proto3" json:"protocols,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1594,6 +1598,13 @@ func (x *ProviderApply) GetMaxOutbounds() int32 {
 		return x.MaxOutbounds
 	}
 	return 0
+}
+
+func (x *ProviderApply) GetProtocols() []string {
+	if x != nil {
+		return x.Protocols
+	}
+	return nil
 }
 
 var File_app_observatory_health_config_proto protoreflect.FileDescriptor
@@ -1725,13 +1736,14 @@ const file_app_observatory_health_config_proto_rawDesc = "" +
 	"\x16exhausted_min_interval\x18\x02 \x01(\x03R\x14exhaustedMinInterval\x12 \n" +
 	"\fmax_per_hour\x18\x03 \x01(\x05R\n" +
 	"maxPerHour\x12C\n" +
-	"\abackoff\x18\x04 \x01(\v2).xray.core.app.observatory.health.BackoffR\abackoff\"\x85\x01\n" +
+	"\abackoff\x18\x04 \x01(\v2).xray.core.app.observatory.health.BackoffR\abackoff\"\xa3\x01\n" +
 	"\rProviderApply\x12\x1a\n" +
 	"\bbalancer\x18\x01 \x01(\tR\bbalancer\x12\x1d\n" +
 	"\n" +
 	"tag_prefix\x18\x02 \x01(\tR\ttagPrefix\x12\x14\n" +
 	"\x05drain\x18\x03 \x01(\x03R\x05drain\x12#\n" +
-	"\rmax_outbounds\x18\x04 \x01(\x05R\fmaxOutbounds*.\n" +
+	"\rmax_outbounds\x18\x04 \x01(\x05R\fmaxOutbounds\x12\x1c\n" +
+	"\tprotocols\x18\x05 \x03(\tR\tprotocols*.\n" +
 	"\vConfirmMode\x12\b\n" +
 	"\x04AUTO\x10\x00\x12\n" +
 	"\n" +

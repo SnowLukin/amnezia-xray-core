@@ -110,7 +110,8 @@ func TestProviderRefreshInRunningCore(t *testing.T) {
 	      "triggers": {"interval": "0s", "minHealthy": 0, "whenExhausted": false, "maxAge": "0s",
 	                   "onNetworkChange": "never"},
 	      "limits": {"exhaustedMinInterval": "10ms", "backoff": {"initial": "50ms"}},
-	      "apply": {"balancer": "auto", "tagPrefix": "p-", "drain": "300ms"}
+	      "allowPlainHttp": true,
+	      "apply": {"balancer": "auto", "tagPrefix": "p-", "drain": "300ms", "protocols": ["freedom", "blackhole", "vless", "nosuch"]}
 	    }]
 	  }
 	}`

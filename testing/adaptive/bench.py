@@ -138,7 +138,7 @@ def provider_config(via, triggers=None, limits=None, apply=None):
     scenario turns it on, so a scenario sees only the trigger it checks."""
     return {
         "tag": "fresh", "url": f"http://127.0.0.1:{PROVIDER_PORT}/set",
-        "headers": {"Authorization": "Bearer bench-token"}, "via": via, "timeout": "3s",
+        "headers": {"Authorization": "Bearer bench-token"}, "via": via, "timeout": "3s", "allowPlainHttp": True,
         "triggers": {"interval": "0s", "minHealthy": 0, "whenExhausted": False, "maxAge": "0s",
                      "onNetworkChange": "never"} | (triggers or {}),
         "limits": limits or {},

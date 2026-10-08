@@ -746,7 +746,7 @@ def provider_invalid_answer(stand, xray, work, name):
 
     def unbuildable():
         answer_body(stand, {"outbounds": [bench.member("x1", "reality", 2, bench.PIN),
-                                          {"tag": "x3", "protocol": "nosuch"}]})
+                                          {"tag": "x3", "protocol": "vless", "settings": {"vnext": []}}]})
         bench.provider_mode("ok")
 
     with bench.Client(xray, cfg, work, name) as c:

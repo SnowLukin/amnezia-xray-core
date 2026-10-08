@@ -109,9 +109,10 @@ func sortedCopy(s []string) []string {
 
 // fakeOutbound is {"tag": "x1", "v": 1}; v stands for the settings.
 type fakeOutbound struct {
-	Tag string `json:"tag"`
-	V   int64  `json:"v"`
-	Bad bool   `json:"bad"`
+	Tag      string `json:"tag"`
+	Protocol string `json:"protocol"`
+	V        int64  `json:"v"`
+	Bad      bool   `json:"bad"`
 }
 
 func fakeSettings(v int64) *serial.TypedMessage { return serial.ToTypedMessage(&Backoff{Initial: v}) }
@@ -163,6 +164,11 @@ func newApplyFixture(t *testing.T, drain time.Duration) *applyFixture {
 
 func answer(t *testing.T, outbounds ...fakeOutbound) *providerAnswer {
 	t.Helper()
+	for i := range outbounds {
+		if outbounds[i].Protocol == "" {
+			outbounds[i].Protocol = "vless"
+		}
+	}
 	body, _ := json.Marshal(map[string]any{"outbounds": outbounds})
 	a, err := parseAnswer(body)
 	if err != nil {
@@ -260,6 +266,7 @@ func TestApplyBrokenSetChangesNothing(t *testing.T) {
 		"duplicate tag": {{Tag: "x2", V: 1}, {Tag: "x2", V: 2}},
 		"build:":        {{Tag: "x2", V: 1}, {Tag: "unparsable"}},
 		"build p-x3":    {{Tag: "x2", V: 1}, {Tag: "x3", Bad: true}},
+		"not allowed":   {{Tag: "x2", V: 1}, {Tag: "x3", Protocol: "freedom"}},
 	}
 	for name, set := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -295,7 +302,7 @@ func TestApplyBrokenSetChangesNothing(t *testing.T) {
 func TestApplyRejectsCostsNotAboveZero(t *testing.T) {
 	for _, cost := range []string{"0", "-1"} {
 		f := newApplyFixture(t, time.Minute)
-		a, err := parseAnswer([]byte(`{"outbounds": [{"tag": "x1", "v": 1}], "costs": {"x1": ` + cost + `}}`))
+		a, err := parseAnswer([]byte(`{"outbounds": [{"tag": "x1", "protocol": "vless", "v": 1}], "costs": {"x1": ` + cost + `}}`))
 		if err != nil {
 			t.Fatal(err)
 		}

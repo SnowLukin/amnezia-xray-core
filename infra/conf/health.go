@@ -116,18 +116,21 @@ type HealthProviderApplyConfig struct {
 	TagPrefix    string            `json:"tagPrefix"`
 	Drain        duration.Duration `json:"drain"`
 	MaxOutbounds int32             `json:"maxOutbounds"`
+	Protocols    StringList        `json:"protocols"`
 }
 
 type HealthProviderConfig struct {
-	Tag      string                        `json:"tag"`
-	URL      string                        `json:"url"`
-	Headers  map[string]string             `json:"headers"`
-	Via      StringList                    `json:"via"`
-	Timeout  duration.Duration             `json:"timeout"`
-	MaxBytes int64                         `json:"maxBytes"`
-	Triggers *HealthProviderTriggersConfig `json:"triggers"`
-	Limits   *HealthProviderLimitsConfig   `json:"limits"`
-	Apply    *HealthProviderApplyConfig    `json:"apply"`
+	Tag      string            `json:"tag"`
+	URL      string            `json:"url"`
+	Headers  map[string]string `json:"headers"`
+	Via      StringList        `json:"via"`
+	Timeout  duration.Duration `json:"timeout"`
+	MaxBytes int64             `json:"maxBytes"`
+	// AllowPlainHTTP permits an http url; headers then travel unencrypted.
+	AllowPlainHTTP bool                          `json:"allowPlainHttp"`
+	Triggers       *HealthProviderTriggersConfig `json:"triggers"`
+	Limits         *HealthProviderLimitsConfig   `json:"limits"`
+	Apply          *HealthProviderApplyConfig    `json:"apply"`
 }
 
 // optionalDuration maps a JSON duration where an explicit zero turns the
@@ -165,8 +168,12 @@ func (c *HealthProviderConfig) build() (*health.ProviderConfig, error) {
 	if err := checkProbeURL(where+" url", c.URL); err != nil {
 		return nil, err
 	}
-	if u, _ := url.Parse(c.URL); u.User != nil {
+	u, _ := url.Parse(c.URL)
+	if u.User != nil {
 		return nil, errors.New("healthObservatory: ", where, ": put credentials into headers, not into the url")
+	}
+	if u.Scheme != "https" && !c.AllowPlainHTTP {
+		return nil, errors.New("healthObservatory: ", where, ": url must be https, or set allowPlainHttp")
 	}
 	a := c.Apply
 	if a == nil || a.Balancer == "" || a.TagPrefix == "" {
@@ -189,6 +196,7 @@ func (c *HealthProviderConfig) build() (*health.ProviderConfig, error) {
 			TagPrefix:    a.TagPrefix,
 			Drain:        int64(a.Drain),
 			MaxOutbounds: a.MaxOutbounds,
+			Protocols:    a.Protocols,
 		},
 	}
 	if t := c.Triggers; t != nil {
