@@ -115,6 +115,50 @@ type HealthProviderTriggersConfig struct {
 	MaxAge          *duration.Duration       `json:"maxAge"`
 	OnNetworkChange string                   `json:"onNetworkChange"`
 	NetworkSettle   duration.Duration        `json:"networkSettle"`
+	Expiry          *HealthExpiryConfig      `json:"expiry"`
+}
+
+// HealthExpiryConfig renews provider leases: shares of a lease, where an
+// explicit renewAt of 0 turns renewal off and an explicit jitter of 0 is
+// none.
+type HealthExpiryConfig struct {
+	RenewAt  *float64 `json:"renewAt"`
+	UrgentAt *float64 `json:"urgentAt"`
+	Jitter   *float64 `json:"jitter"`
+}
+
+func (c *HealthExpiryConfig) build(where string) (*health.ExpiryTrigger, error) {
+	if c == nil {
+		return nil, nil
+	}
+	out := &health.ExpiryTrigger{}
+	renewAt := 0.5
+	if c.RenewAt != nil {
+		renewAt = *c.RenewAt
+		if renewAt < 0 || renewAt > 0.95 {
+			return nil, errors.New("healthObservatory: ", where, ": expiry.renewAt must be in [0, 0.95]")
+		}
+		out.RenewAt = renewAt
+		if renewAt == 0 {
+			out.RenewAt = -1
+		}
+	}
+	if c.UrgentAt != nil {
+		if *c.UrgentAt < renewAt || *c.UrgentAt > 0.95 {
+			return nil, errors.New("healthObservatory: ", where, ": expiry.urgentAt must be in [renewAt, 0.95]")
+		}
+		out.UrgentAt = *c.UrgentAt
+	}
+	if c.Jitter != nil {
+		if *c.Jitter < 0 || *c.Jitter > 0.5 {
+			return nil, errors.New("healthObservatory: ", where, ": expiry.jitter must be in [0, 0.5]")
+		}
+		out.Jitter = *c.Jitter
+		if *c.Jitter == 0 {
+			out.Jitter = -1
+		}
+	}
+	return out, nil
 }
 
 type HealthProviderLimitsConfig struct {
@@ -238,6 +282,11 @@ func (c *HealthProviderConfig) build() (*health.ProviderConfig, error) {
 				out.Triggers.Jitter = -1
 			}
 		}
+		expiry, err := t.Expiry.build(where)
+		if err != nil {
+			return nil, err
+		}
+		out.Triggers.Expiry = expiry
 		if ca := t.WhenCostAbove; ca != nil {
 			if ca.Cost <= 0 || ca.After < 0 {
 				return nil, errors.New("healthObservatory: ", where, ": whenCostAbove needs a cost above zero and a duration not below zero")

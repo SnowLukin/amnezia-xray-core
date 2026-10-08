@@ -280,6 +280,20 @@ message ProviderTriggers {
   RefreshOnNetwork on_network_change = 7;
   // How long after a network change the balancer is judged.
   int64 network_settle = 8;
+  // Renewal of the leases an answer gives its outbounds.
+  ExpiryTrigger expiry = 9;
+}
+
+// ExpiryTrigger renews a lease before it ends. Zero takes the default, a
+// negative value turns the part off.
+message ExpiryTrigger {
+  // Share of the lease after which a refresh renews it, 0.5 by default.
+  // Negative turns renewal off; the lease still ends.
+  double renew_at = 1;
+  // Share of the lease after which the renewal is urgent, 0.8 by default.
+  double urgent_at = 2;
+  // Random spread of renew_at, 0.1 means +-10%. Negative is none.
+  double jitter = 3;
 }
 
 message CostTrigger {

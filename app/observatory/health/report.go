@@ -51,6 +51,7 @@ type reportCounts struct {
 	ProviderRejected      int64            `json:"provider_rejected"`
 	ProviderRestartNeeded int64            `json:"provider_restart_needed"`
 	ProviderExpired       int64            `json:"provider_expired"`
+	ProviderRenewals      int64            `json:"provider_renewals"`
 	Pins                  int64            `json:"pins"`
 	Releases              int64            `json:"releases"`
 	MemoryLow             int64            `json:"memory_low"`
@@ -196,6 +197,10 @@ func (r *report) count(typ string, f map[string]any) {
 		case f["changed"] == true:
 			c.ProviderApplied++
 			r.decide()
+		}
+		// A renewal keeps what the balancer has: it is no decision.
+		if f["ok"] == true && number(f["renewed"]) > 0 && f["trigger"] != "initial" {
+			c.ProviderRenewals++
 		}
 	case "provider_restart_needed":
 		c.ProviderRestartNeeded++

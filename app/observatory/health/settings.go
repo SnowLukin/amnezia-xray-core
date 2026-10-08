@@ -84,6 +84,15 @@ const (
 	defaultRefreshesPerHour     = 6
 	defaultDrain                = 5 * time.Minute
 	defaultMaxOutbounds         = 64
+	// A lease is renewed at this share of it, spread by renewJitter, and
+	// the renewal is urgent from urgentAt on. Clients that got their leases
+	// at once renew them apart: 24 h leases spread over about 2.4 hours.
+	defaultRenewAt     = 0.5
+	defaultUrgentAt    = 0.8
+	defaultRenewJitter = 0.1
+	// The renewal comes before the end, and its spread stays within the lease.
+	maxRenewAt     = 0.95
+	maxRenewJitter = 0.5
 	// Without maxBytes an answer may take this much per outbound it may
 	// carry. An outbound in the format of the config file takes 1-2 KiB.
 	answerBytesPerOutbound = 4 << 10
@@ -238,6 +247,11 @@ type providerSettings struct {
 	maxAge         time.Duration
 	onNetwork      RefreshOnNetwork
 	networkSettle  time.Duration
+	// Shares of a lease at which it is renewed and the renewal is urgent;
+	// renewAt zero turns renewal off, the lease still ends.
+	renewAt     float64
+	urgentAt    float64
+	renewJitter float64
 
 	minInterval          time.Duration
 	exhaustedMinInterval time.Duration
@@ -311,6 +325,13 @@ func newProviderSettings(c *ProviderConfig) *providerSettings {
 		p.costAbove = true
 		p.costThreshold = float64(ca.GetCost())
 		p.costAboveAfter = dur(ca.GetAfter(), defaultCostAboveAfter)
+	}
+	if ex := t.GetExpiry(); ex.GetRenewAt() >= 0 {
+		p.renewAt = min(fnum(ex.GetRenewAt(), defaultRenewAt), maxRenewAt)
+		p.urgentAt = min(max(fnum(ex.GetUrgentAt(), defaultUrgentAt), p.renewAt), maxRenewAt)
+		if ex.GetJitter() >= 0 {
+			p.renewJitter = min(fnum(ex.GetJitter(), defaultRenewJitter), maxRenewJitter)
+		}
 	}
 	return p
 }

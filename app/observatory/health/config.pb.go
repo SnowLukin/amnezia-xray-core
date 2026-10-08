@@ -1480,6 +1480,8 @@ type ProviderTriggers struct {
 	OnNetworkChange RefreshOnNetwork `protobuf:"varint,7,opt,name=on_network_change,json=onNetworkChange,proto3,enum=xray.core.app.observatory.health.RefreshOnNetwork" json:"on_network_change,omitempty"`
 	// How long after a network change the balancer is judged.
 	NetworkSettle int64 `protobuf:"varint,8,opt,name=network_settle,json=networkSettle,proto3" json:"network_settle,omitempty"`
+	// Renewal of the leases an answer gives its outbounds.
+	Expiry        *ExpiryTrigger `protobuf:"bytes,9,opt,name=expiry,proto3" json:"expiry,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1570,6 +1572,79 @@ func (x *ProviderTriggers) GetNetworkSettle() int64 {
 	return 0
 }
 
+func (x *ProviderTriggers) GetExpiry() *ExpiryTrigger {
+	if x != nil {
+		return x.Expiry
+	}
+	return nil
+}
+
+// ExpiryTrigger renews a lease before it ends. Zero takes the default, a
+// negative value turns the part off.
+type ExpiryTrigger struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Share of the lease after which a refresh renews it, 0.5 by default.
+	// Negative turns renewal off; the lease still ends.
+	RenewAt float64 `protobuf:"fixed64,1,opt,name=renew_at,json=renewAt,proto3" json:"renew_at,omitempty"`
+	// Share of the lease after which the renewal is urgent, 0.8 by default.
+	UrgentAt float64 `protobuf:"fixed64,2,opt,name=urgent_at,json=urgentAt,proto3" json:"urgent_at,omitempty"`
+	// Random spread of renew_at, 0.1 means +-10%. Negative is none.
+	Jitter        float64 `protobuf:"fixed64,3,opt,name=jitter,proto3" json:"jitter,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ExpiryTrigger) Reset() {
+	*x = ExpiryTrigger{}
+	mi := &file_app_observatory_health_config_proto_msgTypes[14]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ExpiryTrigger) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ExpiryTrigger) ProtoMessage() {}
+
+func (x *ExpiryTrigger) ProtoReflect() protoreflect.Message {
+	mi := &file_app_observatory_health_config_proto_msgTypes[14]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ExpiryTrigger.ProtoReflect.Descriptor instead.
+func (*ExpiryTrigger) Descriptor() ([]byte, []int) {
+	return file_app_observatory_health_config_proto_rawDescGZIP(), []int{14}
+}
+
+func (x *ExpiryTrigger) GetRenewAt() float64 {
+	if x != nil {
+		return x.RenewAt
+	}
+	return 0
+}
+
+func (x *ExpiryTrigger) GetUrgentAt() float64 {
+	if x != nil {
+		return x.UrgentAt
+	}
+	return 0
+}
+
+func (x *ExpiryTrigger) GetJitter() float64 {
+	if x != nil {
+		return x.Jitter
+	}
+	return 0
+}
+
 type CostTrigger struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	Cost  float32                `protobuf:"fixed32,1,opt,name=cost,proto3" json:"cost,omitempty"`
@@ -1581,7 +1656,7 @@ type CostTrigger struct {
 
 func (x *CostTrigger) Reset() {
 	*x = CostTrigger{}
-	mi := &file_app_observatory_health_config_proto_msgTypes[14]
+	mi := &file_app_observatory_health_config_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1593,7 +1668,7 @@ func (x *CostTrigger) String() string {
 func (*CostTrigger) ProtoMessage() {}
 
 func (x *CostTrigger) ProtoReflect() protoreflect.Message {
-	mi := &file_app_observatory_health_config_proto_msgTypes[14]
+	mi := &file_app_observatory_health_config_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1606,7 +1681,7 @@ func (x *CostTrigger) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CostTrigger.ProtoReflect.Descriptor instead.
 func (*CostTrigger) Descriptor() ([]byte, []int) {
-	return file_app_observatory_health_config_proto_rawDescGZIP(), []int{14}
+	return file_app_observatory_health_config_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *CostTrigger) GetCost() float32 {
@@ -1640,7 +1715,7 @@ type ProviderLimits struct {
 
 func (x *ProviderLimits) Reset() {
 	*x = ProviderLimits{}
-	mi := &file_app_observatory_health_config_proto_msgTypes[15]
+	mi := &file_app_observatory_health_config_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1652,7 +1727,7 @@ func (x *ProviderLimits) String() string {
 func (*ProviderLimits) ProtoMessage() {}
 
 func (x *ProviderLimits) ProtoReflect() protoreflect.Message {
-	mi := &file_app_observatory_health_config_proto_msgTypes[15]
+	mi := &file_app_observatory_health_config_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1665,7 +1740,7 @@ func (x *ProviderLimits) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ProviderLimits.ProtoReflect.Descriptor instead.
 func (*ProviderLimits) Descriptor() ([]byte, []int) {
-	return file_app_observatory_health_config_proto_rawDescGZIP(), []int{15}
+	return file_app_observatory_health_config_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *ProviderLimits) GetMinInterval() int64 {
@@ -1721,7 +1796,7 @@ type ProviderApply struct {
 
 func (x *ProviderApply) Reset() {
 	*x = ProviderApply{}
-	mi := &file_app_observatory_health_config_proto_msgTypes[16]
+	mi := &file_app_observatory_health_config_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1733,7 +1808,7 @@ func (x *ProviderApply) String() string {
 func (*ProviderApply) ProtoMessage() {}
 
 func (x *ProviderApply) ProtoReflect() protoreflect.Message {
-	mi := &file_app_observatory_health_config_proto_msgTypes[16]
+	mi := &file_app_observatory_health_config_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1746,7 +1821,7 @@ func (x *ProviderApply) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ProviderApply.ProtoReflect.Descriptor instead.
 func (*ProviderApply) Descriptor() ([]byte, []int) {
-	return file_app_observatory_health_config_proto_rawDescGZIP(), []int{16}
+	return file_app_observatory_health_config_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *ProviderApply) GetBalancer() string {
@@ -1915,7 +1990,7 @@ const file_app_observatory_health_config_proto_rawDesc = "" +
 	" \x01(\tR\x06method\x1a:\n" +
 	"\fHeadersEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x85\x03\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xce\x03\n" +
 	"\x10ProviderTriggers\x12\x1a\n" +
 	"\binterval\x18\x01 \x01(\x03R\binterval\x12\x16\n" +
 	"\x06jitter\x18\x02 \x01(\x01R\x06jitter\x12\x1f\n" +
@@ -1926,7 +2001,12 @@ const file_app_observatory_health_config_proto_rawDesc = "" +
 	"cost_above\x18\x05 \x01(\v2-.xray.core.app.observatory.health.CostTriggerR\tcostAbove\x12\x17\n" +
 	"\amax_age\x18\x06 \x01(\x03R\x06maxAge\x12^\n" +
 	"\x11on_network_change\x18\a \x01(\x0e22.xray.core.app.observatory.health.RefreshOnNetworkR\x0fonNetworkChange\x12%\n" +
-	"\x0enetwork_settle\x18\b \x01(\x03R\rnetworkSettle\"7\n" +
+	"\x0enetwork_settle\x18\b \x01(\x03R\rnetworkSettle\x12G\n" +
+	"\x06expiry\x18\t \x01(\v2/.xray.core.app.observatory.health.ExpiryTriggerR\x06expiry\"_\n" +
+	"\rExpiryTrigger\x12\x19\n" +
+	"\brenew_at\x18\x01 \x01(\x01R\arenewAt\x12\x1b\n" +
+	"\turgent_at\x18\x02 \x01(\x01R\burgentAt\x12\x16\n" +
+	"\x06jitter\x18\x03 \x01(\x01R\x06jitter\"7\n" +
 	"\vCostTrigger\x12\x12\n" +
 	"\x04cost\x18\x01 \x01(\x02R\x04cost\x12\x14\n" +
 	"\x05after\x18\x02 \x01(\x03R\x05after\"\xd0\x01\n" +
@@ -1975,7 +2055,7 @@ func file_app_observatory_health_config_proto_rawDescGZIP() []byte {
 }
 
 var file_app_observatory_health_config_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
-var file_app_observatory_health_config_proto_msgTypes = make([]protoimpl.MessageInfo, 18)
+var file_app_observatory_health_config_proto_msgTypes = make([]protoimpl.MessageInfo, 19)
 var file_app_observatory_health_config_proto_goTypes = []any{
 	(ConfirmMode)(0),              // 0: xray.core.app.observatory.health.ConfirmMode
 	(NetworkChangeMode)(0),        // 1: xray.core.app.observatory.health.NetworkChangeMode
@@ -1994,11 +2074,12 @@ var file_app_observatory_health_config_proto_goTypes = []any{
 	(*UpgradeConfig)(nil),         // 14: xray.core.app.observatory.health.UpgradeConfig
 	(*ProviderConfig)(nil),        // 15: xray.core.app.observatory.health.ProviderConfig
 	(*ProviderTriggers)(nil),      // 16: xray.core.app.observatory.health.ProviderTriggers
-	(*CostTrigger)(nil),           // 17: xray.core.app.observatory.health.CostTrigger
-	(*ProviderLimits)(nil),        // 18: xray.core.app.observatory.health.ProviderLimits
-	(*ProviderApply)(nil),         // 19: xray.core.app.observatory.health.ProviderApply
-	nil,                           // 20: xray.core.app.observatory.health.ProviderConfig.HeadersEntry
-	(*router.StrategyWeight)(nil), // 21: xray.app.router.StrategyWeight
+	(*ExpiryTrigger)(nil),         // 17: xray.core.app.observatory.health.ExpiryTrigger
+	(*CostTrigger)(nil),           // 18: xray.core.app.observatory.health.CostTrigger
+	(*ProviderLimits)(nil),        // 19: xray.core.app.observatory.health.ProviderLimits
+	(*ProviderApply)(nil),         // 20: xray.core.app.observatory.health.ProviderApply
+	nil,                           // 21: xray.core.app.observatory.health.ProviderConfig.HeadersEntry
+	(*router.StrategyWeight)(nil), // 22: xray.app.router.StrategyWeight
 }
 var file_app_observatory_health_config_proto_depIdxs = []int32{
 	4,  // 0: xray.core.app.observatory.health.Config.passive:type_name -> xray.core.app.observatory.health.PassiveConfig
@@ -2012,22 +2093,23 @@ var file_app_observatory_health_config_proto_depIdxs = []int32{
 	7,  // 8: xray.core.app.observatory.health.ConnectivityConfig.recheck:type_name -> xray.core.app.observatory.health.Backoff
 	7,  // 9: xray.core.app.observatory.health.ScheduleConfig.quarantine:type_name -> xray.core.app.observatory.health.Backoff
 	9,  // 10: xray.core.app.observatory.health.ScheduleConfig.host_probes:type_name -> xray.core.app.observatory.health.HostProbesConfig
-	21, // 11: xray.core.app.observatory.health.SelectorConfig.costs:type_name -> xray.app.router.StrategyWeight
+	22, // 11: xray.core.app.observatory.health.SelectorConfig.costs:type_name -> xray.app.router.StrategyWeight
 	0,  // 12: xray.core.app.observatory.health.SelectorConfig.confirm:type_name -> xray.core.app.observatory.health.ConfirmMode
 	14, // 13: xray.core.app.observatory.health.SelectorConfig.upgrade:type_name -> xray.core.app.observatory.health.UpgradeConfig
 	1,  // 14: xray.core.app.observatory.health.SelectorConfig.on_network_change:type_name -> xray.core.app.observatory.health.NetworkChangeMode
-	20, // 15: xray.core.app.observatory.health.ProviderConfig.headers:type_name -> xray.core.app.observatory.health.ProviderConfig.HeadersEntry
+	21, // 15: xray.core.app.observatory.health.ProviderConfig.headers:type_name -> xray.core.app.observatory.health.ProviderConfig.HeadersEntry
 	16, // 16: xray.core.app.observatory.health.ProviderConfig.triggers:type_name -> xray.core.app.observatory.health.ProviderTriggers
-	18, // 17: xray.core.app.observatory.health.ProviderConfig.limits:type_name -> xray.core.app.observatory.health.ProviderLimits
-	19, // 18: xray.core.app.observatory.health.ProviderConfig.apply:type_name -> xray.core.app.observatory.health.ProviderApply
-	17, // 19: xray.core.app.observatory.health.ProviderTriggers.cost_above:type_name -> xray.core.app.observatory.health.CostTrigger
+	19, // 17: xray.core.app.observatory.health.ProviderConfig.limits:type_name -> xray.core.app.observatory.health.ProviderLimits
+	20, // 18: xray.core.app.observatory.health.ProviderConfig.apply:type_name -> xray.core.app.observatory.health.ProviderApply
+	18, // 19: xray.core.app.observatory.health.ProviderTriggers.cost_above:type_name -> xray.core.app.observatory.health.CostTrigger
 	2,  // 20: xray.core.app.observatory.health.ProviderTriggers.on_network_change:type_name -> xray.core.app.observatory.health.RefreshOnNetwork
-	7,  // 21: xray.core.app.observatory.health.ProviderLimits.backoff:type_name -> xray.core.app.observatory.health.Backoff
-	22, // [22:22] is the sub-list for method output_type
-	22, // [22:22] is the sub-list for method input_type
-	22, // [22:22] is the sub-list for extension type_name
-	22, // [22:22] is the sub-list for extension extendee
-	0,  // [0:22] is the sub-list for field type_name
+	17, // 21: xray.core.app.observatory.health.ProviderTriggers.expiry:type_name -> xray.core.app.observatory.health.ExpiryTrigger
+	7,  // 22: xray.core.app.observatory.health.ProviderLimits.backoff:type_name -> xray.core.app.observatory.health.Backoff
+	23, // [23:23] is the sub-list for method output_type
+	23, // [23:23] is the sub-list for method input_type
+	23, // [23:23] is the sub-list for extension type_name
+	23, // [23:23] is the sub-list for extension extendee
+	0,  // [0:23] is the sub-list for field type_name
 }
 
 func init() { file_app_observatory_health_config_proto_init() }
@@ -2041,7 +2123,7 @@ func file_app_observatory_health_config_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_app_observatory_health_config_proto_rawDesc), len(file_app_observatory_health_config_proto_rawDesc)),
 			NumEnums:      3,
-			NumMessages:   18,
+			NumMessages:   19,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

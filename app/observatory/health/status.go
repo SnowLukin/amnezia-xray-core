@@ -61,11 +61,13 @@ type providerStatusView struct {
 	BackoffMs      int64  `json:"backoff_ms,omitempty"`
 	RetryAfterMs   int64  `json:"retry_after_ms,omitempty"`
 	AttemptsInHour int    `json:"attempts_last_hour"`
-	// Leases that ended, and how far the clock the last answer counts from
-	// is ahead of the device, by which clock.
-	Expired int    `json:"expired,omitempty"`
-	SkewMs  int64  `json:"skew_ms,omitempty"`
-	Clock   string `json:"clock,omitempty"`
+	// The next renewal of a lease, below zero while it waits; leases that
+	// ended; and how far the clock the last answer counts from is ahead of
+	// the device, by which clock.
+	RenewInMs *int64 `json:"renew_in_ms,omitempty"`
+	Expired   int    `json:"expired,omitempty"`
+	SkewMs    int64  `json:"skew_ms,omitempty"`
+	Clock     string `json:"clock,omitempty"`
 }
 
 type statusView struct {
@@ -207,6 +209,13 @@ func (e *engine) status(now time.Time) statusView {
 		for _, l := range p.leases {
 			if l.expired {
 				pv.Expired++
+				continue
+			}
+			if l.asked || p.cfg.renewAt == 0 {
+				continue
+			}
+			if in := (l.renewIn - l.elapsed(now)).Milliseconds(); pv.RenewInMs == nil || in < *pv.RenewInMs {
+				pv.RenewInMs = &in
 			}
 		}
 		pv.SkewMs, pv.Clock = p.skew.Milliseconds(), p.clock

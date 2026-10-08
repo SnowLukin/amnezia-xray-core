@@ -72,9 +72,9 @@ least `spacing` apart. They stay within `perMinute` in total and
 `perServerNamePerMinute` per TLS or REALITY server name, and two probes of
 one server name never run at once: several near-simultaneous handshakes to
 one server name are a known censor signal. Without user traffic for
-`pauseWhenIdle` there are no probes and no timers, except one at the end of a
-provider lease, see Providers. Closing the core ends the probes still
-running, and their outcome is not held against the outbound.
+`pauseWhenIdle` there are no probes and no timers, except the renewal and
+the end of a provider lease, see Providers. Closing the core ends the
+probes still running, and their outcome is not held against the outbound.
 
 Existing connections stay where they are; only new connections move. The
 exception is an outbound found down: its connections that have received
@@ -202,7 +202,8 @@ triggers are judged on what the observatory knows about the balancer.
       "triggers": {
         "interval": "2h", "jitter": 0.2, "minHealthy": 2, "whenExhausted": true,
         "whenCostAbove": { "cost": 10, "for": "15m" }, "maxAge": "6h",
-        "onNetworkChange": "unknownNotCheapest", "networkSettle": "30s"
+        "onNetworkChange": "unknownNotCheapest", "networkSettle": "30s",
+        "expiry": { "renewAt": 0.5, "urgentAt": 0.8, "jitter": 0.1 }
       },
       "limits": {
         "minInterval": "5m", "exhaustedMinInterval": "30s", "maxPerHour": 6,
@@ -397,11 +398,12 @@ answer arrived: `expiresAt` less the later of `serverTime` and the `Date`
 of the answer plus its `Age`, which a cache sets, or less the clock of the
 device without either, at most 30 days. It counts down from there by the
 longer of the monotonic clock, which stands while the device sleeps, and
-the wall clock, so it ends early rather than late. Every answer is the whole
-truth about the outbounds in it: a later end renews a lease, the same end
-only brings a fresher clock and does not stretch it, and an outbound that
-leaves the set takes its lease along. An answer with a time the core cannot
-read is refused, and a refused answer changes no lease.
+the wall clock, so it ends early rather than late. A refresh renews it
+before that, see the `expiry` trigger. Every answer is the whole truth
+about the outbounds in it: a later end renews a lease, the same end only
+brings a fresher clock and moves neither the end nor the renewal, and an
+outbound that leaves the set takes its lease along. An answer with a time
+the core cannot read is refused, and a refused answer changes no lease.
 
 An outbound whose lease ended stays a candidate, the last resort: new
 connections go to it only while no other usable candidate is left, so when
@@ -424,7 +426,7 @@ revoked outbound is no block. One a balancer still uses is judged as usual.
 | `interval` | `interval` +- `jitter` after the previous successful refresh. |
 | `minHealthy` | The balancer has fewer candidates that are up or not judged yet; once, again only after it got back above. |
 | `whenExhausted` | The balancer has no usable candidate and the network is up; again after `exhaustedMinInterval` while it lasts. After a refresh that added outbounds, only once a connection brought them to the balancer. |
-| expiry | A lease ended and no refresh that got an answer asked about it: once per value of the lease, so a backend that keeps a lease short is not asked again. It waits only for `exhaustedMinInterval` and runs while memory is low. |
+| `expiry` | A lease reached `renewAt` of its length, spread by `jitter` per lease, or ended, and no refresh that got an answer asked about this value of it: once per value, so a backend that keeps a lease short is not asked again. From `urgentAt` of the lease on, and once it ended, the refresh is urgent: it waits only for `exhaustedMinInterval` and runs while memory is low. Before that it waits for `minInterval`, and while memory is low for `urgentAt`. `renewAt` 0 turns renewal off; a lease that ended is still asked about once. `renewAt` is at most 0.95, `urgentAt` between it and 0.95, `jitter` at most 0.5. |
 | `whenCostAbove` | The balancer has kept outbounds of at least `cost` for `for`; the time counts again from every successful refresh. |
 | `maxAge` | The set was fetched longer ago than this. |
 | `onNetworkChange` | `networkSettle` after a network change: `unknownNotCheapest` in a network without a remembered working outbound when the balancer is not on its cheapest candidate, `unknown` in such a network, `any`, or `never`. |
@@ -433,18 +435,18 @@ revoked outbound is no block. One a balancer still uses is judged as usual.
 
 Every trigger but a host request waits while the network is down, and while
 there is no user traffic, except the first request for a lease: an outbound
-would end under a sleeping device. A refresh asks about the leases that
-ended by then whatever its trigger; when it fails, they are asked about
-again after the backoff, and then only with user traffic, so a dead backend
-does not wake the device.
+would end under a sleeping device. A refresh asks about the leases due by
+then, to be renewed or ended, whatever its trigger; when it fails, they are
+asked about again after the backoff, and then only with user traffic, so a
+dead backend does not wake the device.
 
 **Limits.** Two refreshes start at least `minInterval` apart, or
-`exhaustedMinInterval` for an exhausted balancer, a lease that ended and
-host requests; at most
-`maxPerHour` start within an hour. After a failure the next attempt waits
-for `backoff`, counted from that attempt, so a failing refresh never runs in
-a loop. A refresh for an exhausted balancer that brings the same set counts
-as a failure for the backoff. A failed host request and a failed network
+`exhaustedMinInterval` for an exhausted balancer, an urgent renewal or a
+lease that ended, and host requests; at most `maxPerHour` start within an
+hour. After a failure the next attempt waits for `backoff`, counted from
+that attempt, so a failing refresh never runs in a loop. A refresh for an
+exhausted balancer that brings the same set counts as a failure for the
+backoff. A failed host request and a failed network
 change refresh are retried after the backoff, or after the pause a busy
 backend asked for.
 
@@ -519,10 +521,11 @@ its end with `SetMemoryLow(false)`. While memory is low:
 - What only improves the choice waits: returns to a cheaper outbound, also
   one under way between its probes, probes after a network change and of
   the outbound remembered for the network, and timed provider refreshes
-  (`provider_skip` with reason `memory`). A refresh the host asked for, or
-  one for an exhausted balancer or a lease that ended, still runs, through
-  the first usable `via` only. A network check in doubt repeats at most
-  every 2 minutes.
+  (`provider_skip` with reason `memory`), the renewal of a lease too until
+  `urgentAt` of it. A refresh the host asked for, or one for an exhausted
+  balancer or an urgent or ended lease, still runs, through the first
+  usable `via` only. A network check in doubt repeats at most every 2
+  minutes.
 - What can go goes at once: drains of outbounds without connections that no
   balancer chooses, and what the observatory knows about outbounds no
   balancer offers.
@@ -598,7 +601,7 @@ changed its settings). `kinds` counts failures by kind: `dial_failed`, `dial_tim
 | `memory_low` | `on` | The host reported that memory is low (`on` true) or no longer. |
 | `provider_fetch` | `provider`, `trigger`, `retry`, `attempt`, `via`, `outbound`, `method`, `refresh`, `ok`, `status`, `ms`, `bytes`, `code`, `retry_after_ms`, `error` | One request of a refresh through one `via` entry; `outbound` is what the entry resolved to, `refresh` the number of the refresh as the body tells it, `bytes` the size of the answer. `code` is the code of an error body of the protocol, `retry_after_ms` the pause `Retry-After` asked for, after the ceiling and before the spread. A skipped entry has `ok` false and only `error`: `balancer exhausted`, `outbound down` or `no such outbound`. `error` never holds the URL. `trigger`: `host`, `exhausted`, `expiry`, `min_healthy`, `cost_above`, `network_change`, `next_refresh`, `max_age`, `interval`; `retry` counts failed refreshes before this one. An answer that breaks the protocol has `ok` true: the backend answered, and the refusal is the `provider_apply`'s. |
 | `provider_apply` | `provider`, `trigger`, `ok`, `changed`, `added`, `replaced`, `removed`, `unchanged`, `version`, `exhausted`, `rules`, `routing_error`, `routing_ignored`, `leases`, `renewed`, `expired`, `skew_ms`, `clock`, `error` | The answer was applied (`changed`), was the applied set already, or was rejected (`ok` false with `error`). `exhausted` tells whether the balancer had nothing usable at that moment. `rules` counts the routing rules applied with the set; `routing_ignored` tells that the answer had routing while `apply.routing` is off. When the answer names leases: `leases` counts them, `renewed` the ones it gave a later end, ended ones too, `expired` the leases that ended after it; `skew_ms` is how far the clock they count from is ahead of the device, and `clock` which one that is: `server`, `date` (the `Date` of the answer plus `Age`) or `device`. |
-| `provider_expired` | `provider`, `outbound`, `active`, `renewal` | The lease of an outbound ended, or an answer brought it ended. `active` tells whether a balancer chose the outbound. `renewal` tells why no later end came: `refused` (the backend answered without one), `failed` (the last refresh that asked failed) or `pending` (no refresh asked yet: no network, the limits). |
+| `provider_expired` | `provider`, `outbound`, `active`, `renewal` | The lease of an outbound ended, or an answer brought it ended. `active` tells whether a balancer chose the outbound. `renewal` tells why no later end came: `refused` (the backend answered without one), `failed` (the last refresh that asked failed), `off` (`renewAt` is 0) or `pending` (no refresh asked yet: no network, the limits). |
 | `provider_restart_needed` | `provider`, `version`, `sections` | Kept for sections of the config the core reads only at start. Protocol 1 refuses an answer with such a section, so this version does not write it. |
 | `provider_skip` | `provider`, `trigger`, `reason`, `wait_ms` | A trigger wants a refresh that cannot start yet. `reason`: `min_interval`, `backoff`, `retry_after`, `max_per_hour`, `idle`, `network_down`, `memory`. Reported once per trigger and reason until a refresh starts. |
 | `provider_drained` | `provider`, `outbound`, `replaced` | An outbound that left the set, or the old handler of a replaced one, was closed: after `drain`, at once without connections, or early to keep at most `maxOutbounds` draining. |
@@ -655,6 +658,7 @@ to this one. Reports of one run add up.
 | `provider_retry_after` | `provider_fetch` events with `retry_after_ms`: a busy backend asked to wait. |
 | `provider_applied`, `provider_rejected`, `provider_restart_needed` | `provider_apply` events that changed the set, the rejected ones, and `provider_restart_needed` events. |
 | `provider_expired` | `provider_expired` events: leases that ended. |
+| `provider_renewals` | `provider_apply` events with `ok` and `renewed` above zero: answers that renewed leases. A renewal keeps what the balancer has and is no decision. |
 | `pins`, `releases` | `pin` and `release` events. |
 | `memory_low` | `memory_low` events with `on`. |
 | `active`, `balancer_exhausted`, `network_up`, `connectivity` | At the time of the report: the chosen outbound by balancer, whether a balancer is exhausted, and the network as in Status. |
@@ -672,8 +676,9 @@ chosen and pinned outbound, whether it is exhausted, the time on the chosen
 outbound and the next return attempt; per provider the method, the version
 of the set, its size, outbounds still draining, refreshes and failures, the
 age of the set, the next timed refresh, the backoff, what is left of a pause
-a busy backend asked for (`retry_after_ms`), the leases that ended
-(`expired`), and the `skew_ms` and `clock` of the last answer as in
+a busy backend asked for (`retry_after_ms`), the next renewal of a lease
+(`renew_in_ms`, below zero while it waits for a limit), the leases that
+ended (`expired`), and the `skew_ms` and `clock` of the last answer as in
 `provider_apply`; the probe requests of the host (`probe_requests`), each with `id`,
 `balancer`, `age_ms`, `done`, `end` and the result per outbound, see Probes
 on request.

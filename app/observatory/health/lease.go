@@ -19,6 +19,11 @@ type lease struct {
 	// What was left of it then: end less the time the answer counts from,
 	// at most maxLease.
 	ttl time.Duration
+	// From at: when a refresh renews it, spread per value, and when that
+	// renewal becomes urgent. An answer with the same end keeps both points
+	// where they were.
+	renewIn  time.Duration
+	urgentIn time.Duration
 	// A refresh asked the backend about this value and got an answer, so it
 	// is not asked about again.
 	asked bool
@@ -38,6 +43,20 @@ func (l *lease) elapsed(now time.Time) time.Duration {
 // left is what is left of the lease, below zero once it ended.
 func (l *lease) left(now time.Time) time.Duration {
 	return l.ttl - l.elapsed(now)
+}
+
+// due tells whether a refresh is to ask about the lease: it ended, or with
+// renewal on it reached its renewal point. urgent: it ended or reached the
+// urgent point.
+func (l *lease) due(renew bool, now time.Time) (due, urgent bool) {
+	if l.expired {
+		return true, true
+	}
+	if !renew {
+		return false, false
+	}
+	elapsed := l.elapsed(now)
+	return elapsed >= l.renewIn, elapsed >= l.urgentIn
 }
 
 // leaseAnswer is what an applied answer says about the leases of its set.
@@ -104,6 +123,7 @@ func (e *engine) acceptLeases(p *provider, tags []string, a leaseAnswer, now tim
 		c.leases++
 		l := p.leases[tag]
 		was := l != nil && l.expired
+		ttl := min(end.Sub(ref), maxLease)
 		if l == nil || end.After(l.end) {
 			if l != nil {
 				c.renewed++
@@ -113,10 +133,21 @@ func (e *engine) acceptLeases(p *provider, tags []string, a leaseAnswer, now tim
 				p.leases = map[string]*lease{}
 			}
 			p.leases[tag] = l
+			if p.cfg.renewAt > 0 {
+				// Spread per value: clients that got their leases at once
+				// do not renew them at once.
+				l.urgentIn = time.Duration(p.cfg.urgentAt * float64(ttl))
+				l.renewIn = min(e.jitter(time.Duration(p.cfg.renewAt*float64(ttl)), p.cfg.renewJitter), l.urgentIn)
+			}
+		} else {
+			// The same value: the renewal stays where it was, or an answer
+			// for another trigger would put it off again and again.
+			gone := l.elapsed(at)
+			l.renewIn, l.urgentIn = max(l.renewIn-gone, 0), max(l.urgentIn-gone, 0)
 		}
 		// A fresh clock of the server is more exact than what the device
 		// counted, which may have slept.
-		l.at, l.ttl = at, min(end.Sub(ref), maxLease)
+		l.at, l.ttl = at, ttl
 		if l.ttl > 0 {
 			l.expired = false
 		} else {
@@ -172,69 +203,93 @@ func (e *engine) expireLeases(p *provider, now time.Time) bool {
 		l.expired = true
 		e.expired[tag] = true
 		e.emit(now, "provider_expired", map[string]any{"provider": p.cfg.tag, "outbound": tag,
-			"active": e.active(tag), "renewal": renewalOf(l)})
+			"active": e.active(tag), "renewal": renewalOf(p, l)})
 	}
 	return true
 }
 
 // renewalOf tells why a lease ended without a renewal: the backend answered
-// without one, the last refresh that asked failed, or no refresh asked yet.
-func renewalOf(l *lease) string {
+// without one, the last refresh that asked failed, renewal is off, or no
+// refresh asked yet.
+func renewalOf(p *provider, l *lease) string {
 	switch {
 	case l.failed:
 		return "failed"
 	case l.asked:
 		return "refused"
+	case p.cfg.renewAt == 0:
+		return "off"
 	}
 	return "pending"
 }
 
 // tickLeases ends the leases of p that ran out, moves the balancers off
-// those outbounds and returns when the next lease ends. That wake comes
-// without user traffic too: an outbound must stop being chosen once its
-// lease is over, and it is one wake per lease value.
-func (e *engine) tickLeases(p *provider, now time.Time) time.Time {
+// those outbounds and returns when the next lease reaches its renewal
+// point or its end. Those wakes come without user traffic too: an outbound
+// must stop being chosen once its lease is over, and a lease that ends
+// under a sleeping device is renewed. That is one wake for the renewal and
+// one for the end per value of a lease; the urgent point wakes only for a
+// renewal that waits for memory or a limit, and not for a retry while idle.
+func (e *engine) tickLeases(p *provider, now time.Time, idle bool) time.Time {
 	if e.expireLeases(p, now) {
 		e.refreshCandidates(now)
 	}
 	var wake time.Time
+	soonest := func(in time.Duration) {
+		if at := now.Add(in); wake.IsZero() || at.Before(wake) {
+			wake = at
+		}
+	}
 	for _, l := range p.leases {
 		if l.expired {
 			continue
 		}
-		if at := now.Add(l.left(now)); wake.IsZero() || at.Before(wake) {
-			wake = at
+		soonest(l.left(now))
+		if l.asked || p.cfg.renewAt == 0 {
+			continue
+		}
+		switch elapsed := l.elapsed(now); {
+		case elapsed < l.renewIn:
+			soonest(l.renewIn - elapsed)
+		case elapsed < l.urgentIn && (!l.failed || !idle):
+			soonest(l.urgentIn - elapsed)
 		}
 	}
 	return wake
 }
 
-// expiryWant tells whether the leases of p want a refresh: one ended and no
-// refresh that got an answer asked about it. Such a refresh is urgent. fresh
-// tells that some of them has not failed a refresh yet: the first request
-// for a lease value does not wait for user traffic, a retry does.
+// expiryWant tells whether the leases of p want a refresh: one ended or
+// reached its renewal point, and no refresh that got an answer asked about
+// that value. urgent: one ended or reached its urgent point. fresh: some of
+// them has not failed a refresh yet; the first request for a lease value
+// does not wait for user traffic, a retry does.
 type expiryWant struct {
 	want, urgent, fresh bool
 }
 
-func (p *provider) expiryWant() expiryWant {
+func (p *provider) expiryWant(now time.Time) expiryWant {
 	var w expiryWant
 	for _, l := range p.leases {
-		if l.asked || !l.expired {
+		if l.asked {
 			continue
 		}
-		w.want, w.urgent = true, true
+		due, urgent := l.due(p.cfg.renewAt > 0, now)
+		if !due {
+			continue
+		}
+		w.want = true
+		w.urgent = w.urgent || urgent
 		w.fresh = w.fresh || !l.failed
 	}
 	return w
 }
 
 // askLeases lists the leases a refresh that starts now asks the backend
-// about, whatever its trigger: the ones that ended and were not asked about.
-func (p *provider) askLeases() []askedLease {
+// about, whatever its trigger: the ones due and not asked about yet.
+func (p *provider) askLeases(now time.Time) []askedLease {
 	var out []askedLease
 	for tag, l := range p.leases {
-		if !l.asked && l.expired {
+		if due, _ := l.due(p.cfg.renewAt > 0, now); due && !l.asked {
 			out = append(out, askedLease{tag: tag, end: l.end})
 		}
 	}

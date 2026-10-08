@@ -2,6 +2,7 @@ package conf_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -174,6 +175,34 @@ func TestHealthProviderMethod(t *testing.T) {
 	}
 }
 
+// Shares of a lease: an explicit renewAt or jitter of 0 turns it off, which
+// the observatory reads from a negative value; missing keeps the default.
+func TestHealthProviderExpiry(t *testing.T) {
+	for expiry, want := range map[string]string{
+		``:               "<nil>",
+		`, "expiry": {}`: "&{0 0 0}",
+		`, "expiry": {"renewAt": 0.6, "urgentAt": 0.9, "jitter": 0.2}`: "&{0.6 0.9 0.2}",
+		`, "expiry": {"renewAt": 0, "jitter": 0}`:                      "&{-1 0 -1}",
+		`, "expiry": {"renewAt": 0, "urgentAt": 0.3}`:                  "&{-1 0.3 0}",
+		`, "expiry": {"urgentAt": 0.95}`:                               "&{0 0.95 0}",
+	} {
+		cfg, err := buildHealth(t, `{"subjectSelector": ["a"], "providers": [{"tag": "a", "url": "https://x.test/",
+		  "triggers": {"interval": "1h"`+expiry+`}, "apply": {"balancer": "auto", "tagPrefix": "p-"}}]}`)
+		if err != nil {
+			t.Errorf("%s: %v", expiry, err)
+			continue
+		}
+		e := cfg.Providers[0].Triggers.Expiry
+		got := "<nil>"
+		if e != nil {
+			got = fmt.Sprintf("&{%v %v %v}", e.RenewAt, e.UrgentAt, e.Jitter)
+		}
+		if got != want {
+			t.Errorf("%s: %s, want %s", expiry, got, want)
+		}
+	}
+}
+
 func TestHealthProvidersReject(t *testing.T) {
 	cases := map[string]string{
 		"no apply":         `{"tag": "a", "url": "https://x.test/"}`,
@@ -188,6 +217,16 @@ func TestHealthProvidersReject(t *testing.T) {
 		            "triggers": {"whenCostAbove": {"cost": 0, "for": "15m"}}}`,
 		"empty via": `{"tag": "a", "url": "https://x.test/", "via": ["auto", ""], "apply": {"balancer": "auto", "tagPrefix": "p-"}}`,
 		"put":       `{"tag": "a", "url": "https://x.test/", "method": "PUT", "apply": {"balancer": "auto", "tagPrefix": "p-"}}`,
+		"renewal past the lease": `{"tag": "a", "url": "https://x.test/", "apply": {"balancer": "auto", "tagPrefix": "p-"},
+		            "triggers": {"expiry": {"renewAt": 0.99}}}`,
+		"negative renewal": `{"tag": "a", "url": "https://x.test/", "apply": {"balancer": "auto", "tagPrefix": "p-"},
+		            "triggers": {"expiry": {"renewAt": -0.5}}}`,
+		"urgent before renewal": `{"tag": "a", "url": "https://x.test/", "apply": {"balancer": "auto", "tagPrefix": "p-"},
+		            "triggers": {"expiry": {"renewAt": 0.6, "urgentAt": 0.5}}}`,
+		"urgent before the default renewal": `{"tag": "a", "url": "https://x.test/", "apply": {"balancer": "auto", "tagPrefix": "p-"},
+		            "triggers": {"expiry": {"urgentAt": 0.4}}}`,
+		"wide renewal spread": `{"tag": "a", "url": "https://x.test/", "apply": {"balancer": "auto", "tagPrefix": "p-"},
+		            "triggers": {"expiry": {"jitter": 0.6}}}`,
 	}
 	for name, providers := range cases {
 		if _, err := buildHealth(t, `{"subjectSelector": ["a"], "providers": [`+providers+`]}`); err == nil {

@@ -175,7 +175,7 @@ func (e *engine) tickProviders(now time.Time) ([]*refreshJob, time.Time) {
 			e.scheduleRefresh(p, 0, now)
 		}
 		// A lease ends during a request as well.
-		soonest(e.tickLeases(p, now))
+		soonest(e.tickLeases(p, now, idle))
 		if p.fetching {
 			continue
 		}
@@ -307,7 +307,7 @@ func (e *engine) wantedRefresh(p *provider, now time.Time) ([triggerCount]bool, 
 			want[triggerMaxAge] = true
 		}
 	}
-	expiry := p.expiryWant()
+	expiry := p.expiryWant(now)
 	want[triggerExpiry] = expiry.want
 	return want, expiry, wake
 }
@@ -404,7 +404,7 @@ func (e *engine) beginRefresh(p *provider, t refreshTrigger, now time.Time) *ref
 	p.retrying = false
 	clear(p.skipped)
 	p.refreshSeq++
-	j := &refreshJob{p: p, trigger: t, retry: p.failures, refresh: p.refreshSeq, asked: p.askLeases()}
+	j := &refreshJob{p: p, trigger: t, retry: p.failures, refresh: p.refreshSeq, asked: p.askLeases(now)}
 	if p.cfg.method == http.MethodPost {
 		j.request = e.providerRequest(p, j, now)
 	}

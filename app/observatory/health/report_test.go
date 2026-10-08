@@ -103,6 +103,9 @@ func foldReport(t *testing.T, raw []byte) (reportCounts, bool) {
 				c.ProviderApplied++
 				decided = true
 			}
+			if f["ok"] == true && num(f["renewed"]) > 0 && f["trigger"] != "initial" {
+				c.ProviderRenewals++
+			}
 		case "provider_restart_needed":
 			c.ProviderRestartNeeded++
 			decided = true
@@ -173,6 +176,8 @@ func TestReportAddsUpTheEvents(t *testing.T) {
 		"via": "", "outbound": "", "ok": false, "status": 429, "retry_after_ms": int64(60000), "error": "status 429"})
 	te.emit(now, "provider_apply", map[string]any{"provider": "p", "trigger": "host", "ok": false, "error": "bad"})
 	te.emit(now, "provider_apply", map[string]any{"provider": "p", "trigger": "host", "ok": true, "changed": false})
+	te.emit(now, "provider_apply", map[string]any{"provider": "p", "trigger": "expiry", "ok": true, "changed": false,
+		"leases": 2, "renewed": 2, "expired": 0})
 	te.emit(now, "provider_apply", map[string]any{"provider": "p", "trigger": "host", "ok": true, "changed": true})
 	te.emit(now, "provider_restart_needed", map[string]any{"provider": "p", "version": "1", "sections": []string{"dns"}})
 	te.emit(now, "provider_expired", map[string]any{"provider": "p", "outbound": "p-x1", "active": true, "renewal": "failed"})
@@ -243,6 +248,7 @@ func TestReportDecisions(t *testing.T) {
 			{"memory_low", map[string]any{"on": true}},
 		}, false},
 		{"same provider set", []emitted{{"provider_apply", map[string]any{"ok": true, "changed": false}}}, false},
+		{"leases renewed", []emitted{{"provider_apply", map[string]any{"ok": true, "changed": false, "renewed": 2}}}, false},
 		{"failover", []emitted{{"switch", map[string]any{"from": "a1", "to": "b1", "reason": "failover"}}}, true},
 		{"exhausted", []emitted{{"exhausted", map[string]any{"balancer": "auto"}}}, true},
 		{"failed return", []emitted{{"upgrade_failed", map[string]any{"balancer": "auto"}}}, true},
