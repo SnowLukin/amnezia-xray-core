@@ -763,6 +763,7 @@ func CopyRawConnIfExist(ctx context.Context, readerConn net.Conn, writerConn net
 			if inTimer != nil {
 				inTimer.SetTimeout(24 * time.Hour)
 			}
+			notifySpliced(readCounter, writeCounter)
 			w, err := tc.ReadFrom(readerConn)
 			if readCounter != nil {
 				readCounter.Add(w) // outbound stats

@@ -20,6 +20,7 @@ import (
 	"github.com/xtls/xray-core/common/serial"
 	"github.com/xtls/xray-core/common/session"
 	"github.com/xtls/xray-core/core"
+	"github.com/xtls/xray-core/features/extension"
 	"github.com/xtls/xray-core/features/outbound"
 	"github.com/xtls/xray-core/features/policy"
 	"github.com/xtls/xray-core/features/stats"
@@ -70,6 +71,7 @@ type Handler struct {
 	udp443          string
 	uplinkCounter   stats.Counter
 	downlinkCounter stats.Counter
+	observer        outbound.ConnectionObserver
 }
 
 // NewHandler creates a new Handler based on the given configuration.
@@ -81,6 +83,9 @@ func NewHandler(ctx context.Context, config *core.OutboundHandlerConfig) (outbou
 		outboundManager: v.GetFeature(outbound.ManagerType()).(outbound.Manager),
 		uplinkCounter:   uplinkCounter,
 		downlinkCounter: downlinkCounter,
+	}
+	if observer, ok := v.GetFeature(extension.ObservatoryType()).(outbound.ConnectionObserver); ok {
+		h.observer = observer
 	}
 
 	if config.SenderSettings != nil {
@@ -134,7 +139,7 @@ func NewHandler(ctx context.Context, config *core.OutboundHandlerConfig) (outbou
 					Enabled: true,
 					Picker: &mux.IncrementalWorkerPicker{
 						Factory: &mux.DialingWorkerFactory{
-							Proxy:  proxyHandler,
+							Proxy:  h.observed(proxyHandler),
 							Dialer: h,
 							Strategy: mux.ClientStrategy{
 								MaxConcurrency: uint32(config.Concurrency),
@@ -155,7 +160,7 @@ func NewHandler(ctx context.Context, config *core.OutboundHandlerConfig) (outbou
 					Enabled: true,
 					Picker: &mux.IncrementalWorkerPicker{
 						Factory: &mux.DialingWorkerFactory{
-							Proxy:  proxyHandler,
+							Proxy:  h.observed(proxyHandler),
 							Dialer: h,
 							Strategy: mux.ClientStrategy{
 								MaxConcurrency: uint32(config.XudpConcurrency),
@@ -246,7 +251,7 @@ func (h *Handler) Dispatch(ctx context.Context, link *transport.Link) {
 		}
 	}
 out:
-	err := h.proxy.Process(ctx, link, h)
+	err := h.process(ctx, link)
 	var errC error
 	if err != nil {
 		errC = errors.Cause(err)
