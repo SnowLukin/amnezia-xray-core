@@ -68,6 +68,9 @@ const (
 	// The reason an answer was refused, as events, Status and the next
 	// request tell it.
 	maxFailureText = 200
+	// A lease of an outbound counts at most this long: a far end or a clock
+	// gone wild does not keep an outbound for good.
+	maxLease = 30 * 24 * time.Hour
 
 	defaultProviderTimeout      = 10 * time.Second
 	defaultRefreshInterval      = 2 * time.Hour

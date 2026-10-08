@@ -464,7 +464,8 @@ func TestParseAnswer(t *testing.T) {
 // is the applied set again, not a new one to build.
 func TestVersionIgnoresMetaKeys(t *testing.T) {
 	a1, _ := parseAnswer([]byte(`{"outbounds": [{"tag": "x"}], "costs": {"x": 2}}`))
-	a2, _ := parseAnswer([]byte(`{"protocol": 1, "outbounds": [{"tag": "x"}], "costs": {"x": 2}, "nextRefreshIn": "1h"}`))
+	a2, _ := parseAnswer([]byte(`{"protocol": 1, "outbounds": [{"tag": "x"}], "costs": {"x": 2}, "nextRefreshIn": "1h",
+		"serverTime": "2026-10-08T12:00:00Z", "expiresAt": {"x": "2026-10-09T12:00:00Z"}}`))
 	a3, _ := parseAnswer([]byte(`{"outbounds": [{"tag": "x"}], "costs": {"x": 3}}`))
 	a4, _ := parseAnswer([]byte(`{"outbounds": [{"tag": "x"}], "costs": {"x": 2}, "routing": {"rules": []}}`))
 	if a1.version != a2.version || a1.version == a3.version || a1.version == a4.version {

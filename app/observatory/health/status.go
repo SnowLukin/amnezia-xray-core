@@ -28,6 +28,10 @@ type pathStatusView struct {
 	ProbesFailed    int64            `json:"probes_failed"`
 	ProbeBytes      int64            `json:"probe_bytes"`
 	ActiveMs        int64            `json:"active_ms"`
+	// What is left of the provider lease, below zero once it ended; none
+	// without a lease.
+	ExpiresInMs *int64 `json:"expires_in_ms,omitempty"`
+	Expired     bool   `json:"expired,omitempty"`
 }
 
 type balancerStatusView struct {
@@ -57,6 +61,11 @@ type providerStatusView struct {
 	BackoffMs      int64  `json:"backoff_ms,omitempty"`
 	RetryAfterMs   int64  `json:"retry_after_ms,omitempty"`
 	AttemptsInHour int    `json:"attempts_last_hour"`
+	// Leases that ended, and how far the clock the last answer counts from
+	// is ahead of the device, by which clock.
+	Expired int    `json:"expired,omitempty"`
+	SkewMs  int64  `json:"skew_ms,omitempty"`
+	Clock   string `json:"clock,omitempty"`
 }
 
 type statusView struct {
@@ -109,6 +118,12 @@ func (e *engine) status(now time.Time) statusView {
 		}
 		v.Balancers = append(v.Balancers, b)
 	}
+	leases := map[string]*lease{}
+	for _, p := range e.providers {
+		for tag, l := range p.leases {
+			leases[tag] = l
+		}
+	}
 	tags := make([]string, 0, len(e.paths))
 	for tag := range e.paths {
 		tags = append(tags, tag)
@@ -151,6 +166,11 @@ func (e *engine) status(now time.Time) statusView {
 				pv.FailuresByKind[failureKind(k).String()] = n
 			}
 		}
+		if l := leases[tag]; l != nil {
+			left := l.left(now).Milliseconds()
+			pv.ExpiresInMs = &left
+			pv.Expired = l.expired
+		}
 		v.Paths = append(v.Paths, pv)
 	}
 	for _, p := range e.providers {
@@ -184,6 +204,12 @@ func (e *engine) status(now time.Time) statusView {
 				pv.AttemptsInHour++
 			}
 		}
+		for _, l := range p.leases {
+			if l.expired {
+				pv.Expired++
+			}
+		}
+		pv.SkewMs, pv.Clock = p.skew.Milliseconds(), p.clock
 		v.Providers = append(v.Providers, pv)
 	}
 	for _, r := range e.requests {

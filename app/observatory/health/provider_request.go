@@ -75,6 +75,8 @@ type requestOutbound struct {
 	BytesDown       int64            `json:"bytesDown,omitempty"`
 	ActiveMs        int64            `json:"activeMs,omitempty"`
 	TTFBP50Ms       int64            `json:"ttfbP50Ms,omitempty"`
+	// What is left of the lease, below zero once it ended; none without one.
+	ExpiresInMs *int64 `json:"expiresInMs,omitempty"`
 }
 
 type requestProbe struct {
@@ -131,12 +133,17 @@ func (e *engine) providerRequest(p *provider, j *refreshJob, now time.Time) *pro
 		}
 	}
 	for _, tag := range p.tags {
-		// An outbound that left the set is no longer the backend's concern.
+		// An outbound that left the set is no longer the backend's concern;
+		// one whose lease ended still is.
 		if e.retiring[tag] {
 			continue
 		}
-		r.Outbounds = append(r.Outbounds, describeOutbound(e.paths[tag], strings.TrimPrefix(tag, p.cfg.prefix),
-			active[tag], now))
+		o := describeOutbound(e.paths[tag], strings.TrimPrefix(tag, p.cfg.prefix), active[tag], now)
+		if l := p.leases[tag]; l != nil {
+			left := l.left(now).Milliseconds()
+			o.ExpiresInMs = &left
+		}
+		r.Outbounds = append(r.Outbounds, o)
 	}
 	return r
 }

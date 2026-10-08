@@ -62,7 +62,8 @@ type drainingOutbound struct {
 
 // providerAnswer is a parsed provider response in protocol 1:
 //
-//	{"protocol": 1, "outbounds": [...], "costs": {"tag": 1}, "nextRefreshIn": "2h", "version": "..."}
+//	{"protocol": 1, "outbounds": [...], "costs": {"tag": 1}, "nextRefreshIn": "2h", "version": "...",
+//	 "expiresAt": {"tag": "2026-10-09T12:00:00Z"}, "serverTime": "2026-10-08T12:00:00Z"}
 type providerAnswer struct {
 	// The outbounds as sent, handed to the config loader in one piece.
 	outbounds     json.RawMessage
@@ -74,6 +75,14 @@ type providerAnswer struct {
 	// file; withStrategy tells whether the strategy was there at all.
 	routing      json.RawMessage
 	withStrategy bool
+	// When the leases of outbounds end, by the tag as sent, and the clock of
+	// the backend they count from.
+	expiresAt  map[string]time.Time
+	serverTime time.Time
+	// The Date of the HTTP answer plus its Age, and when it arrived with
+	// the monotonic reading; zero for an answer that came another way.
+	date     time.Time
+	received time.Time
 }
 
 type outboundHead struct {
@@ -88,7 +97,8 @@ type outboundHead struct {
 // key for applied that the core threw away; a new key is protocol 2.
 var (
 	setKeys  = map[string]bool{"outbounds": true, "costs": true, "routing": true}
-	metaKeys = map[string]bool{"protocol": true, "version": true, "hash": true, "nextRefreshIn": true}
+	metaKeys = map[string]bool{"protocol": true, "version": true, "hash": true, "nextRefreshIn": true,
+		"expiresAt": true, "serverTime": true}
 )
 
 // answerError is an answer that is a JSON object but breaks protocol 1. The
@@ -161,6 +171,29 @@ func parseAnswer(body []byte) (*providerAnswer, error) {
 		return nil, answerErrorf("%v", err)
 	}
 	a.nextRefreshIn = next
+	// A time the core cannot read refuses the answer: a lease taken for
+	// none would keep an outbound the backend meant to end.
+	if raw := sections["expiresAt"]; !isNull(raw) {
+		var ends map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &ends); err != nil {
+			return nil, answerErrorf("expiresAt: %v", err)
+		}
+		a.expiresAt = make(map[string]time.Time, len(ends))
+		for _, tag := range slices.Sorted(maps.Keys(ends)) {
+			end, ok := answerTime(ends[tag])
+			if !ok {
+				return nil, answerErrorf("expiresAt of %s: %s is not a time in RFC 3339 with a zone", cut(tag), cut(string(ends[tag])))
+			}
+			a.expiresAt[tag] = end
+		}
+	}
+	if raw := sections["serverTime"]; !isNull(raw) {
+		t, ok := answerTime(raw)
+		if !ok {
+			return nil, answerErrorf("serverTime: %s is not a time in RFC 3339 with a zone", cut(string(raw)))
+		}
+		a.serverTime = t
+	}
 	for _, key := range []string{"version", "hash"} {
 		if v := sections[key]; a.version == "" && !isNull(v) {
 			if err := json.Unmarshal(v, &a.version); err != nil {
@@ -197,6 +230,27 @@ func parseAnswer(body []byte) (*providerAnswer, error) {
 }
 
 var domainStrategies = []string{"AsIs", "IPIfNonMatch", "IPOnDemand"}
+
+// answerTime reads a JSON string in RFC 3339 with a zone, fractions of a
+// second allowed.
+func answerTime(raw json.RawMessage) (time.Time, bool) {
+	var s string
+	if json.Unmarshal(raw, &s) != nil {
+		return time.Time{}, false
+	}
+	t, err := time.Parse(time.RFC3339, s)
+	return t, err == nil
+}
+
+// parseAge reads the Age a cache adds to an answer it kept, in whole
+// seconds; anything else counts as none.
+func parseAge(value string) time.Duration {
+	secs, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
+	if err != nil || secs < 0 {
+		return 0
+	}
+	return time.Duration(min(secs, int64(maxLease/time.Second))) * time.Second
+}
 
 // cut shortens a key or a value of an answer for an error, so that one odd
 // answer cannot fill the event log.
@@ -599,6 +653,7 @@ func (o *Observer) fetchOnce(cfg *providerSettings, tag string, body []byte) (fe
 		return r, fmt.Errorf("status %d", resp.StatusCode)
 	}
 	answer, err := io.ReadAll(io.LimitReader(resp.Body, cfg.maxBytes+1))
+	received := o.now()
 	r.bytes = len(answer)
 	if err != nil {
 		r.class = "network"
@@ -622,6 +677,11 @@ func (o *Observer) fetchOnce(cfg *providerSettings, tag string, body []byte) (fe
 		err = fmt.Errorf("invalid answer: %w", err)
 	default:
 		r.class = ""
+		// The leases count from the clock of the answer, as it arrived.
+		r.answer.received = received
+		if !r.date.IsZero() {
+			r.answer.date = r.date.Add(parseAge(resp.Header.Get("Age")))
+		}
 	}
 	return r, err
 }
@@ -703,10 +763,21 @@ func (o *Observer) applySet(rt *providerRuntime, a *providerAnswer, j *refreshJo
 		return fail(errors.New("closed"))
 	}
 	if a.version == rt.version {
+		// The version names the set, not the answer: the most common answer
+		// while leases run is the same set with later ends, which renews
+		// them without rebuilding anything.
+		now := o.now()
+		o.mu.Lock()
+		leases, moved := o.e.acceptLeases(rt.p, rt.p.tags, leasesOf(a, rt.cfg.prefix), now)
+		if moved {
+			o.e.refreshCandidates(now)
+		}
 		fields["ok"] = true
 		fields["changed"] = false
 		fields["unchanged"] = len(a.heads)
-		o.emit("provider_apply", fields)
+		leaseFields(fields, leases, rt.p)
+		o.e.emit(now, "provider_apply", fields)
+		o.mu.Unlock()
 		return false, nil
 	}
 	changes, unchanged, err := o.buildSet(rt, a)
@@ -846,6 +917,9 @@ func (o *Observer) applySet(rt *providerRuntime, a *providerAnswer, j *refreshJo
 	for i, c := range added {
 		addedTags[i] = c.tag
 	}
+	// Before the balancers see the set: an outbound whose lease ended on
+	// arrival is never taken as new.
+	leases, _ := o.e.acceptLeases(rt.p, tags, leasesOf(a, rt.cfg.prefix), now)
 	o.e.applyProviderSet(rt.p, providerChange{
 		tags: tags, costs: costs, added: addedTags, retire: removed, revive: revive, reset: reset,
 	}, now)
@@ -858,10 +932,39 @@ func (o *Observer) applySet(rt *providerRuntime, a *providerAnswer, j *refreshJo
 	fields["removed"] = len(removed)
 	fields["unchanged"] = len(unchanged)
 	fields["exhausted"] = exhausted
+	leaseFields(fields, leases, rt.p)
 	o.e.emit(now, "provider_apply", fields)
 	o.mu.Unlock()
 	o.settleDrains(rt)
 	return true, nil
+}
+
+// leasesOf gives the leases of an answer by full tag. A lease of a tag the
+// answer does not list is ignored.
+func leasesOf(a *providerAnswer, prefix string) leaseAnswer {
+	la := leaseAnswer{serverTime: a.serverTime, date: a.date, at: a.received}
+	for _, h := range a.heads {
+		if end, ok := a.expiresAt[h.Tag]; ok {
+			if la.ends == nil {
+				la.ends = map[string]time.Time{}
+			}
+			la.ends[prefix+h.Tag] = end
+		}
+	}
+	return la
+}
+
+// leaseFields tells in provider_apply what the answer did to the leases,
+// when it named any.
+func leaseFields(f map[string]any, c leaseCounts, p *provider) {
+	if c.leases == 0 {
+		return
+	}
+	f["leases"] = c.leases
+	f["renewed"] = c.renewed
+	f["expired"] = c.expired
+	f["skew_ms"] = p.skew.Milliseconds()
+	f["clock"] = p.clock
 }
 
 // buildSet validates the answer and creates handlers for outbounds that are

@@ -958,8 +958,8 @@ def fold_report(events):
             "probes_failed", "probe_bytes", "host_probe_requests", "host_probes", "upgrade_attempts",
             "upgrade_failures", "pinned_down",
             "network_changes", "network_known", "network_down", "provider_fetches", "provider_fetch_failures",
-            "provider_retry_after", "provider_applied", "provider_rejected", "provider_restart_needed", "pins",
-            "releases", "memory_low"]
+            "provider_retry_after", "provider_applied", "provider_rejected", "provider_restart_needed",
+            "provider_expired", "pins", "releases", "memory_low"]
     c = dict.fromkeys(keys, 0)
     c.update(switch_reasons={}, switch_path=[], provider_triggers={})
     decided = False
@@ -1011,6 +1011,9 @@ def fold_report(events):
                 decided = True
         elif t == "provider_restart_needed":
             c["provider_restart_needed"] += 1
+            decided = True
+        elif t == "provider_expired":
+            c["provider_expired"] += 1
             decided = True
         elif t in ("pin", "release"):
             c[t + "s"] += 1

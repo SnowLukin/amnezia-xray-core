@@ -139,6 +139,9 @@ type engine struct {
 	retiring map[string]bool
 	// Outbounds whose handler a provider is swapping right now.
 	replacing map[string]bool
+	// Outbounds whose provider lease ended: still candidates, but the last
+	// resort of every decision.
+	expired   map[string]bool
 	providers []*provider
 
 	lastGC time.Time
@@ -164,6 +167,7 @@ func newEngine(s *settings, seed int64) *engine {
 		costs:            map[string]map[string]float64{},
 		retiring:         map[string]bool{},
 		replacing:        map[string]bool{},
+		expired:          map[string]bool{},
 	}
 	for _, ps := range s.providers {
 		e.providers = append(e.providers, newProvider(ps))
@@ -176,6 +180,30 @@ func (e *engine) cost(s *selector, tag string) float64 {
 		return c
 	}
 	return s.cfg.cost(tag)
+}
+
+// rankCost is the cost decisions weigh: an outbound whose lease ended comes
+// after every other one. When everything ended, traffic goes through the
+// expired outbounds rather than to the fallback, and a revoked one is found
+// as any failed outbound is.
+func (e *engine) rankCost(s *selector, tag string) float64 {
+	if e.expired[tag] {
+		return math.Inf(1)
+	}
+	return e.cost(s, tag)
+}
+
+// leaving tells whether the balancers move off an outbound that may still
+// work: it left its provider set or its lease ended.
+func (e *engine) leaving(tag string) bool {
+	return e.retiring[tag] || e.expired[tag]
+}
+
+func (e *engine) leaveReason(tag string) string {
+	if e.retiring[tag] {
+		return "retired"
+	}
+	return "expired"
 }
 
 func (e *engine) jitter(d time.Duration, j float64) time.Duration {
@@ -234,6 +262,11 @@ func (e *engine) onFailure(tag string, kind failureKind, target string, conn uin
 		return
 	}
 	if e.s.passive.dialOnly && !kind.pathLevel() {
+		return
+	}
+	if e.expired[tag] && !e.active(tag) {
+		// Old connections of an outbound whose lease ended: the backend may
+		// have revoked it, which is no block.
 		return
 	}
 	p := e.pathAt(tag, now)
@@ -506,14 +539,16 @@ func (e *engine) addSelector(tag string, cfg *selectorSettings) *selector {
 	return s
 }
 
-// ranked returns usable candidates from cheapest to most expensive. Within
-// one cost, outbounds known to work go first, then candidate order.
+// ranked returns usable candidates from cheapest to most expensive, the ones
+// whose lease ended last. Within one cost, outbounds known to work go first,
+// then candidate order.
 func (e *engine) ranked(s *selector, now time.Time, skip func(string) bool) []string {
 	type item struct {
-		tag   string
-		cost  float64
-		known int
-		order int
+		tag     string
+		expired bool
+		cost    float64
+		known   int
+		order   int
 	}
 	var items []item
 	for i, c := range s.candidates {
@@ -528,9 +563,12 @@ func (e *engine) ranked(s *selector, now time.Time, skip func(string) bool) []st
 		if p.status == statusUp {
 			known = 0
 		}
-		items = append(items, item{c, e.cost(s, c), known, i})
+		items = append(items, item{c, e.expired[c], e.cost(s, c), known, i})
 	}
 	sort.SliceStable(items, func(i, j int) bool {
+		if items[i].expired != items[j].expired {
+			return !items[i].expired
+		}
 		if items[i].cost != items[j].cost {
 			return items[i].cost < items[j].cost
 		}
@@ -581,8 +619,8 @@ func (e *engine) updateCandidates(s *selector, candidates []string, now time.Tim
 		s.started = true
 		e.start(s, now)
 	case s.pinned != "":
-	case cur != "" && e.retiring[cur] && slices.Contains(candidates, cur):
-		e.leaveRetiring(s, now)
+	case cur != "" && e.leaving(cur) && slices.Contains(candidates, cur):
+		e.leaveOutbound(s, now)
 	case cur != "" && !s.hasCandidate(cur):
 		e.failover(s, now)
 	case s.exhausted:
@@ -607,11 +645,12 @@ func (e *engine) start(s *selector, now time.Time) {
 		e.switchTo(s, s.pinned, "start_pinned", now)
 		return
 	}
-	if tag := e.rememberedFor(s); tag != "" && s.hasCandidate(tag) && e.path(tag).usable(now) {
+	// Neither is taken once its lease ended: the cheapest live candidate is.
+	if tag := e.rememberedFor(s); tag != "" && s.hasCandidate(tag) && e.path(tag).usable(now) && !e.expired[tag] {
 		e.switchTo(s, tag, "start_remembered", now)
 		return
 	}
-	if tag := s.cfg.startWith; tag != "" && s.hasCandidate(tag) && e.path(tag).usable(now) {
+	if tag := s.cfg.startWith; tag != "" && s.hasCandidate(tag) && e.path(tag).usable(now) && !e.expired[tag] {
 		e.switchTo(s, tag, "start_with", now)
 		return
 	}
@@ -696,51 +735,63 @@ func (e *engine) failover(s *selector, now time.Time) {
 		e.switchTo(s, next[0], "failover", now)
 		return
 	}
-	if !e.probeCandidates(s, now) {
+	if !e.probeCandidates(s, now, nil) {
 		e.exhaust(s, now)
 	}
 }
 
-// leaveRetiring moves the balancer off an outbound that left its provider
-// set. Unlike a failover the outbound still works, so the balancer stays on
-// it while there is nothing else to take.
-func (e *engine) leaveRetiring(s *selector, now time.Time) {
+// leaveOutbound moves the balancer off an outbound that left its provider
+// set or whose lease ended. Unlike a failover the outbound still works, so
+// the balancer stays on it while there is nothing else to take, and it never
+// moves to another outbound whose lease ended: that would only hop between
+// them.
+func (e *engine) leaveOutbound(s *selector, now time.Time) {
 	if s.pinned != "" {
 		return
 	}
-	if e.path(s.current()).status == statusDown {
+	cur := s.current()
+	if e.path(cur).status == statusDown {
 		e.failover(s, now)
 		return
 	}
 	if s.failoverTried == nil {
 		s.failoverTried = map[string]bool{}
 	}
-	s.failoverTried[s.current()] = true
+	s.failoverTried[cur] = true
 	if !s.cfg.switchAfterProbe {
-		if next := e.ranked(s, now, func(t string) bool { return s.failoverTried[t] }); len(next) > 0 {
-			e.switchTo(s, next[0], "retired", now)
+		if next := e.ranked(s, now, func(t string) bool { return s.failoverTried[t] || e.expired[t] }); len(next) > 0 {
+			e.switchTo(s, next[0], e.leaveReason(cur), now)
 			return
 		}
-	} else if e.probeCandidates(s, now) {
+	} else if e.probeCandidates(s, now, e.expired) {
 		return
 	}
-	// Staying; once the drain ends, a failover considers every candidate
-	// again, also the ones that failed here and rested since.
+	// Staying; once the drain ends or the lease is renewed, a failover
+	// considers every candidate again, also the ones that failed here and
+	// rested since.
 	s.failoverTried = nil
+	if e.expired[cur] && s.upgradeAt.IsZero() && s.upgradeTarget == "" {
+		// No drain ends an expired outbound: a live candidate that rested
+		// its quarantine is a return.
+		e.scheduleUpgrade(s, now, true)
+	}
 }
 
 // probeCandidates moves the balancer to the cheapest candidate that passed
 // its probe, once no cheaper candidate is open: being probed or not tried
 // yet. Until then it probes the cheapest open candidates, up to concurrent
 // at a time, so that dead candidates do not cost a probe timeout each in
-// turn. It reports false when no candidate is left.
-func (e *engine) probeCandidates(s *selector, now time.Time) bool {
+// turn. Candidates in avoid are not taken. It reports false when no
+// candidate is left.
+func (e *engine) probeCandidates(s *selector, now time.Time, avoid map[string]bool) bool {
 	cur := s.current()
-	ranked := e.ranked(s, now, func(t string) bool { return t == cur })
+	ranked := e.ranked(s, now, func(t string) bool { return t == cur || avoid[t] })
 	if tag := e.failoverChoice(s, ranked); tag != "" {
+		// A balancer leaving a working outbound tells why; one that failed
+		// is a failover.
 		reason := "failover"
-		if e.retiring[cur] {
-			reason = "retired"
+		if e.leaving(cur) && e.path(cur).status != statusDown {
+			reason = e.leaveReason(cur)
 		}
 		e.switchTo(s, tag, reason, now)
 		return true
@@ -757,7 +808,7 @@ func (e *engine) probeCandidates(s *selector, now time.Time) bool {
 		if len(s.failoverProbing) >= e.s.schedule.concurrent {
 			break
 		}
-		c := e.cost(s, t)
+		c := e.rankCost(s, t)
 		switch {
 		case s.failoverProbing[t]:
 		case s.failoverTried[t]:
@@ -768,8 +819,9 @@ func (e *engine) probeCandidates(s *selector, now time.Time) bool {
 			continue
 		case names[e.serverName(t)]:
 			// Its turn comes when the probe of its server name has answered.
-		case s.cfg.isLazy(t) && open < c:
-			// Lazy outbounds are tried only once everything cheaper is down.
+		case (s.cfg.isLazy(t) || e.expired[t]) && open < c:
+			// Lazy outbounds are tried only once everything cheaper is down,
+			// and ones whose lease ended once every other one is.
 		default:
 			s.failoverTried[t] = true
 			s.failoverProbing[t] = true
@@ -786,7 +838,7 @@ func (e *engine) probeCandidates(s *selector, now time.Time) bool {
 func (e *engine) failoverChoice(s *selector, ranked []string) string {
 	open := math.Inf(1)
 	for _, t := range ranked {
-		c := e.cost(s, t)
+		c := e.rankCost(s, t)
 		switch {
 		case s.failoverProbing[t] || !s.failoverTried[t]:
 			open = math.Min(open, c)
@@ -848,10 +900,12 @@ func (e *engine) scheduleUpgrade(s *selector, now time.Time, soon bool) {
 	s.upgradeAt = maxTime(now.Add(wait), s.activeSince.Add(s.cfg.minHold))
 }
 
+// hasCheaper tells whether a return is worth waiting for. There is none to
+// an outbound whose lease ended, and from one any live outbound is a return.
 func (e *engine) hasCheaper(s *selector, cur string) bool {
-	c := e.cost(s, cur)
+	c := e.rankCost(s, cur)
 	for _, t := range s.candidates {
-		if e.cost(s, t) < c && !s.cfg.isLazy(t) {
+		if e.rankCost(s, t) < c && !s.cfg.isLazy(t) {
 			return true
 		}
 	}
@@ -860,9 +914,9 @@ func (e *engine) hasCheaper(s *selector, cur string) bool {
 
 func (e *engine) upgradeTargetFor(s *selector, now time.Time) string {
 	cur := s.current()
-	c := e.cost(s, cur)
+	c := e.rankCost(s, cur)
 	for _, t := range e.ranked(s, now, func(t string) bool { return t == cur || s.cfg.isLazy(t) }) {
-		if e.cost(s, t) < c {
+		if e.rankCost(s, t) < c {
 			return t
 		}
 	}
@@ -1163,10 +1217,10 @@ func (e *engine) maybeUpgrade(s *selector, now time.Time) time.Time {
 	if target == "" {
 		// Cheaper outbounds rest in quarantine; look again when the first rest ends.
 		var wake time.Time
-		cur := e.cost(s, s.current())
+		cur := e.rankCost(s, s.current())
 		for _, c := range s.candidates {
 			p := e.path(c)
-			if e.cost(s, c) < cur && !s.cfg.isLazy(c) && p.quarantined(now) {
+			if e.rankCost(s, c) < cur && !s.cfg.isLazy(c) && p.quarantined(now) {
 				if wake.IsZero() || p.quarantineUntil.Before(wake) {
 					wake = p.quarantineUntil
 				}
@@ -1270,8 +1324,8 @@ func (e *engine) onProbeResult(j *probeJob, r probeResult, now time.Time) {
 			switch {
 			case !s.exhausted && e.path(cur).status == statusDown:
 				e.failover(s, now)
-			case e.retiring[cur]:
-				e.leaveRetiring(s, now)
+			case e.leaving(cur):
+				e.leaveOutbound(s, now)
 			case s.pinned == "":
 				// The outbound works again; a candidate that passed still moves
 				// the balancer, nothing more is probed.
@@ -1603,7 +1657,7 @@ func (e *engine) onNetworkChange(id string, now time.Time) {
 			}
 			continue
 		}
-		if tag := e.rememberedFor(s); tag != "" && tag != s.current() && s.hasCandidate(tag) {
+		if tag := e.rememberedFor(s); tag != "" && tag != s.current() && s.hasCandidate(tag) && !e.expired[tag] {
 			e.enqueue(tag, reasonRemembered, s.tag, now)
 			continue
 		}
@@ -1721,9 +1775,10 @@ func (e *engine) releaseBy(selectorTag, by string, now time.Time) bool {
 	cur := s.current()
 	switch {
 	case cur == "":
-	case e.retiring[cur]:
-		// A provider took the pinned outbound out of its set meanwhile.
-		e.leaveRetiring(s, now)
+	case e.leaving(cur):
+		// A provider took the pinned outbound out of its set meanwhile, or
+		// its lease ended.
+		e.leaveOutbound(s, now)
 		return true
 	case e.path(cur).status == statusDown || !s.hasCandidate(cur):
 		e.failover(s, now)

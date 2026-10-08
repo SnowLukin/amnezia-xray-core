@@ -139,10 +139,11 @@ func (e *engine) requestProbe(balancer string, outbounds []string, now time.Time
 
 // probePlan is what a request without outbounds covers: the outbound the
 // balancer uses, the usable candidates from the cheapest, then the ones in
-// quarantine, which are answered without a probe. Lazy outbounds stay out.
+// quarantine, which are answered without a probe. Lazy outbounds and ones
+// whose lease ended stay out; a request that lists them probes them.
 func (e *engine) probePlan(s *selector, now time.Time) []string {
 	cur := s.current()
-	skip := func(t string) bool { return t == cur || s.cfg.isLazy(t) }
+	skip := func(t string) bool { return t == cur || s.cfg.isLazy(t) || e.expired[t] }
 	var plan []string
 	if cur != "" {
 		plan = append(plan, cur)

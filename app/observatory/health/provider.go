@@ -9,10 +9,11 @@ import (
 type refreshTrigger int
 
 // Ordered by urgency: when several triggers want a refresh at once, the
-// refresh is named after the first one.
+// refresh is named after the first one that may start.
 const (
 	triggerHost refreshTrigger = iota
 	triggerExhausted
+	triggerExpiry
 	triggerMinHealthy
 	triggerCostAbove
 	triggerNetwork
@@ -28,6 +29,8 @@ func (t refreshTrigger) String() string {
 		return "host"
 	case triggerExhausted:
 		return "exhausted"
+	case triggerExpiry:
+		return "expiry"
 	case triggerMinHealthy:
 		return "min_healthy"
 	case triggerCostAbove:
@@ -45,7 +48,8 @@ func (t refreshTrigger) String() string {
 	}
 }
 
-// urgent triggers wait only for the shorter exhaustedMinInterval.
+// urgent triggers wait only for the shorter exhaustedMinInterval. An expiry
+// is urgent as its leases tell.
 func (t refreshTrigger) urgent() bool {
 	return t == triggerHost || t == triggerExhausted
 }
@@ -103,6 +107,14 @@ type provider struct {
 	lastFailedAt time.Time
 	lastStatus   int
 	lastClass    string
+
+	// Leases of the outbounds of the set by full tag; an outbound without
+	// one has no end. At most one per outbound of the set.
+	leases map[string]*lease
+	// How far the clock the last answer counts from is ahead of the device,
+	// and which clock that is: server, date or device.
+	skew  time.Duration
+	clock string
 }
 
 func newProvider(cfg *providerSettings) *provider {
@@ -119,6 +131,8 @@ type refreshJob struct {
 	refresh uint64
 	// The body of a POST, gathered when the refresh starts.
 	request *providerRequest
+	// Leases the refresh asks about, whatever its trigger.
+	asked []askedLease
 }
 
 type refreshOutcome struct {
@@ -160,33 +174,35 @@ func (e *engine) tickProviders(now time.Time) ([]*refreshJob, time.Time) {
 			p.setAt = now
 			e.scheduleRefresh(p, 0, now)
 		}
+		// A lease ends during a request as well.
+		soonest(e.tickLeases(p, now))
 		if p.fetching {
 			continue
 		}
-		trigger, ok, next := e.wantedRefresh(p, now)
+		want, expiry, next := e.wantedRefresh(p, now)
 		if !idle {
 			soonest(next)
+		}
+		// Each trigger that wants a refresh goes through the waits that are
+		// not limits, and the first one through starts it: an idle
+		// exhausted balancer must not hide an expiry, which does not wait
+		// for traffic.
+		trigger, ok := refreshTrigger(0), false
+		for t := refreshTrigger(0); t < triggerCount && !ok; t++ {
+			if !want[t] {
+				continue
+			}
+			if why := e.heldBack(t, expiry, idle); why != "" {
+				e.skipRefresh(p, t, why, 0, now)
+				continue
+			}
+			trigger, ok = t, true
 		}
 		if !ok {
 			continue
 		}
-		// Without user traffic nobody needs fresh outbounds now; the next
-		// connection wakes the observer again. The host is always answered.
-		if idle && trigger != triggerHost {
-			e.skipRefresh(p, trigger, "idle", 0, now)
-			continue
-		}
-		if e.networkDown && trigger != triggerHost {
-			e.skipRefresh(p, trigger, "network_down", 0, now)
-			continue
-		}
-		// A refresh is the heaviest work of the observer. With low memory
-		// only the host and a balancer with nothing left wait for one.
-		if e.memoryLow && !trigger.urgent() {
-			e.skipRefresh(p, trigger, "memory", 0, now)
-			continue
-		}
-		if at, why := p.allowedAt(trigger, now); now.Before(at) {
+		urgent := trigger.urgent() || (trigger == triggerExpiry && expiry.urgent)
+		if at, why := p.allowedAt(urgent, now); now.Before(at) {
 			e.skipRefresh(p, trigger, why, at.Sub(now), now)
 			soonest(at)
 			continue
@@ -196,9 +212,35 @@ func (e *engine) tickProviders(now time.Time) ([]*refreshJob, time.Time) {
 	return jobs, wake
 }
 
-// wantedRefresh returns the most urgent trigger that wants a refresh now
-// and, either way, the earliest time a waiting trigger becomes due.
-func (e *engine) wantedRefresh(p *provider, now time.Time) (refreshTrigger, bool, time.Time) {
+// heldBack returns why a trigger that wants a refresh waits whatever the
+// limits allow, or "" when it does not.
+func (e *engine) heldBack(t refreshTrigger, expiry expiryWant, idle bool) string {
+	switch {
+	case t == triggerHost:
+		// The host is always answered.
+		return ""
+	case idle && !(t == triggerExpiry && expiry.fresh):
+		// Without user traffic nobody needs fresh outbounds now; the next
+		// connection wakes the observer again. The first request for a
+		// lease does not wait: an outbound would end under a sleeping
+		// device. A retry after a failure does, or a dead backend would
+		// wake the device every backoff.
+		return "idle"
+	case e.networkDown:
+		return "network_down"
+	case e.memoryLow && !t.urgent() && !(t == triggerExpiry && expiry.urgent):
+		// A refresh is the heaviest work of the observer. With low memory
+		// only the host, a balancer with nothing left and a lease that
+		// ended wait for one.
+		return "memory"
+	}
+	return ""
+}
+
+// wantedRefresh returns the triggers that want a refresh now, what the
+// leases want, and, either way, the earliest time a waiting trigger becomes
+// due. Leases keep their own time, see tickLeases.
+func (e *engine) wantedRefresh(p *provider, now time.Time) ([triggerCount]bool, expiryWant, time.Time) {
 	var want [triggerCount]bool
 	var wake time.Time
 	soonest := func(t time.Time) {
@@ -265,18 +307,19 @@ func (e *engine) wantedRefresh(p *provider, now time.Time) (refreshTrigger, bool
 			want[triggerMaxAge] = true
 		}
 	}
-	for t := refreshTrigger(0); t < triggerCount; t++ {
-		if want[t] {
-			return t, true, wake
-		}
-	}
-	return 0, false, wake
+	expiry := p.expiryWant()
+	want[triggerExpiry] = expiry.want
+	return want, expiry, wake
 }
 
-// healthy counts candidates that are working or not judged yet.
+// healthy counts candidates that are working or not judged yet. One whose
+// lease ended is gone for minHealthy, however well it works.
 func (e *engine) healthy(s *selector) int {
 	n := 0
 	for _, c := range s.candidates {
+		if e.expired[c] {
+			continue
+		}
 		p := e.paths[c]
 		if p == nil || p.status == statusUp || p.status == statusUnknown {
 			n++
@@ -293,18 +336,19 @@ func (e *engine) notCheapest(s *selector) bool {
 	if cur == "" || s.pinned != "" {
 		return false
 	}
-	c := e.cost(s, cur)
+	c := e.rankCost(s, cur)
 	for _, t := range s.candidates {
-		if e.cost(s, t) < c {
+		if e.rankCost(s, t) < c {
 			return true
 		}
 	}
 	return false
 }
 
-// allowedAt returns when a refresh for the trigger may start and which
-// limit holds it back until then.
-func (p *provider) allowedAt(t refreshTrigger, now time.Time) (time.Time, string) {
+// allowedAt returns when a refresh for a trigger may start and which limit
+// holds it back until then. An urgent one waits only for the shorter
+// exhaustedMinInterval.
+func (p *provider) allowedAt(urgent bool, now time.Time) (time.Time, string) {
 	var at time.Time
 	why := ""
 	later := func(t time.Time, reason string) {
@@ -313,7 +357,7 @@ func (p *provider) allowedAt(t refreshTrigger, now time.Time) (time.Time, string
 		}
 	}
 	gap := p.cfg.minInterval
-	if t.urgent() {
+	if urgent {
 		gap = p.cfg.exhaustedMinInterval
 	}
 	if !p.lastAttempt.IsZero() && gap > 0 {
@@ -360,7 +404,7 @@ func (e *engine) beginRefresh(p *provider, t refreshTrigger, now time.Time) *ref
 	p.retrying = false
 	clear(p.skipped)
 	p.refreshSeq++
-	j := &refreshJob{p: p, trigger: t, retry: p.failures, refresh: p.refreshSeq}
+	j := &refreshJob{p: p, trigger: t, retry: p.failures, refresh: p.refreshSeq, asked: p.askLeases()}
 	if p.cfg.method == http.MethodPost {
 		j.request = e.providerRequest(p, j, now)
 	}
@@ -383,6 +427,7 @@ func (e *engine) onRefreshDone(j *refreshJob, r refreshOutcome, now time.Time) {
 	p := j.p
 	p.fetching = false
 	p.refreshes++
+	p.answeredLeases(j.asked, r.ok)
 	if r.ok {
 		p.setAt = now
 		// Host requests made while the refresh ran are answered by it.
@@ -557,6 +602,9 @@ func (e *engine) dropProviderOutbound(tag string, now time.Time) {
 	delete(e.retiring, tag)
 	for _, m := range e.costs {
 		delete(m, tag)
+	}
+	for _, p := range e.providers {
+		e.dropLease(p, tag)
 	}
 	for _, s := range e.sortedSelectors() {
 		snap := s.snapshot.Load()

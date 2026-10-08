@@ -656,3 +656,33 @@ func TestRequestBodyListsConfigOutboundsBeforeTheFirstAnswer(t *testing.T) {
 		t.Fatalf("outbounds of the first request %v", body.Outbounds)
 	}
 }
+
+// A cache sends the Date of the answer it keeps and how long it kept it as
+// Age, with the old serverTime inside: the leases count from Date plus Age.
+func TestLeaseCountsFromDatePlusAgeOfACachedAnswer(t *testing.T) {
+	now := time.Now().UTC()
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Date", now.Add(-10*time.Minute).Format(http.TimeFormat))
+		w.Header().Set("Age", "600")
+		_, _ = fmt.Fprintf(w, `{"outbounds": [{"tag": "x1", "protocol": "freedom"}], "serverTime": %q, "expiresAt": {"x1": %q}}`,
+			now.Add(-time.Hour).Format(time.RFC3339), now.Add(time.Hour).Format(time.RFC3339))
+	}))
+	defer ts.Close()
+	obs := twoViaCore(t, ts.URL+"/set")
+	w := &eventWaiter{t: t, o: obs}
+	obs.RequestRefresh("fresh")
+	ev := w.until("provider_apply", nil)
+	skew, _ := ev.Fields["skew_ms"].(float64)
+	if ev.Fields["ok"] != true || ev.Fields["leases"] != 1.0 || ev.Fields["clock"] != "date" || skew < -3000 || skew > 3000 {
+		t.Fatalf("apply %v; want one lease by the clock of Date plus Age", ev.Fields)
+	}
+	var st struct {
+		Providers []struct {
+			Clock   string `json:"clock"`
+			Expired int    `json:"expired"`
+		} `json:"providers"`
+	}
+	if err := json.Unmarshal(obs.Status(), &st); err != nil || st.Providers[0].Clock != "date" || st.Providers[0].Expired != 0 {
+		t.Fatalf("status %+v, %v", st, err)
+	}
+}
