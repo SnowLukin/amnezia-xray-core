@@ -141,7 +141,10 @@ type engine struct {
 	replacing map[string]bool
 	// Outbounds whose provider lease ended: still candidates, but the last
 	// resort of every decision.
-	expired   map[string]bool
+	expired map[string]bool
+	// Counts the times leases ended, so that step sees one ending in the
+	// providers' part of its turn.
+	leaseEnds uint64
 	providers []*provider
 
 	lastGC time.Time
@@ -1141,13 +1144,16 @@ func (e *engine) tick(now time.Time) ([]*probeJob, time.Time) {
 // refreshes to start now and when to come back (zero means only on new
 // events). Providers go after the probes, since their triggers judge what
 // the probes decided. A lease that ends there moves balancers off its
-// outbound, and the probes that queues start in this turn as well rather
-// than at whatever wakes the loop next.
+// outbound, so the probes go once more: the probes that queues start in
+// this turn as well rather than at whatever wakes the loop next, and a
+// balancer that stays for now gets the wake of its return. Nothing else
+// may wake the loop: traffic through the outbound that still works sends
+// no kick.
 func (e *engine) step(now time.Time) ([]*probeJob, []*refreshJob, time.Time) {
 	jobs, wake := e.tick(now)
-	queued := e.nextID
+	queued, ended := e.nextID, e.leaseEnds
 	refreshes, refreshWake := e.tickProviders(now)
-	if e.nextID != queued {
+	if e.nextID != queued || e.leaseEnds != ended {
 		more, moreWake := e.tick(now)
 		jobs = append(jobs, more...)
 		wake = soonestOf(wake, moreWake)

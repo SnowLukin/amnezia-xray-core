@@ -212,6 +212,7 @@ func (e *engine) expireLeases(p *provider, now time.Time) bool {
 		return false
 	}
 	sort.Strings(ended)
+	e.leaseEnds++
 	for _, tag := range ended {
 		l := p.leases[tag]
 		l.expired = true

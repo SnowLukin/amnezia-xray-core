@@ -225,6 +225,43 @@ func TestLeaseEndStartsTheProbeInTheSameTurn(t *testing.T) {
 	}
 }
 
+// A lease that ends while nothing live is usable leaves the balancer where
+// it is, waiting for a return. The loop follows only the wakes of step:
+// the outbound still works, so its traffic sends no kick, and the backend
+// answered the renewal without one, so no refresh comes either. The turn
+// in which the lease ends must give the wake of that return.
+func TestLeaseEndGivesTheWakeOfTheReturn(t *testing.T) {
+	te := leaseEngine(t, renewing(nil), &SelectorConfig{Costs: costs("p-x1", 1, "a", 2)}, "p-x1", "a1")
+	te.lease(t0, map[string]time.Duration{"p-x1": time.Minute}, "p-x1")
+	te.failN(3, "a1", failDial, at(time.Second))
+	rested := te.path("a1").quarantineUntil
+	now := at(time.Second)
+	for now.Before(at(time.Hour)) && te.sel.current() != "a1" {
+		te.traffic(now)
+		jobs, refreshes, wake := te.step(now)
+		for _, j := range refreshes {
+			te.sameSet(now, map[string]time.Time{"p-x1": at(time.Minute)})
+			te.onRefreshDone(j, refreshOutcome{ok: true}, now)
+		}
+		for _, j := range jobs {
+			te.onProbeResult(j, probeResult{ok: true, rtt: 50 * time.Millisecond, bytes: 40_000}, now)
+		}
+		if len(jobs) > 0 || len(refreshes) > 0 {
+			// What ended kicks the loop, which steps at once.
+			continue
+		}
+		if wake.IsZero() {
+			t.Fatalf("no wake at %v on %q (expired %v), the return planned at %v",
+				now.Sub(t0), te.sel.current(), te.expired[te.sel.current()], te.sel.upgradeAt.Sub(t0))
+		}
+		now = wake
+	}
+	if sw := te.lastOf(t, "switch"); te.sel.current() != "a1" || sw.Fields["reason"] != "upgrade" ||
+		now.Sub(rested) > time.Minute {
+		t.Fatalf("on %q at %v after %v; a1 rested at %v", te.sel.current(), now.Sub(t0), sw.Fields, rested.Sub(t0))
+	}
+}
+
 func TestExpiryEventTellsWhyThereWasNoRenewal(t *testing.T) {
 	for _, tc := range []struct {
 		renewAt float64
