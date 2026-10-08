@@ -69,6 +69,25 @@ message GetReportResponse {
   string json = 1;
 }
 
+message ProbeRequest {
+  string balancer = 1;
+  // Candidates of the balancer to probe. Empty lets the observatory choose:
+  // the outbound the balancer uses, then its other candidates.
+  repeated string outbounds = 2;
+  // Wait up to this long for the result; 0 answers at once. The deadline of
+  // the call shortens the wait.
+  int64 wait_ms = 3;
+}
+
+message ProbeResponse {
+  // The request, as the status names it under probe_requests; ids start
+  // anew with every run of the core.
+  uint64 id = 1;
+  string run = 2;
+  // The request with the result per outbound as JSON, as in the status.
+  string json = 3;
+}
+
 service HealthService {
   rpc GetStatus(GetStatusRequest) returns (GetStatusResponse) {}
   rpc DrainEvents(DrainEventsRequest) returns (DrainEventsResponse) {}
@@ -76,6 +95,7 @@ service HealthService {
   rpc Pin(PinRequest) returns (PinResponse) {}
   rpc Refresh(RefreshRequest) returns (RefreshResponse) {}
   rpc GetReport(GetReportRequest) returns (GetReportResponse) {}
+  rpc Probe(ProbeRequest) returns (ProbeResponse) {}
 }
 
 message Config {}

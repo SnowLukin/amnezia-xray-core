@@ -2,6 +2,7 @@ package command
 
 import (
 	"context"
+	"time"
 
 	"github.com/xtls/xray-core/app/observatory/health"
 	"github.com/xtls/xray-core/common"
@@ -78,6 +79,40 @@ func (s *service) GetReport(_ context.Context, r *GetReportRequest) (*GetReportR
 		report = s.observer.Report()
 	}
 	return &GetReportResponse{Json: string(report)}, nil
+}
+
+// Probe polls the result instead of waiting on the observer, which keeps no
+// channels for waiting callers. It answers this much before the deadline of
+// the call with what is known by then.
+const (
+	probePoll   = 250 * time.Millisecond
+	probeMargin = 300 * time.Millisecond
+)
+
+func (s *service) Probe(ctx context.Context, r *ProbeRequest) (*ProbeResponse, error) {
+	if err := s.ready(); err != nil {
+		return nil, err
+	}
+	ticket, err := s.observer.RequestProbe(health.ProbeRequest{Balancer: r.Balancer, Outbounds: r.Outbounds})
+	if err != nil {
+		return nil, err
+	}
+	until := time.Now().Add(time.Duration(r.WaitMs) * time.Millisecond)
+	if deadline, ok := ctx.Deadline(); ok && deadline.Add(-probeMargin).Before(until) {
+		until = deadline.Add(-probeMargin)
+	}
+	for {
+		result, done := s.observer.ProbeResult(ticket.ID)
+		wait := time.Until(until)
+		if done || result == nil || wait <= 0 {
+			return &ProbeResponse{Id: ticket.ID, Run: ticket.Run, Json: string(result)}, nil
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(min(wait, probePoll)):
+		}
+	}
 }
 
 func (s *service) Register(server *grpc.Server) {
