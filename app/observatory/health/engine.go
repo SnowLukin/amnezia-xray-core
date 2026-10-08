@@ -1,0 +1,1335 @@
+package health
+
+import (
+	"math/rand"
+	"sort"
+	"sync/atomic"
+	"time"
+)
+
+type probeReason int
+
+const (
+	reasonConnectivity probeReason = iota
+	reasonConfirm
+	reasonFailover
+	reasonNetwork
+	reasonRemembered
+	reasonRecheck
+	reasonUpgrade
+)
+
+func (r probeReason) String() string {
+	switch r {
+	case reasonConnectivity:
+		return "connectivity"
+	case reasonConfirm:
+		return "confirm"
+	case reasonFailover:
+		return "failover"
+	case reasonNetwork:
+		return "network_change"
+	case reasonRemembered:
+		return "remembered"
+	case reasonRecheck:
+		return "recheck"
+	case reasonUpgrade:
+		return "upgrade"
+	default:
+		return "unknown"
+	}
+}
+
+// probeJob is one probe of an outbound. Jobs are shared: one probe of a tag
+// for a reason answers every balancer waiting for it.
+type probeJob struct {
+	id         uint64
+	tag        string
+	reason     probeReason
+	selector   string
+	notBefore  time.Time
+	generation uint64
+}
+
+type probeResult struct {
+	ok    bool
+	rtt   time.Duration
+	bytes int64
+	err   string
+}
+
+// Outbounds no balancer offers any more are forgotten after this long.
+const staleAfter = 30 * time.Minute
+
+// engine makes every decision. It never blocks and never reads the clock:
+// the caller passes the time and runs the probes the engine asks for.
+// It is not safe for concurrent use; the observer guards it with a mutex.
+type engine struct {
+	s         *settings
+	rnd       *rand.Rand
+	paths     map[string]*path
+	selectors map[string]*selector
+	events    *eventLog
+
+	queue   []*probeJob
+	running map[uint64]*probeJob
+	nextID  uint64
+
+	lastStart     time.Time
+	nextSpacing   time.Duration
+	starts        []time.Time
+	startsByName  map[string][]time.Time
+	serverNameFor func(tag string) string
+
+	generation uint64
+	networkID  string
+	networks   map[string]map[string]string
+	netOrder   []string
+
+	lastDemand atomic.Int64
+
+	networkDown        bool
+	checkFails         int
+	checkFailingSince  time.Time
+	nextConnectivity   time.Time
+	lastConnectivityOK time.Time
+	// The check kept failing for maxPause and decisions resumed. What they
+	// rule out comes back once a check passes.
+	doubt bool
+	// The check failed while outbounds worked; it is not used in this network.
+	connectivityIgnored bool
+	lastSuccess         time.Time
+	pendingSuspicion    map[string]verdict
+
+	lastGC time.Time
+}
+
+func newEngine(s *settings, seed int64) *engine {
+	return &engine{
+		s:                s,
+		rnd:              rand.New(rand.NewSource(seed)),
+		paths:            map[string]*path{},
+		selectors:        map[string]*selector{},
+		events:           newEventLog(s.maxEvents, s.maxBytes),
+		running:          map[uint64]*probeJob{},
+		startsByName:     map[string][]time.Time{},
+		networks:         map[string]map[string]string{},
+		pendingSuspicion: map[string]verdict{},
+		serverNameFor:    func(tag string) string { return tag },
+	}
+}
+
+func (e *engine) jitter(d time.Duration, j float64) time.Duration {
+	if j <= 0 || d <= 0 {
+		return d
+	}
+	return time.Duration(float64(d) * (1 + j*(2*e.rnd.Float64()-1)))
+}
+
+func (e *engine) path(tag string) *path {
+	p := e.paths[tag]
+	if p == nil {
+		p = &path{tag: tag}
+		e.paths[tag] = p
+	}
+	return p
+}
+
+func (e *engine) emit(now time.Time, typ string, fields map[string]any) {
+	e.events.add(now, typ, fields)
+}
+
+func (e *engine) noteDemand(now time.Time) {
+	e.lastDemand.Store(now.UnixNano())
+}
+
+func (e *engine) idle(now time.Time) bool {
+	last := e.lastDemand.Load()
+	return last == 0 || now.Sub(time.Unix(0, last)) > e.s.schedule.pauseWhenIdle
+}
+
+func (e *engine) active(tag string) bool {
+	for _, s := range e.selectors {
+		if s.current() == tag {
+			return true
+		}
+	}
+	return false
+}
+
+// ---- passive evidence -----------------------------------------------------
+
+func (e *engine) onFailure(tag string, kind failureKind, target string, conn uint32, now time.Time) {
+	if e.networkDown {
+		return
+	}
+	if e.s.passive.dialOnly && !kind.pathLevel() {
+		return
+	}
+	p := e.path(tag)
+	if p.status == statusDown && p.quarantined(now) {
+		return
+	}
+	if p.status == statusSuspect {
+		if _, ok := e.pendingSuspicion[p.tag]; ok {
+			// Waits for the network check; the network may be what failed.
+			return
+		}
+		if e.queued(p.tag, reasonConfirm) {
+			// The probe confirms weak evidence; strong evidence needs no proof.
+			if p.addFailure(failure{at: now, kind: kind, target: target, conn: conn}, e.s.passive.window) &&
+				p.evaluate(&e.s.passive).strong {
+				e.dropQueued(p.tag, reasonConfirm)
+				e.markDown(p, "traffic", now)
+			}
+			return
+		}
+	}
+	if !p.addFailure(failure{at: now, kind: kind, target: target, conn: conn}, e.s.passive.window) {
+		return
+	}
+	v := p.evaluate(&e.s.passive)
+	if !v.suspect {
+		return
+	}
+	// Strong evidence does not wait for the cooldown that false alarms of
+	// weak evidence earned.
+	if !v.strong && now.Before(p.cooldownUntil) {
+		return
+	}
+	e.suspect(p, v, now)
+}
+
+// awaiting reports whether a decision about the outbound is already on its way.
+func (e *engine) awaiting(tag string) bool {
+	if _, ok := e.pendingSuspicion[tag]; ok {
+		return true
+	}
+	return e.queued(tag, reasonConfirm)
+}
+
+func (e *engine) onSuccess(tag string, now time.Time) {
+	p := e.path(tag)
+	e.sawSuccess("traffic", now)
+	if p.status == statusDown && p.quarantined(now) {
+		// Old connections may still work on an address that refuses new ones.
+		return
+	}
+	p.success(now)
+	if p.status != statusUp {
+		p.quarantineLevel = 0
+		p.provisional = false
+		if p.setStatus(statusUp, "traffic", now) {
+			e.emitPath(p, now)
+		}
+	}
+	e.remember(tag)
+}
+
+func (e *engine) emitPath(p *path, now time.Time) {
+	f := map[string]any{"outbound": p.tag, "state": p.status.String(), "reason": p.reason}
+	if p.status == statusDown {
+		f["quarantine_ms"] = p.quarantineUntil.Sub(now).Milliseconds()
+		f["quarantine_level"] = p.quarantineLevel
+		if p.provisional {
+			f["provisional"] = true
+		}
+	}
+	e.emit(now, "path_state", f)
+}
+
+func (e *engine) suspect(p *path, v verdict, now time.Time) {
+	if !e.active(p.tag) {
+		// Old connections on an outbound that is no longer chosen. Strong
+		// evidence still rules it out; weak evidence is not worth a probe.
+		if v.strong {
+			e.markDown(p, "traffic", now)
+		} else {
+			p.failures = p.failures[:0]
+		}
+		return
+	}
+	p.setStatus(statusSuspect, "traffic", now)
+	e.emit(now, "path_state", map[string]any{
+		"outbound": p.tag, "state": "suspect", "reason": "traffic",
+		"failures": v.failures, "targets": v.targets, "kinds": v.kinds, "strong": v.strong,
+	})
+	if e.s.connectivity != nil && !e.connectivityIgnored && !e.doubt && now.Sub(e.lastConnectivityOK) > e.s.connectivity.timeout*4 {
+		e.pendingSuspicion[p.tag] = v
+		e.enqueueConnectivity(now)
+		return
+	}
+	e.decideSuspect(p, v, now)
+}
+
+func (e *engine) decideSuspect(p *path, v verdict, now time.Time) {
+	confirm := false
+	for _, s := range e.selectors {
+		if s.current() != p.tag {
+			continue
+		}
+		switch s.cfg.confirm {
+		case ConfirmMode_ALWAYS:
+			confirm = true
+		case ConfirmMode_AUTO:
+			if !v.strong {
+				confirm = true
+			}
+		}
+	}
+	if confirm {
+		e.enqueue(p.tag, reasonConfirm, "", now)
+		return
+	}
+	e.markDown(p, "traffic", now)
+}
+
+// ---- state changes --------------------------------------------------------
+
+func (e *engine) markDown(p *path, reason string, now time.Time) {
+	if p.status == statusDown && p.quarantined(now) {
+		// Ruled out already; a late probe or more traffic adds nothing, and a
+		// second failover would abandon the candidate being probed.
+		if p.provisional && !e.doubt {
+			p.provisional = false
+			p.quarantineLevel++
+		}
+		return
+	}
+	rest := e.jitter(e.s.schedule.quarantine.delay(p.quarantineLevel), e.s.schedule.quarantine.jitter)
+	// While the check keeps failing the network may be what failed, so the
+	// rest does not lengthen the next one.
+	p.provisional = e.doubt
+	if !e.doubt {
+		p.quarantineLevel++
+	}
+	p.quarantineUntil = now.Add(rest)
+	p.setStatus(statusDown, reason, now)
+	p.failures = p.failures[:0]
+	delete(e.pendingSuspicion, p.tag)
+	e.emitPath(p, now)
+	for _, s := range e.sortedSelectors() {
+		if s.returnedTo == p.tag && now.Sub(s.returnedAt) < s.cfg.upgrade.penaltyWindow {
+			base := maxDuration(s.cfg.upgrade.interval, s.cfg.minHold)
+			s.penalty[p.tag] = minFloat(s.penaltyFor(p.tag)*s.cfg.upgrade.penaltyMultiplier,
+				float64(s.cfg.upgrade.maxPenalty)/float64(base))
+			e.emit(now, "upgrade_penalty", map[string]any{"balancer": s.tag, "outbound": p.tag, "multiplier": s.penalty[p.tag]})
+			s.returnedTo = ""
+		}
+		if s.current() == p.tag {
+			e.failover(s, now)
+		}
+	}
+}
+
+func (e *engine) markUp(p *path, reason string, now time.Time) {
+	p.success(now)
+	p.quarantineLevel = 0
+	p.quarantineUntil = time.Time{}
+	p.provisional = false
+	if p.setStatus(statusUp, reason, now) {
+		e.emitPath(p, now)
+	}
+	e.remember(p.tag)
+}
+
+// ---- selection --------------------------------------------------------------
+
+type selector struct {
+	tag string
+	cfg *selectorSettings
+
+	candidates []string
+	snapshot   atomic.Pointer[[]string]
+	active     atomic.Pointer[string]
+
+	started     bool
+	activeSince time.Time
+	pinned      string
+	exhausted   bool
+
+	failoverTried   map[string]bool
+	failoverProbing string
+
+	upgradeAt        time.Time
+	upgradeTarget    string
+	upgradeSuccesses int
+	// The extra wait for a penalized target was already served.
+	penaltyServed bool
+
+	// A failed return multiplies the wait before the next return to that
+	// outbound. A return that holds for penaltyWindow clears it.
+	penalty    map[string]float64
+	returnedTo string
+	returnedAt time.Time
+}
+
+func (s *selector) current() string {
+	if p := s.active.Load(); p != nil {
+		return *p
+	}
+	return ""
+}
+
+func (s *selector) setActive(tag string) {
+	s.active.Store(&tag)
+}
+
+func (s *selector) penaltyFor(tag string) float64 {
+	if v, ok := s.penalty[tag]; ok {
+		return v
+	}
+	return 1
+}
+
+func (s *selector) hasCandidate(tag string) bool {
+	for _, c := range s.candidates {
+		if c == tag {
+			return true
+		}
+	}
+	return false
+}
+
+func (e *engine) addSelector(tag string, cfg *selectorSettings) *selector {
+	if s, ok := e.selectors[tag]; ok {
+		s.cfg = cfg
+		return s
+	}
+	s := &selector{tag: tag, cfg: cfg, penalty: map[string]float64{}}
+	s.setActive("")
+	e.selectors[tag] = s
+	return s
+}
+
+// ranked returns usable candidates from cheapest to most expensive. Within
+// one cost, outbounds known to work go first, then candidate order.
+func (e *engine) ranked(s *selector, now time.Time, skip func(string) bool) []string {
+	type item struct {
+		tag   string
+		cost  float64
+		known int
+		order int
+	}
+	var items []item
+	for i, c := range s.candidates {
+		if skip != nil && skip(c) {
+			continue
+		}
+		p := e.path(c)
+		if !p.usable(now) {
+			continue
+		}
+		known := 1
+		if p.status == statusUp {
+			known = 0
+		}
+		items = append(items, item{c, s.cfg.cost(c), known, i})
+	}
+	sort.SliceStable(items, func(i, j int) bool {
+		if items[i].cost != items[j].cost {
+			return items[i].cost < items[j].cost
+		}
+		if items[i].known != items[j].known {
+			return items[i].known < items[j].known
+		}
+		return items[i].order < items[j].order
+	})
+	out := make([]string, len(items))
+	for i, it := range items {
+		out[i] = it.tag
+	}
+	return out
+}
+
+func (e *engine) updateCandidates(s *selector, candidates []string, now time.Time) {
+	s.candidates = append([]string(nil), candidates...)
+	snap := append([]string(nil), candidates...)
+	s.snapshot.Store(&snap)
+	lostProbe := false
+	if s.failoverProbing != "" && !s.hasCandidate(s.failoverProbing) {
+		s.failoverProbing = ""
+		lostProbe = true
+	}
+	if s.upgradeTarget != "" && !s.hasCandidate(s.upgradeTarget) {
+		s.upgradeTarget = ""
+	}
+	cur := s.current()
+	switch {
+	case !s.started:
+		s.started = true
+		e.start(s, now)
+	case s.pinned != "":
+	case cur != "" && !s.hasCandidate(cur):
+		e.failover(s, now)
+	case s.exhausted:
+		if r := e.ranked(s, now, nil); len(r) > 0 {
+			e.switchTo(s, r[0], "candidates_changed", now)
+		}
+	case lostProbe && e.path(cur).status == statusDown:
+		e.failover(s, now)
+	case s.upgradeAt.IsZero() && s.upgradeTarget == "" && s.failoverProbing == "":
+		// Nothing was cheaper at the last switch; a new cheaper candidate is
+		// worth a return.
+		e.scheduleUpgrade(s, now, true)
+	}
+}
+
+func (e *engine) start(s *selector, now time.Time) {
+	if s.cfg.startPinned != "" && s.hasCandidate(s.cfg.startPinned) {
+		s.pinned = s.cfg.startPinned
+		e.switchTo(s, s.pinned, "start_pinned", now)
+		return
+	}
+	if tag := e.rememberedFor(s); tag != "" && s.hasCandidate(tag) && e.path(tag).usable(now) {
+		e.switchTo(s, tag, "start_remembered", now)
+		return
+	}
+	if tag := s.cfg.startWith; tag != "" && s.hasCandidate(tag) && e.path(tag).usable(now) {
+		e.switchTo(s, tag, "start_with", now)
+		return
+	}
+	r := e.ranked(s, now, nil)
+	if len(r) == 0 {
+		e.exhaust(s, now)
+		return
+	}
+	e.switchTo(s, r[0], "start", now)
+}
+
+func (e *engine) switchTo(s *selector, tag string, reason string, now time.Time) {
+	from := s.current()
+	if from != "" && from != tag && !s.activeSince.IsZero() {
+		e.path(from).stats.activeTime += now.Sub(s.activeSince)
+	}
+	held := time.Duration(0)
+	if !s.activeSince.IsZero() {
+		held = now.Sub(s.activeSince)
+	}
+	// An outbound that rested its quarantine is judged afresh once it is
+	// chosen again, otherwise new failures would not count.
+	if p := e.path(tag); (p.status == statusDown || p.status == statusSuspect) && !p.quarantined(now) {
+		p.setStatus(statusUnknown, "chosen", now)
+		p.failures = p.failures[:0]
+	}
+	s.setActive(tag)
+	s.activeSince = now
+	s.exhausted = false
+	s.failoverTried = nil
+	s.failoverProbing = ""
+	s.upgradeTarget = ""
+	s.upgradeSuccesses = 0
+	if reason == "upgrade" {
+		s.returnedTo = tag
+		s.returnedAt = now
+	}
+	e.scheduleUpgrade(s, now, false)
+	e.emit(now, "switch", map[string]any{
+		"balancer": s.tag, "from": from, "to": tag, "reason": reason,
+		"held_ms": held.Milliseconds(), "cost": s.cfg.cost(tag),
+	})
+}
+
+func (e *engine) exhaust(s *selector, now time.Time) {
+	from := s.current()
+	if from != "" && !s.activeSince.IsZero() {
+		e.path(from).stats.activeTime += now.Sub(s.activeSince)
+	}
+	s.setActive("")
+	s.activeSince = time.Time{}
+	s.exhausted = true
+	s.failoverProbing = ""
+	s.upgradeTarget = ""
+	e.emit(now, "exhausted", map[string]any{"balancer": s.tag, "from": from, "candidates": len(s.candidates)})
+}
+
+func (e *engine) failover(s *selector, now time.Time) {
+	if s.pinned != "" {
+		e.emit(now, "pinned_down", map[string]any{"balancer": s.tag, "outbound": s.pinned})
+		return
+	}
+	if s.failoverTried == nil {
+		s.failoverTried = map[string]bool{}
+	}
+	if cur := s.current(); cur != "" {
+		s.failoverTried[cur] = true
+	}
+	next := e.ranked(s, now, func(t string) bool { return s.failoverTried[t] })
+	if len(next) == 0 {
+		e.exhaust(s, now)
+		return
+	}
+	cand := next[0]
+	s.failoverTried[cand] = true
+	if !s.cfg.switchAfterProbe {
+		e.switchTo(s, cand, "failover", now)
+		return
+	}
+	s.failoverProbing = cand
+	e.enqueue(cand, reasonFailover, s.tag, now)
+}
+
+func (e *engine) scheduleUpgrade(s *selector, now time.Time, soon bool) {
+	s.upgradeAt = time.Time{}
+	cur := s.current()
+	if cur == "" || s.pinned != "" || !e.hasCheaper(s, cur) {
+		return
+	}
+	if soon {
+		s.upgradeAt = maxTime(now, s.activeSince.Add(s.cfg.minHold))
+		return
+	}
+	u := s.cfg.upgrade
+	wait := u.interval
+	if u.randomPhase {
+		wait = time.Duration(e.rnd.Float64() * float64(u.interval))
+	}
+	s.upgradeAt = maxTime(now.Add(wait), s.activeSince.Add(s.cfg.minHold))
+}
+
+func (e *engine) hasCheaper(s *selector, cur string) bool {
+	c := s.cfg.cost(cur)
+	for _, t := range s.candidates {
+		if s.cfg.cost(t) < c && !s.cfg.isLazy(t) {
+			return true
+		}
+	}
+	return false
+}
+
+func (e *engine) upgradeTargetFor(s *selector, now time.Time) string {
+	cur := s.current()
+	c := s.cfg.cost(cur)
+	for _, t := range e.ranked(s, now, func(t string) bool { return t == cur || s.cfg.isLazy(t) }) {
+		if s.cfg.cost(t) < c {
+			return t
+		}
+	}
+	return ""
+}
+
+// ---- probes -----------------------------------------------------------------
+
+// queued reports whether a probe of tag for reason is waiting or running.
+// Probes made in a previous network do not count: their results are dropped.
+func (e *engine) queued(tag string, reason probeReason) bool {
+	same := func(j *probeJob) bool {
+		return j.tag == tag && j.reason == reason && (reason == reasonConnectivity || j.generation == e.generation)
+	}
+	for _, j := range e.queue {
+		if same(j) {
+			return true
+		}
+	}
+	for _, j := range e.running {
+		if same(j) {
+			return true
+		}
+	}
+	return false
+}
+
+func (e *engine) dropQueued(tag string, reason probeReason) {
+	kept := e.queue[:0]
+	for _, j := range e.queue {
+		if j.tag != tag || j.reason != reason {
+			kept = append(kept, j)
+		}
+	}
+	e.queue = kept
+}
+
+func (e *engine) enqueue(tag string, reason probeReason, selectorTag string, at time.Time) {
+	if e.queued(tag, reason) {
+		return
+	}
+	e.nextID++
+	e.queue = append(e.queue, &probeJob{id: e.nextID, tag: tag, reason: reason, selector: selectorTag, notBefore: at, generation: e.generation})
+}
+
+func (e *engine) enqueueConnectivity(now time.Time) {
+	if e.queued("", reasonConnectivity) {
+		return
+	}
+	e.nextID++
+	e.queue = append(e.queue, &probeJob{id: e.nextID, reason: reasonConnectivity, notBefore: now, generation: e.generation})
+}
+
+// budgetWait returns how long the job has to wait for the probe budget, or
+// -1 when all probe slots are busy.
+func (e *engine) budgetWait(j *probeJob, now time.Time) time.Duration {
+	if len(e.running) >= e.s.schedule.concurrent {
+		return -1
+	}
+	if j.reason == reasonConnectivity {
+		return 0
+	}
+	var wait time.Duration
+	if !e.lastStart.IsZero() {
+		if w := e.lastStart.Add(e.nextSpacing).Sub(now); w > wait {
+			wait = w
+		}
+	}
+	e.starts = pruneTimes(e.starts, now)
+	if len(e.starts) >= e.s.schedule.perMinute {
+		if w := e.starts[0].Add(time.Minute).Sub(now); w > wait {
+			wait = w
+		}
+	}
+	name := e.serverName(j.tag)
+	byName := pruneTimes(e.startsByName[name], now)
+	e.startsByName[name] = byName
+	if len(byName) >= e.s.schedule.perServerName {
+		if w := byName[0].Add(time.Minute).Sub(now); w > wait {
+			wait = w
+		}
+	}
+	return wait
+}
+
+func (e *engine) serverName(tag string) string {
+	p := e.path(tag)
+	if p.serverName == "" {
+		p.serverName = e.serverNameFor(tag)
+	}
+	return p.serverName
+}
+
+func pruneTimes(ts []time.Time, now time.Time) []time.Time {
+	cut := 0
+	for cut < len(ts) && now.Sub(ts[cut]) >= time.Minute {
+		cut++
+	}
+	return ts[cut:]
+}
+
+// tick does the timed work and returns probes to start now and when to call
+// it again (zero means only on new events).
+func (e *engine) tick(now time.Time) ([]*probeJob, time.Time) {
+	var wake time.Time
+	soonest := func(t time.Time) {
+		if !t.IsZero() && (wake.IsZero() || t.Before(wake)) {
+			wake = t
+		}
+	}
+
+	idle := e.idle(now)
+	if (e.networkDown || e.doubt) && !e.nextConnectivity.IsZero() && !idle {
+		if !now.Before(e.nextConnectivity) {
+			e.nextConnectivity = time.Time{}
+			e.enqueueConnectivity(now)
+		} else {
+			soonest(e.nextConnectivity)
+		}
+	}
+
+	if !e.networkDown {
+		for _, s := range e.sortedSelectors() {
+			if s.returnedTo != "" && now.Sub(s.returnedAt) >= s.cfg.upgrade.penaltyWindow {
+				delete(s.penalty, s.returnedTo)
+				s.returnedTo = ""
+			}
+			if s.exhausted && !idle {
+				soonest(e.recheckExhausted(s, now))
+			}
+			if !idle {
+				soonest(e.maybeUpgrade(s, now))
+			}
+		}
+	}
+
+	if now.Sub(e.lastGC) >= staleAfter {
+		e.gc(now)
+	}
+
+	var start []*probeJob
+	sort.SliceStable(e.queue, func(i, j int) bool { return e.queue[i].reason < e.queue[j].reason })
+	kept := e.queue[:0]
+	for _, j := range e.queue {
+		if j.generation != e.generation && j.reason != reasonConnectivity {
+			continue
+		}
+		if j.reason != reasonConnectivity && (e.networkDown || idle && (j.reason == reasonNetwork || j.reason == reasonRemembered)) {
+			// Waits for the network, or for the first user connection after a
+			// network change: nobody needs the answer before that.
+			kept = append(kept, j)
+			continue
+		}
+		if now.Before(j.notBefore) {
+			soonest(j.notBefore)
+			kept = append(kept, j)
+			continue
+		}
+		w := e.budgetWait(j, now)
+		if w != 0 {
+			if w > 0 {
+				soonest(now.Add(w))
+			}
+			kept = append(kept, j)
+			continue
+		}
+		e.begin(j, now)
+		start = append(start, j)
+	}
+	e.queue = kept
+	return start, wake
+}
+
+func (e *engine) sortedSelectors() []*selector {
+	out := make([]*selector, 0, len(e.selectors))
+	for _, s := range e.selectors {
+		out = append(out, s)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].tag < out[j].tag })
+	return out
+}
+
+func (e *engine) begin(j *probeJob, now time.Time) {
+	e.running[j.id] = j
+	if j.reason == reasonConnectivity {
+		return
+	}
+	e.lastStart = now
+	e.nextSpacing = e.jitter(e.s.schedule.spacing, e.s.schedule.spacingJitter)
+	e.starts = append(e.starts, now)
+	name := e.serverName(j.tag)
+	e.startsByName[name] = append(e.startsByName[name], now)
+	p := e.path(j.tag)
+	p.probing = true
+	p.lastProbe = now
+	e.emit(now, "probe_start", map[string]any{"outbound": j.tag, "reason": j.reason.String(), "balancer": j.selector})
+}
+
+func (e *engine) recheckExhausted(s *selector, now time.Time) time.Time {
+	var wake time.Time
+	for _, c := range e.ranked(s, time.Unix(1<<40, 0), nil) {
+		p := e.path(c)
+		if e.queued(c, reasonRecheck) {
+			return time.Time{}
+		}
+		if now.Before(p.quarantineUntil) {
+			if wake.IsZero() || p.quarantineUntil.Before(wake) {
+				wake = p.quarantineUntil
+			}
+			continue
+		}
+		e.enqueue(c, reasonRecheck, s.tag, now)
+		return time.Time{}
+	}
+	return wake
+}
+
+func (e *engine) maybeUpgrade(s *selector, now time.Time) time.Time {
+	if s.upgradeAt.IsZero() || s.exhausted || s.pinned != "" || s.upgradeTarget != "" || s.failoverProbing != "" {
+		return time.Time{}
+	}
+	if now.Before(s.upgradeAt) {
+		return s.upgradeAt
+	}
+	target := e.upgradeTargetFor(s, now)
+	if target == "" {
+		// Cheaper outbounds rest in quarantine; look again when the first rest ends.
+		var wake time.Time
+		cur := s.cfg.cost(s.current())
+		for _, c := range s.candidates {
+			p := e.path(c)
+			if s.cfg.cost(c) < cur && !s.cfg.isLazy(c) && p.quarantined(now) {
+				if wake.IsZero() || p.quarantineUntil.Before(wake) {
+					wake = p.quarantineUntil
+				}
+			}
+		}
+		s.upgradeAt = wake
+		return wake
+	}
+	if pen := s.penaltyFor(target); pen > 1 && !s.penaltyServed {
+		delay := time.Duration(float64(maxDuration(s.cfg.upgrade.interval, s.cfg.minHold)) * (pen - 1))
+		s.penaltyServed = true
+		s.upgradeAt = now.Add(delay)
+		e.emit(now, "upgrade_delayed", map[string]any{"balancer": s.tag, "outbound": target, "delay_ms": delay.Milliseconds()})
+		return s.upgradeAt
+	}
+	s.penaltyServed = false
+	s.upgradeTarget = target
+	s.upgradeSuccesses = 0
+	e.emit(now, "upgrade_start", map[string]any{"balancer": s.tag, "from": s.current(), "to": target})
+	e.enqueue(target, reasonUpgrade, s.tag, now)
+	return time.Time{}
+}
+
+func (e *engine) onProbeResult(j *probeJob, r probeResult, now time.Time) {
+	delete(e.running, j.id)
+	if j.reason == reasonConnectivity {
+		e.onConnectivity(r, now)
+		return
+	}
+	p := e.path(j.tag)
+	p.probing = false
+	p.stats.probes++
+	p.stats.probeBytes += r.bytes
+	if !r.ok {
+		p.stats.probesFailed++
+		p.lastError = r.err
+	} else {
+		p.lastRTT = r.rtt
+		p.lastError = ""
+	}
+	stale := j.generation != e.generation
+	e.emit(now, "probe_result", map[string]any{
+		"outbound": j.tag, "reason": j.reason.String(), "balancer": j.selector, "ok": r.ok,
+		"rtt_ms": r.rtt.Milliseconds(), "bytes": r.bytes, "error": r.err, "stale": stale,
+	})
+	if stale {
+		return
+	}
+	if r.ok {
+		e.sawSuccess("probe", now)
+	} else if e.networkDown {
+		// Without a network the failure says nothing about the outbound.
+		e.enqueue(j.tag, j.reason, j.selector, now)
+		return
+	}
+	switch j.reason {
+	case reasonConfirm:
+		if p.status != statusSuspect {
+			return
+		}
+		if r.ok {
+			e.clearedSuspicion(p, now)
+			return
+		}
+		p.falseAlarms = 0
+		e.markDown(p, "probe", now)
+	case reasonNetwork:
+		if r.ok {
+			e.markUp(p, "probe", now)
+			return
+		}
+		e.markDown(p, "probe", now)
+	case reasonFailover:
+		if r.ok {
+			e.markUp(p, "probe", now)
+		} else {
+			e.markDown(p, "probe", now)
+		}
+		for _, s := range e.sortedSelectors() {
+			if s.failoverProbing != j.tag {
+				continue
+			}
+			s.failoverProbing = ""
+			if r.ok && s.hasCandidate(j.tag) {
+				e.switchTo(s, j.tag, "failover", now)
+			} else if !s.exhausted && e.path(s.current()).status == statusDown {
+				e.failover(s, now)
+			}
+		}
+	case reasonRecheck:
+		if !r.ok {
+			e.markDown(p, "probe", now)
+			return
+		}
+		e.markUp(p, "probe", now)
+		for _, s := range e.sortedSelectors() {
+			if s.exhausted && s.hasCandidate(j.tag) {
+				e.switchTo(s, j.tag, "recovered", now)
+			}
+		}
+	case reasonRemembered:
+		if !r.ok {
+			e.markDown(p, "probe", now)
+			return
+		}
+		e.markUp(p, "probe", now)
+		for _, s := range e.sortedSelectors() {
+			if s.pinned == "" && s.current() != j.tag && e.rememberedFor(s) == j.tag && s.hasCandidate(j.tag) {
+				e.switchTo(s, j.tag, "remembered", now)
+			}
+		}
+	case reasonUpgrade:
+		e.onUpgradeResult(j, r, p, now)
+	}
+}
+
+// clearedSuspicion handles a confirming probe that found the outbound
+// working: a false alarm, after which weak evidence waits longer.
+func (e *engine) clearedSuspicion(p *path, now time.Time) {
+	if now.After(p.cooldownUntil.Add(maxSuspectCooldown)) {
+		// The last false alarm was long ago; start counting again.
+		p.falseAlarms = 0
+	}
+	p.falseAlarms++
+	cool := e.s.schedule.suspectCooldown << (p.falseAlarms - 1)
+	if cool <= 0 || cool > maxSuspectCooldown {
+		cool = maxSuspectCooldown
+	}
+	p.cooldownUntil = now.Add(cool)
+	e.markUp(p, "probe", now)
+}
+
+func (e *engine) onUpgradeResult(j *probeJob, r probeResult, p *path, now time.Time) {
+	var waiting []*selector
+	for _, s := range e.sortedSelectors() {
+		if s.upgradeTarget == j.tag {
+			waiting = append(waiting, s)
+		}
+	}
+	if !r.ok {
+		e.markDown(p, "upgrade_probe", now)
+		for _, s := range waiting {
+			s.upgradeTarget = ""
+			e.emit(now, "upgrade_failed", map[string]any{"balancer": s.tag, "outbound": j.tag, "successes": s.upgradeSuccesses})
+			e.scheduleUpgrade(s, now, false)
+		}
+		return
+	}
+	p.success(now)
+	if p.status != statusUp {
+		p.setStatus(statusUp, "probe", now)
+		e.emitPath(p, now)
+	}
+	next := false
+	for _, s := range waiting {
+		if !s.hasCandidate(j.tag) {
+			s.upgradeTarget = ""
+			continue
+		}
+		s.upgradeSuccesses++
+		if s.upgradeSuccesses >= s.cfg.upgrade.successes {
+			e.switchTo(s, j.tag, "upgrade", now)
+			continue
+		}
+		next = true
+	}
+	if next {
+		spacing := e.s.schedule.spacing
+		for _, s := range waiting {
+			if s.upgradeTarget == j.tag && s.cfg.upgrade.spacing > spacing {
+				spacing = s.cfg.upgrade.spacing
+			}
+		}
+		e.enqueue(j.tag, reasonUpgrade, j.selector, now.Add(e.jitter(spacing, e.s.schedule.spacingJitter)))
+	}
+}
+
+func (e *engine) onConnectivity(r probeResult, now time.Time) {
+	e.emit(now, "connectivity", map[string]any{"ok": r.ok, "rtt_ms": r.rtt.Milliseconds(), "error": r.err})
+	if r.ok {
+		e.lastConnectivityOK = now
+		e.connectivityPassed(now)
+		e.resumePending(now)
+		return
+	}
+	if e.checkFailingSince.IsZero() {
+		e.checkFailingSince = now
+	}
+	e.checkFails++
+	if e.lastSuccess.After(e.checkFailingSince) {
+		e.ignoreConnectivity(now)
+		return
+	}
+	e.nextConnectivity = now.Add(e.jitter(e.s.connectivity.recheck.delay(e.checkFails-1), e.s.connectivity.recheck.jitter))
+	if e.doubt {
+		return
+	}
+	if paused := now.Sub(e.checkFailingSince); paused >= e.s.connectivity.maxPause {
+		e.networkDown = false
+		e.doubt = true
+		e.emit(now, "connectivity_doubt", map[string]any{"failed_checks": e.checkFails, "paused_ms": paused.Milliseconds()})
+		e.resumePending(now)
+		return
+	}
+	if e.networkDown {
+		return
+	}
+	e.emit(now, "network_down", map[string]any{"error": r.err})
+	e.networkDown = true
+	for _, p := range e.paths {
+		p.failures = p.failures[:0]
+		if p.status == statusSuspect {
+			p.setStatus(statusUnknown, "network_down", now)
+		}
+	}
+	e.pendingSuspicion = map[string]verdict{}
+}
+
+// sawSuccess handles proof that some outbound works.
+func (e *engine) sawSuccess(how string, now time.Time) {
+	e.lastSuccess = now
+	if e.networkDown {
+		e.networkDown = false
+		e.emit(now, "network_up", map[string]any{"by": how})
+	}
+	if e.checkFails > 0 {
+		// Either the network is back or the check cannot reach its
+		// destination here; the next check tells which.
+		e.nextConnectivity = time.Time{}
+		e.enqueueConnectivity(now)
+	}
+}
+
+func (e *engine) connectivityPassed(now time.Time) {
+	resumed := e.networkDown || e.doubt
+	e.networkDown = false
+	e.doubt = false
+	e.checkFails = 0
+	e.checkFailingSince = time.Time{}
+	e.nextConnectivity = time.Time{}
+	if !resumed {
+		e.restoreProvisional(now)
+		return
+	}
+	e.emit(now, "network_up", map[string]any{"by": "connectivity"})
+	e.restoreProvisional(now)
+	for _, s := range e.sortedSelectors() {
+		cur := s.current()
+		if cur == "" || s.pinned != "" || now.Sub(e.path(cur).lastSuccess) < e.s.connectivity.timeout*4 {
+			continue
+		}
+		e.enqueue(cur, reasonNetwork, s.tag, now)
+	}
+}
+
+// restoreProvisional brings back outbounds ruled out while the check was
+// failing: it passes now, so the network was what failed.
+func (e *engine) restoreProvisional(now time.Time) {
+	var tags []string
+	for tag, p := range e.paths {
+		if p.provisional {
+			tags = append(tags, tag)
+		}
+	}
+	if len(tags) == 0 {
+		return
+	}
+	sort.Strings(tags)
+	for _, tag := range tags {
+		p := e.paths[tag]
+		p.provisional = false
+		if p.status != statusDown {
+			continue
+		}
+		p.quarantineUntil = time.Time{}
+		p.failures = p.failures[:0]
+		p.setStatus(statusUnknown, "network_up", now)
+		e.emitPath(p, now)
+	}
+	for _, s := range e.sortedSelectors() {
+		if s.pinned != "" {
+			continue
+		}
+		if s.exhausted {
+			if r := e.ranked(s, now, nil); len(r) > 0 {
+				e.switchTo(s, r[0], "network_up", now)
+			}
+			continue
+		}
+		e.scheduleUpgrade(s, now, true)
+	}
+}
+
+func (e *engine) ignoreConnectivity(now time.Time) {
+	e.emit(now, "connectivity_ignored", map[string]any{"failed_checks": e.checkFails})
+	e.connectivityIgnored = true
+	e.networkDown = false
+	e.doubt = false
+	e.checkFails = 0
+	e.checkFailingSince = time.Time{}
+	e.nextConnectivity = time.Time{}
+	for _, p := range e.paths {
+		if p.provisional && p.status == statusDown {
+			p.quarantineLevel++
+		}
+		p.provisional = false
+	}
+	e.resumePending(now)
+}
+
+func (e *engine) resumePending(now time.Time) {
+	pending := e.pendingSuspicion
+	e.pendingSuspicion = map[string]verdict{}
+	for tag, v := range pending {
+		if p := e.path(tag); p.status == statusSuspect {
+			e.decideSuspect(p, v, now)
+		}
+	}
+}
+
+// ---- host signals -------------------------------------------------------------
+
+// onNetworkChange forgets what was learned in the previous network.
+func (e *engine) onNetworkChange(id string, now time.Time) {
+	known := false
+	if id != "" {
+		_, known = e.networks[id]
+	}
+	e.networkID = id
+	e.networkDown = false
+	e.doubt = false
+	e.checkFails = 0
+	e.checkFailingSince = time.Time{}
+	e.nextConnectivity = time.Time{}
+	e.connectivityIgnored = false
+
+	forget := false
+	for _, s := range e.selectors {
+		if s.cfg.onNetworkChange != NetworkChangeMode_IGNORE {
+			forget = true
+		}
+	}
+	if !forget {
+		e.emit(now, "network_change", map[string]any{"network": id, "known": known, "generation": e.generation, "ignored": true})
+		return
+	}
+	e.generation++
+	e.pendingSuspicion = map[string]verdict{}
+	e.emit(now, "network_change", map[string]any{"network": id, "known": known, "generation": e.generation})
+	for _, p := range e.paths {
+		p.failures = p.failures[:0]
+		p.quarantineLevel = 0
+		p.quarantineUntil = time.Time{}
+		p.provisional = false
+		p.cooldownUntil = time.Time{}
+		p.falseAlarms = 0
+		p.probing = false
+		p.setStatus(statusUnknown, "network_change", now)
+	}
+	e.queue = e.queue[:0]
+	for _, s := range e.sortedSelectors() {
+		s.failoverTried = nil
+		s.failoverProbing = ""
+		s.upgradeTarget = ""
+		s.penaltyServed = false
+		if s.cfg.onNetworkChange != NetworkChangeMode_IGNORE {
+			s.penalty = map[string]float64{}
+			s.returnedTo = ""
+		}
+		if s.cfg.onNetworkChange != NetworkChangeMode_RECHECK || s.pinned != "" {
+			continue
+		}
+		if s.exhausted {
+			if r := e.ranked(s, now, nil); len(r) > 0 {
+				e.switchTo(s, r[0], "network_change", now)
+			}
+			continue
+		}
+		if tag := e.rememberedFor(s); tag != "" && tag != s.current() && s.hasCandidate(tag) {
+			e.enqueue(tag, reasonRemembered, s.tag, now)
+			continue
+		}
+		if cur := s.current(); cur != "" {
+			e.enqueue(cur, reasonNetwork, s.tag, now)
+		}
+		u := s.cfg.upgrade
+		e.scheduleUpgrade(s, now, u.onNetworkChange && (!u.unknownNetworksOnly || !known))
+	}
+}
+
+func (e *engine) onNetworkLost(now time.Time) {
+	if !e.networkDown {
+		e.emit(now, "network_down", map[string]any{"error": "host"})
+	}
+	e.networkDown = true
+	e.doubt = false
+	e.nextConnectivity = time.Time{}
+	e.pendingSuspicion = map[string]verdict{}
+}
+
+func (e *engine) remember(tag string) {
+	if !e.s.remember || e.networkID == "" {
+		return
+	}
+	for _, s := range e.selectors {
+		if s.current() != tag {
+			continue
+		}
+		m := e.networks[e.networkID]
+		if m == nil {
+			m = map[string]string{}
+			e.networks[e.networkID] = m
+			e.netOrder = append(e.netOrder, e.networkID)
+			if len(e.netOrder) > e.s.maxNetworks {
+				delete(e.networks, e.netOrder[0])
+				e.netOrder = e.netOrder[1:]
+			}
+		}
+		m[s.tag] = tag
+	}
+}
+
+func (e *engine) rememberedFor(s *selector) string {
+	if !e.s.remember || e.networkID == "" {
+		return ""
+	}
+	return e.networks[e.networkID][s.tag]
+}
+
+func (e *engine) pin(selectorTag, tag string, now time.Time) bool {
+	s := e.selectors[selectorTag]
+	if s == nil || !s.hasCandidate(tag) {
+		return false
+	}
+	s.pinned = tag
+	e.emit(now, "pin", map[string]any{"balancer": selectorTag, "outbound": tag})
+	if s.current() != tag {
+		e.switchTo(s, tag, "pin", now)
+	}
+	return true
+}
+
+func (e *engine) release(selectorTag string, now time.Time) bool {
+	s := e.selectors[selectorTag]
+	if s == nil || s.pinned == "" {
+		return false
+	}
+	e.emit(now, "release", map[string]any{"balancer": selectorTag, "outbound": s.pinned})
+	s.pinned = ""
+	if cur := s.current(); cur != "" && e.path(cur).status == statusDown {
+		e.failover(s, now)
+		return true
+	}
+	e.scheduleUpgrade(s, now, false)
+	return true
+}
+
+// gc forgets balancers that stopped choosing and outbounds that no balancer
+// offers any more, so rotating tags do not grow the state.
+func (e *engine) gc(now time.Time) {
+	e.lastGC = now
+	offered := map[string]bool{}
+	for _, s := range e.selectors {
+		for _, c := range s.candidates {
+			offered[c] = true
+		}
+	}
+	for tag, p := range e.paths {
+		if !offered[tag] && !p.probing && now.Sub(p.statusSince) > staleAfter {
+			delete(e.paths, tag)
+		}
+	}
+	for name, ts := range e.startsByName {
+		if len(pruneTimes(ts, now)) == 0 {
+			delete(e.startsByName, name)
+		}
+	}
+}
+
+func minFloat(a, b float64) float64 {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func maxDuration(a, b time.Duration) time.Duration {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+func maxTime(a, b time.Time) time.Time {
+	if a.After(b) {
+		return a
+	}
+	return b
+}

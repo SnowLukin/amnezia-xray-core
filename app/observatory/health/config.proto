@@ -1,0 +1,200 @@
+syntax = "proto3";
+
+package xray.core.app.observatory.health;
+option csharp_namespace = "Xray.App.Observatory.Health";
+option go_package = "github.com/xtls/xray-core/app/observatory/health";
+option java_package = "com.xray.app.observatory.health";
+option java_multiple_files = true;
+
+import "app/router/config.proto";
+
+// Config of the health observatory. All durations are int64 nanoseconds.
+message Config {
+  // Outbounds whose connections are observed, matched by tag prefix.
+  repeated string subject_selector = 1;
+  PassiveConfig passive = 2;
+  // The first profile whose selector matches a tag is used to probe it.
+  repeated ProbeProfile probes = 3;
+  ConnectivityConfig connectivity = 4;
+  ScheduleConfig schedule = 5;
+  EventsConfig events = 6;
+  NetworkConfig network = 7;
+}
+
+// PassiveConfig decides when user traffic makes an outbound suspect.
+message PassiveConfig {
+  // Evidence older than this is forgotten.
+  int64 window = 1;
+  // A dial that has not finished after this long counts as failed.
+  int64 dial_timeout = 2;
+  // No response this long after the first write counts as failed.
+  int64 first_byte_timeout = 3;
+  // No progress this long while a written request waits for an answer
+  // counts as a stall.
+  int64 stall_timeout = 4;
+  // Failures needed in the window to suspect an outbound.
+  int32 failures = 5;
+  // For failures that depend on the destination (no response, stall),
+  // how many different destinations they must cover.
+  int32 distinct_targets = 6;
+  // A connection that downloaded this many bytes proves the outbound works.
+  int64 success_bytes = 7;
+  // How often live connections are checked for stalls and timeouts.
+  int64 sweep_interval = 8;
+  // Failures of dial and handshake only, without response and stall checks.
+  bool dial_only = 9;
+  // A young connection that received less than success_bytes and then went
+  // silent for stall_timeout counts as a stall, even when nothing waits for
+  // an answer. This is how a censor freezing connections after the first
+  // kilobytes looks from the client. Only connections that went silent within
+  // this time after the dial count.
+  int64 partial_stall_max_age = 10;
+  bool ignore_partial_stalls = 11;
+  // A stall needs at least this much written since the last read, so small
+  // control writes such as HTTP/2 window updates do not count.
+  int64 stall_min_write_bytes = 12;
+  // A partial stall needs at least this much read, so idle keep-alive
+  // connections with small answers do not count.
+  int64 partial_stall_min_bytes = 13;
+}
+
+message ProbeProfile {
+  repeated string selector = 1;
+  string destination = 2;
+  string method = 3;
+  // Accepted status codes. Empty accepts 200-299.
+  repeated int32 expect_status = 4;
+  // The probe fails unless it reads at least this many body bytes.
+  int64 min_bytes = 5;
+  int64 timeout = 6;
+  // The probe fails when no byte arrives for this long.
+  int64 progress_timeout = 7;
+}
+
+// ConnectivityConfig tells a dead outbound from a dead network.
+message ConnectivityConfig {
+  // Outbound used for the check, usually one that bypasses the tunnel.
+  string outbound = 1;
+  string destination = 2;
+  int64 timeout = 3;
+  // While the network looks down, recheck it with this backoff.
+  Backoff recheck = 4;
+  // How long decisions stay paused while the check keeps failing. After that
+  // they resume, but outbounds ruled out meanwhile come back once a check
+  // passes: either the outage is long or the check cannot reach its
+  // destination in this network.
+  int64 max_pause = 5;
+  // Outbounds whose working connections prove that the network works, such
+  // as a direct outbound for sites outside the tunnel. A connection counts
+  // once it receives successBytes.
+  repeated string witnesses = 6;
+}
+
+message Backoff {
+  int64 initial = 1;
+  double multiplier = 2;
+  int64 max = 3;
+  // Random spread, 0.2 means +-20%.
+  double jitter = 4;
+}
+
+message ScheduleConfig {
+  // Without user traffic for this long, no probes and no timers run.
+  int64 pause_when_idle = 1;
+  // How long a failed outbound rests before it may be probed again.
+  Backoff quarantine = 2;
+  // Probes running at the same time.
+  int32 concurrent = 3;
+  // Minimum pause between probe starts.
+  int64 spacing = 4;
+  // Random spread of spacing.
+  double spacing_jitter = 5;
+  // Probe starts per server name per minute. The server name is the TLS or
+  // REALITY server name, or the server address without one.
+  int32 per_server_name_per_minute = 6;
+  // Probe starts per minute in total.
+  int32 per_minute = 7;
+  // After a probe cleared a suspicion, the same outbound is not suspected
+  // again for this long.
+  int64 suspect_cooldown = 8;
+}
+
+message EventsConfig {
+  // Maximum events kept until the host drains them.
+  int32 max_events = 1;
+  // Maximum size of kept events in bytes.
+  int64 max_bytes = 2;
+}
+
+message NetworkConfig {
+  // Do not remember the last working outbound per network id given by the
+  // host.
+  bool no_memory = 1;
+  // How many networks to remember.
+  int32 max_networks = 2;
+}
+
+// SelectorConfig configures the leastCost balancer strategy.
+message SelectorConfig {
+  // Cost per tag in the format of leastLoad costs. Lower is preferred.
+  repeated xray.app.router.StrategyWeight costs = 1;
+  // Cost of tags without a matching entry. Zero means the highest cost in
+  // costs, so an unexpected outbound is the last resort.
+  float default_cost = 2;
+  // Tags matched by these prefixes are never probed in the background and
+  // are only tried when everything cheaper is down.
+  repeated string lazy = 3;
+  // Move traffic to the next candidate without probing it first.
+  bool switch_without_probe = 4;
+  // When to probe the current outbound before leaving it.
+  ConfirmMode confirm = 5;
+  // Minimum time on an outbound before returning to a cheaper one.
+  int64 min_hold = 6;
+  UpgradeConfig upgrade = 7;
+  // Start pinned to this tag until the host releases the pin.
+  string start_pinned = 8;
+  NetworkChangeMode on_network_change = 9;
+  // Start with this tag instead of the cheapest one, without pinning it. The
+  // host passes the outbound that worked last time, so a restart needs no
+  // probing.
+  string start_with = 10;
+}
+
+enum ConfirmMode {
+  // Probe only when the evidence includes destination-dependent failures.
+  AUTO = 0;
+  ALWAYS = 1;
+  NEVER = 2;
+}
+
+enum NetworkChangeMode {
+  // Forget results, probe the current outbound once, try cheaper ones.
+  RECHECK = 0;
+  // Only forget results.
+  FORGET = 1;
+  // Ignore network changes.
+  IGNORE = 2;
+}
+
+// UpgradeConfig controls returns to cheaper outbounds while the current one
+// works.
+message UpgradeConfig {
+  // Check cheaper outbounds this often while traffic flows.
+  int64 interval = 1;
+  // Start the interval right away instead of at a random point; with a
+  // random point devices do not check together.
+  bool fixed_phase = 2;
+  // Successful probes in a row needed to return.
+  int32 successes = 3;
+  // Pause between those probes.
+  int64 spacing = 4;
+  // If the cheaper outbound fails this soon after the return, the next
+  // attempt waits longer.
+  int64 penalty_window = 5;
+  double penalty_multiplier = 6;
+  int64 max_penalty = 7;
+  // Do not check cheaper outbounds after a network change.
+  bool skip_on_network_change = 8;
+  // Check after a change to any network, not only to one not seen before.
+  bool all_networks = 9;
+}

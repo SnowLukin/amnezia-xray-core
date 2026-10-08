@@ -1,0 +1,262 @@
+package health
+
+import (
+	"context"
+	gonet "net"
+	"testing"
+	"time"
+
+	"github.com/xtls/xray-core/common/net"
+)
+
+type fakeClock struct{ t time.Time }
+
+func (c *fakeClock) now() time.Time          { return c.t }
+func (c *fakeClock) advance(d time.Duration) { c.t = c.t.Add(d) }
+
+func newTestObserver() (*Observer, *fakeClock) {
+	s := newSettings(&Config{SubjectSelector: []string{"a"}})
+	clk := &fakeClock{t: t0}
+	o := &Observer{
+		s:        s,
+		e:        newEngine(s, 1),
+		kick:     make(chan struct{}, 1),
+		trackers: map[*connTracker]struct{}{},
+		watching: map[*connTracker]struct{}{},
+		clock:    clk.now,
+		base:     t0.Add(-time.Second),
+	}
+	// The tests sweep by hand.
+	o.sweeping = true
+	return o, clk
+}
+
+func openTracker(o *Observer, target string, udp bool) (*connTracker, *trackerReadCounter, *trackerWriteCounter) {
+	t := &connTracker{o: o, tag: "a1", target: target, udp: udp, started: o.nowNano(), conn: 1}
+	r, w := t.Dialed(nil, nil, nil, nil)
+	return t, r.(*trackerReadCounter), w.(*trackerWriteCounter)
+}
+
+func failures(o *Observer, kind failureKind) int64 {
+	return o.e.path("a1").stats.failuresByKind[kind]
+}
+
+func TestKeepAliveWithSmallAnswerIsNotAPartialStall(t *testing.T) {
+	o, clk := newTestObserver()
+	tr, r, w := openTracker(o, "x.test", false)
+	w.Add(400)
+	r.Add(2 * 1024)
+	clk.advance(9 * time.Second)
+	tr.sweep(o.nowNano())
+	if n := failures(o, failPartialStall) + failures(o, failStall); n != 0 {
+		t.Fatalf("idle keep-alive counted as %d stalls", n)
+	}
+}
+
+func TestSilenceAfterFirstKilobytesIsAPartialStall(t *testing.T) {
+	o, clk := newTestObserver()
+	tr, r, w := openTracker(o, "x.test", false)
+	w.Add(400)
+	r.Add(12 * 1024)
+	clk.advance(9 * time.Second)
+	tr.sweep(o.nowNano())
+	if failures(o, failPartialStall) != 1 {
+		t.Fatalf("a connection frozen after 12 KB was not noticed")
+	}
+}
+
+func TestSmallWriteAfterDownloadIsNotAStall(t *testing.T) {
+	o, clk := newTestObserver()
+	tr, r, w := openTracker(o, "x.test", false)
+	w.Add(400)
+	r.Add(30 * 1024)
+	// An HTTP/2 window update after the answer.
+	w.Add(13)
+	clk.advance(9 * time.Second)
+	tr.sweep(o.nowNano())
+	if failures(o, failStall) != 0 {
+		t.Fatalf("a control write after a finished download counted as a stall")
+	}
+}
+
+func TestUnansweredRequestIsAStall(t *testing.T) {
+	o, clk := newTestObserver()
+	tr, r, w := openTracker(o, "x.test", false)
+	w.Add(400)
+	r.Add(2 * 1024)
+	w.Add(500)
+	clk.advance(9 * time.Second)
+	tr.sweep(o.nowNano())
+	if failures(o, failStall) != 1 {
+		t.Fatalf("a request without an answer was not noticed")
+	}
+}
+
+func TestNoFirstByteIsNoticed(t *testing.T) {
+	o, clk := newTestObserver()
+	tr, _, w := openTracker(o, "x.test", false)
+	w.Add(400)
+	clk.advance(6 * time.Second)
+	tr.sweep(o.nowNano())
+	if failures(o, failNoResponse) != 1 {
+		t.Fatalf("a request without any answer was not noticed")
+	}
+}
+
+func TestUDPIsNotJudgedBySilence(t *testing.T) {
+	o, clk := newTestObserver()
+	tr, r, w := openTracker(o, "dns.test", true)
+	w.Add(100)
+	r.Add(10 * 1024)
+	clk.advance(10 * time.Second)
+	if watching, _ := tr.sweep(o.nowNano()); watching {
+		t.Fatalf("a UDP flow is watched for silence")
+	}
+	if n := failures(o, failNoResponse) + failures(o, failPartialStall); n != 0 {
+		t.Fatalf("UDP silence counted as %d failures", n)
+	}
+}
+
+func TestSplicedConnectionIsNotJudgedBySilence(t *testing.T) {
+	o, clk := newTestObserver()
+	tr, r, w := openTracker(o, "x.test", false)
+	w.Add(400)
+	r.Add(10 * 1024)
+	r.Spliced()
+	clk.advance(9 * time.Second)
+	tr.sweep(o.nowNano())
+	if failures(o, failPartialStall) != 0 {
+		t.Fatalf("a spliced download counted as a stall")
+	}
+}
+
+func TestDialTimeoutAndStuckDial(t *testing.T) {
+	o, clk := newTestObserver()
+	tr := &connTracker{o: o, tag: "a1", started: o.nowNano(), conn: 1}
+	clk.advance(7 * time.Second)
+	watching, drop := tr.sweep(o.nowNano())
+	if failures(o, failDialTimeout) != 1 || !watching || drop {
+		t.Fatalf("slow dial: failures %d watching %v drop %v", failures(o, failDialTimeout), watching, drop)
+	}
+	clk.advance(30 * time.Second)
+	if _, drop := tr.sweep(o.nowNano()); !drop {
+		t.Fatalf("a dial that never reported back is kept forever")
+	}
+}
+
+func TestWitnessConnectionEndsTheNetworkPause(t *testing.T) {
+	s := newSettings(&Config{
+		SubjectSelector: []string{"a"},
+		Connectivity:    &ConnectivityConfig{Outbound: "direct", Destination: "http://x/204", Witnesses: []string{"direct"}},
+	})
+	clk := &fakeClock{t: t0}
+	o := &Observer{s: s, e: newEngine(s, 1), kick: make(chan struct{}, 1), clock: clk.now, base: t0.Add(-time.Second),
+		trackers: map[*connTracker]struct{}{}, watching: map[*connTracker]struct{}{}}
+	o.e.onConnectivity(probeResult{ok: false, err: "down"}, t0)
+	if !o.e.networkDown {
+		t.Fatal("a failed check did not pause decisions")
+	}
+	if tr := o.StartDial(context.Background(), "proxy", net.Destination{}); tr != nil {
+		t.Fatalf("an outbound that is neither observed nor a witness is followed")
+	}
+	tr := o.StartDial(context.Background(), "direct", net.Destination{})
+	r, _ := tr.Dialed(nil, nil, nil, nil)
+	r.Add(10 * 1024)
+	if !o.e.networkDown {
+		t.Fatal("a few kilobytes ended the pause")
+	}
+	r.Add(20 * 1024)
+	if o.e.networkDown || !o.e.queued("", reasonConnectivity) {
+		t.Fatalf("a working direct connection: paused %v, check queued %v", o.e.networkDown, o.e.queued("", reasonConnectivity))
+	}
+	select {
+	case <-o.kick:
+	default:
+		t.Fatal("the queued check does not wake the loop")
+	}
+}
+
+// loopbackPair returns a dialed TCP connection and its peer, after the peer
+// sent sent bytes, like a server that finished the outer handshake.
+func loopbackPair(t *testing.T, sent int) (gonet.Conn, gonet.Conn) {
+	t.Helper()
+	ln, err := gonet.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	accepted := make(chan gonet.Conn, 1)
+	go func() {
+		c, _ := ln.Accept()
+		accepted <- c
+	}()
+	c, err := gonet.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := <-accepted
+	t.Cleanup(func() { c.Close(); srv.Close() })
+	if _, err := srv.Write(make([]byte, sent)); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(50 * time.Millisecond)
+	return c, srv
+}
+
+func TestSplicedProgressCountsFromTheSplice(t *testing.T) {
+	c, srv := loopbackPair(t, 10*1024)
+	if _, ok := kernelReceived(rawConnOf(c)); !ok {
+		t.Skip("the kernel does not report received bytes here")
+	}
+	o, clk := newTestObserver()
+	tr, r, w := openTracker(o, "x.test", false)
+	tr.Dialed(c, nil, nil, nil)
+	w.Add(400)
+	r.Add(4 * 1024)
+	r.Spliced()
+	clk.advance(9 * time.Second)
+	tr.sweep(o.nowNano())
+	if n := failures(o, failPartialStall); n != 0 {
+		t.Fatalf("a keep-alive with a 4 KB answer counted as a stall: the handshake before the splice was taken for data")
+	}
+	if _, err := srv.Write(make([]byte, 30*1024)); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if watching, _ := tr.sweep(o.nowNano()); watching || o.e.path("a1").status != statusUp {
+		t.Fatalf("30 KB after the splice: watching %v, a1 %v, want a success", watching, o.e.path("a1").status)
+	}
+}
+
+func TestDialsOfThePreviousNetworkDoNotJudgeTheNewOne(t *testing.T) {
+	o, clk := newTestObserver()
+	o.e.updateCandidates(o.e.addSelector("auto", newSelectorSettings(&SelectorConfig{})), []string{"a1", "b1"}, clk.now())
+	var dials []*connTracker
+	for i := 0; i < 3; i++ {
+		dials = append(dials, o.StartDial(context.Background(), "a1", net.Destination{}).(*connTracker))
+	}
+	o.NetworkChanged("lte")
+	clk.advance(7 * time.Second)
+	for _, d := range dials {
+		d.sweep(o.nowNano())
+	}
+	if n := failures(o, failDialTimeout); n != 0 {
+		t.Fatalf("%d dials started on the old network counted against a1", n)
+	}
+	fresh := o.StartDial(context.Background(), "a1", net.Destination{}).(*connTracker)
+	clk.advance(7 * time.Second)
+	fresh.sweep(o.nowNano())
+	if n := failures(o, failDialTimeout); n != 1 {
+		t.Fatalf("a dial in the new network counted %d times, want once", n)
+	}
+}
+
+func TestWatchEndsWithoutDeadlines(t *testing.T) {
+	o, _ := newTestObserver()
+	tr, r, w := openTracker(o, "x.test", false)
+	w.Add(400)
+	r.Add(30 * 1024)
+	if watching, _ := tr.sweep(o.nowNano()); watching {
+		t.Fatalf("a finished download keeps the sweep running")
+	}
+}
