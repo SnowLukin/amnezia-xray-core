@@ -29,6 +29,8 @@ type countingObserver struct {
 	aborts                     []func()
 }
 
+func (c *countingObserver) Observes(tag string) bool { return c.inner.Observes(tag) }
+
 func (c *countingObserver) StartDial(ctx context.Context, tag string, server net.Destination, abort func()) obs.DialTracker {
 	c.starts.Add(1)
 	c.mu.Lock()
@@ -231,6 +233,34 @@ func TestAbortEndsAConnectionWaitingForAnAnswer(t *testing.T) {
 	}
 }
 
+// Outbounds the observer neither judges nor uses to see the network dial
+// as without it.
+func TestOnlyWatchedOutboundsAreHooked(t *testing.T) {
+	inst := startInstance(t, `{
+		"log": {"loglevel": "none"},
+		"outbounds": [
+			{"tag": "a1", "protocol": "freedom"},
+			{"tag": "direct", "protocol": "freedom"},
+			{"tag": "check", "protocol": "freedom"},
+			{"tag": "dns-out", "protocol": "dns"},
+			{"tag": "block", "protocol": "blackhole"}],
+		"healthObservatory": {"subjectSelector": ["a"],
+			"connectivity": {"outbound": "check", "destination": "https://check.test/", "witnesses": ["direct"]}}
+	}`)
+	defer inst.Close()
+	ohm := inst.GetFeature(obs.ManagerType()).(obs.Manager)
+	for tag, want := range map[string]bool{"a1": true, "direct": true, "check": true, "dns-out": false, "block": false} {
+		hooked := false
+		outbound.WrapObserver(ohm.GetHandler(tag), func(in obs.ConnectionObserver) obs.ConnectionObserver {
+			hooked = in != nil
+			return in
+		})
+		if hooked != want {
+			t.Errorf("%s hooked %v, want %v", tag, hooked, want)
+		}
+	}
+}
+
 // VLESS pre-connections are dialed through the dialer of the first
 // connection after it ended; each must still be finished.
 func TestPreconnectionsAreFinished(t *testing.T) {
@@ -275,7 +305,8 @@ func TestPreconnectionsAreFinished(t *testing.T) {
 }
 
 // BenchmarkConnection measures what the observer adds to one proxied
-// connection: run it and compare the plain and observed lines.
+// connection: run it and compare the plain line with the observed one and
+// with an outbound the observer does not watch.
 func BenchmarkConnection(b *testing.B) {
 	ln, err := gonet.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -301,6 +332,7 @@ func BenchmarkConnection(b *testing.B) {
 	for _, tc := range []struct{ name, health string }{
 		{"plain", ""},
 		{"observed", `, "healthObservatory": {"subjectSelector": ["a"]}`},
+		{"unobserved", `, "healthObservatory": {"subjectSelector": ["b"]}`},
 	} {
 		inst := startInstance(b, `{"log": {"loglevel": "none"},
 			"outbounds": [{"tag": "a1", "protocol": "freedom", "settings": {"finalRules": [{"action": "allow"}]}}]`+tc.health+`}`)

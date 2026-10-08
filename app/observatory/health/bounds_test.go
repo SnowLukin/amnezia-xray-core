@@ -115,6 +115,21 @@ func TestGCForgetsEverythingAboutAnOutbound(t *testing.T) {
 	}
 }
 
+// Outbounds a provider adds later are hooked like the configured ones.
+func TestObservesJudgedOutboundsAndTheNetworkCheck(t *testing.T) {
+	o := newObserver(context.Background(), &Config{
+		SubjectSelector: []string{"a"},
+		Connectivity:    &ConnectivityConfig{Outbound: "check", Destination: "https://check.test/", Witnesses: []string{"direct"}},
+		Providers:       []*ProviderConfig{quietProvider(nil)},
+	})
+	defer o.Close()
+	for tag, want := range map[string]bool{"a1": true, "p-x9": true, "direct": true, "check": true, "block": false, "dns": false} {
+		if got := o.Observes(tag); got != want {
+			t.Errorf("observes %s: %v, want %v", tag, got, want)
+		}
+	}
+}
+
 func TestConfigValuesHaveCeilings(t *testing.T) {
 	huge := int64(24 * time.Hour)
 	s := newSettings(&Config{

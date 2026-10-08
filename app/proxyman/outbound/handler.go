@@ -84,7 +84,7 @@ func NewHandler(ctx context.Context, config *core.OutboundHandlerConfig) (outbou
 		uplinkCounter:   uplinkCounter,
 		downlinkCounter: downlinkCounter,
 	}
-	if observer, ok := v.GetFeature(extension.ObservatoryType()).(outbound.ConnectionObserver); ok {
+	if observer, ok := v.GetFeature(extension.ObservatoryType()).(outbound.ConnectionObserver); ok && observer.Observes(config.Tag) {
 		h.observer = observer
 	}
 

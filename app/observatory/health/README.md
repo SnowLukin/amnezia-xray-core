@@ -10,7 +10,9 @@ the config.
 
 1. **Evidence from traffic.** Every connection an observed outbound dials is
    followed through its traffic counters, so readv, writev and XTLS splice
-   are seen as well. Failures are of two kinds:
+   are seen as well. Outbounds that are neither observed, nor `witnesses`,
+   nor the outbound of the network check dial as without the observatory.
+   Failures are of two kinds:
    - about the path, whatever the destination: the dial failed, the dial did
      not finish within `dialTimeout`, REALITY did not verify the server;
    - possibly about one destination: no first byte within

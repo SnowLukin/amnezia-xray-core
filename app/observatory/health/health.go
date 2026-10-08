@@ -231,6 +231,13 @@ func (o *Observer) runProbe(j *probeJob) {
 
 // ---- outbound.ConnectionObserver ------------------------------------------
 
+// Observes implements outbound.ConnectionObserver: the outbounds it judges,
+// the witnesses of the network and the outbound of the network check, whose
+// probes have to be told apart from user traffic.
+func (o *Observer) Observes(tag string) bool {
+	return o.s.observes(tag) || o.s.witness(tag) || (o.s.connectivity != nil && tag == o.s.connectivity.outbound)
+}
+
 // StartDial implements outbound.ConnectionObserver.
 func (o *Observer) StartDial(ctx context.Context, tag string, server net.Destination, abort func()) outbound.DialTracker {
 	if bytes := probeBytesFrom(ctx); bytes != nil {

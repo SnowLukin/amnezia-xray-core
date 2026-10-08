@@ -14,6 +14,10 @@ import (
 //
 // Implementations must not block: the calls happen on the dialing goroutine.
 type ConnectionObserver interface {
+	// Observes reports whether connections of the outbound with the tag are
+	// of interest. A handler asks once when it is created and dials without
+	// the observer otherwise.
+	Observes(tag string) bool
 	// StartDial is called right before a handler dials server. It returns nil
 	// when the observer is not interested in this connection. abort ends the
 	// user connection the dial belongs to, whether it is still dialing or
