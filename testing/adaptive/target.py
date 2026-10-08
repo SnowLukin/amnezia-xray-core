@@ -3,6 +3,7 @@
 GET /204             empty answer
 GET /bytes/N         N bytes
 GET /hold/S          one byte per second for S seconds
+GET /slow/N/S        N bytes spread over S seconds
 Every request is logged as "host path" lines to the file given as argv[2],
 so the bench can count probes separately from user traffic.
 """
@@ -42,6 +43,19 @@ class Handler(BaseHTTPRequestHandler):
                 k = min(n, len(chunk))
                 self.wfile.write(chunk[:k])
                 n -= k
+        elif parts[0] == "slow":
+            n, seconds = int(parts[1]), float(parts[2])
+            self.send_response(200)
+            self.send_header("Content-Length", str(n))
+            self.end_headers()
+            chunk = b"x" * 65536
+            pause = seconds / max(1, n // len(chunk))
+            while n > 0:
+                k = min(n, len(chunk))
+                self.wfile.write(chunk[:k])
+                self.wfile.flush()
+                n -= k
+                time.sleep(pause)
         elif parts[0] == "hang":
             time.sleep(600)
         elif parts[0] == "hold":

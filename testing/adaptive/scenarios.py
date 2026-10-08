@@ -7,6 +7,7 @@ BENCH_IDLE_MIN (default 10), BENCH_FLAP_MIN (10), BENCH_SOAK_MIN (120).
 import json
 import os
 import subprocess
+import threading
 import time
 
 import bench
@@ -640,3 +641,223 @@ def burst_baseline(stand, xray, work, name):
     rec, fails = bench.recovery(tr.records, m["fault"])
     return [check("stock burst recovery, s (was 36)", rec and round(rec, 1), rec is not None and 20 <= rec <= 70,
                   "20..70")]
+
+
+# ---- 5. fresh outbounds from a provider ---------------------------------------
+
+BANNED = [("a1", "reality", 0), ("a2", "reality", 1)]
+FRESH = [("x1", "reality", 2), ("x2", "reality", 3)]
+
+
+def refresh(c):
+    return c.api("refresh", "fresh")
+
+
+def gaps(times):
+    return [round(b - a, 2) for a, b in zip(times, times[1:])]
+
+
+def answer_body(stand, body):
+    with open(stand.provider_answer, "w") as f:
+        json.dump(body, f)
+
+
+@scenario()
+def provider_subnet_ban(stand, xray, work, name):
+    """Every address of the set is blocked; the provider brings new ones."""
+    stand.answer(FRESH)
+    prov = bench.provider_config(["auto", "direct"], triggers={"whenExhausted": True})
+    cfg = bench.client_config(BANNED, {"a": 1, "p-": 1}, providers=[prov])
+    banned = ",".join(str(address_port(k, i)) for _, k, i in BANNED)
+    m = Marks()
+    with bench.Client(xray, cfg, work, name) as c:
+        tr = bench.Traffic(rate=2, big=0.5)
+        run_timeline(tr, [(10, m.at("ban", lambda: bench.chaos(banned, "blackhole")))], 60)
+    ex = bench.events_of(c.events, "exhausted", m["ban"])
+    t_ex = ex[0]["ts"] / 1000 if ex else None
+    rec = bench.recovery(tr.records, t_ex)[0] if t_ex else None
+    fetches = bench.events_of(c.events, "provider_fetch", m["ban"])
+    applied = [e for e in bench.events_of(c.events, "provider_apply", m["ban"]) if e["fields"].get("changed")]
+    fresh = [e for e in bench.switches(c.events, m["ban"]) if e["fields"]["to"].startswith("p-")]
+    reqs = stand.provider_requests(m["ban"])
+    first = fetches[0]["fields"] if fetches else {}
+    ok_via = next((e["fields"]["via"] for e in fetches if e["fields"].get("ok")), None)
+    return [
+        check("exhausted after the ban, s", t_ex and round(t_ex - m["ban"], 1),
+              t_ex is not None and t_ex - m["ban"] <= 20, "<= 20"),
+        check("refresh trigger", first.get("trigger"), first.get("trigger") == "exhausted", "exhausted"),
+        check("exhausted balancer skipped as via", first.get("error"),
+              first.get("via") == "auto" and first.get("error") == "balancer exhausted", "balancer exhausted"),
+        check("set fetched via", ok_via, ok_via == "direct", "direct"),
+        check("outbounds added", applied and applied[0]["fields"].get("added"),
+              bool(applied) and applied[0]["fields"].get("added") == len(FRESH), f"== {len(FRESH)}"),
+        check("switched to a fresh outbound", fresh and fresh[0]["fields"]["to"], bool(fresh), "p-*"),
+        check("connectivity back after exhausted, s", rec and round(rec, 1), rec is not None and rec <= 30, "<= 30"),
+        check("provider requests", len(reqs), len(reqs) == 1, "== 1"),
+        check("token in a header, not in the URL", reqs and f"{reqs[0][1]} {reqs[0][2]}",
+              bool(reqs) and all(a == "Bearer bench-token" and p == "/set" for _, a, p in reqs), "Bearer, /set"),
+    ]
+
+
+@scenario()
+def provider_first_via_dead(stand, xray, work, name):
+    """The first way to the provider is dead: the request goes the second way."""
+    stand.answer(FRESH)
+    prov = bench.provider_config(["spare", "direct"], limits={"exhaustedMinInterval": "1s"})
+    cfg = bench.client_config(BANNED[:1], {"a": 1, "p-": 1}, providers=[prov])
+    cfg["outbounds"].insert(-2, bench.member("spare", "tcp_tls", 1, bench.PIN))
+    bench.chaos(str(address_port("tcp_tls", 1)), "blackhole")
+    m = Marks()
+    with bench.Client(xray, cfg, work, name) as c:
+        tr = bench.Traffic(rate=1, big=0)
+        run_timeline(tr, [(3, m.at("refresh", lambda: refresh(c)))], 15)
+    fetches = [e["fields"] for e in bench.events_of(c.events, "provider_fetch", m["refresh"])]
+    applied = [e["fields"] for e in bench.events_of(c.events, "provider_apply", m["refresh"])]
+    reqs = stand.provider_requests(m["refresh"])
+    took = reqs[0][0] - m["refresh"] if reqs else None
+    order = [(f.get("via"), f.get("ok")) for f in fetches]
+    return [
+        check("attempts (via, ok)", order, order == [("spare", False), ("direct", True)],
+              "[spare failed, direct ok]"),
+        check("dead via error", fetches and fetches[0].get("error"), bool(fetches) and fetches[0].get("error") == "timeout",
+              "timeout"),
+        check("trigger in every attempt", sorted({f.get("trigger") for f in fetches}),
+              {f.get("trigger") for f in fetches} == {"host"}, "host"),
+        check("set applied", applied and applied[-1].get("ok"), bool(applied) and applied[-1].get("ok") is True, "ok"),
+        check("provider requests", len(reqs), len(reqs) == 1, "== 1"),
+        check("answer after the first via timed out, s", took and round(took, 1),
+              took is not None and 3 <= took <= 5, "timeout 3 .. 5"),
+    ]
+
+
+@scenario()
+def provider_invalid_answer(stand, xray, work, name):
+    """A broken answer and a set that does not build change nothing; failures back off."""
+    stand.answer(FRESH)
+    limits = {"exhaustedMinInterval": "1s", "maxPerHour": 0,
+              "backoff": {"initial": "2s", "multiplier": 2, "max": "8s", "jitter": 0.3}}
+    prov = bench.provider_config(["direct"], limits=limits)
+    cfg = bench.client_config(BANNED[:1], {"a": 1, "p-": 1}, providers=[prov])
+    m = Marks()
+
+    def garbage():
+        bench.provider_mode("garbage")
+        refresh(c)
+
+    def unbuildable():
+        answer_body(stand, {"outbounds": [bench.member("x1", "reality", 2, bench.PIN),
+                                          {"tag": "x3", "protocol": "nosuch"}]})
+        bench.provider_mode("ok")
+
+    with bench.Client(xray, cfg, work, name) as c:
+        tr = bench.Traffic(rate=2, big=0.5)
+        run_timeline(tr, [(2, m.at("good", lambda: refresh(c))), (6, m.at("garbage", garbage)),
+                          (26, m.at("unbuildable", unbuildable))], 50)
+        members = c.status()["providers"][0]["members"]
+    applies = bench.events_of(c.events, "provider_apply", m["garbage"])
+    fetches = bench.events_of(c.events, "provider_fetch", m["garbage"])
+    broken = [e for e in fetches if "invalid answer" in (e["fields"].get("error") or "")]
+    not_built = [e for e in applies if e["ts"] / 1000 >= m["unbuildable"] and e["fields"].get("ok") is False
+                 and "build" in (e["fields"].get("error") or "")]
+    changed = [e for e in applies if e["fields"].get("changed")]
+    tries = [t for t, _, _ in stand.provider_requests(m["garbage"]) if t < m["unbuildable"]]
+    g = gaps(tries)[:3]
+    base = [2, 4, 8]
+    within = len(g) == 3 and all(0.7 * b - 0.3 <= x <= 1.3 * b + 0.3 for x, b in zip(g, base))
+    spread = [round(x / b, 2) for x, b in zip(g, base)]
+    failed = sum(1 for r in tr.records if not r[1])
+    return [
+        check("broken answers seen as errors", len(broken), len(broken) >= 3, ">= 3"),
+        check("set that does not build rejected", len(not_built), len(not_built) >= 1, ">= 1"),
+        check("set changes after the first one", len(changed), not changed, "== 0"),
+        check("members kept", members, members == len(FRESH), f"== {len(FRESH)}"),
+        check("pauses after failures, s", g, within and g == sorted(g), "2, 4, 8 +-30% growing"),
+        check("pauses vary (pause / backoff)", spread, any(abs(x - 1) > 0.05 for x in spread), "not all 1"),
+        check("user requests failed", failed, failed == 0, "== 0"),
+    ]
+
+
+@scenario()
+def provider_refresh_keeps_download(stand, xray, work, name):
+    """Refreshes while the chosen outbound works: a long download on it goes on,
+    also after the outbound leaves the set, until its drain ends."""
+    size, seconds, drain = 16 << 20, 24, 30
+    prov = bench.provider_config(["auto", "direct"], limits={"exhaustedMinInterval": "1s"},
+                                 apply={"drain": f"{drain}s"})
+    cfg = bench.client_config([("p-x1", "reality", 1)], {"p-": 1}, providers=[prov])
+    m = Marks()
+    got = {}
+
+    def long_download():
+        got["start"] = time.time()
+        try:
+            got["bytes"] = bench.download("t1.test", f"/slow/{size}/{seconds}", timeout=seconds + 20)
+        except OSError as e:
+            got["error"] = repr(e)
+        got["end"] = time.time()
+
+    def first():
+        stand.answer([("x1", "reality", 1), ("x2", "reality", 2)])
+        refresh(c)
+
+    def second():
+        stand.answer([("x2", "reality", 2)])
+        refresh(c)
+
+    with bench.Client(xray, cfg, work, name) as c:
+        tr = bench.Traffic(rate=2, big=0.5)
+        dl = threading.Thread(target=long_download, daemon=True)
+        run_timeline(tr, [(2, dl.start), (6, m.at("first", first)), (12, m.at("second", second))], 50)
+        dl.join(timeout=30)
+    applies = [e["fields"] for e in bench.events_of(c.events, "provider_apply", m["first"]) if e["fields"].get("ok")]
+    one = applies[0] if applies else {}
+    two = applies[1] if len(applies) > 1 else {}
+    left = [e for e in bench.switches(c.events, m["second"]) if e["fields"]["from"] == "p-x1"]
+    drained = [e for e in bench.events_of(c.events, "provider_drained", m["second"])
+               if e["fields"]["outbound"] == "p-x1"]
+    t_drained = drained[0]["ts"] / 1000 - m["second"] if drained else None
+    failed = sum(1 for r in tr.records if not r[1])
+    return [
+        check("long download complete, MB", round(got.get("bytes", 0) / 2**20, 1), got.get("bytes") == size,
+              f"== {size >> 20}"),
+        check("download outlived the removal, s", got.get("end") and round(got["end"] - m["second"], 1),
+              got.get("end", 0) > m["second"] + 5, "> 5"),
+        check("first apply: kept, added", (one.get("unchanged"), one.get("added")),
+              one.get("unchanged") == 1 and one.get("added") == 1, "(1, 1)"),
+        check("second apply: removed", two.get("removed"), two.get("removed") == 1, "== 1"),
+        check("balancer left the removed outbound", left and f"{left[0]['fields']['to']} {left[0]['fields']['reason']}",
+              bool(left) and left[0]["fields"]["to"] == "p-x2" and left[0]["fields"]["reason"] == "retired",
+              "p-x2 retired"),
+        check("removed outbound closed after drain, s", t_drained and round(t_drained, 1),
+              t_drained is not None and drain - 1 <= t_drained <= drain + 5, f"{drain} .. {drain + 5}"),
+        check("user requests failed", failed, failed == 0, "== 0"),
+    ]
+
+
+@scenario()
+def provider_limits(stand, xray, work, name):
+    """A trigger that wants a refresh every second gets one per minInterval;
+    a failing provider is asked again after growing, spread pauses."""
+    stand.answer(FRESH, version="v1")
+    prov = bench.provider_config(["direct"], triggers={"interval": "1s", "jitter": 0},
+                                 limits={"minInterval": "4s", "maxPerHour": 0,
+                                         "backoff": {"initial": "5s", "multiplier": 2, "max": "1m", "jitter": 0.3}})
+    cfg = bench.client_config(BANNED[:1], {"a": 1, "p-": 1}, providers=[prov])
+    m = Marks()
+    with bench.Client(xray, cfg, work, name) as c:
+        tr = bench.Traffic(rate=2, big=0)
+        start = run_timeline(tr, [(30, m.at("fail", lambda: bench.provider_mode("status:500")))], 85)
+    reqs = [t for t, _, _ in stand.provider_requests(start)]
+    ok_phase = [t for t in reqs if t < m["fail"]]
+    fail_phase = [t for t in reqs if t >= m["fail"]]
+    g_ok = gaps(ok_phase)
+    g_fail = gaps(fail_phase)[:3]
+    base = [5, 10, 20]
+    within = len(g_fail) == 3 and all(max(4, 0.7 * b) - 0.3 <= x <= 1.3 * b + 0.3 for x, b in zip(g_fail, base))
+    skips = [e for e in bench.events_of(c.events, "provider_skip", start) if e["fields"]["reason"] == "min_interval"]
+    return [
+        check("refreshes in 30 s with interval 1s", len(ok_phase), 6 <= len(ok_phase) <= 9, "30 / minInterval 4"),
+        check("min pause between refreshes, s", g_ok and min(g_ok), bool(g_ok) and min(g_ok) >= 3.9, ">= 4"),
+        check("min_interval skips reported", len(skips), 0 < len(skips) <= len(ok_phase) + 1, "one per wait"),
+        check("pauses after failures, s", g_fail, within and g_fail == sorted(g_fail), "5, 10, 20 +-30% growing"),
+    ]

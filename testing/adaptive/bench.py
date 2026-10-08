@@ -25,6 +25,7 @@ REALITY_PUBLIC = "SFQq-6EUyhY12O_zOjI9pVdY1b7y3aVaevZJg8JDaEw"
 OFFSET = int(os.environ.get("BENCH_PORT_OFFSET", "0"))
 TARGET_PORT = 18999 + OFFSET
 CHAOS_CONTROL = 19000 + OFFSET
+PROVIDER_PORT = 19002 + OFFSET
 SOCKS_PORT = 10808 + OFFSET
 API_PORT = 10085 + OFFSET
 METRICS_PORT = 11111 + OFFSET
@@ -132,7 +133,20 @@ def plain(cfg, outbound):
     return cfg
 
 
-def client_config(members, costs, health=None, strategy=None, burst=None, loglevel="warning"):
+def provider_config(via, triggers=None, limits=None, apply=None):
+    """A provider served by provider.py. Every trigger is off unless the
+    scenario turns it on, so a scenario sees only the trigger it checks."""
+    return {
+        "tag": "fresh", "url": f"http://127.0.0.1:{PROVIDER_PORT}/set",
+        "headers": {"Authorization": "Bearer bench-token"}, "via": via, "timeout": "3s",
+        "triggers": {"interval": "0s", "minHealthy": 0, "whenExhausted": False, "maxAge": "0s",
+                     "onNetworkChange": "never"} | (triggers or {}),
+        "limits": limits or {},
+        "apply": {"balancer": "auto", "tagPrefix": "p-", "drain": "1m"} | (apply or {}),
+    }
+
+
+def client_config(members, costs, health=None, strategy=None, burst=None, loglevel="warning", providers=None):
     """members: list of (tag, kind, address index)."""
     outbounds = [member(t, k, i, PIN) for t, k, i in members]
     outbounds += [{"tag": "direct", "protocol": "freedom", "settings": {"finalRules": [{"action": "allow"}]}},
@@ -158,11 +172,14 @@ def client_config(members, costs, health=None, strategy=None, burst=None, loglev
         return cfg
     settings = {"costs": [{"match": t, "value": c} for t, c in costs.items()]}
     settings.update(strategy or {})
+    subjects = list(selectors)
+    if providers:
+        selectors = selectors + [p["apply"]["tagPrefix"] for p in providers]
     cfg["routing"]["balancers"].append({"tag": "auto", "selector": selectors,
                                         "strategy": {"type": "leastCost", "settings": settings},
                                         "fallbackTag": "block"})
     h = {
-        "subjectSelector": selectors,
+        "subjectSelector": subjects,
         "probes": [{"destination": f"http://probe.test:{TARGET_PORT}/bytes/32768", "minBytes": 32768,
                     "expectStatus": [200], "timeout": "6s", "progressTimeout": "3s"}],
         "connectivity": {"outbound": "direct", "destination": f"http://127.0.0.1:{CONNECTIVITY_PORT}/204",
@@ -173,6 +190,8 @@ def client_config(members, costs, health=None, strategy=None, burst=None, loglev
             h[k] = h[k] | v
         else:
             h[k] = v
+    if providers:
+        h["providers"] = providers
     cfg["healthObservatory"] = h
     return cfg
 
@@ -190,9 +209,11 @@ class Stand:
         self.procs = []
         PIN = ensure_cert(xray)
         self.target_log = os.path.join(workdir, "target.log")
+        self.provider_answer = os.path.join(workdir, "provider-answer.json")
+        self.provider_log = os.path.join(workdir, "provider.log")
 
     def __enter__(self):
-        busy = [p for p in [TARGET_PORT, CHAOS_CONTROL, SOCKS_PORT, API_PORT, METRICS_PORT]
+        busy = [p for p in [TARGET_PORT, CHAOS_CONTROL, PROVIDER_PORT, SOCKS_PORT, API_PORT, METRICS_PORT]
                 + [server_port(k) for k in TRANSPORTS] + all_address_ports() if port_open(p)]
         if busy:
             raise RuntimeError(f"ports already in use, another bench running? {busy}")
@@ -210,8 +231,14 @@ class Stand:
         specs.append(f"{CONNECTIVITY_PORT}:{TARGET_PORT}")
         self.procs.append(subprocess.Popen(["python3", os.path.join(HERE, "chaos.py"), str(CHAOS_CONTROL)] + specs,
                                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
+        self.answer([("n1", "reality", 2)])
+        open(self.provider_log, "w").close()
+        self.procs.append(subprocess.Popen(
+            ["python3", os.path.join(HERE, "provider.py"), str(PROVIDER_PORT), self.provider_answer,
+             self.provider_log], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
         wait_port(TARGET_PORT)
         wait_port(CHAOS_CONTROL)
+        wait_port(PROVIDER_PORT)
         for k in TRANSPORTS:
             wait_port(server_port(k))
         return self
@@ -228,6 +255,30 @@ class Stand:
     def reset(self):
         chaos(",".join(map(str, all_address_ports())), "pass")
         open(self.target_log, "w").close()
+        open(self.provider_log, "w").close()
+        provider_mode("ok")
+
+    def answer(self, members, costs=None, version=None, next_refresh=None):
+        """Sets what the provider serves: members as (tag, kind, address index)."""
+        body = {"outbounds": [member(t, k, i, PIN) for t, k, i in members]}
+        if costs:
+            body["costs"] = costs
+        if version:
+            body["version"] = version
+        if next_refresh:
+            body["nextRefreshIn"] = next_refresh
+        with open(self.provider_answer, "w") as f:
+            json.dump(body, f)
+
+    def provider_requests(self, since=0):
+        """(time, authorization, path) of every request the provider got."""
+        out = []
+        with open(self.provider_log) as f:
+            for line in f:
+                ts, auth, path = line.strip().split(" ", 2)
+                if float(ts) >= since:
+                    out.append((float(ts), auth.replace("_", " "), path))
+        return out
 
     def probe_hits(self, since):
         hits = []
@@ -256,6 +307,10 @@ def wait_port(port, timeout=10):
         except OSError:
             time.sleep(0.1)
     raise RuntimeError(f"port {port} did not open")
+
+
+def provider_mode(mode):
+    return urllib.request.urlopen(f"http://127.0.0.1:{PROVIDER_PORT}/control?mode={mode}", timeout=3).read()
 
 
 def chaos(ports, mode):
@@ -530,6 +585,10 @@ def recovery(records, at, streak=10, hosts=None):
             fails = sum(1 for t, ok in after[:i] if not ok)
             return after[i][0] - at, fails
     return None, sum(1 for _, ok in after if not ok)
+
+
+def events_of(events, typ, since=0):
+    return [e for e in events if e["type"] == typ and e["ts"] / 1000 >= since]
 
 
 def switches(events, since=0):
