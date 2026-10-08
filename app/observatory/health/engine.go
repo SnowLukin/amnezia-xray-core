@@ -107,6 +107,8 @@ type engine struct {
 	networkID  string
 	networks   map[string]map[string]string
 	netOrder   []string
+	// The network was remembered when the host reported it.
+	networkKnown bool
 
 	lastDemand atomic.Int64
 
@@ -435,6 +437,8 @@ type selector struct {
 	// The start pin releases itself at this time; zero waits for the host.
 	pinnedUntil time.Time
 	exhausted   bool
+	// The network changed while pinned; the release rechecks the choice.
+	recheckOnRelease bool
 
 	// Candidates of the failover under way: every one tried, and the ones
 	// whose probe has not answered yet.
@@ -1537,6 +1541,7 @@ func (e *engine) onNetworkChange(id string, now time.Time) {
 	}
 	e.providersOnNetworkChange(known, now)
 	e.networkID = id
+	e.networkKnown = known
 	e.endPause(now)
 	e.doubt = false
 	e.checkFails = 0
@@ -1577,25 +1582,35 @@ func (e *engine) onNetworkChange(id string, now time.Time) {
 			s.penalty = map[string]float64{}
 			s.returnedTo = ""
 		}
-		if s.cfg.onNetworkChange != NetworkChangeMode_RECHECK || s.pinned != "" {
+		if s.cfg.onNetworkChange != NetworkChangeMode_RECHECK {
 			continue
 		}
-		if s.exhausted {
-			if r := e.ranked(s, now, nil); len(r) > 0 {
-				e.switchTo(s, r[0], "network_change", now)
-			}
+		if s.pinned != "" {
+			s.recheckOnRelease = true
 			continue
 		}
-		if tag := e.rememberedFor(s); tag != "" && tag != s.current() && s.hasCandidate(tag) {
-			e.enqueue(tag, reasonRemembered, s.tag, now)
-			continue
-		}
-		if cur := s.current(); cur != "" {
-			e.enqueue(cur, reasonNetwork, s.tag, now)
-		}
-		u := s.cfg.upgrade
-		e.scheduleUpgrade(s, now, u.onNetworkChange && (!u.unknownNetworksOnly || !known))
+		e.recheckChoice(s, known, now)
 	}
+}
+
+// recheckChoice probes the choice of the balancer in a new network, or the
+// outbound that last worked in it.
+func (e *engine) recheckChoice(s *selector, known bool, now time.Time) {
+	if s.exhausted {
+		if r := e.ranked(s, now, nil); len(r) > 0 {
+			e.switchTo(s, r[0], "network_change", now)
+		}
+		return
+	}
+	if tag := e.rememberedFor(s); tag != "" && tag != s.current() && s.hasCandidate(tag) {
+		e.enqueue(tag, reasonRemembered, s.tag, now)
+		return
+	}
+	if cur := s.current(); cur != "" {
+		e.enqueue(cur, reasonNetwork, s.tag, now)
+	}
+	u := s.cfg.upgrade
+	e.scheduleUpgrade(s, now, u.onNetworkChange && (!u.unknownNetworksOnly || !known))
 }
 
 func (e *engine) onNetworkLost(now time.Time) {
@@ -1701,6 +1716,8 @@ func (e *engine) releaseBy(selectorTag, by string, now time.Time) bool {
 	e.emit(now, "release", map[string]any{"balancer": selectorTag, "outbound": s.pinned, "by": by})
 	s.pinned = ""
 	s.pinnedUntil = time.Time{}
+	recheck := s.recheckOnRelease
+	s.recheckOnRelease = false
 	cur := s.current()
 	switch {
 	case cur == "":
@@ -1713,6 +1730,9 @@ func (e *engine) releaseBy(selectorTag, by string, now time.Time) bool {
 		return true
 	}
 	e.scheduleUpgrade(s, now, false)
+	if recheck {
+		e.recheckChoice(s, e.networkKnown, now)
+	}
 	return true
 }
 
