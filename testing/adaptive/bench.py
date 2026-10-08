@@ -258,6 +258,7 @@ class Stand:
         self.target_log = os.path.join(workdir, "target.log")
         self.provider_answer = os.path.join(workdir, "provider-answer.json")
         self.provider_log = os.path.join(workdir, "provider.log")
+        self.provider_bodies_log = self.provider_log + ".bodies"
 
     def __enter__(self):
         busy = [p for p in [TARGET_PORT, TARGET_TLS_PORT, CHAOS_CONTROL, PROVIDER_PORT, SOCKS_PORT, API_PORT,
@@ -282,6 +283,7 @@ class Stand:
                                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
         self.answer([("n1", "reality", 2)])
         open(self.provider_log, "w").close()
+        open(self.provider_bodies_log, "w").close()
         self.procs.append(subprocess.Popen(
             ["python3", os.path.join(HERE, "provider.py"), str(PROVIDER_PORT), self.provider_answer,
              self.provider_log], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
@@ -306,6 +308,7 @@ class Stand:
         chaos(",".join(map(str, all_address_ports())), "pass")
         open(self.target_log, "w").close()
         open(self.provider_log, "w").close()
+        open(self.provider_bodies_log, "w").close()
         provider_mode("ok")
 
     def answer(self, members, costs=None, version=None, next_refresh=None):
@@ -329,6 +332,11 @@ class Stand:
                 if float(ts) >= since:
                     out.append((float(ts), auth.replace("_", " "), path))
         return out
+
+    def provider_bodies(self, since=0):
+        """{ts, auth, type, body} of every POST the provider got."""
+        with open(self.provider_bodies_log) as f:
+            return [b for b in map(json.loads, f) if b["ts"] >= since]
 
     def probe_hits(self, since):
         hits = []

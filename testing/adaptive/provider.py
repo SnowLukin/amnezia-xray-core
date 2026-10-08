@@ -2,13 +2,16 @@
 
 Run:      provider.py <port> <answer file> <log file>
 GET /set                     the answer file as JSON, read on every request
+POST /set                    the same; the body of the request goes to <log file>.bodies
 GET /control?mode=<mode>     changes how /set answers:
   ok            the answer file
   garbage       a cut JSON document
   status:N[:R]  HTTP status N with an empty body; with R, Retry-After: R
   error:N:code  HTTP status N with an error body of the protocol
   hang          never answers
-Every /set request is logged as "time authorization path" to the log file.
+Every /set request is logged as "time authorization path" to the log file,
+and the body of a POST as a JSON line {ts, auth, type, body} to the bodies
+file; a body that is not JSON is kept as a string.
 """
 import json
 import sys
@@ -21,6 +24,7 @@ MODE = ["ok"]
 LOCK = threading.Lock()
 ANSWER = None
 LOG = None
+BODIES = None
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -64,12 +68,26 @@ class Handler(BaseHTTPRequestHandler):
             with open(ANSWER, "rb") as f:
                 self.reply(200, f.read())
 
+    def do_POST(self):
+        raw = self.rfile.read(int(self.headers.get("Content-Length") or 0))
+        try:
+            body = json.loads(raw)
+        except ValueError:
+            body = raw.decode(errors="replace")
+        line = {"ts": round(time.time(), 3), "auth": self.headers.get("Authorization"),
+                "type": self.headers.get("Content-Type"), "body": body}
+        with LOCK:
+            BODIES.write(json.dumps(line) + "\n")
+            BODIES.flush()
+        self.do_GET()
+
 
 def main():
-    global ANSWER, LOG
+    global ANSWER, LOG, BODIES
     port = int(sys.argv[1])
     ANSWER = sys.argv[2]
     LOG = open(sys.argv[3], "a", buffering=1)
+    BODIES = open(sys.argv[3] + ".bodies", "a", buffering=1)
     ThreadingHTTPServer.daemon_threads = True
     ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
 
