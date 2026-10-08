@@ -308,9 +308,12 @@ Zero and empty values are left out, except `protocol`, `provider`, `run`,
 `refresh`, `trigger`, `retry`, `clientTime`, `network.known`, `network.up`,
 `memoryLow` and the flags of `balancer`. The body never holds destinations,
 domains, addresses or server names, the targets of failures, the text of an
-error that may name the probe URL, or header values. It takes about 400
-bytes per outbound, under 64 KiB for the largest set. A backend ignores
-fields it does not know: protocol 1 may gain fields in the body.
+error that may name the probe URL, or header values. Its size is an
+estimate, not a limit: up to about 500 bytes per outbound besides its tag,
+so a usual set takes a few kilobytes and the largest one with every counter
+busy some 60 KB, plus the tags and the version the backend chose itself. A
+backend ignores fields it does not know: protocol 1 may gain fields in the
+body.
 
 **Answer.**
 

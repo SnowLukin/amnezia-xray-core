@@ -216,21 +216,25 @@ func TestLastFailureCarriesTheRejection(t *testing.T) {
 	}
 }
 
-// The largest set the provider may have, with long errors and busy
-// outbounds, stays well within what a backend takes in one request: errors
-// go out as classes.
+// The largest set the provider may have, with long errors and every counter
+// busy, takes under 64 KiB besides the tags and the version, which the
+// backend chose itself and which have no bound of their own: errors go out
+// as classes.
 func TestRequestBodyBounded(t *testing.T) {
 	var tags []string
+	chosen := 0
 	for i := 0; i < maxProviderOutbounds; i++ {
-		tags = append(tags, fmt.Sprintf("p-de-fra-reality-%03d", i))
+		tag := fmt.Sprintf("de-fra-reality-%03d-%s", i, strings.Repeat("t", 45))
+		tags = append(tags, "p-"+tag)
+		chosen += len(tag)
 	}
 	te := newProviderEngine(t, quietProvider(nil), &SelectorConfig{Costs: costs("p-", 1)}, tags...)
 	te.applyProviderSet(te.prov(), providerChange{tags: tags}, t0)
 	for _, tag := range tags {
 		p := te.path(tag)
-		p.status, p.reason, p.statusSince = statusDown, "upgrade_probe", t0
+		p.status, p.reason, p.statusSince = statusDown, "network_change", t0
 		p.quarantineLevel, p.quarantineUntil = 9, at(time.Hour)
-		for _, k := range []failureKind{failDialTimeout, failNoResponse, failStall} {
+		for k := range p.stats.failuresByKind {
 			p.stats.failuresByKind[k] = 1_000_000
 		}
 		p.stats.probes, p.lastProbeEnd, p.lastError, p.lastClass = 1, t0, strings.Repeat("e", 4096), "status_503"
@@ -240,10 +244,12 @@ func TestRequestBodyBounded(t *testing.T) {
 	}
 	te.prov().lastFailedAt, te.prov().lastClass = t0, strings.Repeat("r", 1<<20)
 	te.prov().version = strings.Repeat("v", 256)
+	chosen += len(te.prov().version)
 	_, body, _ := requestOf(t, te, at(time.Minute))
-	t.Logf("%d outbounds: %d bytes, %d per outbound", len(tags), len(body), len(body)/len(tags))
-	if len(body) > 64<<10 {
-		t.Fatalf("the body of %d outbounds takes %d bytes", len(tags), len(body))
+	core := len(body) - chosen
+	t.Logf("%d outbounds: %d bytes, %d of them the core's, %d per outbound", len(tags), len(body), core, core/len(tags))
+	if core > 64<<10 {
+		t.Fatalf("the body of %d outbounds takes %d bytes besides the tags and the version", len(tags), core)
 	}
 }
 
