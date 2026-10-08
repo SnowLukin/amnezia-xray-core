@@ -300,7 +300,8 @@ func TestRefreshUnderLowMemoryTriesOneVia(t *testing.T) {
 
 // twoViaCore runs a core whose provider at url is reached through direct,
 // then direct2; both work, so only the answer decides whether the second is
-// tried. more goes into the provider, such as a method.
+// tried. more goes last into the provider, such as `, "method": "GET"`, and
+// a key in it takes the place of the one above.
 func twoViaCore(t *testing.T, url string, more ...string) *health.Observer {
 	t.Helper()
 	cfg, err := core.LoadConfig("json", strings.NewReader(`{
@@ -314,11 +315,11 @@ func twoViaCore(t *testing.T, url string, more ...string) *health.Observer {
 	  "routing": {"balancers": [{"tag": "auto", "selector": ["p-"], "strategy": {"type": "leastCost", "settings": {}}}]},
 	  "healthObservatory": {
 	    "subjectSelector": ["p-"],
-	    "providers": [{`+strings.Join(more, "")+`
+	    "providers": [{
 	      "tag": "fresh", "url": "`+url+`", "allowPlainHttp": true, "via": ["direct", "direct2"], "timeout": "3s",
 	      "triggers": {"interval": "0s", "minHealthy": 0, "whenExhausted": false, "maxAge": "0s", "onNetworkChange": "never"},
 	      "limits": {"backoff": {"initial": "1h"}},
-	      "apply": {"balancer": "auto", "tagPrefix": "p-", "protocols": ["freedom"]}
+	      "apply": {"balancer": "auto", "tagPrefix": "p-", "protocols": ["freedom"]}`+strings.Join(more, "")+`
 	    }]
 	  }
 	}`))
@@ -487,6 +488,48 @@ func TestBackendAnswerEndsTheAttempts(t *testing.T) {
 	}
 }
 
+// An entry skipped after a via that was asked does not hide what that via
+// met: the next request tells the backend the status, not a network failure.
+func TestSkippedViaKeepsTheFailureBeforeIt(t *testing.T) {
+	var mu sync.Mutex
+	var bodies [][]byte
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sent, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		bodies = append(bodies, sent)
+		n := len(bodies)
+		mu.Unlock()
+		if n == 1 {
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		_, _ = w.Write([]byte(`{"outbounds": [{"tag": "x1", "protocol": "freedom"}]}`))
+	}))
+	defer ts.Close()
+	// The failed host request is retried after the short backoff.
+	obs := twoViaCore(t, ts.URL+"/set", `, "via": ["direct", "missing"],
+	  "limits": {"exhaustedMinInterval": "10ms", "backoff": {"initial": "50ms"}}`)
+	w := &eventWaiter{t: t, o: obs}
+	obs.RequestRefresh("fresh")
+	w.until("provider_apply", func(e health.Event) bool { return e.Fields["ok"] == true })
+	fetches := w.since(0, "provider_fetch")
+	if len(fetches) < 3 || fetches[0].Fields["status"] != 502.0 || fetches[1].Fields["error"] != "no such outbound" {
+		t.Fatalf("fetches %+v; want a 502 through direct, then missing skipped", fetches)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	var body struct {
+		LastFailure *struct {
+			Status int    `json:"status"`
+			Error  string `json:"error"`
+		} `json:"lastFailure"`
+	}
+	if err := json.Unmarshal(bodies[1], &body); err != nil || body.LastFailure == nil ||
+		body.LastFailure.Status != 502 || body.LastFailure.Error != "status" {
+		t.Fatalf("the retry tells %s: %v", bodies[1], err)
+	}
+}
+
 // Every via of one refresh sends the same body: the backend tells a request
 // sent again from a new one by run and refresh.
 func TestSameBodyThroughEveryVia(t *testing.T) {
@@ -527,7 +570,7 @@ func TestGetSendsNoBody(t *testing.T) {
 	srv.set(`{"outbounds": [{"tag": "x1", "protocol": "freedom"}]}`)
 	ts := httptest.NewServer(srv)
 	defer ts.Close()
-	obs := twoViaCore(t, ts.URL+"/set", `"method": "GET",`)
+	obs := twoViaCore(t, ts.URL+"/set", `, "method": "GET"`)
 	w := &eventWaiter{t: t, o: obs}
 	obs.RequestRefresh("fresh")
 	if ev := w.until("provider_apply", nil); ev.Fields["ok"] != true {

@@ -283,7 +283,8 @@ it can answer with the right outbounds at once:
 - `lastFailure` comes when the previous refresh failed: the HTTP status or
   0, how long ago, and as `error` the reason a well-formed answer was
   refused (at most 200 bytes) or the class of the failure: `timeout`,
-  `network`, `status`, `too_large` or `broken_json`.
+  `network`, `status`, `too_large` or `broken_json`. It is what the last
+  `via` that was asked met; entries skipped after it do not hide it.
 - `version` is the set applied now; `clientTime` the clock of the device, so
   the backend sees how far off it is.
 - `balancer` is the one the provider feeds. `current` and `own` tell whether

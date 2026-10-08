@@ -456,6 +456,7 @@ func (o *Observer) fetchSet(rt *providerRuntime, j *refreshJob, body []byte) (fe
 	}
 	var last fetchResult
 	var lastErr error
+	asked := false
 	for i, v := range via {
 		o.mu.Lock()
 		tag, skip := o.e.resolveVia(v, o.now())
@@ -470,9 +471,14 @@ func (o *Observer) fetchSet(rt *providerRuntime, j *refreshJob, body []byte) (fe
 			f["ok"] = false
 			f["error"] = skip
 			o.emit("provider_fetch", f)
-			last, lastErr = fetchResult{class: "network"}, errors.New(skip)
+			// What a via that was asked met tells the next request more than
+			// an entry skipped after it.
+			if !asked {
+				last, lastErr = fetchResult{class: "network"}, errors.New(skip)
+			}
 			continue
 		}
+		asked = true
 		start := time.Now()
 		r, err := o.fetchOnce(rt.cfg, tag, body)
 		// An answer against the protocol still came from the backend: the
