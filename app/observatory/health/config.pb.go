@@ -944,9 +944,13 @@ type SelectorConfig struct {
 	// Start with this tag instead of the cheapest one, without pinning it. The
 	// host passes the outbound that worked last time, so a restart needs no
 	// probing.
-	StartWith     string `protobuf:"bytes,10,opt,name=start_with,json=startWith,proto3" json:"start_with,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	StartWith string `protobuf:"bytes,10,opt,name=start_with,json=startWith,proto3" json:"start_with,omitempty"`
+	// Releases the start pin by itself this long after the start, as when a
+	// host verifies the pinned outbound within a known time and stops the core
+	// when it fails. Zero keeps the pin until the host releases it.
+	StartPinnedFor int64 `protobuf:"varint,11,opt,name=start_pinned_for,json=startPinnedFor,proto3" json:"start_pinned_for,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *SelectorConfig) Reset() {
@@ -1047,6 +1051,13 @@ func (x *SelectorConfig) GetStartWith() string {
 		return x.StartWith
 	}
 	return ""
+}
+
+func (x *SelectorConfig) GetStartPinnedFor() int64 {
+	if x != nil {
+		return x.StartPinnedFor
+	}
+	return 0
 }
 
 // UpgradeConfig controls returns to cheaper outbounds while the current one
@@ -1688,7 +1699,7 @@ const file_app_observatory_health_config_proto_rawDesc = "" +
 	"\tmax_bytes\x18\x02 \x01(\x03R\bmaxBytes\"O\n" +
 	"\rNetworkConfig\x12\x1b\n" +
 	"\tno_memory\x18\x01 \x01(\bR\bnoMemory\x12!\n" +
-	"\fmax_networks\x18\x02 \x01(\x05R\vmaxNetworks\"\x82\x04\n" +
+	"\fmax_networks\x18\x02 \x01(\x05R\vmaxNetworks\"\xac\x04\n" +
 	"\x0eSelectorConfig\x125\n" +
 	"\x05costs\x18\x01 \x03(\v2\x1f.xray.app.router.StrategyWeightR\x05costs\x12!\n" +
 	"\fdefault_cost\x18\x02 \x01(\x02R\vdefaultCost\x12\x12\n" +
@@ -1701,7 +1712,8 @@ const file_app_observatory_health_config_proto_rawDesc = "" +
 	"\x11on_network_change\x18\t \x01(\x0e23.xray.core.app.observatory.health.NetworkChangeModeR\x0fonNetworkChange\x12\x1d\n" +
 	"\n" +
 	"start_with\x18\n" +
-	" \x01(\tR\tstartWith\"\xd3\x02\n" +
+	" \x01(\tR\tstartWith\x12(\n" +
+	"\x10start_pinned_for\x18\v \x01(\x03R\x0estartPinnedFor\"\xd3\x02\n" +
 	"\rUpgradeConfig\x12\x1a\n" +
 	"\binterval\x18\x01 \x01(\x03R\binterval\x12\x1f\n" +
 	"\vfixed_phase\x18\x02 \x01(\bR\n" +

@@ -106,7 +106,7 @@ Existing connections stay where they are; only new connections move.
         "upgrade": { "interval": "30m", "randomPhase": true, "successes": 3, "spacing": "20s",
                      "penaltyWindow": "5m", "penaltyMultiplier": 2, "maxPenalty": "2h",
                      "onNetworkChange": true, "unknownNetworksOnly": true },
-        "startPinned": "",
+        "startPinned": "", "startPinnedFor": "0s",
         "onNetworkChange": "recheck"
       } },
       "fallbackTag": "block"
@@ -141,6 +141,9 @@ matching probe profile an outbound is probed with a GET of
   leaves only returns after network changes.
 - `startPinned` keeps the balancer on one outbound until the host releases
   it, for example while another component verifies the connection.
+  `startPinnedFor` releases it by itself after that long: a host that
+  verifies within a known time and stops the core when the check fails
+  then needs no release call.
 - Set `fallbackTag` to a blackhole: without it, an empty choice sends traffic
   to the default outbound.
 
@@ -304,7 +307,7 @@ changed its settings). `kinds` counts failures by kind: `dial_failed`, `dial_tim
 | `upgrade_failed` | `balancer`, `outbound`, `successes` | The return was abandoned after a failed probe. |
 | `upgrade_delayed` | `balancer`, `outbound`, `delay_ms` | The return waits longer because the previous one failed. |
 | `upgrade_penalty` | `balancer`, `outbound`, `multiplier` | A return failed within `penaltyWindow`. |
-| `pin`, `release` | `balancer`, `outbound` | The host pinned or released a balancer. |
+| `pin`, `release` | `balancer`, `outbound`; for `release` also `by`: `host` or `timer` | The host pinned or released a balancer, or the start pin ran out. |
 | `stale_request` | `request`, `balancer`, `run` | A pin or release meant for another run of the core was ignored. |
 | `pinned_down` | `balancer`, `outbound` | The pinned outbound failed; the balancer stays on it. |
 | `connectivity` | `ok`, `rtt_ms`, `error` | Result of a network check. |

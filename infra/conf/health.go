@@ -429,6 +429,7 @@ type strategyLeastCostConfig struct {
 	MinHold          duration.Duration               `json:"minHold"`
 	Upgrade          *strategyLeastCostUpgradeConfig `json:"upgrade"`
 	StartPinned      string                          `json:"startPinned"`
+	StartPinnedFor   duration.Duration               `json:"startPinnedFor"`
 	StartWith        string                          `json:"startWith"`
 	OnNetworkChange  string                          `json:"onNetworkChange"`
 }
@@ -464,6 +465,7 @@ func (v *strategyLeastCostConfig) Build() (proto.Message, error) {
 		SwitchWithoutProbe: isFalse(v.SwitchAfterProbe),
 		MinHold:            int64(v.MinHold),
 		StartPinned:        v.StartPinned,
+		StartPinnedFor:     int64(v.StartPinnedFor),
 		StartWith:          v.StartWith,
 	}
 	switch strings.ToLower(v.Confirm) {

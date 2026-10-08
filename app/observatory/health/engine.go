@@ -373,6 +373,8 @@ type selector struct {
 	started     bool
 	activeSince time.Time
 	pinned      string
+	// The start pin releases itself at this time; zero waits for the host.
+	pinnedUntil time.Time
 	exhausted   bool
 
 	failoverTried   map[string]bool
@@ -519,6 +521,9 @@ func (e *engine) updateCandidates(s *selector, candidates []string, now time.Tim
 func (e *engine) start(s *selector, now time.Time) {
 	if s.cfg.startPinned != "" && s.hasCandidate(s.cfg.startPinned) {
 		s.pinned = s.cfg.startPinned
+		if s.cfg.startPinnedFor > 0 {
+			s.pinnedUntil = now.Add(s.cfg.startPinnedFor)
+		}
 		e.switchTo(s, s.pinned, "start_pinned", now)
 		return
 	}
@@ -796,6 +801,16 @@ func (e *engine) tick(now time.Time) ([]*probeJob, time.Time) {
 	}
 
 	idle := e.idle(now)
+	for _, s := range e.sortedSelectors() {
+		if s.pinned == "" || s.pinnedUntil.IsZero() {
+			continue
+		}
+		if now.Before(s.pinnedUntil) {
+			soonest(s.pinnedUntil)
+			continue
+		}
+		e.releaseBy(s.tag, "timer", now)
+	}
 	if (e.networkDown || e.doubt) && !e.nextConnectivity.IsZero() && !idle {
 		if !now.Before(e.nextConnectivity) {
 			e.nextConnectivity = time.Time{}
@@ -1373,6 +1388,7 @@ func (e *engine) pin(selectorTag, tag string, now time.Time) bool {
 		return false
 	}
 	s.pinned = tag
+	s.pinnedUntil = time.Time{}
 	e.emit(now, "pin", map[string]any{"balancer": selectorTag, "outbound": tag})
 	if s.current() != tag {
 		e.switchTo(s, tag, "pin", now)
@@ -1381,12 +1397,17 @@ func (e *engine) pin(selectorTag, tag string, now time.Time) bool {
 }
 
 func (e *engine) release(selectorTag string, now time.Time) bool {
+	return e.releaseBy(selectorTag, "host", now)
+}
+
+func (e *engine) releaseBy(selectorTag, by string, now time.Time) bool {
 	s := e.selectors[selectorTag]
 	if s == nil || s.pinned == "" {
 		return false
 	}
-	e.emit(now, "release", map[string]any{"balancer": selectorTag, "outbound": s.pinned})
+	e.emit(now, "release", map[string]any{"balancer": selectorTag, "outbound": s.pinned, "by": by})
 	s.pinned = ""
+	s.pinnedUntil = time.Time{}
 	cur := s.current()
 	switch {
 	case cur == "":

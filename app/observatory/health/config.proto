@@ -160,6 +160,10 @@ message SelectorConfig {
   // host passes the outbound that worked last time, so a restart needs no
   // probing.
   string start_with = 10;
+  // Releases the start pin by itself this long after the start, as when a
+  // host verifies the pinned outbound within a known time and stops the core
+  // when it fails. Zero keeps the pin until the host releases it.
+  int64 start_pinned_for = 11;
 }
 
 enum ConfirmMode {

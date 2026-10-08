@@ -409,6 +409,7 @@ type selectorSettings struct {
 	minHold          time.Duration
 	upgrade          upgradeSettings
 	startPinned      string
+	startPinnedFor   time.Duration
 	startWith        string
 	onNetworkChange  NetworkChangeMode
 }
@@ -453,6 +454,7 @@ func newSelectorSettings(c *SelectorConfig) *selectorSettings {
 			unknownNetworksOnly: !u.GetAllNetworks(),
 		},
 		startPinned:     c.GetStartPinned(),
+		startPinnedFor:  time.Duration(max(c.GetStartPinnedFor(), 0)),
 		startWith:       c.GetStartWith(),
 		onNetworkChange: c.GetOnNetworkChange(),
 	}

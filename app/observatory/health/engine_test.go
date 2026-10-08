@@ -579,6 +579,28 @@ func TestPinnedStaysUntilRelease(t *testing.T) {
 	}
 }
 
+func TestStartPinReleasesItselfAfterItsTime(t *testing.T) {
+	sc := &SelectorConfig{Costs: costs("a", 1, "b", 3), StartPinned: "a1", StartPinnedFor: int64(30 * time.Second)}
+	te := newTestEngine(t, nil, sc, "a1", "b1")
+	te.failN(3, "a1", failDial, at(time.Second))
+	te.run(t, at(10*time.Second), nil)
+	if te.sel.current() != "a1" || te.sel.pinned != "a1" {
+		t.Fatalf("before its time the pin moved to %q (pinned %q)", te.sel.current(), te.sel.pinned)
+	}
+	if _, wake := te.tick(at(11 * time.Second)); wake.IsZero() || wake.After(at(30*time.Second)) {
+		t.Fatalf("no wake-up planned for the end of the pin: %v", wake.Sub(t0))
+	}
+	te.run(t, at(31*time.Second), nil)
+	if te.sel.pinned != "" {
+		t.Fatal("the start pin outlived its time")
+	}
+	te.failN(3, "a1", failDial, at(32*time.Second))
+	te.run(t, at(33*time.Second), nil)
+	if te.sel.current() != "b1" {
+		t.Fatalf("after the pin ended a dead a1 kept the balancer: %q", te.sel.current())
+	}
+}
+
 func connectivityConfig() *Config {
 	return &Config{Connectivity: &ConnectivityConfig{Outbound: "direct", Destination: "http://x/204"}}
 }
