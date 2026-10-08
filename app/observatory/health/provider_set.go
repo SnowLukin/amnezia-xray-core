@@ -395,11 +395,16 @@ func (o *Observer) emit(typ string, fields map[string]any) {
 func (o *Observer) runRefresh(j *refreshJob) {
 	rt := o.runtimeFor(j.p)
 	var r refreshOutcome
-	if res, err := o.fetchSet(rt, j); err != nil {
+	if res, err := o.fetchSet(rt, j, o.requestBody(rt, j)); err != nil {
 		r.err = err.Error()
 		r.retryAfter = res.retryAfter
+		r.status = res.status
+		// A refused answer is told by its reason, a failed request by class.
+		r.class = cmp.Or(res.class, r.err)
 	} else if changed, err := o.applySet(rt, res.answer, j); err != nil {
 		r.err = err.Error()
+		r.status = res.status
+		r.class = r.err
 	} else {
 		r.ok = true
 		r.changed = changed
@@ -426,13 +431,17 @@ type fetchResult struct {
 	// The backend itself answered, in the protocol or by asking to wait.
 	// Another via leads to the same backend, so the attempts end.
 	backend bool
+	// What failed, for the next request to tell the backend: timeout,
+	// network, status, too_large or broken_json; empty for an answer
+	// against the protocol, which is told by its reason.
+	class string
 }
 
 // fetchSet requests the set through the via outbounds in turn until one
 // brings a well-formed answer or the backend itself answers. An answer that
 // a firewall, a portal or a server on the way may have given goes on to the
-// next via. Every attempt is an event.
-func (o *Observer) fetchSet(rt *providerRuntime, j *refreshJob) (fetchResult, error) {
+// next via. Every attempt is an event and sends the same body.
+func (o *Observer) fetchSet(rt *providerRuntime, j *refreshJob, body []byte) (fetchResult, error) {
 	via := rt.cfg.via
 	if len(via) == 0 {
 		via = []string{""}
@@ -448,16 +457,16 @@ func (o *Observer) fetchSet(rt *providerRuntime, j *refreshJob) (fetchResult, er
 			skip = "no such outbound"
 		}
 		f := map[string]any{"provider": rt.cfg.tag, "trigger": j.trigger.String(), "retry": j.retry,
-			"attempt": i + 1, "via": v, "outbound": tag}
+			"attempt": i + 1, "via": v, "outbound": tag, "method": rt.cfg.method, "refresh": j.refresh}
 		if skip != "" {
 			f["ok"] = false
 			f["error"] = skip
 			o.emit("provider_fetch", f)
-			last, lastErr = fetchResult{}, errors.New(skip)
+			last, lastErr = fetchResult{class: "network"}, errors.New(skip)
 			continue
 		}
 		start := time.Now()
-		r, err := o.fetchOnce(rt.cfg, tag)
+		r, err := o.fetchOnce(rt.cfg, tag, body)
 		// An answer against the protocol still came from the backend: the
 		// request did its job and the refusal is the apply's, so the report
 		// counts it once, as rejected.
@@ -495,8 +504,8 @@ func (o *Observer) fetchSet(rt *providerRuntime, j *refreshJob) (fetchResult, er
 	return last, lastErr
 }
 
-func (o *Observer) fetchOnce(cfg *providerSettings, tag string) (fetchResult, error) {
-	var r fetchResult
+func (o *Observer) fetchOnce(cfg *providerSettings, tag string, body []byte) (fetchResult, error) {
+	r := fetchResult{class: "network"}
 	// Counted like a probe, so the request is not taken for user traffic.
 	var wire atomic.Int64
 	ctx, cancel := context.WithTimeout(withProbe(o.runCtx, &wire), cfg.timeout)
@@ -520,7 +529,12 @@ func (o *Observer) fetchOnce(cfg *providerSettings, tag string) (fetchResult, er
 			return http.ErrUseLastResponse
 		},
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, cfg.url, nil)
+	// Every attempt reads the same bytes afresh.
+	var payload io.Reader
+	if cfg.method == http.MethodPost {
+		payload = bytes.NewReader(body)
+	}
+	req, err := http.NewRequestWithContext(ctx, cfg.method, cfg.url, payload)
 	if err != nil {
 		return r, err
 	}
@@ -530,9 +544,13 @@ func (o *Observer) fetchOnce(cfg *providerSettings, tag string) (fetchResult, er
 	if req.Header.Get("Accept") == "" {
 		req.Header.Set("Accept", "application/json")
 	}
+	if payload != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
+			r.class = "timeout"
 			return r, errors.New("timeout")
 		}
 		// Events go to analytics; the URL may name more than it should.
@@ -543,15 +561,16 @@ func (o *Observer) fetchOnce(cfg *providerSettings, tag string) (fetchResult, er
 	}
 	defer resp.Body.Close()
 	r.status = resp.StatusCode
+	r.class = "status"
 	if d, err := http.ParseTime(resp.Header.Get("Date")); err == nil {
 		r.date = d
 	}
 	if resp.StatusCode != http.StatusOK {
 		// Only the protocol and the code of an error body are read: its
 		// message may echo the request and is kept nowhere.
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBody))
-		r.bytes = len(body)
-		r.code = errorCode(body)
+		errorBody, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBody))
+		r.bytes = len(errorBody)
+		r.code = errorCode(errorBody)
 		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusServiceUnavailable {
 			if ra := parseRetryAfter(resp.Header.Get("Retry-After"), r.date, o.now()); ra > 0 {
 				r.retryAfter = min(ra, cfg.backoff.max)
@@ -560,23 +579,30 @@ func (o *Observer) fetchOnce(cfg *providerSettings, tag string) (fetchResult, er
 		r.backend = r.code != "" || r.retryAfter > 0
 		return r, fmt.Errorf("status %d", resp.StatusCode)
 	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, cfg.maxBytes+1))
-	r.bytes = len(body)
+	answer, err := io.ReadAll(io.LimitReader(resp.Body, cfg.maxBytes+1))
+	r.bytes = len(answer)
 	if err != nil {
+		r.class = "network"
 		if ctx.Err() == context.DeadlineExceeded {
+			r.class = "timeout"
 			err = errors.New("timeout")
 		}
 		return r, err
 	}
-	if int64(len(body)) > cfg.maxBytes {
+	if int64(len(answer)) > cfg.maxBytes {
+		r.class = "too_large"
 		return r, fmt.Errorf("answer larger than %d bytes", cfg.maxBytes)
 	}
-	r.answer, err = parseAnswer(body)
+	r.answer, err = parseAnswer(answer)
 	switch {
 	case isAnswerError(err):
 		r.backend = true
+		r.class = ""
 	case err != nil:
+		r.class = "broken_json"
 		err = fmt.Errorf("invalid answer: %w", err)
+	default:
+		r.class = ""
 	}
 	return r, err
 }
@@ -702,11 +728,14 @@ func (o *Observer) applySet(rt *providerRuntime, a *providerAnswer, j *refreshJo
 		}
 	}
 	inSet := map[string]bool{}
-	tags := make([]string, 0, len(changes)+len(unchanged))
+	// In the order of the answer, as the request tells the backend its set.
+	tags := make([]string, 0, len(a.heads))
+	for _, h := range a.heads {
+		tags = append(tags, rt.cfg.prefix+h.Tag)
+	}
 	var added, replaced []*outboundChange
 	for _, c := range changes {
 		inSet[c.tag] = true
-		tags = append(tags, c.tag)
 		c.old = owned[c.tag]
 		c.oldDrain = retiring[c.tag]
 		if c.old != nil {
@@ -718,7 +747,6 @@ func (o *Observer) applySet(rt *providerRuntime, a *providerAnswer, j *refreshJo
 	var revive []string
 	for _, tag := range unchanged {
 		inSet[tag] = true
-		tags = append(tags, tag)
 		if retiring[tag] != nil {
 			revive = append(revive, tag)
 		}

@@ -118,8 +118,12 @@ func TestProbeCountsBytesOnTheWire(t *testing.T) {
 
 func TestProbeFailsOnFrozenBodyAndWrongStatus(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/teapot" {
+		switch r.URL.Path {
+		case "/teapot":
 			w.WriteHeader(http.StatusTeapot)
+			return
+		case "/short":
+			w.Write([]byte("short"))
 			return
 		}
 		w.Header().Set("Content-Length", "65536")
@@ -137,6 +141,12 @@ func TestProbeFailsOnFrozenBodyAndWrongStatus(t *testing.T) {
 	}
 	if ok, _, _ := health.Probe(o, "a1", srv.URL+"/teapot", 0, 200); ok {
 		t.Fatal("status 418 passed a probe expecting 200")
+	}
+	// A provider sees the class of the failure, never its text.
+	for path, want := range map[string]string{"/freeze": "no_progress", "/teapot": "status_418", "/short": "short_body"} {
+		if got := health.ProbeClass(o, "a1", srv.URL+path, 32*1024, 200); got != want {
+			t.Errorf("%s: class %q, want %q", path, got, want)
+		}
 	}
 }
 

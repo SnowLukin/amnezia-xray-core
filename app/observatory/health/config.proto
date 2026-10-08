@@ -243,7 +243,7 @@ message UpgradeConfig {
 message ProviderConfig {
   // Names the provider in events, status and refresh requests.
   string tag = 1;
-  // The set is fetched with a GET of this URL.
+  // The set is fetched from this URL with method.
   string url = 2;
   // Request headers. Credentials belong here, not in the URL.
   map<string, string> headers = 3;
@@ -257,6 +257,9 @@ message ProviderConfig {
   ProviderTriggers triggers = 7;
   ProviderLimits limits = 8;
   ProviderApply apply = 9;
+  // POST, the default, sends the state of the core to the provider; GET
+  // sends no body, for a static file on a web server.
+  string method = 10;
 }
 
 message ProviderTriggers {

@@ -1,6 +1,7 @@
 package health
 
 import (
+	"net/http"
 	"strings"
 	"time"
 
@@ -61,6 +62,8 @@ const (
 	providerProtocol = 1
 	// How much of an answer that is not 200 is read for its error code.
 	maxErrorBody = 4 << 10
+	// The reason of the previous failure the next request tells the provider.
+	maxFailureText = 200
 
 	defaultProviderTimeout      = 10 * time.Second
 	defaultRefreshInterval      = 2 * time.Hour
@@ -208,8 +211,10 @@ type settings struct {
 }
 
 type providerSettings struct {
-	tag      string
-	url      string
+	tag string
+	url string
+	// http.MethodPost or http.MethodGet.
+	method   string
 	headers  map[string]string
 	via      []string
 	timeout  time.Duration
@@ -264,6 +269,7 @@ func newProviderSettings(c *ProviderConfig) *providerSettings {
 	p := &providerSettings{
 		tag:      c.GetTag(),
 		url:      c.GetUrl(),
+		method:   http.MethodPost,
 		headers:  c.GetHeaders(),
 		via:      c.GetVia(),
 		timeout:  dur(c.GetTimeout(), defaultProviderTimeout),
@@ -287,6 +293,9 @@ func newProviderSettings(c *ProviderConfig) *providerSettings {
 		maxOutbounds: maxOutbounds,
 		protocols:    stringsOr(a.GetProtocols(), defaultProviderProtocols),
 		routing:      a.GetRouting(),
+	}
+	if strings.EqualFold(c.GetMethod(), http.MethodGet) {
+		p.method = http.MethodGet
 	}
 	if t.GetJitter() >= 0 {
 		p.jitter = jitter(t.GetJitter(), defaultRefreshJitter)

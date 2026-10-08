@@ -3,9 +3,18 @@ package health
 import "time"
 
 func Probe(o *Observer, tag, dest string, minBytes int64, expect ...int32) (bool, int64, string) {
-	r := o.probe(tag, &probeSettings{destination: dest, method: "GET", minBytes: minBytes, expectStatus: expect,
-		timeout: 4 * time.Second, progressTimeout: 2 * time.Second})
+	r := probeOnce(o, tag, dest, minBytes, expect...)
 	return r.ok, r.bytes, r.err
+}
+
+// ProbeClass is the class a provider would see for the error of the probe.
+func ProbeClass(o *Observer, tag, dest string, minBytes int64, expect ...int32) string {
+	return probeOnce(o, tag, dest, minBytes, expect...).class
+}
+
+func probeOnce(o *Observer, tag, dest string, minBytes int64, expect ...int32) probeResult {
+	return o.probe(tag, &probeSettings{destination: dest, method: "GET", minBytes: minBytes, expectStatus: expect,
+		timeout: 4 * time.Second, progressTimeout: 2 * time.Second})
 }
 
 // QueueProbe asks for a probe of tag, as after a network change.

@@ -1,8 +1,10 @@
 package health_test
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -21,6 +23,11 @@ type setServer struct {
 	body    string
 	auth    []string
 	queries []string
+	// Answers served before body, one per request.
+	first   []string
+	methods []string
+	types   []string
+	bodies  [][]byte
 }
 
 func (s *setServer) set(body string) {
@@ -30,10 +37,17 @@ func (s *setServer) set(body string) {
 }
 
 func (s *setServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	sent, _ := io.ReadAll(r.Body)
 	s.mu.Lock()
 	s.auth = append(s.auth, r.Header.Get("Authorization"))
 	s.queries = append(s.queries, r.URL.RawQuery)
+	s.methods = append(s.methods, r.Method)
+	s.types = append(s.types, r.Header.Get("Content-Type"))
+	s.bodies = append(s.bodies, sent)
 	body := s.body
+	if len(s.first) > 0 {
+		body, s.first = s.first[0], s.first[1:]
+	}
 	s.mu.Unlock()
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = w.Write([]byte(body))
@@ -286,19 +300,21 @@ func TestRefreshUnderLowMemoryTriesOneVia(t *testing.T) {
 
 // twoViaCore runs a core whose provider at url is reached through direct,
 // then direct2; both work, so only the answer decides whether the second is
-// tried.
-func twoViaCore(t *testing.T, url string) *health.Observer {
+// tried. more goes into the provider, such as a method.
+func twoViaCore(t *testing.T, url string, more ...string) *health.Observer {
 	t.Helper()
 	cfg, err := core.LoadConfig("json", strings.NewReader(`{
 	  "log": {"loglevel": "none"},
 	  "outbounds": [
 	    {"tag": "direct", "protocol": "freedom", "settings": {"finalRules": [{"action": "allow"}]}},
-	    {"tag": "direct2", "protocol": "freedom", "settings": {"finalRules": [{"action": "allow"}]}}
+	    {"tag": "direct2", "protocol": "freedom", "settings": {"finalRules": [{"action": "allow"}]}},
+	    {"tag": "p-b", "protocol": "blackhole"},
+	    {"tag": "p-a", "protocol": "blackhole"}
 	  ],
 	  "routing": {"balancers": [{"tag": "auto", "selector": ["p-"], "strategy": {"type": "leastCost", "settings": {}}}]},
 	  "healthObservatory": {
 	    "subjectSelector": ["p-"],
-	    "providers": [{
+	    "providers": [{`+strings.Join(more, "")+`
 	      "tag": "fresh", "url": "`+url+`", "allowPlainHttp": true, "via": ["direct", "direct2"], "timeout": "3s",
 	      "triggers": {"interval": "0s", "minHealthy": 0, "whenExhausted": false, "maxAge": "0s", "onNetworkChange": "never"},
 	      "limits": {"backoff": {"initial": "1h"}},
@@ -468,5 +484,94 @@ func TestBackendAnswerEndsTheAttempts(t *testing.T) {
 				t.Error("the message of an error body was kept")
 			}
 		})
+	}
+}
+
+// Every via of one refresh sends the same body: the backend tells a request
+// sent again from a new one by run and refresh.
+func TestSameBodyThroughEveryVia(t *testing.T) {
+	srv := &setServer{first: []string{`{"outbounds": [`}}
+	srv.set(`{"protocol": 1, "outbounds": [{"tag": "x1", "protocol": "freedom"}]}`)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	obs := twoViaCore(t, ts.URL+"/set")
+	w := &eventWaiter{t: t, o: obs}
+	obs.RequestRefresh("fresh")
+	w.until("provider_apply", nil)
+	srv.mu.Lock()
+	defer srv.mu.Unlock()
+	if len(srv.bodies) != 2 || !bytes.Equal(srv.bodies[0], srv.bodies[1]) || len(srv.bodies[0]) == 0 {
+		t.Fatalf("bodies %q", srv.bodies)
+	}
+	if srv.methods[0] != "POST" || srv.types[0] != "application/json" {
+		t.Fatalf("method %s, content type %q", srv.methods[0], srv.types[0])
+	}
+	var body struct {
+		Run     string `json:"run"`
+		Refresh int    `json:"refresh"`
+		Trigger string `json:"trigger"`
+	}
+	if err := json.Unmarshal(srv.bodies[0], &body); err != nil || body.Run == "" || body.Refresh != 1 || body.Trigger != "host" {
+		t.Fatalf("body %s: %v", srv.bodies[0], err)
+	}
+	for _, f := range w.since(0, "provider_fetch") {
+		if f.Fields["method"] != "POST" || f.Fields["refresh"] != 1.0 {
+			t.Fatalf("fetch %v", f.Fields)
+		}
+	}
+}
+
+// A static file on a web server is asked for with a GET without a body.
+func TestGetSendsNoBody(t *testing.T) {
+	srv := &setServer{}
+	srv.set(`{"outbounds": [{"tag": "x1", "protocol": "freedom"}]}`)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	obs := twoViaCore(t, ts.URL+"/set", `"method": "GET",`)
+	w := &eventWaiter{t: t, o: obs}
+	obs.RequestRefresh("fresh")
+	if ev := w.until("provider_apply", nil); ev.Fields["ok"] != true {
+		t.Fatalf("apply %v", ev.Fields)
+	}
+	srv.mu.Lock()
+	defer srv.mu.Unlock()
+	if len(srv.methods) != 1 || srv.methods[0] != "GET" || len(srv.bodies[0]) != 0 || srv.types[0] != "" {
+		t.Fatalf("methods %v, bodies %q, content types %q", srv.methods, srv.bodies, srv.types)
+	}
+}
+
+// Before its first answer the provider owns the outbounds of the config with
+// its prefix, and the first request already tells the backend about them.
+func TestRequestBodyListsConfigOutboundsBeforeTheFirstAnswer(t *testing.T) {
+	srv := &setServer{}
+	srv.set(`{"outbounds": [{"tag": "x1", "protocol": "freedom"}]}`)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	obs := twoViaCore(t, ts.URL+"/set")
+	var st struct {
+		Providers []struct {
+			Members int    `json:"members"`
+			Method  string `json:"method"`
+		} `json:"providers"`
+	}
+	if err := json.Unmarshal(obs.Status(), &st); err != nil || st.Providers[0].Members != 2 || st.Providers[0].Method != "POST" {
+		t.Fatalf("status before the first answer %+v, %v", st, err)
+	}
+	w := &eventWaiter{t: t, o: obs}
+	obs.RequestRefresh("fresh")
+	w.until("provider_apply", nil)
+	srv.mu.Lock()
+	defer srv.mu.Unlock()
+	var body struct {
+		Outbounds []struct {
+			Tag   string `json:"tag"`
+			State string `json:"state"`
+		} `json:"outbounds"`
+	}
+	if err := json.Unmarshal(srv.bodies[0], &body); err != nil {
+		t.Fatal(err)
+	}
+	if fmt.Sprint(body.Outbounds) != "[{a unknown} {b unknown}]" {
+		t.Fatalf("outbounds of the first request %v", body.Outbounds)
 	}
 }

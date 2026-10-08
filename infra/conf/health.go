@@ -136,6 +136,7 @@ type HealthProviderApplyConfig struct {
 type HealthProviderConfig struct {
 	Tag      string            `json:"tag"`
 	URL      string            `json:"url"`
+	Method   string            `json:"method"`
 	Headers  map[string]string `json:"headers"`
 	Via      StringList        `json:"via"`
 	Timeout  duration.Duration `json:"timeout"`
@@ -189,6 +190,11 @@ func (c *HealthProviderConfig) build() (*health.ProviderConfig, error) {
 	if u.Scheme != "https" && !c.AllowPlainHTTP {
 		return nil, errors.New("healthObservatory: ", where, ": url must be https, or set allowPlainHttp")
 	}
+	// Empty stays empty: the observatory takes it for POST.
+	method := strings.ToUpper(c.Method)
+	if method != "" && method != "GET" && method != "POST" {
+		return nil, errors.New("healthObservatory: ", where, ": method must be GET or POST")
+	}
 	a := c.Apply
 	if a == nil || a.Balancer == "" || a.TagPrefix == "" {
 		return nil, errors.New("healthObservatory: ", where, ": apply needs balancer and tagPrefix")
@@ -201,6 +207,7 @@ func (c *HealthProviderConfig) build() (*health.ProviderConfig, error) {
 	out := &health.ProviderConfig{
 		Tag:      c.Tag,
 		Url:      c.URL,
+		Method:   method,
 		Headers:  c.Headers,
 		Via:      c.Via,
 		Timeout:  int64(c.Timeout),

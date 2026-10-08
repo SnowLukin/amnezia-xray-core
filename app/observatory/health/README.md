@@ -194,6 +194,7 @@ triggers are judged on what the observatory knows about the balancer.
     "providers": [{
       "tag": "fresh",
       "url": "https://api.example.com/set",
+      "method": "POST",
       "headers": { "Authorization": "Bearer <token>" },
       "via": ["auto", "backup", "direct"],
       "timeout": "10s", "maxBytes": 262144,
@@ -216,7 +217,10 @@ The values above are the defaults, except `whenCostAbove`, which is off
 unless set, and `maxBytes`, which is 4 KiB per outbound of `maxOutbounds`. `tag`, `url`, `apply.balancer` and `apply.tagPrefix` are
 required. A trigger or a limit set to an explicit zero (`"0s"`, `0`) is off.
 
-**Request.** A GET of `url` with `headers`; credentials belong in a header,
+**Request.** A provider that serves a static file on a web server needs
+`"method": "GET"`: by default the request is a POST, which a static host
+answers with 405 or 403. A POST of `url` with `headers` carries the state of
+the core as JSON, see below; a GET has no body. Credentials belong in a header,
 the URL must not carry them. The URL must be `https`; `allowPlainHttp: true`
 permits `http`, and the headers then cross the network unencrypted. The request goes through the `via` entries in
 order until one brings a well-formed answer: an outbound tag, or the tag of a
@@ -241,6 +245,69 @@ back apart. Such a pause is no failure, and the backoff does not grow. An
 error body and `Retry-After` end the attempts, as the backend itself
 answered. A bare status may come from a firewall, a portal or a proxy on
 one way, and the next entry is tried.
+
+The body of a POST tells the backend why it is asked and what broke, so that
+it can answer with the right outbounds at once:
+
+```json
+{
+  "protocol": 1, "provider": "fresh", "run": "9f2c6a1e5b7d3c40", "refresh": 7,
+  "trigger": "exhausted", "retry": 1,
+  "lastFailure": { "status": 503, "error": "status", "agoMs": 61000 },
+  "version": "2026-10-08.3", "clientTime": "2026-10-08T12:00:03Z",
+  "network": { "id": "5d0c1f2a9b3e4c71", "known": false, "up": true },
+  "memoryLow": false,
+  "balancer": { "tag": "auto", "current": "x2", "own": true, "cost": 3, "exhausted": false, "pinned": false,
+                "heldMs": 840000 },
+  "outbounds": [
+    { "tag": "x1", "state": "down", "reason": "traffic", "stateMs": 81000, "seenMs": 3600000,
+      "quarantineLevel": 2, "quarantineMs": 81000, "failures": { "dial_timeout": 4 },
+      "probe": { "ok": false, "error": "timeout", "agoMs": 30000 },
+      "connsOk": 12, "connsFailed": 4, "bytesUp": 90112, "bytesDown": 1048576, "activeMs": 600000,
+      "ttfbP50Ms": 300 },
+    { "tag": "x2", "state": "up", "probe": { "ok": true, "rttMs": 180, "agoMs": 840000 },
+      "connsOk": 412, "bytesDown": 52428800, "activeMs": 840000 }
+  ]
+}
+```
+
+- `run` and `network.id` go out hashed for the provider: the first 16 hex
+  digits of SHA-256 of `url`, a zero byte and the value. One backend sees
+  them stable across runs, two backends cannot match theirs, and the raw
+  run, which the report carries as `health_run`, never leaves the device.
+  An empty network id is left out.
+- `refresh` grows with every refresh and is the same through every `via` of
+  it, which all send the same bytes: `run` and `refresh` together tell a
+  request sent again from a new one. `trigger` and `retry` are those of
+  `provider_fetch`.
+- `lastFailure` comes when the previous refresh failed: the HTTP status or
+  0, how long ago, and as `error` the reason a well-formed answer was
+  refused (at most 200 bytes) or the class of the failure: `timeout`,
+  `network`, `status`, `too_large` or `broken_json`.
+- `version` is the set applied now; `clientTime` the clock of the device, so
+  the backend sees how far off it is.
+- `balancer` is the one the provider feeds. `current` and `own` tell whether
+  it uses an outbound of this provider, without the prefix; the path of
+  another provider or of the config is not named. `cost` is the cost of the
+  chosen outbound, `heldMs` how long it has been chosen.
+- `outbounds` are the set of the provider in the order of the answer; before
+  the first answer the outbounds of the config with its prefix. Tags go
+  without `tagPrefix`, and outbounds that left the set are not listed.
+  `state`, `reason` and `stateMs` are as in `path_state`, `unknown` for an
+  outbound the observatory knows nothing about yet; `seenMs` is how long its
+  counters have been kept. Quarantine shows while it lasts. `failures` counts
+  by kind over the life of the outbound, `probe` is the last probe with its
+  error as a class: `timeout`, `no_progress`, `status_<N>`, `short_body`,
+  `reset`, `refused`, `eof`, `tls` or `other`. The traffic counters are those
+  of Status.
+
+Zero and empty values are left out, except `protocol`, `provider`, `run`,
+`refresh`, `trigger`, `retry`, `clientTime`, `network.known`, `network.up`,
+`memoryLow` and the flags of `balancer`. The body never holds destinations,
+domains, addresses or server names, the targets of failures, the text of an
+error that may name the probe URL, or header values. It takes about 400
+bytes per outbound, under 64 KiB for the largest set. A backend ignores
+fields it does not know: protocol 1 may gain fields in the body.
 
 **Answer.**
 
@@ -481,7 +548,7 @@ changed its settings). `kinds` counts failures by kind: `dial_failed`, `dial_tim
 | `connectivity_ignored` | `failed_checks` | The check failed while an outbound worked; it is not used until the next network change. |
 | `network_change` | `network`, `known`, `generation` | The host reported a network change. |
 | `memory_low` | `on` | The host reported that memory is low (`on` true) or no longer. |
-| `provider_fetch` | `provider`, `trigger`, `retry`, `attempt`, `via`, `outbound`, `ok`, `status`, `ms`, `bytes`, `code`, `retry_after_ms`, `error` | One request of a refresh through one `via` entry; `outbound` is what the entry resolved to, `bytes` the size of the answer. `code` is the code of an error body of the protocol, `retry_after_ms` the pause `Retry-After` asked for, after the ceiling and before the spread. A skipped entry has `ok` false and only `error`: `balancer exhausted`, `outbound down` or `no such outbound`. `error` never holds the URL. `trigger`: `host`, `exhausted`, `min_healthy`, `cost_above`, `network_change`, `next_refresh`, `max_age`, `interval`; `retry` counts failed refreshes before this one. An answer that breaks the protocol has `ok` true: the backend answered, and the refusal is the `provider_apply`'s. |
+| `provider_fetch` | `provider`, `trigger`, `retry`, `attempt`, `via`, `outbound`, `method`, `refresh`, `ok`, `status`, `ms`, `bytes`, `code`, `retry_after_ms`, `error` | One request of a refresh through one `via` entry; `outbound` is what the entry resolved to, `refresh` the number of the refresh as the body tells it, `bytes` the size of the answer. `code` is the code of an error body of the protocol, `retry_after_ms` the pause `Retry-After` asked for, after the ceiling and before the spread. A skipped entry has `ok` false and only `error`: `balancer exhausted`, `outbound down` or `no such outbound`. `error` never holds the URL. `trigger`: `host`, `exhausted`, `min_healthy`, `cost_above`, `network_change`, `next_refresh`, `max_age`, `interval`; `retry` counts failed refreshes before this one. An answer that breaks the protocol has `ok` true: the backend answered, and the refusal is the `provider_apply`'s. |
 | `provider_apply` | `provider`, `trigger`, `ok`, `changed`, `added`, `replaced`, `removed`, `unchanged`, `version`, `exhausted`, `rules`, `routing_error`, `routing_ignored`, `error` | The answer was applied (`changed`), was the applied set already, or was rejected (`ok` false with `error`). `exhausted` tells whether the balancer had nothing usable at that moment. `rules` counts the routing rules applied with the set; `routing_ignored` tells that the answer had routing while `apply.routing` is off. |
 | `provider_restart_needed` | `provider`, `version`, `sections` | Kept for sections of the config the core reads only at start. Protocol 1 refuses an answer with such a section, so this version does not write it. |
 | `provider_skip` | `provider`, `trigger`, `reason`, `wait_ms` | A trigger wants a refresh that cannot start yet. `reason`: `min_interval`, `backoff`, `retry_after`, `max_per_hour`, `idle`, `network_down`, `memory`. Reported once per trigger and reason until a refresh starts. |
@@ -550,7 +617,7 @@ the window, quarantine, last probe RTT and error, connections, bytes, time to
 first byte (p50, p90), failures by kind, probes and their bytes, and time as
 the chosen outbound; per balancer the chosen and pinned outbound, whether it
 is exhausted, the time on the chosen outbound and the next return attempt;
-per provider the version of the set, its size, outbounds still draining,
+per provider the method, the version of the set, its size, outbounds still draining,
 refreshes and failures, the age of the set, the next timed refresh, the
 backoff and what is left of a pause a busy backend asked for
 (`retry_after_ms`); the probe requests of the host (`probe_requests`), each with `id`,

@@ -1,6 +1,7 @@
 package health
 
 import (
+	"net/http"
 	"slices"
 	"time"
 )
@@ -86,11 +87,22 @@ type provider struct {
 	retryAfterUntil time.Time
 	skipped         map[refreshTrigger]string
 
-	version   string
-	members   int
+	version string
+	// Every outbound of the set by its full tag, in the order of the answer;
+	// before the first answer the outbounds of the config with the prefix.
+	tags      []string
 	draining  int
 	lastError string
 	refreshes int64
+	// Numbers the refreshes for the request body, so that the backend tells
+	// a request sent again through another via from a new one.
+	refreshSeq uint64
+	// The previous refresh failed: when, with which HTTP status or 0, and its
+	// class, or the reason a well-formed answer was refused. A success
+	// clears them.
+	lastFailedAt time.Time
+	lastStatus   int
+	lastClass    string
 }
 
 func newProvider(cfg *providerSettings) *provider {
@@ -103,7 +115,10 @@ type refreshJob struct {
 	p       *provider
 	trigger refreshTrigger
 	// Failed refreshes before this one.
-	retry int
+	retry   int
+	refresh uint64
+	// The body of a POST, gathered when the refresh starts.
+	request *providerRequest
 }
 
 type refreshOutcome struct {
@@ -114,6 +129,10 @@ type refreshOutcome struct {
 	nextRefreshIn time.Duration
 	// The backend asked to wait this long, at most backoff.max.
 	retryAfter time.Duration
+	// The HTTP status of the last attempt or 0, and the class of the
+	// failure or the reason the answer was refused.
+	status int
+	class  string
 }
 
 func (e *engine) provider(tag string) *provider {
@@ -340,7 +359,12 @@ func (e *engine) beginRefresh(p *provider, t refreshTrigger, now time.Time) *ref
 	p.minHealthyArmed = false
 	p.retrying = false
 	clear(p.skipped)
-	return &refreshJob{p: p, trigger: t, retry: p.failures}
+	p.refreshSeq++
+	j := &refreshJob{p: p, trigger: t, retry: p.failures, refresh: p.refreshSeq}
+	if p.cfg.method == http.MethodPost {
+		j.request = e.providerRequest(p, j, now)
+	}
+	return j
 }
 
 func (e *engine) scheduleRefresh(p *provider, hint time.Duration, now time.Time) {
@@ -364,6 +388,7 @@ func (e *engine) onRefreshDone(j *refreshJob, r refreshOutcome, now time.Time) {
 		// Host requests made while the refresh ran are answered by it.
 		p.host = false
 		p.lastError = ""
+		p.lastFailedAt, p.lastStatus, p.lastClass = time.Time{}, 0, ""
 		if !p.aboveSince.IsZero() {
 			p.aboveSince = now
 		}
@@ -377,6 +402,7 @@ func (e *engine) onRefreshDone(j *refreshJob, r refreshOutcome, now time.Time) {
 		}
 	} else {
 		p.lastError = r.err
+		p.lastFailedAt, p.lastStatus, p.lastClass = now, r.status, r.class
 		switch j.trigger {
 		case triggerHost, triggerNetwork:
 			p.retrying = true
@@ -447,7 +473,8 @@ func (e *engine) resolveVia(via string, now time.Time) (string, string) {
 
 // providerChange is an applied set as the balancers see it.
 type providerChange struct {
-	// Every outbound of the set and the costs the provider sent for them.
+	// Every outbound of the set, in the order of the answer, and the costs
+	// the provider sent for them.
 	tags  []string
 	costs map[string]float64
 	// New tags, tags that left the set, tags that came back before their
@@ -484,7 +511,7 @@ func (e *engine) applyProviderSet(p *provider, c providerChange, now time.Time) 
 	if len(c.added) > 0 {
 		p.expect = c.added[0]
 	}
-	p.members = len(c.tags)
+	p.tags = c.tags
 	e.refreshCandidates(now)
 }
 

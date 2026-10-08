@@ -79,7 +79,10 @@ const maxFailures = 64
 
 // path is everything known about one outbound.
 type path struct {
-	tag         string
+	tag string
+	// When the outbound first showed up as a candidate or with a connection:
+	// the counters below count from here.
+	created     time.Time
 	status      pathStatus
 	statusSince time.Time
 	reason      string
@@ -102,6 +105,9 @@ type path struct {
 	lastProbe time.Time
 	lastRTT   time.Duration
 	lastError string
+	// The class of lastError, which a provider may see: the error itself may
+	// carry the URL of the probe.
+	lastClass string
 
 	serverName string
 	stats      pathStats

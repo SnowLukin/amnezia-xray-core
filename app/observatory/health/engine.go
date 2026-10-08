@@ -1,6 +1,7 @@
 package health
 
 import (
+	"cmp"
 	"math"
 	"math/rand"
 	"slices"
@@ -65,6 +66,9 @@ type probeResult struct {
 	rtt   time.Duration
 	bytes int64
 	err   string
+	// err by class: timeout, no_progress, status_<N>, short_body, reset,
+	// refused, eof, tls or other.
+	class string
 	// The observer ended the probe on close; it tells nothing about the outbound.
 	canceled bool
 }
@@ -190,6 +194,16 @@ func (e *engine) path(tag string) *path {
 	return p
 }
 
+// pathAt is path at the moments an outbound shows up: as a candidate, with a
+// connection, a probe or a switch. It notes when its counters started.
+func (e *engine) pathAt(tag string, now time.Time) *path {
+	p := e.path(tag)
+	if p.created.IsZero() {
+		p.created = now
+	}
+	return p
+}
+
 func (e *engine) emit(now time.Time, typ string, fields map[string]any) {
 	e.events.add(now, typ, fields)
 	e.report.count(typ, fields)
@@ -222,7 +236,7 @@ func (e *engine) onFailure(tag string, kind failureKind, target string, conn uin
 	if e.s.passive.dialOnly && !kind.pathLevel() {
 		return
 	}
-	p := e.path(tag)
+	p := e.pathAt(tag, now)
 	if p.status == statusDown && p.quarantined(now) {
 		return
 	}
@@ -265,7 +279,7 @@ func (e *engine) awaiting(tag string) bool {
 }
 
 func (e *engine) onSuccess(tag string, now time.Time) {
-	p := e.path(tag)
+	p := e.pathAt(tag, now)
 	e.sawSuccess("traffic", now)
 	if p.status == statusDown && p.quarantined(now) {
 		// Old connections may still work on an address that refuses new ones.
@@ -506,7 +520,7 @@ func (e *engine) ranked(s *selector, now time.Time, skip func(string) bool) []st
 		if skip != nil && skip(c) {
 			continue
 		}
-		p := e.path(c)
+		p := e.pathAt(c, now)
 		if !p.usable(now) {
 			continue
 		}
@@ -625,7 +639,7 @@ func (e *engine) switchTo(s *selector, tag string, reason string, now time.Time)
 	}
 	// An outbound that rested its quarantine is judged afresh once it is
 	// chosen again, otherwise new failures would not count.
-	if p := e.path(tag); (p.status == statusDown || p.status == statusSuspect) && !p.quarantined(now) {
+	if p := e.pathAt(tag, now); (p.status == statusDown || p.status == statusSuspect) && !p.quarantined(now) {
 		p.setStatus(statusUnknown, "chosen", now)
 		p.failures = p.failures[:0]
 	}
@@ -1103,7 +1117,7 @@ func (e *engine) begin(j *probeJob, now time.Time) {
 	}
 	name := e.serverName(j.tag)
 	e.startsByName[name] = append(e.startsByName[name], now)
-	p := e.path(j.tag)
+	p := e.pathAt(j.tag, now)
 	p.probing = true
 	p.lastProbe = now
 	running := 0
@@ -1195,9 +1209,11 @@ func (e *engine) onProbeResult(j *probeJob, r probeResult, now time.Time) {
 	if !r.ok {
 		p.stats.probesFailed++
 		p.lastError = r.err
+		p.lastClass = cmp.Or(r.class, "other")
 	} else {
 		p.lastRTT = r.rtt
 		p.lastError = ""
+		p.lastClass = ""
 	}
 	stale := j.generation != e.generation
 	f := map[string]any{

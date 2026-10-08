@@ -43,6 +43,7 @@ type balancerStatusView struct {
 
 type providerStatusView struct {
 	Provider       string `json:"provider"`
+	Method         string `json:"method"`
 	Version        string `json:"version,omitempty"`
 	Members        int    `json:"members"`
 	Draining       int    `json:"draining"`
@@ -155,8 +156,9 @@ func (e *engine) status(now time.Time) statusView {
 	for _, p := range e.providers {
 		pv := providerStatusView{
 			Provider:  p.cfg.tag,
+			Method:    p.cfg.method,
 			Version:   p.version,
-			Members:   p.members,
+			Members:   len(p.tags),
 			Draining:  p.draining,
 			Fetching:  p.fetching,
 			Refreshes: p.refreshes,

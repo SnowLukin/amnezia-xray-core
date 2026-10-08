@@ -1340,7 +1340,7 @@ type ProviderConfig struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Names the provider in events, status and refresh requests.
 	Tag string `protobuf:"bytes,1,opt,name=tag,proto3" json:"tag,omitempty"`
-	// The set is fetched with a GET of this URL.
+	// The set is fetched from this URL with method.
 	Url string `protobuf:"bytes,2,opt,name=url,proto3" json:"url,omitempty"`
 	// Request headers. Credentials belong here, not in the URL.
 	Headers map[string]string `protobuf:"bytes,3,rep,name=headers,proto3" json:"headers,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
@@ -1350,10 +1350,13 @@ type ProviderConfig struct {
 	// Timeout of one request through one via.
 	Timeout int64 `protobuf:"varint,5,opt,name=timeout,proto3" json:"timeout,omitempty"`
 	// Larger answers are rejected.
-	MaxBytes      int64             `protobuf:"varint,6,opt,name=max_bytes,json=maxBytes,proto3" json:"max_bytes,omitempty"`
-	Triggers      *ProviderTriggers `protobuf:"bytes,7,opt,name=triggers,proto3" json:"triggers,omitempty"`
-	Limits        *ProviderLimits   `protobuf:"bytes,8,opt,name=limits,proto3" json:"limits,omitempty"`
-	Apply         *ProviderApply    `protobuf:"bytes,9,opt,name=apply,proto3" json:"apply,omitempty"`
+	MaxBytes int64             `protobuf:"varint,6,opt,name=max_bytes,json=maxBytes,proto3" json:"max_bytes,omitempty"`
+	Triggers *ProviderTriggers `protobuf:"bytes,7,opt,name=triggers,proto3" json:"triggers,omitempty"`
+	Limits   *ProviderLimits   `protobuf:"bytes,8,opt,name=limits,proto3" json:"limits,omitempty"`
+	Apply    *ProviderApply    `protobuf:"bytes,9,opt,name=apply,proto3" json:"apply,omitempty"`
+	// POST, the default, sends the state of the core to the provider; GET
+	// sends no body, for a static file on a web server.
+	Method        string `protobuf:"bytes,10,opt,name=method,proto3" json:"method,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1449,6 +1452,13 @@ func (x *ProviderConfig) GetApply() *ProviderApply {
 		return x.Apply
 	}
 	return nil
+}
+
+func (x *ProviderConfig) GetMethod() string {
+	if x != nil {
+		return x.Method
+	}
+	return ""
 }
 
 type ProviderTriggers struct {
@@ -1890,7 +1900,7 @@ const file_app_observatory_health_config_proto_rawDesc = "" +
 	"\vmax_penalty\x18\a \x01(\x03R\n" +
 	"maxPenalty\x123\n" +
 	"\x16skip_on_network_change\x18\b \x01(\bR\x13skipOnNetworkChange\x12!\n" +
-	"\fall_networks\x18\t \x01(\bR\vallNetworks\"\xf3\x03\n" +
+	"\fall_networks\x18\t \x01(\bR\vallNetworks\"\x8b\x04\n" +
 	"\x0eProviderConfig\x12\x10\n" +
 	"\x03tag\x18\x01 \x01(\tR\x03tag\x12\x10\n" +
 	"\x03url\x18\x02 \x01(\tR\x03url\x12W\n" +
@@ -1900,7 +1910,9 @@ const file_app_observatory_health_config_proto_rawDesc = "" +
 	"\tmax_bytes\x18\x06 \x01(\x03R\bmaxBytes\x12N\n" +
 	"\btriggers\x18\a \x01(\v22.xray.core.app.observatory.health.ProviderTriggersR\btriggers\x12H\n" +
 	"\x06limits\x18\b \x01(\v20.xray.core.app.observatory.health.ProviderLimitsR\x06limits\x12E\n" +
-	"\x05apply\x18\t \x01(\v2/.xray.core.app.observatory.health.ProviderApplyR\x05apply\x1a:\n" +
+	"\x05apply\x18\t \x01(\v2/.xray.core.app.observatory.health.ProviderApplyR\x05apply\x12\x16\n" +
+	"\x06method\x18\n" +
+	" \x01(\tR\x06method\x1a:\n" +
 	"\fHeadersEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x85\x03\n" +

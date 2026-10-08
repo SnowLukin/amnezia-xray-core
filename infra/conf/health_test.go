@@ -162,6 +162,18 @@ func TestHealthProvidersBuild(t *testing.T) {
 	}
 }
 
+// The method is GET or POST in any case; left out it stays empty, which the
+// observatory takes for POST.
+func TestHealthProviderMethod(t *testing.T) {
+	for method, want := range map[string]string{`"get"`: "GET", `"Post"`: "POST", `""`: ""} {
+		cfg, err := buildHealth(t, `{"subjectSelector": ["a"], "providers": [{"tag": "a", "url": "https://x.test/",
+		  "method": `+method+`, "apply": {"balancer": "auto", "tagPrefix": "p-"}}]}`)
+		if err != nil || cfg.Providers[0].Method != want {
+			t.Errorf("method %s: %v, %+v; want %q", method, err, cfg, want)
+		}
+	}
+}
+
 func TestHealthProvidersReject(t *testing.T) {
 	cases := map[string]string{
 		"no apply":         `{"tag": "a", "url": "https://x.test/"}`,
@@ -175,6 +187,7 @@ func TestHealthProvidersReject(t *testing.T) {
 		"zero cost trigger": `{"tag": "a", "url": "https://x.test/", "apply": {"balancer": "auto", "tagPrefix": "p-"},
 		            "triggers": {"whenCostAbove": {"cost": 0, "for": "15m"}}}`,
 		"empty via": `{"tag": "a", "url": "https://x.test/", "via": ["auto", ""], "apply": {"balancer": "auto", "tagPrefix": "p-"}}`,
+		"put":       `{"tag": "a", "url": "https://x.test/", "method": "PUT", "apply": {"balancer": "auto", "tagPrefix": "p-"}}`,
 	}
 	for name, providers := range cases {
 		if _, err := buildHealth(t, `{"subjectSelector": ["a"], "providers": [`+providers+`]}`); err == nil {

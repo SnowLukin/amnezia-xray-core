@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -145,14 +146,41 @@ func (o *Observer) Type() interface{} {
 // Start implements common.Runnable.
 func (o *Observer) Start() error {
 	o.mu.Lock()
-	defer o.mu.Unlock()
 	if o.started {
+		o.mu.Unlock()
 		return nil
 	}
 	o.started = true
+	o.mu.Unlock()
+	// Outside the lock: like the apply of a set, the observer never holds it
+	// across a call into the outbound manager.
+	o.seedProviderSets()
 	running.Store(o)
 	go o.loop(o.done)
 	return nil
+}
+
+// seedProviderSets gives every provider the outbounds of the config with its
+// prefix, which it owns until its first answer, so the first request already
+// tells the backend about them. The outbounds of the config are registered
+// by the time the features start.
+func (o *Observer) seedProviderSets() {
+	if o.ohm == nil {
+		return
+	}
+	handlers := o.ohm.ListHandlers(o.ctx)
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	for _, rt := range o.providers {
+		var tags []string
+		for _, h := range handlers {
+			if t := h.Tag(); strings.HasPrefix(t, rt.cfg.prefix) {
+				tags = append(tags, t)
+			}
+		}
+		sort.Strings(tags)
+		rt.p.tags = tags
+	}
 }
 
 // Close implements common.Closable.
@@ -448,7 +476,7 @@ func (o *Observer) witnessed() {
 
 func (o *Observer) finished(t *connTracker) {
 	o.mu.Lock()
-	st := &o.e.path(t.tag).stats
+	st := &o.e.pathAt(t.tag, o.now()).stats
 	if t.bytesRead.Load() > 0 {
 		st.connsOK++
 	} else if t.bytesWritten.Load() > 0 {
