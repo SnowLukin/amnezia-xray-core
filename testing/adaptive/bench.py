@@ -512,6 +512,9 @@ class Client:
         self.loglevel = config["log"]["loglevel"]
         self.events = []
         self.dropped = 0
+        # Reports taken while the client ran, and the last one at the stop.
+        self.reports = []
+        self.final_report = None
         self.mem = []
         self._stop = threading.Event()
         self.has_health = "healthObservatory" in config
@@ -535,8 +538,13 @@ class Client:
             pass
         if self.has_health:
             self.drain()
+            try:
+                REPORT_CHECKS.append(self._check_reports())
+            except Exception as e:
+                REPORT_CHECKS.append({"check": "reports add up the events", "value": repr(e), "limit": "== events",
+                                      "ok": False})
             with open(self.log_path.replace(".log", "-events.json"), "w") as f:
-                json.dump({"dropped": self.dropped, "events": self.events}, f, indent=1)
+                json.dump({"dropped": self.dropped, "events": self.events, "reports": self.reports}, f, indent=1)
         self.process.stop()
         wait_closed(SOCKS_PORT)
 
@@ -572,6 +580,47 @@ class Client:
 
     def status(self):
         return self.api("status")
+
+    def take_report(self):
+        r = self.api("report", "take")
+        if r:
+            self.reports.append(r)
+        return r
+
+    def _check_reports(self):
+        """Takes the last report, as a host does before it stops the core, and
+        checks every report of the run against the events of its window."""
+        quiet_until = len(self.events)
+        snapshot = self.api("report")
+        final = self.api("report", "final")
+        again = self.api("report", "final")
+        self.drain()
+        self.final_report = final
+        if final:
+            self.reports.append(final)
+        problems = []
+        if again is not None:
+            problems.append("a second final report")
+        if final and (not snapshot or snapshot["report_reason"] != "snapshot"
+                      or snapshot["report_index"] != final["report_index"]):
+            problems.append(f"snapshot {snapshot and snapshot['report_reason']} before the final report")
+        if not final and fold_report(self.events[:quiet_until])[1]:
+            problems.append("no final report after a decision")
+        by_seq = {e["seq"]: e for e in self.events}
+        last = 0
+        for i, r in enumerate(self.reports):
+            window = [by_seq.get(seq) for seq in range(last + 1, last + r["events"] + 1)]
+            last += r["events"]
+            if None in window:
+                continue
+            want, _ = fold_report(window)
+            for k, v in want.items():
+                if r[k] != v:
+                    problems.append(f"report {i + 1} {k}={r[k]!r}, events add up to {v!r}")
+            if r["report_index"] != i + 1:
+                problems.append(f"report {i + 1} has index {r['report_index']}")
+        value = "; ".join(problems[:3]) if problems else f"{len(self.reports)} reports"
+        return {"check": "reports add up the events", "value": value, "limit": "== events", "ok": not problems}
 
     def memory(self):
         vars_ = json.loads(urllib.request.urlopen(f"http://127.0.0.1:{METRICS_PORT}/debug/vars", timeout=3).read())
@@ -885,6 +934,81 @@ def recovery(records, at, streak=10, hosts=None):
             fails = sum(1 for t, ok in after[:i] if not ok)
             return after[i][0] - at, fails
     return None, sum(1 for _, ok in after if not ok)
+
+
+# Checks of the reports of every client with a health observatory, collected
+# when it stops; run.py adds them to the checks of the scenario.
+REPORT_CHECKS = []
+
+START_REASONS = ("start", "start_pinned", "start_remembered")
+
+
+def fold_report(events):
+    """Adds up events the way the report of the core counts them. Returns the
+    counters and whether there was a decision."""
+    keys = ["events", "switches", "exhausted", "path_down", "path_suspect", "pending_closed", "probes",
+            "probes_failed", "probe_bytes", "upgrade_attempts", "upgrade_failures", "pinned_down",
+            "network_changes", "network_known", "network_down", "provider_fetches", "provider_fetch_failures",
+            "provider_applied", "provider_rejected", "provider_restart_needed", "pins", "releases", "memory_low"]
+    c = dict.fromkeys(keys, 0)
+    c.update(switch_reasons={}, switch_path=[], provider_triggers={})
+    decided = False
+    for e in events:
+        t, f = e["type"], e.get("fields", {})
+        c["events"] += 1
+        if t == "switch":
+            reason = f.get("reason", "")
+            c["switches"] += 1
+            c["switch_reasons"][reason] = c["switch_reasons"].get(reason, 0) + 1
+            c["switch_path"] = (c["switch_path"] + [f"{f.get('from', '')}>{f.get('to', '')}:{reason}"])[-10:]
+            decided = decided or reason not in START_REASONS
+        elif t in ("exhausted", "pinned_down"):
+            c[t] += 1
+            decided = True
+        elif t == "path_state" and f.get("state") in ("down", "suspect"):
+            c["path_" + f["state"]] += 1
+        elif t == "pending_closed":
+            c["pending_closed"] += f.get("connections", 0)
+        elif t == "probe_result":
+            c["probes"] += 1
+            c["probes_failed"] += f.get("ok") is not True
+            c["probe_bytes"] += f.get("bytes", 0)
+        elif t == "upgrade_start":
+            c["upgrade_attempts"] += 1
+        elif t == "upgrade_failed":
+            c["upgrade_failures"] += 1
+            decided = True
+        elif t == "network_change":
+            c["network_changes"] += 1
+            c["network_known"] += f.get("known") is True
+        elif t == "network_down":
+            c["network_down"] += 1
+        elif t == "provider_fetch":
+            c["provider_fetches"] += 1
+            c["provider_fetch_failures"] += f.get("ok") is not True
+            if "trigger" in f:
+                c["provider_triggers"][f["trigger"]] = c["provider_triggers"].get(f["trigger"], 0) + 1
+        elif t == "provider_apply":
+            if f.get("ok") is False:
+                c["provider_rejected"] += 1
+                decided = True
+            elif f.get("changed") is True:
+                c["provider_applied"] += 1
+                decided = True
+        elif t == "provider_restart_needed":
+            c["provider_restart_needed"] += 1
+            decided = True
+        elif t in ("pin", "release"):
+            c[t + "s"] += 1
+        elif t == "memory_low":
+            c["memory_low"] += f.get("on") is True
+    return c, decided
+
+
+def pop_report_checks():
+    out = list(REPORT_CHECKS)
+    REPORT_CHECKS.clear()
+    return out
 
 
 def events_of(events, typ, since=0):

@@ -353,6 +353,30 @@ def failover_blackhole(stand, xray, work, name):
 
 
 @scenario()
+def report_interval(stand, xray, work, name):
+    """A window with a failover is reported once it is report.interval long,
+    not before and not again without a new decision; the stop brings the
+    last report of the run."""
+    interval = 20
+    cfg = bench.client_config(THREE, THREE_COSTS, health={"report": {"interval": f"{interval}s"}})
+    with bench.Client(xray, cfg, work, name) as c:
+        polls = [(s, c.take_report) for s in range(1, 3 * interval)]
+        run_timeline(bench.Traffic(rate=2, big=0.5), [(5, lambda: bench.chaos(A0, "blackhole"))] + polls,
+                     3 * interval)
+    first = c.reports[0] if c.reports else {}
+    final = c.final_report or {}
+    window = first.get("window_sec")
+    return [
+        check("first report", f"{first.get('report_reason')} after {window} s",
+              first.get("report_reason") == "interval" and interval <= window <= interval + 3
+              and first.get("switch_reasons", {}).get("failover") == 1, f"interval after {interval}-{interval + 3} s"),
+        check("reports while the client ran", len(c.reports) - 1, len(c.reports) == 2, "== 1"),
+        check("final report", f"{final.get('report_reason')} #{final.get('report_index')}",
+              final.get("report_reason") == "stop" and final.get("report_index") == 2, "stop #2"),
+    ]
+
+
+@scenario()
 def failover_reset(stand, xray, work, name):
     return failover(stand, xray, work, name, A0, "reset", 3, expect_to="a2")
 

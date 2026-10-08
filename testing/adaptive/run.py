@@ -34,6 +34,7 @@ def main():
             except Exception as e:
                 traceback.print_exc()
                 checks = [{"check": "scenario ran", "value": repr(e), "limit": "", "ok": False}]
+            checks += bench.pop_report_checks()
             for c in checks:
                 mark = "PASS" if c["ok"] else "FAIL"
                 print(f"{mark}  {sc.name:32s} {c['check']:44s} {c['value']!s:>12} {c['limit']}", flush=True)
