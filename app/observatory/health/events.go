@@ -2,7 +2,6 @@ package health
 
 import (
 	"encoding/json"
-	"slices"
 	"sort"
 	"time"
 )
@@ -53,14 +52,6 @@ func (l *eventLog) trim() {
 		l.dropped++
 		l.droppedTotal++
 	}
-}
-
-// limit changes the limits at once: events beyond them are dropped as when
-// the log is full.
-func (l *eventLog) limit(maxEvents, maxBytes int) {
-	l.maxEvents, l.maxBytes = maxEvents, maxBytes
-	l.trim()
-	l.events = slices.Clone(l.events)
 }
 
 // drain returns kept events as a JSON array and forgets them.

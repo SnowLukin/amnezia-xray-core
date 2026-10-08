@@ -513,8 +513,8 @@ func TestHostProbeUnderLowMemory(t *testing.T) {
 	if got := answers(r); !slices.Equal(got, []string{"a1 ok/probe", "b1 skipped/memory"}) {
 		t.Fatalf("answers %v", got)
 	}
-	if n := len(eventsOf(drainEvents(te), "probe_start")); n != 0 {
-		t.Fatalf("%d probe_start events while memory is low", n)
+	if n := len(eventsOf(drainEvents(te), "probe_start")); n != 1 {
+		t.Fatalf("%d probe_start events while memory is low, want the one probe that ran", n)
 	}
 	for i := 0; i < 3; i++ {
 		te.ask(t, at(2*time.Second+time.Duration(i)*time.Second), "a1")

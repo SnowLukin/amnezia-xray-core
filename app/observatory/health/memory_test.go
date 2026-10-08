@@ -168,24 +168,23 @@ func TestMemoryLowSkipsTimedRefreshes(t *testing.T) {
 	expectRefresh(t, te, at(5*time.Hour), "interval")
 }
 
-// The event log shrinks at once, and the start of every probe, which its
-// result repeats, is not written while memory is low.
-func TestMemoryLowShrinksTheEventLog(t *testing.T) {
+// Low memory postpones work, not what a host can see: the event log keeps its
+// limits and every event is written.
+func TestMemoryLowKeepsTheEventLog(t *testing.T) {
 	te := newTestEngine(t, nil, &SelectorConfig{Costs: costs("a", 1, "b", 3)}, "a1", "b1")
-	for i := 0; i < 2000; i++ {
+	for i := 0; i < 200; i++ {
 		te.emit(at(0), "filler", map[string]any{"i": i, "pad": strings.Repeat("x", 40)})
 	}
 	te.setMemoryLow(true, at(time.Second))
 	te.failN(3, "a1", failDial, at(2*time.Second))
 	te.run(t, at(3*time.Second), nil)
-	raw, _ := te.events.drain()
+	raw, dropped := te.events.drain()
 	var evs []Event
 	if err := json.Unmarshal(raw, &evs); err != nil {
 		t.Fatal(err)
 	}
-	// Commas and brackets come with the drain.
-	if len(raw) > lowMemoryEventBytes+len(evs)+1 {
-		t.Fatalf("%d bytes of events kept while memory is low", len(raw))
+	if dropped != 0 {
+		t.Fatalf("%d events dropped while memory is low, the log should keep its limits", dropped)
 	}
 	var types []string
 	for _, e := range evs {
@@ -193,7 +192,7 @@ func TestMemoryLowShrinksTheEventLog(t *testing.T) {
 			types = append(types, e.Type)
 		}
 	}
-	if !slices.Contains(types, "memory_low") || slices.Contains(types, "probe_start") || !slices.Contains(types, "probe_result") {
+	if !slices.Contains(types, "memory_low") || !slices.Contains(types, "probe_start") || !slices.Contains(types, "probe_result") {
 		t.Fatalf("events %v while memory is low", types)
 	}
 }

@@ -72,12 +72,8 @@ type probeResult struct {
 // Outbounds no balancer offers any more are forgotten after this long.
 const staleAfter = 30 * time.Minute
 
-const (
-	// While memory is low the event log keeps at most this much.
-	lowMemoryEventBytes = 16 << 10
-	// While memory is low a network check in doubt is repeated at most this often.
-	lowMemoryRecheck = 2 * time.Minute
-)
+// While memory is low a network check in doubt is repeated at most this often.
+const lowMemoryRecheck = 2 * time.Minute
 
 // engine makes every decision. It never blocks and never reads the clock:
 // the caller passes the time and runs the probes the engine asks for.
@@ -1116,14 +1112,11 @@ func (e *engine) begin(j *probeJob, now time.Time) {
 			running++
 		}
 	}
-	if !e.memoryLow {
-		// Its result repeats everything but running.
-		f := map[string]any{"outbound": j.tag, "reason": j.reason.String(), "balancer": j.selector, "running": running}
-		if j.request != 0 {
-			f["request"] = j.request
-		}
-		e.emit(now, "probe_start", f)
+	f := map[string]any{"outbound": j.tag, "reason": j.reason.String(), "balancer": j.selector, "running": running}
+	if j.request != 0 {
+		f["request"] = j.request
 	}
+	e.emit(now, "probe_start", f)
 }
 
 func (e *engine) recheckExhausted(s *selector, now time.Time) time.Time {
@@ -1623,12 +1616,9 @@ func (e *engine) setMemoryLow(low bool, now time.Time) bool {
 	}
 	e.memoryLow = low
 	if low {
-		e.events.limit(e.s.maxEvents, min(e.s.maxBytes, lowMemoryEventBytes))
 		e.gc(now, 0)
 		e.dropHostProbesForMemory()
 		e.keepRequests()
-	} else {
-		e.events.limit(e.s.maxEvents, e.s.maxBytes)
 	}
 	e.emit(now, "memory_low", map[string]any{"on": low})
 	return true
