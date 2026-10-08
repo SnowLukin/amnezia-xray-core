@@ -838,6 +838,38 @@ func TestEventLogLimits(t *testing.T) {
 	}
 }
 
+func TestEventLogByteLimitAndDefaults(t *testing.T) {
+	l := newEventLog(1000, 300)
+	for i := 0; i < 10; i++ {
+		l.add(t0, "x", map[string]any{"i": i})
+	}
+	raw, dropped := l.drain()
+	if len(raw) > 300+2+10 || dropped == 0 {
+		t.Fatalf("%d bytes kept, %d dropped, want at most about 300 bytes", len(raw), dropped)
+	}
+	s := newSettings(&Config{})
+	if s.maxEvents != 1000 || s.maxBytes != 64*1024 {
+		t.Fatalf("event limits by default %d events, %d bytes", s.maxEvents, s.maxBytes)
+	}
+}
+
+func TestQuarantineGrowsToItsCeiling(t *testing.T) {
+	q := newSettings(&Config{}).schedule.quarantine
+	var got []time.Duration
+	for i := 0; i < 6; i++ {
+		got = append(got, q.delay(i))
+	}
+	want := []time.Duration{2 * time.Minute, 4 * time.Minute, 8 * time.Minute, 16 * time.Minute, 30 * time.Minute, 30 * time.Minute}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("quarantine by attempt %v, want %v", got, want)
+		}
+	}
+	if q.jitter == 0 {
+		t.Fatal("quarantine has no jitter: every client would recheck at the same moment")
+	}
+}
+
 func TestHistogramQuantiles(t *testing.T) {
 	var h histogram
 	if h.quantile(0.5) != -1 {
