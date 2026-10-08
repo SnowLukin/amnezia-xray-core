@@ -1,8 +1,12 @@
 """Bench scenarios. Each one returns checks: name, measured value, limit, ok.
 
-Long scenarios read their length in minutes from the environment so a quick
-pass and the full acceptance run use the same code:
-BENCH_IDLE_MIN (default 10), BENCH_FLAP_MIN (10), BENCH_SOAK_MIN (120).
+Long scenarios read their length from the environment so a quick pass and the
+full acceptance run use the same code: BENCH_IDLE_MIN (default 10),
+BENCH_FLAP_MIN (10), BENCH_HEALTHY_MIN (30), BENCH_EXPENSIVE_MIN (60),
+BENCH_SOAK_MIN (120) and BENCH_DEAD_SITE_SEC (300). A shorter BENCH_EXPENSIVE_MIN
+judges the cost of one probe instead of a whole hour; BENCH_EXPENSIVE_UPGRADE
+(a duration such as 1m) sets upgrade.interval there, so that a short run sees
+probes at all.
 """
 import json
 import os
@@ -22,6 +26,10 @@ THREE_COSTS = {"a": 1, "b": 3}
 
 
 def minutes(name, default):
+    return float(os.environ.get(name, default))
+
+
+def seconds(name, default):
     return float(os.environ.get(name, default))
 
 
@@ -91,10 +99,159 @@ def probe_checks(events, since=0):
     return peak, (min(gaps) if gaps else None), len(starts)
 
 
+def leak_check(c):
+    """Nothing may go around the tunnel. direct is the default outbound of the
+    client and carries no check of the network, so every byte in its counters
+    belongs to a user connection that the tunnel failed to hold."""
+    got = c.direct_bytes
+    value = "unreadable" if got is None else f"{got[0]} up, {got[1]} down"
+    return check("bytes through direct (around the tunnel)", value, got == (0, 0), "== 0")
+
+
+def failover_evidence(events, since=0):
+    """Every failover switch needs the story before it: while the left outbound
+    was chosen, a suspect path_state with failures and kinds, or a failed probe
+    of that outbound. Returns the number of such switches and the bad ones."""
+    chosen = {}
+    bad = []
+    total = 0
+    for e in sorted(events, key=lambda e: e["ts"]):
+        if e["type"] != "switch":
+            continue
+        f = e["fields"]
+        if e["ts"] / 1000 >= since and f.get("reason") == "failover":
+            total += 1
+            left, t = f["from"], e["ts"]
+            from_t = chosen.get(left, 0)
+            proven = any(
+                from_t <= x["ts"] <= t and (
+                    (x["type"] == "path_state" and x["fields"].get("outbound") == left
+                     and x["fields"].get("state") == "suspect" and x["fields"].get("failures", 0) > 0
+                     and bool(x["fields"].get("kinds")))
+                    or (x["type"] == "probe_result" and x["fields"].get("outbound") == left
+                        and x["fields"].get("ok") is False))
+                for x in events)
+            if not proven:
+                bad.append(f"{left}->{f['to']}")
+        chosen[f["to"]] = e["ts"]
+    return total, bad
+
+
+def evidence_check(events, since=0, need=True):
+    """need: the scenario must have had a failover to judge."""
+    total, bad = failover_evidence(events, since)
+    return check("failover switches with evidence before them", f"{total - len(bad)}/{total}",
+                 (total > 0 or not need) and not bad, "all" + (", at least one" if need else ""))
+
+
+def suspect_kinds(events, tag, since=0):
+    """Failure kinds in the suspicions of an outbound, summed over its path_state events."""
+    seen = {}
+    for e in events:
+        f = e["fields"]
+        if (e["type"] == "path_state" and f.get("outbound") == tag and f.get("state") == "suspect"
+                and e["ts"] / 1000 >= since):
+            for k, n in (f.get("kinds") or {}).items():
+                seen[k] = seen.get(k, 0) + n
+    return seen
+
+
+def confirm_chain(events, tag, since=0):
+    """A confirming probe of the outbound that failed, and the path_state down
+    that followed it: (probe_start, probe_result, path_state), each None if missing."""
+    mine = [e for e in events if e["ts"] / 1000 >= since and e["fields"].get("outbound") == tag]
+    started = next((e for e in mine if e["type"] == "probe_start" and e["fields"].get("reason") == "confirm"), None)
+    failed = next((e for e in mine if started and e["type"] == "probe_result" and e["ts"] >= started["ts"]
+                   and e["fields"].get("reason") == "confirm" and e["fields"].get("ok") is False), None)
+    down = next((e for e in mine if failed and e["type"] == "path_state" and e["ts"] >= failed["ts"]
+                 and e["fields"].get("state") == "down" and e["fields"].get("reason") == "probe"), None)
+    return started, failed, down
+
+
+def probe_conn_match(cs, events, ports, since=0):
+    """The core says which outbounds it probed, the proxy says which connections
+    it got. For each outbound the window runs from half a second before its
+    first probe to half a second after its last one (probes are at least a
+    second apart), on a port that no user traffic uses in that window.
+    ports maps an outbound to the chaos port of its address."""
+    parts, conns, starts = [], 0, 0
+    for tag, port in ports.items():
+        ts = sorted(e["ts"] / 1000 for e in events if e["type"] == "probe_start" and e["fields"]["outbound"] == tag
+                    and e["ts"] / 1000 >= since)
+        if not ts:
+            continue
+        n = cs.between(port, ts[0] - 0.5, ts[-1] + 0.5) or 0
+        parts.append(f"{tag} {n}/{len(ts)}")
+        conns += n
+        starts += len(ts)
+    return conns, starts, ", ".join(parts)
+
+
+def probe_conn_check(cs, events, ports, since=0):
+    conns, starts, detail = probe_conn_match(cs, events, ports, since)
+    return check("probe connections at the proxy vs probe_start events", f"{conns}/{starts} ({detail})",
+                 conns == starts and starts > 0, "equal, not zero")
+
+
+def connectivity_conn_check(cs, events, since=0):
+    """Checks of the network are connections of the core too: the proxy sees them on its own port."""
+    ts = sorted(e["ts"] / 1000 for e in events if e["type"] == "connectivity" and e["ts"] / 1000 >= since)
+    if not ts:
+        return check("network check connections at the proxy vs events", "0/0", True, "equal")
+    n = cs.between(bench.CONNECTIVITY_PORT, ts[0] - 0.5, ts[-1] + 0.5) or 0
+    return check("network check connections at the proxy vs events", f"{n}/{len(ts)}", n == len(ts), "equal")
+
+
+def server_names(status):
+    """Outbound -> TLS or REALITY server name, as the core grouped them."""
+    return {p["outbound"]: p.get("server_name") or p["outbound"] for p in status["paths"]}
+
+
+def per_name_peak(events, names, since=0, window=60.0):
+    """The most probe starts of one server name inside any 60 s, and that name."""
+    by = {}
+    for e in events:
+        if e["type"] == "probe_start" and e["ts"] / 1000 >= since:
+            by.setdefault(names.get(e["fields"]["outbound"], e["fields"]["outbound"]), []).append(e["ts"] / 1000)
+    worst, who = 0, "-"
+    for name, ts in by.items():
+        ts.sort()
+        for i, t in enumerate(ts):
+            n = sum(1 for u in ts[i:] if u < t + window - 0.005)
+            if n > worst:
+                worst, who = n, name
+    return worst, who
+
+
+def per_name_check(events, names, since=0):
+    worst, who = per_name_peak(events, names, since)
+    return check("most probe starts of one server name in 60 s", f"{worst} ({who})", worst <= 3, "<= 3")
+
+
+def jitter_check(events, since=0, spacing=2.0):
+    """Probes are spaced by a jittered pause. Gaps near the spacing are the
+    ones the pause set (a probe that ran longer sets the gap itself); they must
+    not all be the same, and none may be shorter than the jitter allows."""
+    ts = sorted(e["ts"] / 1000 for e in events if e["type"] == "probe_start" and e["ts"] / 1000 >= since)
+    gaps = [round(b - a, 2) for a, b in zip(ts, ts[1:]) if b - a < 2 * spacing]
+    if len(gaps) < 4:
+        return check("pauses between probes vary", f"{len(gaps)} gaps", False, ">= 4 gaps")
+    return check("pauses between probes vary, s", f"{min(gaps)}..{max(gaps)} of {len(gaps)}",
+                 max(gaps) - min(gaps) >= 0.1 and min(gaps) >= 0.7 * spacing - 0.05, "spread >= 0.1, min >= 1.4")
+
+
 # ---- 1. failover ------------------------------------------------------------
 
 def failover(stand, xray, work, name, port, mode, limit, members=THREE, costs=THREE_COSTS, expect_to=None,
-             traffic=None, duration=40):
+             traffic=None, duration=40, tag="a1", count_conns=True, kinds=None, confirm=False, immediate=False,
+             redials=False):
+    """One fault on the address of the chosen outbound.
+
+    kinds: one of these failure kinds must be in the suspicion of the outbound.
+    confirm: the evidence is weak, so a confirming probe must fail and rule the
+    outbound out. immediate: the evidence is strong and rules it out without a
+    probe. count_conns is off for a mode that the proxy cannot count (refuse). redials: the
+    transport dials the address again by itself (gRPC does after a failure)."""
     cfg = bench.client_config(members, costs)
     m = Marks()
     with bench.Client(xray, cfg, work, name, profile=True) as c, bench.ConnSampler() as cs:
@@ -116,31 +273,60 @@ def failover(stand, xray, work, name, port, mode, limit, members=THREE, costs=TH
         to = sw[0]["fields"]["to"] if sw else None
         checks.append(check("switched to", to, to == expect_to, expect_to))
     if sw:
-        # After the switch nothing new may reach the dead address. VLESS retries
-        # the dial of a connection that started before the switch for up to 2 s,
-        # so the window starts later.
+        # After the switch nothing new may go to the dead outbound. VLESS retries the dial
+        # of a connection that started before the switch for up to 2 s, so the window
+        # starts later.
         t_sw = sw[0]["ts"] / 1000 + 3
-        n = cs.between(port, t_sw, end)
-        checks.append(check("connections to dead address after switch", n, n == 0, "== 0"))
+        routed = c.routed(t_sw)
+        if routed is not None:
+            checks.append(check("user connections to the dead outbound after switch", routed.get(tag, 0),
+                                routed.get(tag, 0) == 0, "== 0"))
+        if count_conns:
+            # The proxy also sees what a transport dials by itself, such as a gRPC client
+            # reconnecting in the background; with the access log at hand that is no verdict.
+            n = cs.between(port, t_sw, end)
+            judged = routed is None or not redials
+            checks.append(check("connections at the dead address after switch", n, n == 0 or not judged,
+                                "== 0" if judged else "info (the transport redials)"))
         recheck = [e for e in c.events if e["type"] == "probe_start" and e["ts"] / 1000 > t_sw]
         checks.append(check("probes after switch", len(recheck), len(recheck) == 0, "== 0"))
     # The event log alone must tell the story: when the path became suspect or
     # down, with what evidence, and when traffic moved.
     ev = [e for e in c.events if e["ts"] / 1000 >= m["fault"]]
-    noticed = next((e for e in ev if e["type"] == "path_state" and e["fields"].get("state") in ("suspect", "down")), None)
+    noticed = next((e for e in ev if e["type"] == "path_state" and e["fields"].get("outbound") == tag
+                    and e["fields"].get("state") in ("suspect", "down")), None)
     if sw and rec is not None:
         gap = abs(sw[0]["ts"] / 1000 - (m["fault"] + rec))
         checks.append(check("switch in events vs recovery on stand, s", round(gap, 2), gap <= 1, "<= 1"))
-    has_evidence = bool(noticed) and ("kinds" in noticed["fields"] or noticed["fields"].get("reason") in ("probe", "traffic"))
-    checks.append(check("decision has reason and evidence", noticed and noticed["fields"].get("reason"),
-                        has_evidence and bool(sw) and bool(sw[0]["fields"].get("reason")), "present"))
+    checks.append(check("the first decision names its reason", noticed and noticed["fields"].get("reason"),
+                        bool(noticed) and bool(sw) and bool(sw[0]["fields"].get("reason")), "present"))
+    checks.append(evidence_check(c.events, m["fault"]))
+    seen = suspect_kinds(c.events, tag, m["fault"])
+    if kinds:
+        checks.append(check("evidence names the failure kind", ",".join(f"{k}:{v}" for k, v in sorted(seen.items())),
+                            any(k in seen for k in kinds), " or ".join(kinds)))
+    else:
+        checks.append(check("evidence kinds", ",".join(f"{k}:{v}" for k, v in sorted(seen.items())) or "-", True,
+                            "info"))
+    if immediate:
+        suspects = [e for e in c.events if e["type"] == "path_state" and e["fields"].get("outbound") == tag
+                    and e["fields"].get("state") == "suspect" and e["ts"] / 1000 >= m["fault"]]
+        confirming = [e for e in c.events if e["type"] == "probe_start" and e["fields"].get("outbound") == tag
+                      and e["fields"].get("reason") == "confirm" and e["ts"] / 1000 >= m["fault"]]
+        strong = bool(suspects) and all(e["fields"].get("strong") for e in suspects)
+        checks.append(check("ruled out on strong evidence, no confirming probe",
+                            f"strong={strong}, confirming probes {len(confirming)}", strong and not confirming,
+                            "strong, 0 probes"))
+    if confirm:
+        started, failed, down = confirm_chain(c.events, tag, m["fault"])
+        chain = (f"probe {'ok=false ' + str(failed['fields'].get('error')) if failed else 'not failed'}"
+                 if started else "no confirming probe")
+        checks.append(check("confirming probe failed, then the path is down", chain + (", down" if down else ""),
+                            bool(started and failed and down), "start, ok=false, down"))
     mpeak = max(mech, default=0)
     checks.append(check("mechanism heap peak, MB", round(mpeak / 2**20, 2), mpeak <= 2 * 2**20, "<= 2"))
     checks.append(check("whole heap growth incl. user conns, MB", round((peak - base) / 2**20, 2), True, "info"))
-    if noticed:
-        kinds = noticed["fields"].get("kinds") or {}
-        checks.append(check("evidence kinds", ",".join(f"{k}:{v}" for k, v in sorted(kinds.items())) or "-", True,
-                            "info"))
+    checks.append(leak_check(c))
     if c.splices() is not None:
         checks.append(check("spliced connections", c.splices(), True, "info"))
     return checks
@@ -157,25 +343,53 @@ def failover_reset(stand, xray, work, name):
 
 
 @scenario()
+def failover_refuse(stand, xray, work, name):
+    """The address answers the SYN with RST: nothing listens there."""
+    return failover(stand, xray, work, name, A0, "refuse", 3, expect_to="a2", count_conns=False)
+
+
+@scenario()
 def failover_freeze(stand, xray, work, name):
-    return failover(stand, xray, work, name, A0, "stall_after:16384", 15, expect_to="a2")
+    return failover(stand, xray, work, name, A0, "stall_after:16384", 15, expect_to="a2", confirm=True)
 
 
 @scenario()
 def failover_impostor(stand, xray, work, name):
-    return failover(stand, xray, work, name, A0, f"redirect:{IMPOSTOR}", 5, expect_to="a2")
+    """Another server answers on the address. Its certificate is not trusted by the client, so the
+    REALITY handshake ends in an x509 error, which the core reports as a failed dial. The kind
+    server_unverified needs an impostor whose certificate the system trusts, such as a real decoy
+    site; the stand cannot make one on macOS, where Go takes the trust store from the system."""
+    return failover(stand, xray, work, name, A0, f"redirect:{IMPOSTOR}", 5, expect_to="a2",
+                    kinds=("server_unverified", "dial_failed"), immediate=True)
 
 
-def per_transport(kind):
+# What each fault is, with the recovery it must meet on every transport.
+FAULTS = {"blackhole": ("blackhole", 10), "reset": ("reset", 3), "freeze": ("stall_after:16384", 15)}
+
+
+def per_transport(kind, fault):
+    mode, limit = FAULTS[fault]
+
     def run(stand, xray, work, name):
         members = [("x1", kind, 0), ("x2", kind, 1)]
-        return failover(stand, xray, work, name, address_port(kind, 0), "blackhole", 10,
-                        members=members, costs={"x": 1}, expect_to="x2")
+        # xhttp opens its stream lazily: the dial succeeds and the failure shows at the first byte.
+        want = ("no_response",) if kind == "xhttp" and fault != "reset" else None
+        return failover(stand, xray, work, name, address_port(kind, 0), mode, limit, members=members,
+                        costs={"x": 1}, expect_to="x2", tag="x1", kinds=want, confirm=fault == "freeze",
+                        redials=kind == "grpc")
     return run
 
 
+# Known results on a build of this branch, which these scenarios exist to show:
+# - reset on xhttp is red: the xhttp dial never fails (the stream opens lazily), the connection
+#   then ends at once without an answer, and the core takes neither for evidence, so users fail
+#   and nothing switches.
+# - reset on ws is red about one run in twenty: the probe of the healthy second address fails
+#   with "io: read/write on closed pipe" after receiving every byte, and the balancer is left
+#   with nothing (exhausted) until the quarantine ends.
 for _kind in ("tcp_tls", "ws", "xhttp", "grpc"):
-    ALL.append(Scenario(f"failover_blackhole_{_kind}", per_transport(_kind)))
+    for _fault in FAULTS:
+        ALL.append(Scenario(f"failover_{_fault}_{_kind}", per_transport(_kind, _fault)))
 
 
 def plain_heap(kind):
@@ -200,28 +414,50 @@ for _kind in ("xhttp", "grpc"):
 
 @scenario()
 def one_dead_site(stand, xray, work, name):
+    length = seconds("BENCH_DEAD_SITE_SEC", 300)
     plan = [("t1.test", "/bytes/65536", 65536), ("dead.test", "/hang", 1), ("t2.test", "/204", 0),
             ("dead.test", "/hang", 1), ("t3.test", "/bytes/65536", 65536)]
     cfg = bench.client_config(THREE, THREE_COSTS)
     with bench.Client(xray, cfg, work, name) as c:
         tr = bench.Traffic(rate=2, plan=plan, timeout=20)
-        start = run_timeline(tr, [], 120)
+        start = run_timeline(tr, [], length)
     sw = bench.switches(c.events, start + 1)
     pr = bench.probes(c.events, start)
-    return [check("switches", len(sw), len(sw) == 0, "== 0"),
-            check("probes", len(pr), len(pr) == 0, "== 0")]
+    hung = sum(1 for r in tr.records if r[4] == "dead.test" and not r[1])
+    return [check(f"switches in {length:g} s", len(sw), len(sw) == 0, "== 0"),
+            check("probes", len(pr), len(pr) == 0, "== 0"),
+            check("requests to the dead site that failed", hung, hung > 0, "> 0, or the site was not dead"),
+            leak_check(c)]
 
 
-@scenario()
-def short_glitch(stand, xray, work, name):
+def glitch(stand, xray, work, name, mode):
+    """The address of the chosen outbound is gone for 3 s, then back."""
     cfg = bench.client_config(THREE, THREE_COSTS)
     m = Marks()
     with bench.Client(xray, cfg, work, name) as c:
         tr = bench.Traffic(rate=2, big=0.5)
-        run_timeline(tr, [(10, m.at("fault", lambda: bench.chaos(A0, "pause"))),
+        run_timeline(tr, [(10, m.at("fault", lambda: bench.chaos(A0, mode))),
                           (13, lambda: bench.chaos(A0, "pass"))], 40)
     sw = bench.switches(c.events, m["fault"])
-    return [check("switches after 3 s pause", len(sw), len(sw) == 0, "== 0")]
+    downs = [e for e in c.events if e["type"] == "path_state" and e["fields"].get("state") == "down"
+             and e["ts"] / 1000 >= m["fault"]]
+    pr = bench.probes(c.events, m["fault"])
+    return [check(f"switches after 3 s of {mode}", len(sw), len(sw) == 0, "== 0"),
+            check("paths ruled out", len(downs), len(downs) == 0, "== 0"),
+            check("probes", len(pr), True, "info"),
+            leak_check(c)]
+
+
+@scenario()
+def short_glitch(stand, xray, work, name):
+    """Data held back and then delivered, as TCP retransmits do."""
+    return glitch(stand, xray, work, name, "pause")
+
+
+@scenario()
+def short_glitch_blackhole(stand, xray, work, name):
+    """Packets lost for 3 s: connections that began meanwhile never get an answer."""
+    return glitch(stand, xray, work, name, "blackhole")
 
 
 @scenario()
@@ -247,7 +483,8 @@ def splice_keepalive(stand, xray, work, name):
     kinds = a1.get("failures_by_kind") or {}
     checks = [check("answers", answers, answers == [65536, 0, 0], "[65536, 0, 0]"),
               check("failures on the idle connection", kinds or 0, not kinds, "== 0"),
-              check("sweep goroutines while it idles", sweeping, sweeping == 0, "== 0")]
+              check("sweep goroutines while it idles", sweeping, sweeping == 0, "== 0"),
+              leak_check(c)]
     if c.splices() is not None:
         checks.append(check("spliced connections", c.splices(), c.splices() == 1, "== 1"))
     return checks
@@ -268,9 +505,12 @@ def idle_no_probes(stand, xray, work, name):
         heap, gor = c.gc_memory()
     hits = stand.probe_hits(quiet_from)
     pr = bench.probes(c.events, quiet_from)
+    sw = bench.switches(c.events, quiet_from)
     return [check(f"probe requests in {mins:g} min idle", len(hits), len(hits) == 0, "== 0"),
             check("probe events while idle", len(pr), len(pr) == 0, "== 0"),
-            check("goroutines idle vs busy", f"{gor} vs {g0}", gor <= g0, "idle <= busy")]
+            check("switches while idle", len(sw), len(sw) == 0, "== 0"),
+            check("goroutines idle vs busy", f"{gor} vs {g0}", gor <= g0, "idle <= busy"),
+            leak_check(c)]
 
 
 @scenario(slow=True)
@@ -290,7 +530,9 @@ def flapping(stand, xray, work, name):
     sw = bench.switches(c.events, start + 1)
     ok = sum(1 for r in tr.records if r[1]) / max(1, len(tr.records))
     return [check(f"switches in {mins:g} min", len(sw), len(sw) <= 3 * mins / 10, f"<= {3 * mins / 10:g}"),
-            check("requests ok, %", round(100 * ok, 1), True, "info")]
+            evidence_check(c.events, start),
+            check("requests ok, %", round(100 * ok, 1), True, "info"),
+            leak_check(c)]
 
 
 # ---- network and exhaustion ---------------------------------------------------
@@ -312,7 +554,8 @@ def network_down(stand, xray, work, name):
     return [check("switches", len(sw) - 1, len(sw) == 1, "== 0 after the start"),
             check("outbound probes while network is down", len(probes), not probes, "== 0"),
             check("active after network returns", active, active == "a1", "a1"),
-            check("recovery after network returns, s", rec and round(rec, 1), rec is not None and rec <= 10, "<= 10")]
+            check("recovery after network returns, s", rec and round(rec, 1), rec is not None and rec <= 10, "<= 10"),
+            leak_check(c)]
 
 
 @scenario()
@@ -336,7 +579,8 @@ def long_outage(stand, xray, work, name):
             check("active after network returns", active, active == "a1", "a1"),
             check("a1 after network returns", a1["state"], a1["state"] != "down", "not down"),
             check("recovery after network returns, s", rec and round(rec, 1), rec is not None and rec <= 35,
-                  "<= recheck max 30 + 5")]
+                  "<= recheck max 30 + 5"),
+            leak_check(c)]
 
 
 @scenario()
@@ -354,7 +598,9 @@ def check_unreachable(stand, xray, work, name):
     return [check("recovery, s", rec and round(rec, 1), rec is not None and rec <= 50,
                   "<= suspicion 8 + maxPause 20 + recheck 16 + failover 6"),
             check("check ignored after an outbound worked", len(ignored), len(ignored) == 1, "== 1"),
-            check("connectivity state", st.get("connectivity"), st.get("connectivity") == "ignored", "ignored")]
+            check("connectivity state", st.get("connectivity"), st.get("connectivity") == "ignored", "ignored"),
+            evidence_check(c.events, m["down"]),
+            leak_check(c)]
 
 
 @scenario()
@@ -362,9 +608,8 @@ def check_unreachable_witness(stand, xray, work, name):
     """As check_unreachable, but sites outside the tunnel work and prove that the network is there."""
     cfg = bench.client_config(THREE, THREE_COSTS,
                               health={"connectivity": {"maxPause": "20s", "witnesses": ["direct"]}})
-    cfg["dns"] = {"hosts": {"w.test": bench.HOST}}
+    cfg["dns"]["hosts"]["w.test"] = bench.HOST
     cfg["routing"]["rules"].insert(0, {"domain": ["full:w.test"], "outboundTag": "direct"})
-    next(o for o in cfg["outbounds"] if o["tag"] == "direct")["settings"]["domainStrategy"] = "UseIPv4"
     tunnel = bench.TARGETS[:3]
     m = Marks()
     with bench.Client(xray, cfg, work, name) as c:
@@ -377,7 +622,8 @@ def check_unreachable_witness(stand, xray, work, name):
     return [check("recovery, s", rec and round(rec, 1), rec is not None and rec <= 25,
                   "<= suspicion 8 + two checks 4 + witness 3 + failover 6"),
             check("requests outside the tunnel ok", direct_ok, direct_ok > 0, "> 0"),
-            check("connectivity state", st.get("connectivity"), st.get("connectivity") == "ignored", "ignored")]
+            check("connectivity state", st.get("connectivity"), st.get("connectivity") == "ignored", "ignored"),
+            evidence_check(c.events, m["down"])]
 
 
 @scenario()
@@ -385,32 +631,76 @@ def exhausted(stand, xray, work, name):
     cfg = bench.client_config(THREE, THREE_COSTS)
     member_ports = ",".join(str(p) for p in (A0, A1, B0))
     m = Marks()
-    with bench.Client(xray, cfg, work, name) as c:
+    mid = {}
+
+    def look():
+        m["mid"] = time.time()
+        mid["status"] = c.status()
+
+    with bench.Client(xray, cfg, work, name) as c, bench.ConnSampler() as cs:
         tr = bench.Traffic(rate=2, big=0.5)
         run_timeline(tr, [(10, m.at("down", lambda: bench.chaos(member_ports, "blackhole"))),
-                          (70, m.at("leak_check")),
+                          (70, look),
                           (80, m.at("up", lambda: bench.chaos(str(A1), "pass")))], 280)
+        names = server_names(c.status())
     ex = [e for e in c.events if e["type"] == "exhausted" and e["ts"] / 1000 >= m["down"]]
     t_ex = ex[0]["ts"] / 1000 - m["down"] if ex else None
-    # Leak: a user request reaching the target while every server is dead went around the tunnel.
+    t_ex_abs = ex[0]["ts"] / 1000 if ex else m["down"]
+    # Where traffic went. direct has no part in it (the leak check), and a request that reached
+    # the target in this window went around the tunnel too, since every server is dead.
     leaked = []
     with open(stand.target_log) as f:
         for line in f:
             ts, host, _ = line.split(" ", 2)
-            if host.startswith("t") and m["down"] + 15 <= float(ts) <= m["up"]:
+            if host.startswith("t") and t_ex_abs + 3 <= float(ts) <= m["up"]:
                 leaked.append(line)
+    # What block does: it refuses at once, where a dead server would keep a request waiting.
+    refused = sorted(r[2] for r in tr.records if t_ex_abs + 3 <= r[0] <= m["up"] and not r[1])
+    served = sum(1 for r in tr.records if t_ex_abs + 3 <= r[0] <= m["up"] and r[1])
+    median = refused[len(refused) // 2] if refused else None
+    st = mid["status"]
+    balancer = st["balancers"][0]
     rec, _ = bench.recovery(tr.records, m["up"])
+    recovered = next((e for e in bench.switches(c.events, m["down"]) if e["fields"].get("reason") == "recovered"), None)
+    until = recovered["ts"] / 1000 - 1.0 if recovered else None
     peak, gap, n = probe_checks(c.events, m["down"])
+    ports = {"a1": A0, "a2": A1, "b1": B0}
+    probe_events = [e for e in c.events if until is None or e["type"] != "probe_start" or e["ts"] / 1000 <= until]
     return [check("exhausted after all paths died, s", t_ex and round(t_ex, 1), t_ex is not None and t_ex <= 20,
                   "<= 20"),
-            check("requests leaked around the tunnel", len(leaked), not leaked, "== 0"),
+            check("balancer while exhausted: exhausted, active", f"{balancer['exhausted']}, {balancer['active']!r}",
+                  balancer["exhausted"] is True and balancer["active"] == "", "True, ''"),
+            check("requests that reached the target while exhausted", len(leaked) + served,
+                  not leaked and not served, "== 0"),
+            check("failed requests answered at once (block), median s", median and round(median, 2),
+                  median is not None and median < 2, "< 2"),
+            leak_check(c),
             # A dead outbound rests 2 min +-30% before a recheck: a censor keeps a
             # frozen server frozen for that long and longer after new handshakes.
             check("recovery after one path returned, s", rec and round(rec, 1), rec is not None and rec <= 180,
                   "<= 180"),
             check("probes at once", peak, peak <= 1, "<= 1"),
             check("min pause between probes, s", gap and round(gap, 2), gap is None or gap >= 1.4, ">= 1.4"),
+            probe_conn_check(cs, probe_events, ports, m["down"]),
+            connectivity_conn_check(cs, c.events, m["down"]),
+            per_name_check(c.events, names, m["down"]),
             check("probes", n, True, "info")]
+
+
+@scenario()
+def leak_detector(stand, xray, work, name):
+    """The leak check itself: traffic that is sent to direct on purpose has to show in its
+    counters, or a zero there would prove nothing."""
+    cfg = bench.client_config(THREE, THREE_COSTS)
+    cfg["routing"]["rules"] = [{"inboundTag": ["socks"], "outboundTag": "direct"}]
+    with bench.Client(xray, cfg, work, name) as c:
+        tr = bench.Traffic(rate=2, big=0.5)
+        run_timeline(tr, [], 8)
+    got = c.direct_bytes
+    ok = sum(1 for r in tr.records if r[1])
+    return [check("requests that went around the tunnel and were answered", f"{ok}/{len(tr.records)}", ok > 0, "> 0"),
+            check("bytes through direct, down", got and got[1], bool(got) and got[1] >= 64 * 1024, ">= 64 KB"),
+            check("the leak check says so", leak_check(c)["ok"], not leak_check(c)["ok"], "False")]
 
 
 # ---- memory and cost ----------------------------------------------------------
