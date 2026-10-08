@@ -249,6 +249,41 @@ func TestPinDuringFailoverProbeHolds(t *testing.T) {
 	}
 }
 
+// The host pins the outbound the balancer is on while a return to a cheaper
+// one is being probed: the probes that pass do not move it off the pin.
+func TestPinDuringReturnProbeHolds(t *testing.T) {
+	te := newTestEngine(t, &Config{Schedule: quarantine(30 * time.Second)}, upgradeConfig(), "a1", "b1")
+	failoverToB(t, te, at(0))
+	jobs, _ := te.tick(at(6 * time.Minute))
+	if len(jobs) != 1 || jobs[0].reason != reasonUpgrade || jobs[0].tag != "a1" {
+		t.Fatalf("setup: probes %+v, want the return to a1", jobs)
+	}
+	te.pin("auto", "b1", at(6*time.Minute+time.Second))
+	te.onProbeResult(jobs[0], probeResult{ok: true}, at(6*time.Minute+2*time.Second))
+	for now := at(6 * time.Minute); now.Before(at(10 * time.Minute)); now = now.Add(5 * time.Second) {
+		te.run(t, now, nil)
+	}
+	if te.sel.current() != "b1" || te.sel.pinned != "b1" {
+		t.Fatalf("pinned to b1, yet the balancer is on %q (pinned %q)", te.sel.current(), te.sel.pinned)
+	}
+}
+
+// A pin drops the failover probes still waiting for their turn.
+func TestPinDropsWaitingFailoverProbes(t *testing.T) {
+	cfg := parallelConfig(2)
+	cfg.Schedule.PerMinute = 1
+	te := newTestEngine(t, cfg, &SelectorConfig{Costs: costs("a", 1, "b", 3)}, "a1", "a2", "b1")
+	te.serverNames(map[string]string{"a1": "a1.example", "a2": "a2.example", "b1": "b1.example"})
+	te.failN(3, "a1", failDial, at(0))
+	if jobs, _ := te.tick(at(time.Second)); !slices.Equal(jobTags(jobs), []string{"a2"}) {
+		t.Fatalf("setup: probes %v, want a2 alone within one probe a minute", jobTags(jobs))
+	}
+	te.pin("auto", "a1", at(2*time.Second))
+	if later, _ := te.tick(at(2 * time.Minute)); len(later) != 0 {
+		t.Fatalf("probed %v for a failover after the pin", jobTags(later))
+	}
+}
+
 // A candidate still waiting for the probe budget when the balancer has moved
 // is not probed any more.
 func TestWaitingCandidateIsDroppedAfterTheSwitch(t *testing.T) {

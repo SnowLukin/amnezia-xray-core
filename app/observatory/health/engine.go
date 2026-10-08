@@ -1563,11 +1563,33 @@ func (e *engine) pin(selectorTag, tag string, now time.Time) bool {
 	}
 	s.pinned = tag
 	s.pinnedUntil = time.Time{}
+	// A return or a failover under way would move the balancer off the pin
+	// once its probe answers.
+	if target := s.upgradeTarget; target != "" {
+		s.upgradeTarget = ""
+		if !e.returningTo(target) {
+			e.dropQueued(target, reasonUpgrade)
+		}
+	}
+	s.upgradeSuccesses = 0
+	s.upgradeAt = time.Time{}
+	s.failoverTried = nil
+	s.failoverProbing = nil
+	e.dropUnclaimedFailover()
 	e.emit(now, "pin", map[string]any{"balancer": selectorTag, "outbound": tag})
 	if s.current() != tag {
 		e.switchTo(s, tag, "pin", now)
 	}
 	return true
+}
+
+func (e *engine) returningTo(tag string) bool {
+	for _, s := range e.selectors {
+		if s.upgradeTarget == tag {
+			return true
+		}
+	}
+	return false
 }
 
 func (e *engine) release(selectorTag string, now time.Time) bool {
