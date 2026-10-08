@@ -1,6 +1,7 @@
 package conf
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -77,6 +78,26 @@ func (p *awgParam) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// awgFlag accepts a JSON boolean, and also 0 or 1 as a number or a string,
+// which is how awg configs and UAPI write flags.
+type awgFlag bool
+
+func (f *awgFlag) UnmarshalJSON(data []byte) error {
+	var b bool
+	if err := json.Unmarshal(data, &b); err == nil {
+		*f = awgFlag(b)
+		return nil
+	}
+	var p awgParam
+	if err := p.UnmarshalJSON(data); err == nil {
+		if b, err := strconv.ParseBool(string(p)); err == nil {
+			*f = awgFlag(b)
+			return nil
+		}
+	}
+	return errors.New("AmneziaWG flag must be a boolean, 0 or 1")
+}
+
 type AmneziaParameters struct {
 	Jc   awgParam `json:"jc"`
 	Jmin awgParam `json:"jmin"`
@@ -97,8 +118,8 @@ type AmneziaParameters struct {
 
 	// AmneziaWG 3.1 flags, named after RandomTrailers and DisableCookies of
 	// awg configs. RandomTrailers must match the server.
-	RandomTrailers bool `json:"randomTrailers"`
-	DisableCookies bool `json:"disableCookies"`
+	RandomTrailers awgFlag `json:"randomTrailers"`
+	DisableCookies awgFlag `json:"disableCookies"`
 }
 
 func (c *AmneziaParameters) Build() *wireguard.AmneziaParameters {
@@ -124,8 +145,8 @@ func (c *AmneziaParameters) Build() *wireguard.AmneziaParameters {
 		I4:   string(c.I4),
 		I5:   string(c.I5),
 
-		RandomTrailers: c.RandomTrailers,
-		DisableCookies: c.DisableCookies,
+		RandomTrailers: bool(c.RandomTrailers),
+		DisableCookies: bool(c.DisableCookies),
 	}
 }
 
@@ -202,6 +223,9 @@ func (c *WireGuardConfig) Build() (proto.Message, error) {
 	config.NoKernelTun = c.NoKernelTun
 	config.DNS = c.DNS
 	config.Parameters = c.Parameters.Build()
+	if !c.IsClient && c.Parameters != nil {
+		errors.LogWarning(context.Background(), "the WireGuard inbound ignores awg parameters")
+	}
 
 	return config, nil
 }

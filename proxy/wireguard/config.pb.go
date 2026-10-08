@@ -117,12 +117,16 @@ type AmneziaParameters struct {
 	I3    string                 `protobuf:"bytes,14,opt,name=i3,proto3" json:"i3,omitempty"`
 	I4    string                 `protobuf:"bytes,15,opt,name=i4,proto3" json:"i4,omitempty"`
 	I5    string                 `protobuf:"bytes,16,opt,name=i5,proto3" json:"i5,omitempty"`
-	// AmneziaWG 3.1 appends random bytes to handshake messages and pads
+	// AmneziaWG 3.1 flags. Only outbounds apply them: the inbound writes no
+	// AmneziaWG parameters to its device.
+	//
+	// random_trailers appends random bytes to handshake messages and pads
 	// transport packets. Both sides must agree: a peer without it drops every
 	// handshake.
 	RandomTrailers bool `protobuf:"varint,17,opt,name=random_trailers,json=randomTrailers,proto3" json:"random_trailers,omitempty"`
-	// Stops answering handshakes under load with cookies; it matters to the side
-	// that receives handshake initiations.
+	// disable_cookies stops answering handshakes under load with cookies. That
+	// is the side receiving handshake initiations, a server, so on an outbound
+	// it does next to nothing.
 	DisableCookies bool `protobuf:"varint,18,opt,name=disable_cookies,json=disableCookies,proto3" json:"disable_cookies,omitempty"`
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
