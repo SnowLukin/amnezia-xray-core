@@ -1560,6 +1560,68 @@ def provider_subnet_ban(stand, xray, work, name):
 
 
 @scenario()
+def provider_post_state(stand, xray, work, name):
+    """Every address of the set the provider gave is blocked: the request posts
+    what broke, both outbounds down with their failures, and every via sends
+    the same body. No destination of the user and no address goes out."""
+    stand.answer(FRESH)
+    banned = [("p-a1", "reality", 0), ("p-a2", "reality", 1)]
+    prov = bench.provider_config(["net", "direct"], triggers={"whenExhausted": True},
+                                 limits={"exhaustedMinInterval": "5s", "backoff": {"initial": "5s"}})
+    cfg = bench.client_config(banned, {"p-": 1}, providers=[prov])
+    ports = ",".join(str(address_port(k, i)) for _, k, i in banned)
+    m = Marks()
+
+    def answer_after_garbage():
+        # Both via get a broken answer, so both send their body; the retry
+        # after the backoff gets the set.
+        deadline = time.time() + 30
+        while len(stand.provider_bodies()) < 2 and time.time() < deadline:
+            time.sleep(0.1)
+        bench.provider_mode("ok")
+
+    bench.provider_mode("garbage")
+    with bench.Client(xray, cfg, work, name) as c:
+        tr = bench.Traffic(rate=2, big=0.5)
+        run_timeline(tr, [(10, m.at("ban", lambda: bench.chaos(ports, "blackhole"))),
+                          (11, answer_after_garbage)], 60)
+    bodies = stand.provider_bodies(m["ban"])
+    first = bodies[0] if bodies else {}
+    body = first.get("body") if isinstance(first.get("body"), dict) else {}
+    outs = {o.get("tag"): o for o in body.get("outbounds", [])}
+    bal = body.get("balancer", {})
+    raw = json.dumps([b.get("body") for b in bodies])
+    leaks = [s for s in bench.TARGETS + ["probe.test", bench.HOST, "dead.test"] if s in raw]
+    pair = [(b["body"].get("run"), b["body"].get("refresh")) for b in bodies[:2] if isinstance(b.get("body"), dict)]
+    applied = [e for e in bench.events_of(c.events, "provider_apply", m["ban"]) if e["fields"].get("changed")]
+    fresh = [e for e in bench.switches(c.events, m["ban"]) if e["fields"]["to"] in ("p-x1", "p-x2")]
+    # The chosen one fails on traffic; the other is found down by its failover
+    # probe, which the body tells by class.
+    down = {t: (o.get("state"), sorted(o.get("failures", {})) or (o.get("probe") or {}).get("error"))
+            for t, o in outs.items()}
+    why = [o for o in outs.values() if o.get("state") == "down"
+           and ("dial_timeout" in o.get("failures", {}) or (o.get("probe") or {}).get("ok") is False)]
+    return [
+        check("posted as JSON", first.get("type"), first.get("type") == "application/json" and bool(body),
+              "application/json"),
+        check("trigger", body.get("trigger"), body.get("trigger") in ("exhausted", "min_healthy"),
+              "exhausted or min_healthy"),
+        check("outbounds down with what failed", down,
+              sorted(outs) == ["a1", "a2"] and len(why) == 2
+              and any("dial_timeout" in o.get("failures", {}) for o in outs.values()),
+              "a1, a2 down: dial_timeout or a failed probe"),
+        check("balancer exhausted, not own", (bal.get("exhausted"), bal.get("own")),
+              bal.get("exhausted") is True and bal.get("own") is False, "(True, False)"),
+        check("no destination or address in the body", leaks, not leaks, "none"),
+        check("body size, bytes", first.get("bytes"), 0 < (first.get("bytes") or 0) < 4096, "< 4096"),
+        check("same run and refresh through both via", pair,
+              len(pair) == 2 and pair[0] == pair[1] and pair[0][0] and pair[0][1], "equal"),
+        check("set applied after the broken answers", len(applied), len(applied) == 1, "== 1"),
+        check("switched to a fresh outbound", fresh and fresh[0]["fields"]["to"], bool(fresh), "p-x*"),
+    ]
+
+
+@scenario()
 def provider_first_via_dead(stand, xray, work, name):
     """The first way to the provider is dead: the request goes the second way."""
     stand.answer(FRESH)

@@ -10,7 +10,7 @@ GET /control?mode=<mode>     changes how /set answers:
   error:N:code  HTTP status N with an error body of the protocol
   hang          never answers
 Every /set request is logged as "time authorization path" to the log file,
-and the body of a POST as a JSON line {ts, auth, type, body} to the bodies
+and the body of a POST as a JSON line {ts, auth, type, bytes, body} to the bodies
 file; a body that is not JSON is kept as a string.
 """
 import json
@@ -75,7 +75,7 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError:
             body = raw.decode(errors="replace")
         line = {"ts": round(time.time(), 3), "auth": self.headers.get("Authorization"),
-                "type": self.headers.get("Content-Type"), "body": body}
+                "type": self.headers.get("Content-Type"), "bytes": len(raw), "body": body}
         with LOCK:
             BODIES.write(json.dumps(line) + "\n")
             BODIES.flush()

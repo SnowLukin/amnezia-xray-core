@@ -334,7 +334,7 @@ class Stand:
         return out
 
     def provider_bodies(self, since=0):
-        """{ts, auth, type, body} of every POST the provider got."""
+        """{ts, auth, type, bytes, body} of every POST the provider got."""
         with open(self.provider_bodies_log) as f:
             return [b for b in map(json.loads, f) if b["ts"] >= since]
 
