@@ -17,6 +17,7 @@ Environment:
                       XTLS Vision switch to direct copy, which splices on Linux.
   BENCH_LOGLEVEL      log level of the client, debug to see splices.
 """
+import datetime
 import http.client
 import json
 import os
@@ -51,7 +52,8 @@ OFFSET = int(os.environ.get("BENCH_PORT_OFFSET", "0"))
 TARGET_TLS_PORT = 18998 + OFFSET
 TARGET_PORT = 18999 + OFFSET
 CHAOS_CONTROL = 19000 + OFFSET
-PROVIDER_PORT = 19002 + OFFSET
+# Not 19002: that plus an offset of 7000 is a chaos port of a bench with offset 5000.
+PROVIDER_PORT = 19050 + OFFSET
 SOCKS_PORT = 10808 + OFFSET
 API_PORT = 10085 + OFFSET
 METRICS_PORT = 11111 + OFFSET
@@ -180,9 +182,17 @@ def provider_config(via, triggers=None, limits=None, apply=None):
 
 def client_config(members, costs, health=None, strategy=None, burst=None, loglevel=LOGLEVEL, providers=None):
     """members: list of (tag, kind, address index)."""
-    outbounds = [member(t, k, i, PIN) for t, k, i in members]
-    outbounds += [{"tag": "direct", "protocol": "freedom", "settings": {"finalRules": [{"action": "allow"}]}},
-                  {"tag": "block", "protocol": "blackhole"}]
+    # direct comes first, so it is the default outbound: traffic that a
+    # balancer fails to hold would end there and show in its counters. It
+    # resolves the names of the targets as the servers do, so that such traffic
+    # reaches a target instead of failing to find it. The network check has an
+    # outbound of its own, so that direct carries nothing but traffic that went
+    # around the tunnel.
+    outbounds = [{"tag": "direct", "protocol": "freedom",
+                  "settings": {"domainStrategy": "UseIPv4", "finalRules": [{"action": "allow"}]}},
+                 {"tag": "net", "protocol": "freedom", "settings": {"finalRules": [{"action": "allow"}]}}]
+    outbounds += [member(t, k, i, PIN) for t, k, i in members]
+    outbounds += [{"tag": "block", "protocol": "blackhole"}]
     selectors = [t for t, _, _ in members]
     cfg = {
         "log": {"loglevel": loglevel},
@@ -193,6 +203,7 @@ def client_config(members, costs, health=None, strategy=None, burst=None, loglev
         "policy": {"system": {"statsOutboundUplink": True, "statsOutboundDownlink": True}},
         "inbounds": [{"tag": "socks", "listen": "127.0.0.1", "port": SOCKS_PORT, "protocol": "socks",
                       "settings": {"udp": True}}],
+        "dns": {"hosts": {h: HOST for h in TARGETS + ["probe.test", "dead.test"]}},
         "outbounds": outbounds,
         "routing": {"rules": [{"inboundTag": ["socks"], "balancerTag": "auto"}], "balancers": []},
     }
@@ -214,7 +225,7 @@ def client_config(members, costs, health=None, strategy=None, burst=None, loglev
         "subjectSelector": subjects,
         "probes": [{"destination": f"http://probe.test:{TARGET_PORT}/bytes/32768", "minBytes": 32768,
                     "expectStatus": [200], "timeout": "6s", "progressTimeout": "3s"}],
-        "connectivity": {"outbound": "direct", "destination": f"http://{HOST}:{CONNECTIVITY_PORT}/204",
+        "connectivity": {"outbound": "net", "destination": f"http://{HOST}:{CONNECTIVITY_PORT}/204",
                          "timeout": "2s"},
     }
     for k, v in (health or {}).items():
@@ -352,12 +363,13 @@ def chaos(ports, mode):
     return urllib.request.urlopen(f"http://127.0.0.1:{CHAOS_CONTROL}/set?port={ports}&mode={mode}", timeout=3).read()
 
 
-def chaos_conns():
+def chaos_stats():
+    """Per chaos port: (connections accepted, bytes the client sent, bytes that reached it)."""
     out = urllib.request.urlopen(f"http://127.0.0.1:{CHAOS_CONTROL}/set", timeout=3).read().decode()
     res = {}
     for line in out.strip().splitlines():
-        p, _, c = line.split(" ")
-        res[int(p)] = int(c.split("=")[1])
+        port, _, conns, up, down = line.split(" ")
+        res[int(port)] = (int(conns.split("=")[1]), int(up.split("=")[1]), int(down.split("=")[1]))
     return res
 
 
@@ -499,6 +511,9 @@ class Client:
         self.mem = []
         self._stop = threading.Event()
         self.has_health = "healthObservatory" in config
+        # Bytes (up, down) that went through outbound direct by the time the
+        # client stopped; None if the counters could not be read.
+        self.direct_bytes = None
 
     def __enter__(self):
         self.process.start(self.path, self.log_path, self.env)
@@ -510,6 +525,10 @@ class Client:
     def __exit__(self, *exc):
         self._stop.set()
         self.thread.join(timeout=5)
+        try:
+            self.direct_bytes = self.outbound_bytes("direct")
+        except Exception:
+            pass
         if self.has_health:
             self.drain()
             with open(self.log_path.replace(".log", "-events.json"), "w") as f:
@@ -562,6 +581,29 @@ class Client:
         dump = urllib.request.urlopen(f"http://127.0.0.1:{METRICS_PORT}/debug/pprof/goroutine?debug=1",
                                       timeout=3).read().decode()
         return sum(int(block.split(" @", 1)[0]) for block in dump.split("\n\n") if " @" in block and function in block)
+
+    def routed(self, since, until=None):
+        """User connections the client sent to each outbound between two times,
+        from its access log (read after it stopped). None when the log's clock
+        is not ours, as on a device."""
+        if ADB_SERIAL:
+            return None
+        count = {}
+        with open(self.log_path, errors="replace") as f:
+            for line in f:
+                if " accepted " not in line or "[socks -> " not in line:
+                    continue
+                stamp = datetime.datetime.strptime(line[:26], "%Y/%m/%d %H:%M:%S.%f").timestamp()
+                if stamp >= since and (until is None or stamp <= until):
+                    tag = line.rsplit("[socks -> ", 1)[1].split("]")[0]
+                    count[tag] = count.get(tag, 0) + 1
+        return count
+
+    def outbound_bytes(self, tag):
+        """(uplink, downlink) bytes counted for an outbound by the stats of the client."""
+        vars_ = json.loads(urllib.request.urlopen(f"http://127.0.0.1:{METRICS_PORT}/debug/vars", timeout=3).read())
+        counters = vars_["stats"]["outbound"].get(tag, {})
+        return counters.get("uplink", 0), counters.get("downlink", 0)
 
     def gc_memory(self):
         urllib.request.urlopen(f"http://127.0.0.1:{METRICS_PORT}/debug/pprof/heap?gc=1", timeout=5).read()
@@ -701,8 +743,8 @@ class Traffic:
 
 
 class ConnSampler:
-    """Samples chaos connection counters, so a check can count connections
-    to an address within a time window."""
+    """Samples chaos counters, so a check can count connections and bytes
+    of an address within a time window."""
 
     def __init__(self, period=0.25):
         self.period = period
@@ -721,17 +763,26 @@ class ConnSampler:
     def _run(self):
         while not self._stop.is_set():
             try:
-                self.samples.append((time.time(), chaos_conns()))
+                self.samples.append((time.time(), chaos_stats()))
             except Exception:
                 pass
             self._stop.wait(self.period)
 
-    def between(self, port, t1, t2):
+    def _delta(self, ports, t1, t2, field):
         before = [c for t, c in self.samples if t <= t1]
         after = [c for t, c in self.samples if t <= t2]
         if not before or not after:
             return None
-        return after[-1].get(port, 0) - before[-1].get(port, 0)
+        ports = ports if isinstance(ports, (list, tuple, set)) else [ports]
+        return sum(after[-1].get(p, (0, 0, 0))[field] - before[-1].get(p, (0, 0, 0))[field] for p in ports)
+
+    def between(self, ports, t1, t2):
+        """Connections accepted on the port (or ports) between t1 and t2."""
+        return self._delta(ports, t1, t2, 0)
+
+    def traffic(self, ports, t1, t2):
+        """Bytes sent by the client and bytes that reached it, between t1 and t2."""
+        return self._delta(ports, t1, t2, 1), self._delta(ports, t1, t2, 2)
 
 
 def open_stream(host, timeout, tls=TLS):

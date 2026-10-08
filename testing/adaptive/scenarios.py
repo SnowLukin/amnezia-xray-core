@@ -759,7 +759,7 @@ def provider_first_via_dead(stand, xray, work, name):
     stand.answer(FRESH)
     prov = bench.provider_config(["spare", "direct"], limits={"exhaustedMinInterval": "1s"})
     cfg = bench.client_config(BANNED[:1], {"a": 1, "p-": 1}, providers=[prov])
-    cfg["outbounds"].insert(-2, bench.member("spare", "tcp_tls", 1, bench.PIN))
+    cfg["outbounds"].insert(-1, bench.member("spare", "tcp_tls", 1, bench.PIN))
     bench.chaos(str(address_port("tcp_tls", 1)), "blackhole")
     m = Marks()
     with bench.Client(xray, cfg, work, name) as c:
