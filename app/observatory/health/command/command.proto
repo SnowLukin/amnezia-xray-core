@@ -1,0 +1,52 @@
+syntax = "proto3";
+
+package xray.core.app.observatory.health.command;
+option csharp_namespace = "Xray.Core.App.Observatory.Health.Command";
+option go_package = "github.com/xtls/xray-core/app/observatory/health/command";
+option java_package = "com.xray.core.app.observatory.health.command";
+option java_multiple_files = true;
+
+message GetStatusRequest {}
+
+message GetStatusResponse {
+  // Current state of outbounds and balancers as JSON.
+  string json = 1;
+}
+
+message DrainEventsRequest {}
+
+message DrainEventsResponse {
+  // Events since the previous drain as a JSON array.
+  string json = 1;
+  // Events dropped because the buffer was full.
+  uint64 dropped = 2;
+}
+
+message NetworkChangedRequest {
+  // Identifies the network for remembering working outbounds. Empty when the
+  // host cannot tell networks apart.
+  string network = 1;
+  // The device has no network now; decisions pause until the next change.
+  bool lost = 2;
+}
+
+message NetworkChangedResponse {}
+
+message PinRequest {
+  string balancer = 1;
+  // Outbound to keep the balancer on. Empty releases the pin.
+  string outbound = 2;
+}
+
+message PinResponse {
+  bool ok = 1;
+}
+
+service HealthService {
+  rpc GetStatus(GetStatusRequest) returns (GetStatusResponse) {}
+  rpc DrainEvents(DrainEventsRequest) returns (DrainEventsResponse) {}
+  rpc NetworkChanged(NetworkChangedRequest) returns (NetworkChangedResponse) {}
+  rpc Pin(PinRequest) returns (PinResponse) {}
+}
+
+message Config {}
