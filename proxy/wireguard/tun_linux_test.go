@@ -3,12 +3,14 @@
 package wireguard
 
 import (
+	"context"
 	"net/netip"
 	"os"
 	"testing"
 	"time"
 
 	"github.com/vishvananda/netlink"
+	"golang.org/x/sys/unix"
 )
 
 // requireKernelTun skips tests that need to create kernel interfaces. Run
@@ -139,5 +141,80 @@ func TestOpenKernelTunTakenName(t *testing.T) {
 	}
 	if after := fds(); after != before {
 		t.Fatalf("%d descriptors open after failed attempts, %d before", after, before)
+	}
+}
+
+// TestBindToInterfaceByIndex checks that a socket bound to an interface that
+// is gone cannot send, also when a new interface has taken its name.
+func TestBindToInterfaceByIndex(t *testing.T) {
+	requireKernelTun(t)
+	const name = "xraytest0"
+	add := func() netlink.Link {
+		t.Helper()
+		if err := netlink.LinkAdd(&netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Name: name}}); err != nil {
+			t.Fatal(err)
+		}
+		l, err := netlink.LinkByName(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return l
+	}
+	gone := add()
+	if err := netlink.LinkDel(gone); err != nil {
+		t.Fatal(err)
+	}
+	reused := add()
+	defer netlink.LinkDel(reused)
+	if gone.Attrs().Index == reused.Attrs().Index {
+		t.Skip("the kernel gave the new interface the index of the old one")
+	}
+
+	fd, err := unix.Socket(unix.AF_INET, unix.SOCK_DGRAM|unix.SOCK_CLOEXEC, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unix.Close(fd)
+	// The kernel accepts any index, or refuses a name that is gone.
+	if err := bindToInterface(fd, gone.Attrs().Index, name); err == nil {
+		lo := &unix.SockaddrInet4{Port: 9, Addr: [4]byte{127, 0, 0, 1}}
+		if err := unix.Sendto(fd, []byte("x"), 0, lo); err == nil {
+			t.Fatal("a socket bound to an interface that is gone sent a datagram")
+		}
+	}
+}
+
+// TestKernelClientStaleStack checks that a connection that still holds the
+// stack of an outbound gone to sleep can no longer send.
+func TestKernelClientStaleStack(t *testing.T) {
+	requireKernelTun(t)
+	priv, pub := testKeys(t)
+	addr := netip.MustParseAddr("10.9.0.2")
+	s := startTestServer(t, testParams, testPeer{pub, addr})
+	inst := newTestInstance(t)
+	conf := testClientConf(s, priv, addr, testParams)
+	conf.NoKernelTun = false
+	oh, h := addTestClientConf(t, inst, "wg", conf)
+
+	roundTrip(t, oh, s)
+	h.mu.Lock()
+	tnet := h.tnet
+	h.mu.Unlock()
+	if !h.Sleep() {
+		t.Fatal("an idle outbound refused to sleep")
+	}
+	dst := netip.AddrPortFrom(testServerAddr, 7)
+	if c, err := tnet.DialUDPAddrPort(netip.AddrPort{}, dst); err == nil {
+		c.Close()
+		t.Fatal("a stale stack opened a UDP socket")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if c, err := tnet.DialContextTCPAddrPort(ctx, dst); err == nil {
+		c.Close()
+		t.Fatal("a stale stack dialed TCP")
+	}
+	if _, err := tnet.LookupHost("example.com"); err == nil {
+		t.Fatal("a stale stack resolved a name")
 	}
 }

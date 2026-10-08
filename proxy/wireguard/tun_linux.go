@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 
 	"golang.org/x/sys/unix"
@@ -112,6 +113,7 @@ type kernelTun struct {
 	linkAddrs []netlink.Addr
 	routes    []*netlink.Route
 	rules     []*netlink.Rule
+	closed    atomic.Bool
 }
 
 // createKernelTun creates an interface named name. With no name, or when an
@@ -289,24 +291,23 @@ func createKernelTun(name string, localAddresses, dnsServers []netip.Addr, mtu i
 		}
 	}
 
-	dialer := &net.Dialer{}
-	dialer.Control = func(network, address string, c syscall.RawConn) error {
-		return c.Control(func(fd uintptr) {
-			if err := syscall.BindToDevice(int(fd), n); err != nil {
-				errors.LogInfoInner(context.Background(), err, "failed to bind to device")
-			}
-		})
+	// Binding to the interface is all that keeps a socket in the tunnel; IPv4
+	// has no route to it. A socket that cannot be bound fails instead of
+	// leaving by the main table. It is bound by index: once the interface is
+	// gone, as when the outbound has slept, the socket cannot send, while its
+	// name may already belong to an interface created later.
+	index := l.Attrs().Index
+	control := func(network, address string, c syscall.RawConn) error {
+		var bindErr error
+		if err := c.Control(func(fd uintptr) {
+			bindErr = bindToInterface(int(fd), index, n)
+		}); err != nil {
+			return err
+		}
+		return bindErr
 	}
-	lc := &net.ListenConfig{}
-	lc.Control = func(network, address string, c syscall.RawConn) error {
-		return c.Control(func(fd uintptr) {
-			if err := syscall.BindToDevice(int(fd), n); err != nil {
-				errors.LogInfoInner(context.Background(), err, "failed to bind to device")
-			}
-		})
-	}
-	t.dialer = dialer
-	t.lc = lc
+	t.dialer = &net.Dialer{Control: control}
+	t.lc = &net.ListenConfig{Control: control}
 
 	tnet = &Net{
 		DialContextTCPAddrPort: t.DialContextTCPAddrPort,
@@ -319,7 +320,21 @@ func createKernelTun(name string, localAddresses, dnsServers []netip.Addr, mtu i
 	return t, tnet, name, nil
 }
 
+// bindToInterface binds a socket to an interface by its index, or by its name
+// on kernels before 5.0, which lack SO_BINDTOIFINDEX.
+func bindToInterface(fd, index int, name string) error {
+	err := unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_BINDTOIFINDEX, index)
+	if err == unix.ENOPROTOOPT {
+		err = unix.BindToDevice(fd, name)
+	}
+	if err != nil {
+		return fmt.Errorf("failed to bind to %s: %w", name, err)
+	}
+	return nil
+}
+
 func (tun *kernelTun) Close() (err error) {
+	tun.closed.Store(true)
 	var errs []error
 	for _, rule := range tun.rules {
 		if err = tun.handle.RuleDel(rule); err != nil {
@@ -339,11 +354,19 @@ func (tun *kernelTun) Close() (err error) {
 	return goerrors.Join(errs...)
 }
 
+// A connection that ended may still use the stack of an outbound gone to
+// sleep, for instance to resolve a name; it gets net.ErrClosed.
 func (tun *kernelTun) DialContextTCPAddrPort(ctx context.Context, addr netip.AddrPort) (net.Conn, error) {
+	if tun.closed.Load() {
+		return nil, net.ErrClosed
+	}
 	return tun.dialer.DialContext(ctx, "tcp", addr.String())
 }
 
 func (tun *kernelTun) DialUDPAddrPort(laddr, raddr netip.AddrPort) (net.Conn, error) {
+	if tun.closed.Load() {
+		return nil, net.ErrClosed
+	}
 	conn, err := tun.lc.ListenPacket(context.Background(), "udp", ":0")
 	if err != nil {
 		return nil, err
