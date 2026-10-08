@@ -66,6 +66,7 @@ type statusView struct {
 	Connectivity string               `json:"connectivity,omitempty"`
 	Generation   uint64               `json:"generation"`
 	Idle         bool                 `json:"idle"`
+	MemoryLow    bool                 `json:"memory_low"`
 	Queued       int                  `json:"probes_queued"`
 	Running      int                  `json:"probes_running"`
 	Paths        []pathStatusView     `json:"paths"`
@@ -80,6 +81,7 @@ func (e *engine) status(now time.Time) statusView {
 		Connectivity: e.connectivityState(),
 		Generation:   e.generation,
 		Idle:         e.idle(now),
+		MemoryLow:    e.memoryLow,
 		Queued:       len(e.queue),
 		Running:      len(e.running),
 	}

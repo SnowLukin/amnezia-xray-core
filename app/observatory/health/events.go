@@ -2,6 +2,7 @@ package health
 
 import (
 	"encoding/json"
+	"slices"
 	"sort"
 	"time"
 )
@@ -38,12 +39,24 @@ func (l *eventLog) add(now time.Time, typ string, fields map[string]any) {
 	}
 	l.events = append(l.events, raw)
 	l.bytes += len(raw)
+	l.trim()
+}
+
+func (l *eventLog) trim() {
 	for len(l.events) > 0 && (len(l.events) > l.maxEvents || l.bytes > l.maxBytes) {
 		l.bytes -= len(l.events[0])
 		l.events[0] = nil
 		l.events = l.events[1:]
 		l.dropped++
 	}
+}
+
+// limit changes the limits at once: events beyond them are dropped as when
+// the log is full.
+func (l *eventLog) limit(maxEvents, maxBytes int) {
+	l.maxEvents, l.maxBytes = maxEvents, maxBytes
+	l.trim()
+	l.events = slices.Clone(l.events)
 }
 
 // drain returns kept events as a JSON array and forgets them.

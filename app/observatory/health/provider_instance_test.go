@@ -212,3 +212,73 @@ func TestProviderRefreshInRunningCore(t *testing.T) {
 		t.Fatalf("status %+v, %v", st, err)
 	}
 }
+
+// While memory is low a refresh asks only the first via it can use; the
+// backoff brings the next attempt.
+func TestRefreshUnderLowMemoryTriesOneVia(t *testing.T) {
+	srv := &setServer{}
+	srv.set(`{"outbounds": [{"tag": "x1", "protocol": "freedom"}]}`)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	cfg, err := core.LoadConfig("json", strings.NewReader(`{
+	  "log": {"loglevel": "none"},
+	  "outbounds": [
+	    {"tag": "direct", "protocol": "freedom", "settings": {"finalRules": [{"action": "allow"}]}},
+	    {"tag": "dead", "protocol": "blackhole"}
+	  ],
+	  "routing": {"balancers": [{"tag": "auto", "selector": ["p-"], "strategy": {"type": "leastCost", "settings": {}}}]},
+	  "healthObservatory": {
+	    "subjectSelector": ["p-"],
+	    "providers": [{
+	      "tag": "fresh", "url": "`+ts.URL+`/set", "allowPlainHttp": true,
+	      "via": ["missing", "dead", "direct"], "timeout": "500ms",
+	      "triggers": {"interval": "0s", "minHealthy": 0, "whenExhausted": false, "maxAge": "0s", "onNetworkChange": "never"},
+	      "limits": {"backoff": {"initial": "1h"}},
+	      "apply": {"balancer": "auto", "tagPrefix": "p-", "protocols": ["freedom"]}
+	    }]
+	  }
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	inst, err := core.New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := inst.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer inst.Close()
+	obs := health.FromInstance(inst)
+	obs.SetMemoryLow(true)
+	w := &eventWaiter{t: t, o: obs}
+	obs.RequestRefresh("fresh")
+	w.until("provider_fetch", func(e health.Event) bool { return e.Fields["via"] == "dead" })
+	var st struct {
+		Providers []struct {
+			Failures int  `json:"failures"`
+			Fetching bool `json:"fetching"`
+		} `json:"providers"`
+	}
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+		if err := json.Unmarshal(obs.Status(), &st); err != nil {
+			t.Fatal(err)
+		}
+		if !st.Providers[0].Fetching {
+			break
+		}
+	}
+	raw, _ := obs.DrainEvents()
+	var rest []health.Event
+	if err := json.Unmarshal(raw, &rest); err != nil {
+		t.Fatal(err)
+	}
+	w.all = append(w.all, rest...)
+	var vias []string
+	for _, f := range w.since(0, "provider_fetch") {
+		vias = append(vias, f.Fields["via"].(string))
+	}
+	if strings.Join(vias, ",") != "missing,dead" || st.Providers[0].Failures != 1 {
+		t.Fatalf("requests through %v, %d failures; want the dead via alone after the missing one", vias, st.Providers[0].Failures)
+	}
+}

@@ -66,6 +66,13 @@ type probeResult struct {
 // Outbounds no balancer offers any more are forgotten after this long.
 const staleAfter = 30 * time.Minute
 
+const (
+	// While memory is low the event log keeps at most this much.
+	lowMemoryEventBytes = 16 << 10
+	// While memory is low a network check in doubt is repeated at most this often.
+	lowMemoryRecheck = 2 * time.Minute
+)
+
 // engine makes every decision. It never blocks and never reads the clock:
 // the caller passes the time and runs the probes the engine asks for.
 // It is not safe for concurrent use; the observer guards it with a mutex.
@@ -124,6 +131,9 @@ type engine struct {
 	providers []*provider
 
 	lastGC time.Time
+	// The host reported that memory is low: work that only improves the
+	// choice waits, finding failures does not.
+	memoryLow bool
 }
 
 func newEngine(s *settings, seed int64) *engine {
@@ -985,14 +995,14 @@ func (e *engine) tick(now time.Time) ([]*probeJob, time.Time) {
 			if s.exhausted && !idle {
 				soonest(e.recheckExhausted(s, now))
 			}
-			if !idle {
+			if !idle && !e.memoryLow {
 				soonest(e.maybeUpgrade(s, now))
 			}
 		}
 	}
 
 	if now.Sub(e.lastGC) >= staleAfter {
-		e.gc(now)
+		e.gc(now, staleAfter)
 	}
 
 	var start []*probeJob
@@ -1002,9 +1012,7 @@ func (e *engine) tick(now time.Time) ([]*probeJob, time.Time) {
 		if j.generation != e.generation && j.reason != reasonConnectivity {
 			continue
 		}
-		if j.reason != reasonConnectivity && (e.networkDown || idle && (j.reason == reasonNetwork || j.reason == reasonRemembered)) {
-			// Waits for the network, or for the first user connection after a
-			// network change: nobody needs the answer before that.
+		if j.reason != reasonConnectivity && (e.networkDown || e.putOff(j, idle)) {
 			kept = append(kept, j)
 			continue
 		}
@@ -1026,6 +1034,19 @@ func (e *engine) tick(now time.Time) ([]*probeJob, time.Time) {
 	}
 	e.queue = kept
 	return start, wake
+}
+
+// putOff tells whether a probe waits for the first user connection after a
+// network change, or for memory: it only improves the choice, and nobody
+// needs its answer before that.
+func (e *engine) putOff(j *probeJob, idle bool) bool {
+	switch j.reason {
+	case reasonNetwork, reasonRemembered:
+		return idle || e.memoryLow
+	case reasonUpgrade:
+		return e.memoryLow
+	}
+	return false
 }
 
 func (e *engine) sortedSelectors() []*selector {
@@ -1055,8 +1076,11 @@ func (e *engine) begin(j *probeJob, now time.Time) {
 			running++
 		}
 	}
-	e.emit(now, "probe_start", map[string]any{"outbound": j.tag, "reason": j.reason.String(), "balancer": j.selector,
-		"running": running})
+	if !e.memoryLow {
+		// Its result repeats everything but running.
+		e.emit(now, "probe_start", map[string]any{"outbound": j.tag, "reason": j.reason.String(), "balancer": j.selector,
+			"running": running})
+	}
 }
 
 func (e *engine) recheckExhausted(s *selector, now time.Time) time.Time {
@@ -1306,6 +1330,9 @@ func (e *engine) onConnectivity(r probeResult, now time.Time) {
 	}
 	e.nextConnectivity = now.Add(e.jitter(e.s.connectivity.recheck.delay(e.checkFails-1), e.s.connectivity.recheck.jitter))
 	if e.doubt {
+		if e.memoryLow {
+			e.nextConnectivity = maxTime(e.nextConnectivity, now.Add(lowMemoryRecheck))
+		}
 		return
 	}
 	if paused := now.Sub(e.checkFailingSince); paused >= e.s.connectivity.maxPause {
@@ -1527,6 +1554,23 @@ func (e *engine) onNetworkLost(now time.Time) {
 	e.pendingSuspicion = map[string]verdict{}
 }
 
+// setMemoryLow switches to or from low memory and reports whether that
+// changed anything.
+func (e *engine) setMemoryLow(low bool, now time.Time) bool {
+	if e.memoryLow == low {
+		return false
+	}
+	e.memoryLow = low
+	if low {
+		e.events.limit(e.s.maxEvents, min(e.s.maxBytes, lowMemoryEventBytes))
+		e.gc(now, 0)
+	} else {
+		e.events.limit(e.s.maxEvents, e.s.maxBytes)
+	}
+	e.emit(now, "memory_low", map[string]any{"on": low})
+	return true
+}
+
 func (e *engine) remember(tag string) {
 	if !e.s.remember || e.networkID == "" {
 		return
@@ -1619,18 +1663,26 @@ func (e *engine) releaseBy(selectorTag, by string, now time.Time) bool {
 	return true
 }
 
-// gc forgets outbounds that no balancer offers any more, so rotating tags do
-// not grow the state.
-func (e *engine) gc(now time.Time) {
+// gc forgets outbounds that no balancer has offered for stale, so rotating
+// tags do not grow the state.
+func (e *engine) gc(now time.Time, stale time.Duration) {
 	e.lastGC = now
 	offered := map[string]bool{}
 	for _, s := range e.selectors {
 		for _, c := range s.candidates {
 			offered[c] = true
 		}
+		// Outbounds leaving a provider set are out of the candidates while
+		// they drain, and a balancer may stay on one.
+		if snap := s.snapshot.Load(); snap != nil {
+			for _, c := range *snap {
+				offered[c] = true
+			}
+		}
+		offered[s.current()] = true
 	}
 	for tag, p := range e.paths {
-		if !offered[tag] && !p.probing && now.Sub(p.statusSince) > staleAfter {
+		if !offered[tag] && !p.probing && now.Sub(p.statusSince) >= stale {
 			e.forget(tag)
 		}
 	}

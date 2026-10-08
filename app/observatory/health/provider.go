@@ -156,6 +156,12 @@ func (e *engine) tickProviders(now time.Time) ([]*refreshJob, time.Time) {
 			e.skipRefresh(p, trigger, "network_down", 0, now)
 			continue
 		}
+		// A refresh is the heaviest work of the observer. With low memory
+		// only the host and a balancer with nothing left wait for one.
+		if e.memoryLow && !trigger.urgent() {
+			e.skipRefresh(p, trigger, "memory", 0, now)
+			continue
+		}
 		if at, why := p.allowedAt(trigger, now); now.Before(at) {
 			e.skipRefresh(p, trigger, why, at.Sub(now), now)
 			soonest(at)

@@ -301,6 +301,36 @@ a loop. A refresh for an exhausted balancer that brings the same set counts
 as a failure for the backoff. A failed host request and a failed network
 change refresh are retried after the backoff.
 
+## Memory
+
+What the observatory keeps does not grow with the length of a session or the
+number of networks, outbounds and connections: what it knows about an
+outbound is forgotten once no balancer offers it, failures per outbound are
+capped, probes end by a deadline, and the config values that size anything
+have ceilings. For an open connection of a watched outbound it keeps under
+1 KB and no goroutine of its own.
+
+A host that watches the memory of the process, such as an iOS network
+extension close to its limit, reports pressure with `SetMemoryLow(true)` and
+its end with `SetMemoryLow(false)`. While memory is low:
+
+- What only improves the choice waits: returns to a cheaper outbound, also
+  one under way between its probes, probes after a network change and of
+  the outbound remembered for the network, and timed provider refreshes
+  (`provider_skip` with reason `memory`). A refresh the host asked for or
+  one for an exhausted balancer still runs, through the first usable `via`
+  only. A network check in doubt repeats at most every 2 minutes.
+- What can go goes at once: drains of outbounds without connections that no
+  balancer chooses, what the observatory knows about outbounds no balancer
+  offers, and the event log beyond 16 KiB. `probe_start` is not written;
+  `probe_result` tells the same.
+- Finding failures goes on as usual: confirming probes, failovers, rechecks
+  of an exhausted balancer and the first network check. No user connection
+  is ended for memory.
+
+Once memory is back, what waited goes on from where it stopped. A host that
+never reports pressure, such as a desktop, gets the usual behavior.
+
 ## Host API
 
 The `HealthService` gRPC service (enable it in `api.services`) and
@@ -312,6 +342,7 @@ when the core runs through a library that keeps the instance to itself:
 | --- | --- |
 | `NetworkChanged(id)` / `xray api health network <id>` | The device moved to another network. `id` lets the observatory remember working outbounds per network; empty when the host cannot tell networks apart. |
 | `NetworkLost()` / `lost` | No network; decisions pause until the next change. |
+| `SetMemoryLow(low)` | The process is short of memory, or no longer; see Memory. Safe from any goroutine, a repeated value does nothing. Only for embedders. |
 | `Pin(balancer, outbound, run)` / `pin` | Keep the balancer on an outbound. |
 | `Release(balancer, run)` / `release` | Let the balancer choose again. |
 | `RequestRefresh(provider)` / `refresh [provider]` | Fetch the set of a provider, or of every provider when empty, as soon as the limits allow. False when there is no such provider. |
@@ -333,7 +364,7 @@ Every event is `{"seq": n, "ts": unix_ms, "type": "...", "fields": {...}}`.
 | `switch` | `balancer`, `from`, `to`, `reason`, `held_ms`, `cost` | New connections go to another outbound. `reason`: `start`, `start_pinned`, `start_remembered`, `failover`, `upgrade`, `recovered`, `remembered`, `network_change`, `candidates_changed`, `pin`, `retired` (the previous one left its provider set). `held_ms` is the time on the previous one. |
 | `path_state` | `outbound`, `state`, `reason`; for `suspect` also `failures`, `targets`, `kinds`, `strong`; for `down` also `quarantine_ms`, `quarantine_level` and `provisional` when it was ruled out while the network check was failing | An outbound became `up`, `suspect`, `down` or `unknown`. `reason`: `traffic`, `probe`, `upgrade_probe`, `network_change`, `network_down`, `network_up`, `replaced` (a provider
 changed its settings). `kinds` counts failures by kind: `dial_failed`, `dial_timeout`, `server_unverified`, `no_response`, `closed`, `stall`, `partial_stall`. |
-| `probe_start` | `outbound`, `reason`, `balancer`, `running` | A probe started. `reason`: `confirm`, `failover`, `network_change`, `remembered`, `recheck`, `upgrade`. `running` counts the outbound probes running now, this one included. |
+| `probe_start` | `outbound`, `reason`, `balancer`, `running` | A probe started. `reason`: `confirm`, `failover`, `network_change`, `remembered`, `recheck`, `upgrade`. `running` counts the outbound probes running now, this one included. Not written while memory is low. |
 | `probe_result` | `outbound`, `reason`, `balancer`, `ok`, `rtt_ms`, `bytes`, `error`, `stale` | A probe finished. `bytes` counts both directions above TLS. `stale` means it was made in the previous network and was ignored. |
 | `exhausted` | `balancer`, `from`, `candidates` | No usable candidate is left; traffic goes to `fallbackTag`. |
 | `pending_closed` | `outbound`, `connections`, `reason` | Connections of an outbound found down that had received nothing were ended. `reason` is the one the outbound went down for. |
@@ -350,16 +381,17 @@ changed its settings). `kinds` counts failures by kind: `dial_failed`, `dial_tim
 | `connectivity_doubt` | `failed_checks`, `paused_ms` | The check kept failing for `maxPause`; decisions resumed provisionally. |
 | `connectivity_ignored` | `failed_checks` | The check failed while an outbound worked; it is not used until the next network change. |
 | `network_change` | `network`, `known`, `generation` | The host reported a network change. |
+| `memory_low` | `on` | The host reported that memory is low (`on` true) or no longer. |
 | `provider_fetch` | `provider`, `trigger`, `retry`, `attempt`, `via`, `outbound`, `ok`, `status`, `ms`, `bytes`, `error` | One request of a refresh through one `via` entry; `outbound` is what the entry resolved to, `bytes` the size of the answer. A skipped entry has `ok` false and only `error`: `balancer exhausted`, `outbound down` or `no such outbound`. `error` never holds the URL. `trigger`: `host`, `exhausted`, `min_healthy`, `cost_above`, `network_change`, `next_refresh`, `max_age`, `interval`; `retry` counts failed refreshes before this one. |
 | `provider_apply` | `provider`, `trigger`, `ok`, `changed`, `added`, `replaced`, `removed`, `unchanged`, `version`, `exhausted`, `rules`, `routing_error`, `error` | The answer was applied (`changed`), was the applied set already, or was rejected (`ok` false with `error`). `exhausted` tells whether the balancer had nothing usable at that moment. `rules` counts the routing rules applied with the set. |
 | `provider_restart_needed` | `provider`, `version`, `sections` | The applied answer also changes sections the core reads only at start. |
-| `provider_skip` | `provider`, `trigger`, `reason`, `wait_ms` | A trigger wants a refresh that cannot start yet. `reason`: `min_interval`, `backoff`, `max_per_hour`, `idle`, `network_down`. Reported once per trigger and reason until a refresh starts. |
+| `provider_skip` | `provider`, `trigger`, `reason`, `wait_ms` | A trigger wants a refresh that cannot start yet. `reason`: `min_interval`, `backoff`, `max_per_hour`, `idle`, `network_down`, `memory`. Reported once per trigger and reason until a refresh starts. |
 | `provider_drained` | `provider`, `outbound`, `replaced` | An outbound that left the set, or the old handler of a replaced one, was closed: after `drain`, at once without connections, or early to keep at most `maxOutbounds` draining. |
 
 ## Status
 
 `Status()` returns the run of the core (`run`), the network (`network`, `network_up`, `connectivity`:
-`ok`, `paused`, `doubt` or `ignored`, `generation`, `idle`), probe queue sizes, per outbound the state and its age, failures in
+`ok`, `paused`, `doubt` or `ignored`, `generation`, `idle`), whether memory is low (`memory_low`), probe queue sizes, per outbound the state and its age, failures in
 the window, quarantine, last probe RTT and error, connections, bytes, time to
 first byte (p50, p90), failures by kind, probes and their bytes, and time as
 the chosen outbound; per balancer the chosen and pinned outbound, whether it

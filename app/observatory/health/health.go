@@ -563,6 +563,26 @@ func (o *Observer) NetworkLost() {
 	o.mu.Unlock()
 }
 
+// SetMemoryLow tells the observer whether the process is short of memory.
+// While it is, the observer puts off what only improves the choice: returns
+// to cheaper outbounds, probes after a network change and timed provider
+// refreshes. It lets go at once of what it can: drains without connections,
+// state about outbounds nothing offers, most of the event log. Finding
+// failures and moving away from them go on as usual. It is safe to call from
+// any goroutine; repeating the current value does nothing.
+func (o *Observer) SetMemoryLow(low bool) {
+	o.mu.Lock()
+	changed := o.e.setMemoryLow(low, o.now())
+	o.mu.Unlock()
+	if !changed {
+		return
+	}
+	if low {
+		o.settleAllDrains()
+	}
+	o.wake()
+}
+
 // Pin keeps the balancer on tag until Release.
 // run is the run of the core the request is meant for, as Status reports
 // it; a request for another run is ignored. An empty run skips the check.

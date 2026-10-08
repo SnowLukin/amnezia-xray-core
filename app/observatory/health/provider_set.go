@@ -369,6 +369,7 @@ func (o *Observer) fetchSet(rt *providerRuntime, j *refreshJob) (*providerAnswer
 	for i, v := range via {
 		o.mu.Lock()
 		tag, skip := o.e.resolveVia(v, o.now())
+		low := o.e.memoryLow
 		o.mu.Unlock()
 		if skip == "" && tag != "" && o.ohm.GetHandler(tag) == nil {
 			skip = "no such outbound"
@@ -396,6 +397,10 @@ func (o *Observer) fetchSet(rt *providerRuntime, j *refreshJob) (*providerAnswer
 			return a, nil
 		}
 		lastErr = err
+		if low {
+			// One request at a time is enough; the backoff brings the next.
+			break
+		}
 	}
 	return nil, lastErr
 }
@@ -835,6 +840,18 @@ func (o *Observer) oldestConnections() map[string]int64 {
 		}
 	}
 	return m
+}
+
+// settleAllDrains ends the drains nothing waits for any more, of every provider.
+func (o *Observer) settleAllDrains() {
+	o.applyMu.Lock()
+	defer o.applyMu.Unlock()
+	if o.applyClosed {
+		return
+	}
+	for _, rt := range o.providers {
+		o.settleDrains(rt)
+	}
 }
 
 func (o *Observer) finishDrain(rt *providerRuntime, d *drainingOutbound) {
