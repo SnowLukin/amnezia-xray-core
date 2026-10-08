@@ -51,6 +51,20 @@ const (
 	defaultPenaltyMultiplier = 2
 	defaultMaxPenalty        = 2 * time.Hour
 	maxJitter                = 0.9
+
+	defaultProviderTimeout      = 10 * time.Second
+	defaultProviderMaxBytes     = 1 << 20
+	defaultRefreshInterval      = 2 * time.Hour
+	defaultRefreshJitter        = 0.2
+	defaultMinHealthy           = 2
+	defaultCostAboveAfter       = 15 * time.Minute
+	defaultMaxSetAge            = 6 * time.Hour
+	defaultNetworkSettle        = 30 * time.Second
+	defaultRefreshMinInterval   = 5 * time.Minute
+	defaultExhaustedMinInterval = 30 * time.Second
+	defaultRefreshesPerHour     = 6
+	defaultDrain                = 5 * time.Minute
+	defaultMaxOutbounds         = 64
 )
 
 var (
@@ -60,6 +74,7 @@ var (
 	defaultQuarantine   = backoff{initial: 2 * time.Minute, multiplier: 2, max: 30 * time.Minute, jitter: 0.3}
 	defaultConnRecheck  = backoff{initial: 2 * time.Second, multiplier: 2, max: 30 * time.Second, jitter: 0.2}
 	defaultExpectStatus = []int32{}
+	defaultRefreshRetry = backoff{initial: 30 * time.Second, multiplier: 2, max: 30 * time.Minute, jitter: 0.3}
 )
 
 type backoff struct {
@@ -151,6 +166,94 @@ type settings struct {
 	maxBytes     int
 	remember     bool
 	maxNetworks  int
+	providers    []*providerSettings
+}
+
+type providerSettings struct {
+	tag      string
+	url      string
+	headers  map[string]string
+	via      []string
+	timeout  time.Duration
+	maxBytes int64
+
+	// Zero durations and counts below mean the trigger or limit is off.
+	interval       time.Duration
+	jitter         float64
+	minHealthy     int
+	whenExhausted  bool
+	costAbove      bool
+	costThreshold  float64
+	costAboveAfter time.Duration
+	maxAge         time.Duration
+	onNetwork      RefreshOnNetwork
+	networkSettle  time.Duration
+
+	minInterval          time.Duration
+	exhaustedMinInterval time.Duration
+	maxPerHour           int
+	backoff              backoff
+
+	balancer     string
+	prefix       string
+	drain        time.Duration
+	maxOutbounds int
+}
+
+// optional maps a config value where zero means the default and a negative
+// value turns the feature off.
+func optional(v int64, def time.Duration) time.Duration {
+	if v < 0 {
+		return 0
+	}
+	return dur(v, def)
+}
+
+func optionalNum(v int32, def int) int {
+	if v < 0 {
+		return 0
+	}
+	return num(v, def)
+}
+
+func newProviderSettings(c *ProviderConfig) *providerSettings {
+	t := c.GetTriggers()
+	l := c.GetLimits()
+	a := c.GetApply()
+	p := &providerSettings{
+		tag:      c.GetTag(),
+		url:      c.GetUrl(),
+		headers:  c.GetHeaders(),
+		via:      c.GetVia(),
+		timeout:  dur(c.GetTimeout(), defaultProviderTimeout),
+		maxBytes: size(c.GetMaxBytes(), defaultProviderMaxBytes),
+
+		interval:      optional(t.GetInterval(), defaultRefreshInterval),
+		minHealthy:    optionalNum(t.GetMinHealthy(), defaultMinHealthy),
+		whenExhausted: !t.GetSkipWhenExhausted(),
+		maxAge:        optional(t.GetMaxAge(), defaultMaxSetAge),
+		onNetwork:     t.GetOnNetworkChange(),
+		networkSettle: dur(t.GetNetworkSettle(), defaultNetworkSettle),
+
+		minInterval:          optional(l.GetMinInterval(), defaultRefreshMinInterval),
+		exhaustedMinInterval: optional(l.GetExhaustedMinInterval(), defaultExhaustedMinInterval),
+		maxPerHour:           optionalNum(l.GetMaxPerHour(), defaultRefreshesPerHour),
+		backoff:              toBackoff(l.GetBackoff(), defaultRefreshRetry),
+
+		balancer:     a.GetBalancer(),
+		prefix:       a.GetTagPrefix(),
+		drain:        dur(a.GetDrain(), defaultDrain),
+		maxOutbounds: num(a.GetMaxOutbounds(), defaultMaxOutbounds),
+	}
+	if t.GetJitter() >= 0 {
+		p.jitter = jitter(t.GetJitter(), defaultRefreshJitter)
+	}
+	if ca := t.GetCostAbove(); ca != nil {
+		p.costAbove = true
+		p.costThreshold = float64(ca.GetCost())
+		p.costAboveAfter = dur(ca.GetAfter(), defaultCostAboveAfter)
+	}
+	return p
 }
 
 func dur(v int64, def time.Duration) time.Duration {
@@ -204,7 +307,7 @@ func toBackoff(b *Backoff, def backoff) backoff {
 }
 
 func newSettings(c *Config) *settings {
-	s := &settings{subjects: c.GetSubjectSelector()}
+	s := &settings{subjects: append([]string(nil), c.GetSubjectSelector()...)}
 	p := c.GetPassive()
 	s.passive = passiveSettings{
 		window:           dur(p.GetWindow(), defaultWindow),
@@ -259,6 +362,14 @@ func newSettings(c *Config) *settings {
 	s.maxBytes = int(size(c.GetEvents().GetMaxBytes(), defaultMaxEventBytes))
 	s.remember = !c.GetNetwork().GetNoMemory()
 	s.maxNetworks = num(c.GetNetwork().GetMaxNetworks(), defaultMaxNetworks)
+	for _, pc := range c.GetProviders() {
+		ps := newProviderSettings(pc)
+		s.providers = append(s.providers, ps)
+		// Outbounds a provider brings are observed like the configured ones.
+		if ps.prefix != "" && !matchesAny(ps.prefix, s.subjects) {
+			s.subjects = append(s.subjects, ps.prefix)
+		}
+	}
 	return s
 }
 

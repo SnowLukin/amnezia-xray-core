@@ -51,6 +51,16 @@ type Observer struct {
 	// The engine's network generation, readable without the lock.
 	generation atomic.Uint64
 
+	providers []*providerRuntime
+	// Ends provider requests still running when the observer closes.
+	fetchCtx  context.Context
+	stopFetch context.CancelFunc
+	// Serializes changes of provider outbounds in the outbound manager.
+	applyMu        sync.Mutex
+	applyClosed    bool
+	parseOutbounds func([]json.RawMessage) ([]*core.OutboundHandlerConfig, error)
+	newHandler     func(*core.OutboundHandlerConfig) (outbound.Handler, error)
+
 	clock func() time.Time
 	// Connection times count from here on the monotonic clock, so a jump of
 	// the wall clock does not time out every open dial at once.
@@ -60,21 +70,7 @@ type Observer struct {
 
 // New creates the observer.
 func New(ctx context.Context, config *Config) (*Observer, error) {
-	s := newSettings(config)
-	o := &Observer{
-		config:   config,
-		s:        s,
-		ctx:      ctx,
-		e:        newEngine(s, time.Now().UnixNano()),
-		kick:     make(chan struct{}, 1),
-		trackers: map[*connTracker]struct{}{},
-		watching: map[*connTracker]struct{}{},
-		clock:    time.Now,
-		done:     make(chan struct{}),
-	}
-	// A second back, so that zero stays free to mean "not yet".
-	o.base = o.clock().Add(-time.Second)
-	o.e.serverNameFor = o.serverName
+	o := newObserver(ctx, config)
 	err := core.RequireFeatures(ctx, func(dispatcher routing.Dispatcher, ohm outbound.Manager) error {
 		o.dispatcher = dispatcher
 		o.ohm = ohm
@@ -84,6 +80,36 @@ func New(ctx context.Context, config *Config) (*Observer, error) {
 		return nil, err
 	}
 	return o, nil
+}
+
+func newObserver(ctx context.Context, config *Config) *Observer {
+	s := newSettings(config)
+	o := &Observer{
+		config:         config,
+		s:              s,
+		ctx:            ctx,
+		e:              newEngine(s, time.Now().UnixNano()),
+		kick:           make(chan struct{}, 1),
+		trackers:       map[*connTracker]struct{}{},
+		watching:       map[*connTracker]struct{}{},
+		parseOutbounds: loadOutbounds,
+		clock:          time.Now,
+		done:           make(chan struct{}),
+	}
+	// A second back, so that zero stays free to mean "not yet".
+	o.base = o.clock().Add(-time.Second)
+	o.fetchCtx, o.stopFetch = context.WithCancel(ctx)
+	o.newHandler = o.createHandler
+	for i, ps := range s.providers {
+		o.providers = append(o.providers, &providerRuntime{
+			p:        o.e.providers[i],
+			cfg:      ps,
+			built:    map[string]*core.OutboundHandlerConfig{},
+			draining: map[outbound.Handler]*drainingOutbound{},
+		})
+	}
+	o.e.serverNameFor = o.serverName
+	return o
 }
 
 func (o *Observer) now() time.Time { return o.clock() }
@@ -110,6 +136,8 @@ func (o *Observer) Start() error {
 // Close implements common.Closable.
 func (o *Observer) Close() error {
 	o.once.Do(func() { close(o.done) })
+	o.stopFetch()
+	o.closeProviders()
 	return nil
 }
 
@@ -127,9 +155,16 @@ func (o *Observer) loop(done chan struct{}) {
 		o.mu.Lock()
 		now := o.now()
 		jobs, wake := o.e.tick(now)
+		refreshes, refreshWake := o.e.tickProviders(now)
 		o.mu.Unlock()
+		if !refreshWake.IsZero() && (wake.IsZero() || refreshWake.Before(wake)) {
+			wake = refreshWake
+		}
 		for _, j := range jobs {
 			go o.runProbe(j)
+		}
+		for _, r := range refreshes {
+			go o.runRefresh(r)
 		}
 		if !wake.IsZero() {
 			d := wake.Sub(now)

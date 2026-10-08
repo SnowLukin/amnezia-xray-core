@@ -41,6 +41,22 @@ type balancerStatusView struct {
 	Candidates    []string `json:"candidates"`
 }
 
+type providerStatusView struct {
+	Provider       string `json:"provider"`
+	Version        string `json:"version,omitempty"`
+	Members        int    `json:"members"`
+	Draining       int    `json:"draining"`
+	Fetching       bool   `json:"fetching"`
+	Refreshes      int64  `json:"refreshes"`
+	Failures       int    `json:"failures"`
+	LastError      string `json:"last_error,omitempty"`
+	SetAgeMs       int64  `json:"set_age_ms"`
+	NextTrigger    string `json:"next_trigger,omitempty"`
+	NextInMs       *int64 `json:"next_in_ms,omitempty"`
+	BackoffMs      int64  `json:"backoff_ms,omitempty"`
+	AttemptsInHour int    `json:"attempts_last_hour"`
+}
+
 type statusView struct {
 	Network   string `json:"network,omitempty"`
 	NetworkUp bool   `json:"network_up"`
@@ -52,6 +68,7 @@ type statusView struct {
 	Running      int                  `json:"probes_running"`
 	Paths        []pathStatusView     `json:"paths"`
 	Balancers    []balancerStatusView `json:"balancers"`
+	Providers    []providerStatusView `json:"providers,omitempty"`
 }
 
 func (e *engine) status(now time.Time) statusView {
@@ -127,6 +144,35 @@ func (e *engine) status(now time.Time) statusView {
 			}
 		}
 		v.Paths = append(v.Paths, pv)
+	}
+	for _, p := range e.providers {
+		pv := providerStatusView{
+			Provider:  p.cfg.tag,
+			Version:   p.version,
+			Members:   p.members,
+			Draining:  p.draining,
+			Fetching:  p.fetching,
+			Refreshes: p.refreshes,
+			Failures:  p.failures,
+			LastError: p.lastError,
+		}
+		if !p.setAt.IsZero() {
+			pv.SetAgeMs = now.Sub(p.setAt).Milliseconds()
+		}
+		if !p.nextAt.IsZero() {
+			in := p.nextAt.Sub(now).Milliseconds()
+			pv.NextInMs = &in
+			pv.NextTrigger = p.nextTrigger.String()
+		}
+		if p.failures > 0 && now.Before(p.backoffUntil) {
+			pv.BackoffMs = p.backoffUntil.Sub(now).Milliseconds()
+		}
+		for _, t := range p.attempts {
+			if now.Sub(t) < time.Hour {
+				pv.AttemptsInHour++
+			}
+		}
+		v.Providers = append(v.Providers, pv)
 	}
 	return v
 }

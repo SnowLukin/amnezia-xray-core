@@ -1,0 +1,615 @@
+package health
+
+import (
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"math"
+	"net/http"
+	"net/url"
+	"sort"
+	"strings"
+	"sync/atomic"
+	"time"
+
+	"github.com/xtls/xray-core/common"
+	"github.com/xtls/xray-core/common/net"
+	"github.com/xtls/xray-core/core"
+	"github.com/xtls/xray-core/features/outbound"
+	"github.com/xtls/xray-core/transport/internet/tagged"
+	"google.golang.org/protobuf/proto"
+)
+
+// providerRuntime holds the outbounds of one provider. The decision state is
+// in the engine; this part touches the outbound manager.
+type providerRuntime struct {
+	p   *provider
+	cfg *providerSettings
+
+	// Guarded by Observer.applyMu.
+	version string
+	// Config of every outbound this provider added, by tag, to tell an
+	// unchanged outbound from a changed one.
+	built    map[string]*core.OutboundHandlerConfig
+	draining map[outbound.Handler]*drainingOutbound
+}
+
+type drainingOutbound struct {
+	tag     string
+	handler outbound.Handler
+	// Still registered under its tag and only out of the balancers. A
+	// replaced outbound is already unregistered and only finishes its
+	// connections.
+	registered bool
+	timer      *time.Timer
+}
+
+// providerAnswer is a parsed provider response:
+//
+//	{"outbounds": [...], "costs": {"tag": 1}, "nextRefreshIn": "2h", "version": "..."}
+type providerAnswer struct {
+	outbounds     []json.RawMessage
+	costs         map[string]float64
+	nextRefreshIn time.Duration
+	version       string
+}
+
+func parseAnswer(body []byte) (*providerAnswer, error) {
+	var raw struct {
+		Outbounds     []json.RawMessage  `json:"outbounds"`
+		Costs         map[string]float64 `json:"costs"`
+		NextRefreshIn json.RawMessage    `json:"nextRefreshIn"`
+		Version       string             `json:"version"`
+		Hash          string             `json:"hash"`
+	}
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return nil, err
+	}
+	if len(raw.Outbounds) == 0 {
+		return nil, errors.New("no outbounds")
+	}
+	next, err := parseRefreshIn(raw.NextRefreshIn)
+	if err != nil {
+		return nil, err
+	}
+	a := &providerAnswer{outbounds: raw.Outbounds, costs: raw.Costs, nextRefreshIn: next, version: raw.Version}
+	if a.version == "" {
+		a.version = raw.Hash
+	}
+	if a.version == "" {
+		a.version = setHash(raw.Outbounds, raw.Costs)
+	}
+	return a, nil
+}
+
+// parseRefreshIn accepts a duration string such as "90m" or seconds.
+func parseRefreshIn(raw json.RawMessage) (time.Duration, error) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return 0, nil
+	}
+	var s string
+	if json.Unmarshal(raw, &s) == nil {
+		d, err := time.ParseDuration(s)
+		if err != nil {
+			return 0, fmt.Errorf("nextRefreshIn: %w", err)
+		}
+		return max(d, 0), nil
+	}
+	var secs float64
+	if err := json.Unmarshal(raw, &secs); err != nil {
+		return 0, errors.New("nextRefreshIn must be a duration or seconds")
+	}
+	return max(time.Duration(secs*float64(time.Second)), 0), nil
+}
+
+func setHash(outbounds []json.RawMessage, costs map[string]float64) string {
+	h := sha256.New()
+	var b bytes.Buffer
+	for _, o := range outbounds {
+		b.Reset()
+		if json.Compact(&b, o) != nil {
+			b.Write(o)
+		}
+		h.Write(b.Bytes())
+		h.Write([]byte{0})
+	}
+	c, _ := json.Marshal(costs)
+	h.Write(c)
+	return "sha256:" + hex.EncodeToString(h.Sum(nil))[:16]
+}
+
+// loadOutbounds builds outbound configs with the JSON config loader of the
+// core, the same code that reads the config file.
+func loadOutbounds(raw []json.RawMessage) ([]*core.OutboundHandlerConfig, error) {
+	doc, err := json.Marshal(struct {
+		Outbounds []json.RawMessage `json:"outbounds"`
+	}{raw})
+	if err != nil {
+		return nil, err
+	}
+	c, err := core.LoadConfig("json", bytes.NewReader(doc))
+	if err != nil {
+		return nil, err
+	}
+	return c.Outbound, nil
+}
+
+func (o *Observer) runtimeFor(p *provider) *providerRuntime {
+	for _, rt := range o.providers {
+		if rt.p == p {
+			return rt
+		}
+	}
+	return nil
+}
+
+func (o *Observer) emit(typ string, fields map[string]any) {
+	o.mu.Lock()
+	o.e.emit(o.now(), typ, fields)
+	o.mu.Unlock()
+}
+
+func (o *Observer) runRefresh(j *refreshJob) {
+	rt := o.runtimeFor(j.p)
+	var r refreshOutcome
+	if a, err := o.fetchSet(rt, j); err != nil {
+		r.err = err.Error()
+	} else if changed, err := o.applySet(rt, a, j); err != nil {
+		r.err = err.Error()
+	} else {
+		r.ok = true
+		r.changed = changed
+		r.nextRefreshIn = a.nextRefreshIn
+	}
+	o.mu.Lock()
+	o.e.onRefreshDone(j, r, o.now())
+	o.mu.Unlock()
+	o.wake()
+}
+
+// fetchSet requests the set through the via outbounds in turn until one
+// brings a well-formed answer. Every attempt is an event.
+func (o *Observer) fetchSet(rt *providerRuntime, j *refreshJob) (*providerAnswer, error) {
+	via := rt.cfg.via
+	if len(via) == 0 {
+		via = []string{""}
+	}
+	var lastErr error
+	for i, v := range via {
+		o.mu.Lock()
+		tag, skip := o.e.resolveVia(v, o.now())
+		o.mu.Unlock()
+		if skip == "" && tag != "" && o.ohm.GetHandler(tag) == nil {
+			skip = "no such outbound"
+		}
+		f := map[string]any{"provider": rt.cfg.tag, "trigger": j.trigger.String(), "retry": j.retry,
+			"attempt": i + 1, "via": v, "outbound": tag}
+		if skip != "" {
+			f["ok"] = false
+			f["error"] = skip
+			o.emit("provider_fetch", f)
+			lastErr = errors.New(skip)
+			continue
+		}
+		start := time.Now()
+		a, status, n, err := o.fetchOnce(rt.cfg, tag)
+		f["ok"] = err == nil
+		f["status"] = status
+		f["ms"] = time.Since(start).Milliseconds()
+		f["bytes"] = n
+		if err != nil {
+			f["error"] = err.Error()
+		}
+		o.emit("provider_fetch", f)
+		if err == nil {
+			return a, nil
+		}
+		lastErr = err
+	}
+	return nil, lastErr
+}
+
+func (o *Observer) fetchOnce(cfg *providerSettings, tag string) (*providerAnswer, int, int, error) {
+	// Counted like a probe, so the request is not taken for user traffic.
+	var wire atomic.Int64
+	ctx, cancel := context.WithTimeout(withProbe(o.fetchCtx, &wire), cfg.timeout)
+	defer cancel()
+	transport := &http.Transport{
+		DisableKeepAlives: true,
+		DialContext: func(_ context.Context, network, addr string) (net.Conn, error) {
+			dest, err := net.ParseDestination(network + ":" + addr)
+			if err != nil {
+				return nil, err
+			}
+			return tagged.Dialer(ctx, o.dispatcher, dest, tag)
+		},
+	}
+	defer transport.CloseIdleConnections()
+	client := &http.Client{
+		Transport: transport,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, cfg.url, nil)
+	if err != nil {
+		return nil, 0, 0, err
+	}
+	for k, v := range cfg.headers {
+		req.Header.Set(k, v)
+	}
+	if req.Header.Get("Accept") == "" {
+		req.Header.Set("Accept", "application/json")
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return nil, 0, 0, errors.New("timeout")
+		}
+		// Events go to analytics; the URL may name more than it should.
+		if ue, ok := err.(*url.Error); ok {
+			err = ue.Err
+		}
+		return nil, 0, 0, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, resp.StatusCode, 0, fmt.Errorf("status %d", resp.StatusCode)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, cfg.maxBytes+1))
+	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			err = errors.New("timeout")
+		}
+		return nil, resp.StatusCode, len(body), err
+	}
+	if int64(len(body)) > cfg.maxBytes {
+		return nil, resp.StatusCode, len(body), fmt.Errorf("answer larger than %d bytes", cfg.maxBytes)
+	}
+	a, err := parseAnswer(body)
+	if err != nil {
+		return nil, resp.StatusCode, len(body), fmt.Errorf("invalid answer: %w", err)
+	}
+	return a, resp.StatusCode, len(body), nil
+}
+
+type outboundChange struct {
+	tag    string
+	config *core.OutboundHandlerConfig
+	// The outbound registered under the tag now, nil for a new tag.
+	old      outbound.Handler
+	oldDrain *drainingOutbound
+	handler  outbound.Handler
+}
+
+// applySet replaces the outbounds of the provider with the answer. Nothing
+// changes unless every outbound builds; outbounds that stay as they were are
+// not touched, so their connections go on.
+func (o *Observer) applySet(rt *providerRuntime, a *providerAnswer, j *refreshJob) (bool, error) {
+	o.applyMu.Lock()
+	defer o.applyMu.Unlock()
+	fields := map[string]any{"provider": rt.cfg.tag, "trigger": j.trigger.String(), "version": a.version}
+	fail := func(err error) (bool, error) {
+		fields["ok"] = false
+		fields["error"] = err.Error()
+		o.emit("provider_apply", fields)
+		return false, err
+	}
+	if o.applyClosed {
+		return fail(errors.New("closed"))
+	}
+	if a.version == rt.version {
+		fields["ok"] = true
+		fields["changed"] = false
+		fields["unchanged"] = len(a.outbounds)
+		o.emit("provider_apply", fields)
+		return false, nil
+	}
+	changes, unchanged, err := o.buildSet(rt, a)
+	if err != nil {
+		return fail(err)
+	}
+
+	owned := map[string]outbound.Handler{}
+	for _, h := range o.ohm.ListHandlers(o.ctx) {
+		if t := h.Tag(); t != "" && strings.HasPrefix(t, rt.cfg.prefix) {
+			owned[t] = h
+		}
+	}
+	retiring := map[string]*drainingOutbound{}
+	for _, d := range rt.draining {
+		if d.registered {
+			retiring[d.tag] = d
+		}
+	}
+	inSet := map[string]bool{}
+	tags := make([]string, 0, len(changes)+len(unchanged))
+	var added, replaced []*outboundChange
+	for _, c := range changes {
+		inSet[c.tag] = true
+		tags = append(tags, c.tag)
+		c.old = owned[c.tag]
+		c.oldDrain = retiring[c.tag]
+		if c.old != nil {
+			replaced = append(replaced, c)
+		} else {
+			added = append(added, c)
+		}
+	}
+	var revive []string
+	for _, tag := range unchanged {
+		inSet[tag] = true
+		tags = append(tags, tag)
+		if retiring[tag] != nil {
+			revive = append(revive, tag)
+		}
+	}
+	var removed []string
+	for tag := range owned {
+		if !inSet[tag] && retiring[tag] == nil {
+			removed = append(removed, tag)
+		}
+	}
+	sort.Strings(removed)
+
+	var reset []string
+	for _, c := range replaced {
+		reset = append(reset, c.tag)
+	}
+	o.mu.Lock()
+	o.e.replacingTags(reset)
+	o.mu.Unlock()
+	if err := o.registerSet(added, replaced); err != nil {
+		o.mu.Lock()
+		clear(o.e.replacing)
+		o.mu.Unlock()
+		return fail(err)
+	}
+	for _, c := range changes {
+		rt.built[c.tag] = c.config
+	}
+	for _, c := range replaced {
+		if c.oldDrain != nil {
+			c.oldDrain.registered = false
+			revive = append(revive, c.tag)
+		} else {
+			o.startDrain(rt, c.tag, c.old, false)
+		}
+	}
+	for _, tag := range revive {
+		if d := retiring[tag]; d != nil && d.registered {
+			d.timer.Stop()
+			delete(rt.draining, d.handler)
+		}
+	}
+	for _, tag := range removed {
+		o.startDrain(rt, tag, owned[tag], true)
+	}
+	rt.version = a.version
+
+	costs := map[string]float64{}
+	for tag, c := range a.costs {
+		costs[rt.cfg.prefix+tag] = c
+	}
+	now := o.now()
+	o.mu.Lock()
+	exhausted := false
+	if s := o.e.selectors[rt.cfg.balancer]; s != nil {
+		exhausted = s.exhausted
+	}
+	addedTags := make([]string, len(added))
+	for i, c := range added {
+		addedTags[i] = c.tag
+	}
+	o.e.applyProviderSet(rt.p, providerChange{
+		tags: tags, costs: costs, added: addedTags, retire: removed, revive: revive, reset: reset,
+	}, now)
+	rt.p.version = a.version
+	rt.p.draining = len(rt.draining)
+	fields["ok"] = true
+	fields["changed"] = true
+	fields["added"] = len(added)
+	fields["replaced"] = len(replaced)
+	fields["removed"] = len(removed)
+	fields["unchanged"] = len(unchanged)
+	fields["exhausted"] = exhausted
+	o.e.emit(now, "provider_apply", fields)
+	o.mu.Unlock()
+	return true, nil
+}
+
+// buildSet validates the answer and creates handlers for outbounds that are
+// new or changed. It returns them and the tags of outbounds that stay as
+// they are. On error every created handler is closed.
+func (o *Observer) buildSet(rt *providerRuntime, a *providerAnswer) ([]*outboundChange, []string, error) {
+	if len(a.outbounds) > rt.cfg.maxOutbounds {
+		return nil, nil, fmt.Errorf("set of %d outbounds, at most %d allowed", len(a.outbounds), rt.cfg.maxOutbounds)
+	}
+	for tag, c := range a.costs {
+		if math.IsNaN(c) || math.IsInf(c, 0) || c <= 0 {
+			return nil, nil, fmt.Errorf("cost of %s must be a number above zero", tag)
+		}
+	}
+	tags := make([]string, len(a.outbounds))
+	seen := map[string]bool{}
+	for i, raw := range a.outbounds {
+		var head struct {
+			Tag string `json:"tag"`
+		}
+		if err := json.Unmarshal(raw, &head); err != nil || head.Tag == "" {
+			return nil, nil, fmt.Errorf("outbound %d has no tag", i+1)
+		}
+		if seen[head.Tag] {
+			return nil, nil, fmt.Errorf("duplicate tag %s", head.Tag)
+		}
+		seen[head.Tag] = true
+		tags[i] = rt.cfg.prefix + head.Tag
+	}
+	configs, err := o.parseOutbounds(a.outbounds)
+	if err != nil {
+		return nil, nil, fmt.Errorf("build: %w", err)
+	}
+	if len(configs) != len(tags) {
+		return nil, nil, fmt.Errorf("build: %d outbounds of %d", len(configs), len(tags))
+	}
+	var changes []*outboundChange
+	var unchanged []string
+	closeAll := func() {
+		for _, c := range changes {
+			common.Close(c.handler)
+		}
+	}
+	for i, cfg := range configs {
+		cfg.Tag = tags[i]
+		if h := o.ohm.GetHandler(cfg.Tag); h != nil && sameOutbound(h, rt.built[cfg.Tag], cfg) {
+			unchanged = append(unchanged, cfg.Tag)
+			continue
+		}
+		h, err := o.newHandler(cfg)
+		if err != nil {
+			closeAll()
+			return nil, nil, fmt.Errorf("build %s: %w", cfg.Tag, err)
+		}
+		changes = append(changes, &outboundChange{tag: cfg.Tag, config: cfg, handler: h})
+	}
+	return changes, unchanged, nil
+}
+
+func (o *Observer) createHandler(cfg *core.OutboundHandlerConfig) (outbound.Handler, error) {
+	inst := core.FromContext(o.ctx)
+	if inst == nil {
+		return nil, errors.New("no core instance")
+	}
+	raw, err := core.CreateObject(inst, cfg)
+	if err != nil {
+		return nil, err
+	}
+	h, ok := raw.(outbound.Handler)
+	if !ok {
+		common.Close(raw)
+		return nil, errors.New("not an outbound handler")
+	}
+	return h, nil
+}
+
+// registerSet puts new and changed outbounds into the outbound manager, or
+// puts everything back and closes the new handlers when one fails.
+func (o *Observer) registerSet(added, replaced []*outboundChange) error {
+	var undo []func()
+	rollback := func(err error) error {
+		for i := len(undo) - 1; i >= 0; i-- {
+			undo[i]()
+		}
+		for _, c := range added {
+			common.Close(c.handler)
+		}
+		for _, c := range replaced {
+			common.Close(c.handler)
+		}
+		return err
+	}
+	for _, c := range replaced {
+		if err := o.ohm.RemoveHandler(o.ctx, c.tag); err != nil {
+			return rollback(err)
+		}
+		undo = append(undo, func() { _ = o.ohm.AddHandler(o.ctx, c.old) })
+		if err := o.ohm.AddHandler(o.ctx, c.handler); err != nil {
+			return rollback(err)
+		}
+		undo = append(undo, func() { _ = o.ohm.RemoveHandler(o.ctx, c.tag) })
+	}
+	for _, c := range added {
+		if err := o.ohm.AddHandler(o.ctx, c.handler); err != nil {
+			return rollback(err)
+		}
+		undo = append(undo, func() { _ = o.ohm.RemoveHandler(o.ctx, c.tag) })
+	}
+	return nil
+}
+
+func sameOutbound(h outbound.Handler, built, next *core.OutboundHandlerConfig) bool {
+	proxy, sender := h.ProxySettings(), h.SenderSettings()
+	if built != nil {
+		proxy, sender = built.ProxySettings, built.SenderSettings
+	}
+	return sameMessage(proxy, next.ProxySettings) && sameMessage(sender, next.SenderSettings)
+}
+
+func sameMessage(a, b interface {
+	GetInstance() (proto.Message, error)
+}) bool {
+	ai, err := a.GetInstance()
+	if err != nil {
+		return false
+	}
+	bi, err := b.GetInstance()
+	if err != nil {
+		return false
+	}
+	return proto.Equal(ai, bi)
+}
+
+// startDrain closes the outbound after the drain time. A registered one is
+// taken out of the outbound manager first.
+func (o *Observer) startDrain(rt *providerRuntime, tag string, h outbound.Handler, registered bool) {
+	d := &drainingOutbound{tag: tag, handler: h, registered: registered}
+	rt.draining[h] = d
+	d.timer = time.AfterFunc(rt.cfg.drain, func() { o.finishDrain(rt, d) })
+}
+
+func (o *Observer) finishDrain(rt *providerRuntime, d *drainingOutbound) {
+	o.applyMu.Lock()
+	defer o.applyMu.Unlock()
+	if rt.draining[d.handler] != d || o.applyClosed {
+		return
+	}
+	delete(rt.draining, d.handler)
+	registered := d.registered && o.ohm.GetHandler(d.tag) == d.handler
+	if registered {
+		_ = o.ohm.RemoveHandler(o.ctx, d.tag)
+		delete(rt.built, d.tag)
+	}
+	o.mu.Lock()
+	if registered {
+		o.e.dropProviderOutbound(d.tag, o.now())
+	}
+	rt.p.draining = len(rt.draining)
+	o.e.emit(o.now(), "provider_drained", map[string]any{"provider": rt.cfg.tag, "outbound": d.tag, "replaced": !d.registered})
+	o.mu.Unlock()
+	common.Close(d.handler)
+}
+
+// closeProviders stops drains on shutdown. Registered outbounds are closed
+// by the outbound manager; replaced ones only this observer knows about.
+func (o *Observer) closeProviders() {
+	o.applyMu.Lock()
+	defer o.applyMu.Unlock()
+	o.applyClosed = true
+	for _, rt := range o.providers {
+		for _, d := range rt.draining {
+			d.timer.Stop()
+			if !d.registered {
+				common.Close(d.handler)
+			}
+		}
+		clear(rt.draining)
+	}
+}
+
+// RequestRefresh asks the provider with the tag, or every provider when the
+// tag is empty, to fetch its set as soon as its limits allow. It returns
+// false when there is no such provider.
+func (o *Observer) RequestRefresh(provider string) bool {
+	o.mu.Lock()
+	ok := o.e.requestRefresh(provider)
+	o.mu.Unlock()
+	if ok {
+		o.wake()
+	}
+	return ok
+}

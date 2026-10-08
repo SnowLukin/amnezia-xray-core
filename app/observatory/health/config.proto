@@ -19,6 +19,8 @@ message Config {
   ScheduleConfig schedule = 5;
   EventsConfig events = 6;
   NetworkConfig network = 7;
+  // Sources of fresh outbounds for balancers.
+  repeated ProviderConfig providers = 8;
 }
 
 // PassiveConfig decides when user traffic makes an outbound suspect.
@@ -197,4 +199,87 @@ message UpgradeConfig {
   bool skip_on_network_change = 8;
   // Check after a change to any network, not only to one not seen before.
   bool all_networks = 9;
+}
+
+// ProviderConfig fetches a set of outbounds over HTTP when one of its
+// triggers fires and puts it into a balancer without a restart. Durations
+// and counts left at zero take their defaults; a negative value disables
+// the trigger or the limit where noted.
+message ProviderConfig {
+  // Names the provider in events, status and refresh requests.
+  string tag = 1;
+  // The set is fetched with a GET of this URL.
+  string url = 2;
+  // Request headers. Credentials belong here, not in the URL.
+  map<string, string> headers = 3;
+  // Outbound or leastCost balancer tags to send the request through, tried
+  // in order until one answers. Empty routes the request like any other.
+  repeated string via = 4;
+  // Timeout of one request through one via.
+  int64 timeout = 5;
+  // Larger answers are rejected.
+  int64 max_bytes = 6;
+  ProviderTriggers triggers = 7;
+  ProviderLimits limits = 8;
+  ProviderApply apply = 9;
+}
+
+message ProviderTriggers {
+  // Refresh this long after the previous successful refresh. Negative
+  // disables.
+  int64 interval = 1;
+  // Random spread of interval and of nextRefreshIn, 0.2 means +-20%.
+  double jitter = 2;
+  // Refresh when the balancer has fewer usable candidates than this.
+  // Negative disables.
+  int32 min_healthy = 3;
+  // Do not refresh when the balancer has no usable candidate left.
+  bool skip_when_exhausted = 4;
+  // Refresh when the balancer keeps outbounds of at least this cost.
+  CostTrigger cost_above = 5;
+  // Refresh when the set is older than this. Negative disables.
+  int64 max_age = 6;
+  RefreshOnNetwork on_network_change = 7;
+  // How long after a network change the balancer is judged.
+  int64 network_settle = 8;
+}
+
+message CostTrigger {
+  float cost = 1;
+  // How long the balancer has to keep such outbounds.
+  int64 after = 2;
+}
+
+enum RefreshOnNetwork {
+  // Only in a network without a remembered working outbound, and only when
+  // the balancer did not settle on its cheapest candidate there.
+  REFRESH_UNKNOWN_NOT_CHEAPEST = 0;
+  REFRESH_UNKNOWN = 1;
+  REFRESH_ANY = 2;
+  REFRESH_NEVER = 3;
+}
+
+message ProviderLimits {
+  // Minimum time between the starts of two refreshes.
+  int64 min_interval = 1;
+  // The same for refreshes because the balancer is exhausted or the host
+  // asked for one.
+  int64 exhausted_min_interval = 2;
+  // Refreshes started within an hour. Negative removes the limit.
+  int32 max_per_hour = 3;
+  // Pause after failed refreshes.
+  Backoff backoff = 4;
+}
+
+message ProviderApply {
+  // Balancer whose candidates the set feeds. Its selector has to match
+  // tag_prefix.
+  string balancer = 1;
+  // Prefix added to every outbound tag of the set. The provider owns every
+  // outbound whose tag starts with it, including ones from the config.
+  string tag_prefix = 2;
+  // Outbounds that left the set keep serving their connections this long.
+  int64 drain = 3;
+  // Larger sets are rejected.
+  int32 max_outbounds = 4;
 }

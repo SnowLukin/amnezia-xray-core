@@ -2,6 +2,7 @@ package health
 
 import (
 	"math/rand"
+	"slices"
 	"sort"
 	"sync/atomic"
 	"time"
@@ -101,11 +102,20 @@ type engine struct {
 	lastSuccess         time.Time
 	pendingSuspicion    map[string]verdict
 
+	// Costs that providers sent for their outbounds, by balancer and outbound.
+	costs map[string]map[string]float64
+	// Outbounds that left a provider set: they keep their connections but
+	// are no longer candidates.
+	retiring map[string]bool
+	// Outbounds whose handler a provider is swapping right now.
+	replacing map[string]bool
+	providers []*provider
+
 	lastGC time.Time
 }
 
 func newEngine(s *settings, seed int64) *engine {
-	return &engine{
+	e := &engine{
 		s:                s,
 		rnd:              rand.New(rand.NewSource(seed)),
 		paths:            map[string]*path{},
@@ -116,7 +126,21 @@ func newEngine(s *settings, seed int64) *engine {
 		networks:         map[string]map[string]string{},
 		pendingSuspicion: map[string]verdict{},
 		serverNameFor:    func(tag string) string { return tag },
+		costs:            map[string]map[string]float64{},
+		retiring:         map[string]bool{},
+		replacing:        map[string]bool{},
 	}
+	for _, ps := range s.providers {
+		e.providers = append(e.providers, newProvider(ps))
+	}
+	return e
+}
+
+func (e *engine) cost(s *selector, tag string) float64 {
+	if c, ok := e.costs[s.tag][tag]; ok {
+		return c
+	}
+	return s.cfg.cost(tag)
 }
 
 func (e *engine) jitter(d time.Duration, j float64) time.Duration {
@@ -424,7 +448,7 @@ func (e *engine) ranked(s *selector, now time.Time, skip func(string) bool) []st
 		if p.status == statusUp {
 			known = 0
 		}
-		items = append(items, item{c, s.cfg.cost(c), known, i})
+		items = append(items, item{c, e.cost(s, c), known, i})
 	}
 	sort.SliceStable(items, func(i, j int) bool {
 		if items[i].cost != items[j].cost {
@@ -443,7 +467,19 @@ func (e *engine) ranked(s *selector, now time.Time, skip func(string) bool) []st
 }
 
 func (e *engine) updateCandidates(s *selector, candidates []string, now time.Time) {
-	s.candidates = append([]string(nil), candidates...)
+	for t := range e.replacing {
+		if s.offers(t) && !slices.Contains(candidates, t) {
+			// Taken in the moment the provider swaps the handler: the next
+			// connection brings the complete list.
+			return
+		}
+	}
+	s.candidates = make([]string, 0, len(candidates))
+	for _, c := range candidates {
+		if !e.retiring[c] {
+			s.candidates = append(s.candidates, c)
+		}
+	}
 	snap := append([]string(nil), candidates...)
 	s.snapshot.Store(&snap)
 	lostProbe := false
@@ -460,6 +496,8 @@ func (e *engine) updateCandidates(s *selector, candidates []string, now time.Tim
 		s.started = true
 		e.start(s, now)
 	case s.pinned != "":
+	case cur != "" && e.retiring[cur] && slices.Contains(candidates, cur):
+		e.leaveRetiring(s, now)
 	case cur != "" && !s.hasCandidate(cur):
 		e.failover(s, now)
 	case s.exhausted:
@@ -526,7 +564,7 @@ func (e *engine) switchTo(s *selector, tag string, reason string, now time.Time)
 	e.scheduleUpgrade(s, now, false)
 	e.emit(now, "switch", map[string]any{
 		"balancer": s.tag, "from": from, "to": tag, "reason": reason,
-		"held_ms": held.Milliseconds(), "cost": s.cfg.cost(tag),
+		"held_ms": held.Milliseconds(), "cost": e.cost(s, tag),
 	})
 }
 
@@ -569,6 +607,47 @@ func (e *engine) failover(s *selector, now time.Time) {
 	e.enqueue(cand, reasonFailover, s.tag, now)
 }
 
+// leaveRetiring moves the balancer off an outbound that left its provider
+// set. Unlike a failover the outbound still works, so the balancer stays on
+// it while there is nothing else to take.
+func (e *engine) leaveRetiring(s *selector, now time.Time) {
+	if s.pinned != "" || s.failoverProbing != "" {
+		return
+	}
+	if e.path(s.current()).status == statusDown {
+		e.failover(s, now)
+		return
+	}
+	if s.failoverTried == nil {
+		s.failoverTried = map[string]bool{}
+	}
+	s.failoverTried[s.current()] = true
+	next := e.ranked(s, now, func(t string) bool { return s.failoverTried[t] })
+	if len(next) == 0 {
+		// Staying; once the drain ends, a failover considers every candidate
+		// again, also the ones that failed here and rested since.
+		s.failoverTried = nil
+		return
+	}
+	cand := next[0]
+	s.failoverTried[cand] = true
+	if !s.cfg.switchAfterProbe {
+		e.switchTo(s, cand, "retired", now)
+		return
+	}
+	s.failoverProbing = cand
+	e.enqueue(cand, reasonFailover, s.tag, now)
+}
+
+// refreshCandidates applies a change of retiring outbounds to every balancer.
+func (e *engine) refreshCandidates(now time.Time) {
+	for _, s := range e.sortedSelectors() {
+		if snap := s.snapshot.Load(); snap != nil && s.started {
+			e.updateCandidates(s, *snap, now)
+		}
+	}
+}
+
 func (e *engine) scheduleUpgrade(s *selector, now time.Time, soon bool) {
 	s.upgradeAt = time.Time{}
 	cur := s.current()
@@ -588,9 +667,9 @@ func (e *engine) scheduleUpgrade(s *selector, now time.Time, soon bool) {
 }
 
 func (e *engine) hasCheaper(s *selector, cur string) bool {
-	c := s.cfg.cost(cur)
+	c := e.cost(s, cur)
 	for _, t := range s.candidates {
-		if s.cfg.cost(t) < c && !s.cfg.isLazy(t) {
+		if e.cost(s, t) < c && !s.cfg.isLazy(t) {
 			return true
 		}
 	}
@@ -599,9 +678,9 @@ func (e *engine) hasCheaper(s *selector, cur string) bool {
 
 func (e *engine) upgradeTargetFor(s *selector, now time.Time) string {
 	cur := s.current()
-	c := s.cfg.cost(cur)
+	c := e.cost(s, cur)
 	for _, t := range e.ranked(s, now, func(t string) bool { return t == cur || s.cfg.isLazy(t) }) {
-		if s.cfg.cost(t) < c {
+		if e.cost(s, t) < c {
 			return t
 		}
 	}
@@ -830,10 +909,10 @@ func (e *engine) maybeUpgrade(s *selector, now time.Time) time.Time {
 	if target == "" {
 		// Cheaper outbounds rest in quarantine; look again when the first rest ends.
 		var wake time.Time
-		cur := s.cfg.cost(s.current())
+		cur := e.cost(s, s.current())
 		for _, c := range s.candidates {
 			p := e.path(c)
-			if s.cfg.cost(c) < cur && !s.cfg.isLazy(c) && p.quarantined(now) {
+			if e.cost(s, c) < cur && !s.cfg.isLazy(c) && p.quarantined(now) {
 				if wake.IsZero() || p.quarantineUntil.Before(wake) {
 					wake = p.quarantineUntil
 				}
@@ -917,10 +996,16 @@ func (e *engine) onProbeResult(j *probeJob, r probeResult, now time.Time) {
 				continue
 			}
 			s.failoverProbing = ""
-			if r.ok && s.hasCandidate(j.tag) {
+			cur := s.current()
+			switch {
+			case r.ok && s.hasCandidate(j.tag) && e.retiring[cur]:
+				e.switchTo(s, j.tag, "retired", now)
+			case r.ok && s.hasCandidate(j.tag):
 				e.switchTo(s, j.tag, "failover", now)
-			} else if !s.exhausted && e.path(s.current()).status == statusDown {
+			case !s.exhausted && e.path(cur).status == statusDown:
 				e.failover(s, now)
+			case e.retiring[cur]:
+				e.leaveRetiring(s, now)
 			}
 		}
 	case reasonRecheck:
@@ -1162,6 +1247,7 @@ func (e *engine) onNetworkChange(id string, now time.Time) {
 	if id != "" {
 		_, known = e.networks[id]
 	}
+	e.providersOnNetworkChange(known, now)
 	e.networkID = id
 	e.networkDown = false
 	e.doubt = false
@@ -1283,7 +1369,14 @@ func (e *engine) release(selectorTag string, now time.Time) bool {
 	}
 	e.emit(now, "release", map[string]any{"balancer": selectorTag, "outbound": s.pinned})
 	s.pinned = ""
-	if cur := s.current(); cur != "" && e.path(cur).status == statusDown {
+	cur := s.current()
+	switch {
+	case cur == "":
+	case e.retiring[cur]:
+		// A provider took the pinned outbound out of its set meanwhile.
+		e.leaveRetiring(s, now)
+		return true
+	case e.path(cur).status == statusDown || !s.hasCandidate(cur):
 		e.failover(s, now)
 		return true
 	}
@@ -1291,8 +1384,8 @@ func (e *engine) release(selectorTag string, now time.Time) bool {
 	return true
 }
 
-// gc forgets balancers that stopped choosing and outbounds that no balancer
-// offers any more, so rotating tags do not grow the state.
+// gc forgets outbounds that no balancer offers any more, so rotating tags do
+// not grow the state.
 func (e *engine) gc(now time.Time) {
 	e.lastGC = now
 	offered := map[string]bool{}
