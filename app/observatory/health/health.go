@@ -67,7 +67,7 @@ type Observer struct {
 	parseOutbounds func(json.RawMessage) ([]*core.OutboundHandlerConfig, error)
 	newHandler     func(*core.OutboundHandlerConfig) (outbound.Handler, error)
 	parseRouting   func(json.RawMessage) (*router.Config, error)
-	replaceRules   func(*router.Config) error
+	replaceRules   func(*router.Config, bool) error
 
 	clock func() time.Time
 	// Connection times count from here on the monotonic clock, so a jump of
@@ -83,7 +83,11 @@ func New(ctx context.Context, config *Config) (*Observer, error) {
 		o.dispatcher = dispatcher
 		o.ohm = ohm
 		o.stats = sm
-		if rr, ok := r.(interface{ ReplaceRules(*router.Config) error }); ok {
+		// The signature has to follow app/router: a mismatch fails this check
+		// quietly and leaves provider routing unsupported.
+		if rr, ok := r.(interface {
+			ReplaceRules(*router.Config, bool) error
+		}); ok {
 			o.replaceRules = rr.ReplaceRules
 		}
 		return nil

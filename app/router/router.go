@@ -248,15 +248,17 @@ func (r *Router) pickRouteInternal(ctx routing.Context) (*Rule, routing.Context,
 	// this prevents cycle resolving dead loop
 	skipDNSResolve := ctx.GetSkipDNSResolve()
 
-	if r.domainStrategy == Config_IpOnDemand && !skipDNSResolve {
+	// Rules and the domain strategy change while routing. Every change builds
+	// a new slice or appends past the end of the current one, so a snapshot
+	// stays valid without the lock; one snapshot of both routes by rules and
+	// a strategy that were in force together.
+	r.mu.Lock()
+	rules, strategy := r.rules, r.domainStrategy
+	r.mu.Unlock()
+
+	if strategy == Config_IpOnDemand && !skipDNSResolve {
 		ctx = routing_dns.ContextWithDNSClient(ctx, r.dns)
 	}
-
-	// Rules change while routing. Every change builds a new slice or appends
-	// past the end of the current one, so a snapshot stays valid without the lock.
-	r.mu.Lock()
-	rules := r.rules
-	r.mu.Unlock()
 
 	for _, rule := range rules {
 		if rule.Apply(ctx) {
@@ -264,7 +266,7 @@ func (r *Router) pickRouteInternal(ctx routing.Context) (*Rule, routing.Context,
 		}
 	}
 
-	if r.domainStrategy != Config_IpIfNonMatch || len(ctx.GetTargetDomain()) == 0 || skipDNSResolve {
+	if strategy != Config_IpIfNonMatch || len(ctx.GetTargetDomain()) == 0 || skipDNSResolve {
 		return nil, ctx, common.ErrNoClue
 	}
 

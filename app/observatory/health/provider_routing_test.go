@@ -92,7 +92,7 @@ func TestApplyRoutingWithTheSet(t *testing.T) {
 			f.rt.cfg.routing = true
 			f.o.parseRouting = testRouting
 			var replaced *router.Config
-			f.o.replaceRules = func(rc *router.Config) error { replaced = rc; return nil }
+			f.o.replaceRules = func(rc *router.Config, _ bool) error { replaced = rc; return nil }
 			_, err := f.apply(t, routingAnswer(t, tc.routing))
 			if tc.applied {
 				if err != nil || replaced == nil || len(replaced.Rule) != 2 {
@@ -114,7 +114,7 @@ func TestRoutingNotAllowedAsksForARestart(t *testing.T) {
 	f := newApplyFixture(t, time.Minute)
 	f.o.parseRouting = testRouting
 	called := false
-	f.o.replaceRules = func(*router.Config) error { called = true; return nil }
+	f.o.replaceRules = func(*router.Config, bool) error { called = true; return nil }
 	if _, err := f.apply(t, routingAnswer(t, `{"rules": []}`)); err != nil {
 		t.Fatal(err)
 	}
@@ -132,7 +132,7 @@ func TestRoutingForgetsBalancersItNoLongerHas(t *testing.T) {
 		f := newApplyFixture(t, time.Minute)
 		f.rt.cfg.routing = true
 		f.o.parseRouting = testRouting
-		f.o.replaceRules = func(*router.Config) error {
+		f.o.replaceRules = func(*router.Config, bool) error {
 			if refused {
 				return errors.New("refused")
 			}

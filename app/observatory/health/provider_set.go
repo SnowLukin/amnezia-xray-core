@@ -609,7 +609,7 @@ func (o *Observer) applySet(rt *providerRuntime, a *providerAnswer, j *refreshJo
 	// Outside the observer lock: rebuilt leastCost balancers ask the observer
 	// for their selectors.
 	if routing != nil {
-		if err := o.replaceRules(routing); err != nil {
+		if err := o.replaceRules(routing, false); err != nil {
 			fields["routing_error"] = err.Error()
 		} else {
 			fields["rules"] = len(routing.Rule)
