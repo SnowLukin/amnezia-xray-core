@@ -3,12 +3,14 @@
 Run:      provider.py <port> <answer file> <log file>
 GET /set                     the answer file as JSON, read on every request
 GET /control?mode=<mode>     changes how /set answers:
-  ok          the answer file
-  garbage     a cut JSON document
-  status:N    HTTP status N with an empty body
-  hang        never answers
+  ok            the answer file
+  garbage       a cut JSON document
+  status:N[:R]  HTTP status N with an empty body; with R, Retry-After: R
+  error:N:code  HTTP status N with an error body of the protocol
+  hang          never answers
 Every /set request is logged as "time authorization path" to the log file.
 """
+import json
 import sys
 import threading
 import time
@@ -27,8 +29,10 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args):
         pass
 
-    def reply(self, code, body=b""):
+    def reply(self, code, body=b"", headers=None):
         self.send_response(code)
+        for k, v in (headers or {}).items():
+            self.send_header(k, v)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
@@ -48,7 +52,12 @@ class Handler(BaseHTTPRequestHandler):
         if mode == "hang":
             time.sleep(600)
         elif mode.startswith("status:"):
-            self.reply(int(mode.split(":")[1]))
+            parts = mode.split(":")
+            self.reply(int(parts[1]), headers={"Retry-After": parts[2]} if len(parts) > 2 else None)
+        elif mode.startswith("error:"):
+            _, status, code = mode.split(":")
+            body = json.dumps({"protocol": 1, "error": code, "message": "bench"}).encode()
+            self.reply(int(status), body)
         elif mode == "garbage":
             self.reply(200, b'{"outbounds": [{"tag": ')
         else:

@@ -1673,6 +1673,58 @@ def provider_strict_answer(stand, xray, work, name):
 
 
 @scenario()
+def provider_retry_after(stand, xray, work, name):
+    """A busy provider answers 429 with Retry-After: the host request is asked
+    again after that pause, spread upward, without a growing backoff and
+    without the second via. An error body of the protocol ends the attempts too."""
+    stand.answer(FRESH)
+    # exhaustedMinInterval would otherwise hold the retry of the host request
+    # for 30 s, longer than Retry-After. Three busy requests fit before the
+    # provider answers again: the third comes 12-15.6 s after the first.
+    prov = bench.provider_config(["direct", "net"], limits={"exhaustedMinInterval": "1s"})
+    cfg = bench.client_config(BANNED[:1], {"a": 1, "p-": 1}, providers=[prov])
+    m = Marks()
+
+    def busy():
+        bench.provider_mode("status:429:6")
+        refresh(c)
+
+    def failing():
+        bench.provider_mode("error:500:internal")
+        refresh(c)
+
+    with bench.Client(xray, cfg, work, name) as c:
+        tr = bench.Traffic(rate=1, big=0)
+        run_timeline(tr, [(2, m.at("busy", busy)), (19.5, m.at("ok", lambda: bench.provider_mode("ok"))),
+                          (30, m.at("failing", failing))], 34)
+    reqs = [t for t, _, _ in stand.provider_requests(m["busy"])]
+    busy_reqs = [t for t in reqs if t < m["ok"]]
+    g = gaps(busy_reqs)[:2]
+    fetches = [e["fields"] for e in bench.events_of(c.events, "provider_fetch", m["busy"])]
+    busy_fetches = [f for f in fetches if f.get("status") == 429]
+    skips = [e for e in bench.events_of(c.events, "provider_skip", m["busy"]) if e["fields"]["reason"] == "retry_after"]
+    applied = [e["fields"] for e in bench.events_of(c.events, "provider_apply", m["ok"]) if e["fields"].get("changed")]
+    failed = [f for f in fetches if f.get("code")]
+    counted = sum(r.get("provider_retry_after", 0) for r in c.reports)
+    return [
+        check("pauses after 429 with Retry-After 6, s", g,
+              len(g) == 2 and all(5.9 <= x <= 8.1 for x in g), "6 .. 7.8 twice, not growing"),
+        check("attempts per busy refresh", [f.get("via") for f in busy_fetches],
+              len(busy_fetches) >= 3 and len(busy_fetches) == len(busy_reqs)
+              and all(f.get("via") == "direct" and f.get("retry_after_ms") == 6000 for f in busy_fetches),
+              "direct only, retry_after_ms 6000"),
+        check("failures counted while busy", [f.get("retry") for f in busy_fetches],
+              all(f.get("retry") == 0 for f in busy_fetches), "retry 0"),
+        check("retry_after skips", len(skips), len(skips) >= 1, ">= 1"),
+        check("set applied once the provider answers", applied and applied[0].get("added"),
+              bool(applied) and applied[0].get("added") == len(FRESH), f"== {len(FRESH)}"),
+        check("error body ends the attempts", [(f.get("via"), f.get("code")) for f in failed],
+              [(f.get("via"), f.get("code")) for f in failed] == [("direct", "internal")], "[direct internal]"),
+        check("report provider_retry_after", counted, counted >= 1, ">= 1"),
+    ]
+
+
+@scenario()
 def provider_refresh_keeps_download(stand, xray, work, name):
     """Refreshes while the chosen outbound works: a long download on it goes on,
     also after the outbound leaves the set, until its drain ends."""
