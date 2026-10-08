@@ -210,6 +210,21 @@ func TestExpiredOutboundGetsNoNewConnections(t *testing.T) {
 	}
 }
 
+// The turn of the loop in which a lease ends starts the probe of the
+// outbound to move to, not a later turn whatever wakes it.
+func TestLeaseEndStartsTheProbeInTheSameTurn(t *testing.T) {
+	te := leaseEngine(t, nil, &SelectorConfig{Costs: costs("p-x1", 1, "p-x2", 2)}, "p-x1", "p-x2")
+	te.lease(t0, map[string]time.Duration{"p-x1": time.Minute, "p-x2": time.Hour}, "p-x1", "p-x2")
+	te.traffic(at(50 * time.Second))
+	if jobs, _, wake := te.step(at(50 * time.Second)); len(jobs) != 0 || wake != at(time.Minute) {
+		t.Fatalf("probes %+v, wake %v; want the end of the lease", jobs, wake.Sub(t0))
+	}
+	jobs, _, _ := te.step(at(time.Minute))
+	if len(jobs) != 1 || jobs[0].tag != "p-x2" || jobs[0].reason != reasonFailover {
+		t.Fatalf("probes in the turn the lease ended %+v, want the one of p-x2", jobs)
+	}
+}
+
 func TestExpiryEventTellsWhyThereWasNoRenewal(t *testing.T) {
 	for _, tc := range []struct {
 		renewAt float64

@@ -205,17 +205,13 @@ func (o *Observer) loop(done chan struct{}) {
 	for {
 		o.mu.Lock()
 		now := o.now()
-		jobs, wake := o.e.tick(now)
-		refreshes, refreshWake := o.e.tickProviders(now)
+		jobs, refreshes, wake := o.e.step(now)
 		downs := o.e.takeDowns()
 		o.mu.Unlock()
 		// Ending a connection reports back to the observer, so it happens
 		// outside the lock.
 		for _, d := range downs {
 			o.closePending(d)
-		}
-		if !refreshWake.IsZero() && (wake.IsZero() || refreshWake.Before(wake)) {
-			wake = refreshWake
 		}
 		for _, j := range jobs {
 			go o.runProbe(j)

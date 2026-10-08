@@ -1137,6 +1137,32 @@ func (e *engine) tick(now time.Time) ([]*probeJob, time.Time) {
 	return start, wake
 }
 
+// step does the timed work of one turn of the observer loop: the probes and
+// refreshes to start now and when to come back (zero means only on new
+// events). Providers go after the probes, since their triggers judge what
+// the probes decided. A lease that ends there moves balancers off its
+// outbound, and the probes that queues start in this turn as well rather
+// than at whatever wakes the loop next.
+func (e *engine) step(now time.Time) ([]*probeJob, []*refreshJob, time.Time) {
+	jobs, wake := e.tick(now)
+	queued := e.nextID
+	refreshes, refreshWake := e.tickProviders(now)
+	if e.nextID != queued {
+		more, moreWake := e.tick(now)
+		jobs = append(jobs, more...)
+		wake = soonestOf(wake, moreWake)
+	}
+	return jobs, refreshes, soonestOf(wake, refreshWake)
+}
+
+// soonestOf returns the earlier of two wakes; zero is none.
+func soonestOf(a, b time.Time) time.Time {
+	if a.IsZero() || (!b.IsZero() && b.Before(a)) {
+		return b
+	}
+	return a
+}
+
 // putOff tells whether a probe waits for the first user connection after a
 // network change, or for memory: it only improves the choice, and nobody
 // needs its answer before that.
