@@ -94,6 +94,11 @@ type AmneziaParameters struct {
 	I3   awgParam `json:"i3"`
 	I4   awgParam `json:"i4"`
 	I5   awgParam `json:"i5"`
+
+	// AmneziaWG 3.1 flags, named after RandomTrailers and DisableCookies of
+	// awg configs. RandomTrailers must match the server.
+	RandomTrailers bool `json:"randomTrailers"`
+	DisableCookies bool `json:"disableCookies"`
 }
 
 func (c *AmneziaParameters) Build() *wireguard.AmneziaParameters {
@@ -118,6 +123,9 @@ func (c *AmneziaParameters) Build() *wireguard.AmneziaParameters {
 		I3:   string(c.I3),
 		I4:   string(c.I4),
 		I5:   string(c.I5),
+
+		RandomTrailers: c.RandomTrailers,
+		DisableCookies: c.DisableCookies,
 	}
 }
 

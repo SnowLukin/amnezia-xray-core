@@ -38,6 +38,23 @@ func TestWriteAmneziaParams(t *testing.T) {
 				"h1=39131278\nh2=832138185\nh3=1436957857\nh4=1635877746\n" +
 				"i1=<b 0xc0>\ni2=<r 8>\ni3=<rd 4>\ni4=<rc 4>\ni5=<t>\n",
 		},
+		{
+			name: "3.1 flags follow the string parameters",
+			params: &AmneziaParameters{
+				Jc: "3", I5: "<t>",
+				RandomTrailers: true, DisableCookies: true,
+			},
+			expect: "jc=3\ni5=<t>\nrandom_trailers=true\ndisable_cookies=true\n",
+		},
+		{
+			// A server without random trailers drops every handshake that
+			// carries them, so unset flags must not reach the device.
+			name: "unset 3.1 flags emit nothing",
+			params: &AmneziaParameters{
+				Jc: "3",
+			},
+			expect: "jc=3\n",
+		},
 	}
 
 	for _, testCase := range testCases {

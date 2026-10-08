@@ -89,6 +89,35 @@ func TestWireGuardAmneziaParameters(t *testing.T) {
 			},
 		},
 		{
+			// AmneziaWG 3.1 flags are JSON booleans next to the parameters.
+			Input: `{
+				"secretKey": "` + testSecretKey + `",
+				"address": ["10.0.0.2/32"],
+				"peers": [{
+					"publicKey": "` + testPublicKey + `",
+					"endpoint": "1.2.3.4:27789"
+				}],
+				"awg": {
+					"jc": 3,
+					"randomTrailers": true,
+					"disableCookies": true
+				}
+			}`,
+			Parser: loadJSON(creator),
+			Output: &wireguard.DeviceConfig{
+				SecretKey: testSecretKey,
+				Endpoint:  []string{"10.0.0.2/32"},
+				Peers:     peers,
+				Mtu:       1420,
+				IsClient:  true,
+				Parameters: &wireguard.AmneziaParameters{
+					Jc:             "3",
+					RandomTrailers: true,
+					DisableCookies: true,
+				},
+			},
+		},
+		{
 			// Without the awg block the device must come up as plain
 			// WireGuard instead of failing.
 			Input: `{

@@ -34,6 +34,13 @@ message AmneziaParameters {
   string i3 = 14;
   string i4 = 15;
   string i5 = 16;
+  // AmneziaWG 3.1 appends random bytes to handshake messages and pads
+  // transport packets. Both sides must agree: a peer without it drops every
+  // handshake.
+  bool random_trailers = 17;
+  // Stops answering handshakes under load with cookies; it matters to the side
+  // that receives handshake initiations.
+  bool disable_cookies = 18;
 }
 
 message DeviceConfig {
