@@ -228,6 +228,54 @@ func TestSplicedProgressCountsFromTheSplice(t *testing.T) {
 	}
 }
 
+func TestSplicedFreezeIsNoticedByKernelProgress(t *testing.T) {
+	c, srv := loopbackPair(t, 5*1024)
+	if _, ok := kernelReceived(rawConnOf(c)); !ok {
+		t.Skip("the kernel does not report received bytes here")
+	}
+	o, clk := newTestObserver()
+	tr, r, w := openTracker(o, "x.test", false)
+	tr.Dialed(c, nil, nil, nil)
+	w.Add(400)
+	r.Spliced()
+	if _, err := srv.Write(make([]byte, 12*1024)); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if watching, _ := tr.sweep(o.nowNano()); !watching {
+		t.Fatalf("a young spliced connection below successBytes is not watched")
+	}
+	clk.advance(9 * time.Second)
+	tr.sweep(o.nowNano())
+	if failures(o, failPartialStall) != 1 {
+		t.Fatalf("a spliced connection frozen after 12 KB was not noticed")
+	}
+}
+
+func TestSlowSplicedDownloadIsNotAStall(t *testing.T) {
+	c, srv := loopbackPair(t, 5*1024)
+	if _, ok := kernelReceived(rawConnOf(c)); !ok {
+		t.Skip("the kernel does not report received bytes here")
+	}
+	o, clk := newTestObserver()
+	tr, r, w := openTracker(o, "x.test", false)
+	tr.Dialed(c, nil, nil, nil)
+	w.Add(400)
+	r.Spliced()
+	for i := 0; i < 4; i++ {
+		if _, err := srv.Write(make([]byte, 4*1024)); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(50 * time.Millisecond)
+		tr.sweep(o.nowNano())
+		clk.advance(5 * time.Second)
+	}
+	tr.sweep(o.nowNano())
+	if n := failures(o, failPartialStall) + failures(o, failStall); n != 0 {
+		t.Fatalf("a slow spliced download counted as %d stalls", n)
+	}
+}
+
 func TestDialsOfThePreviousNetworkDoNotJudgeTheNewOne(t *testing.T) {
 	o, clk := newTestObserver()
 	o.e.updateCandidates(o.e.addSelector("auto", newSelectorSettings(&SelectorConfig{})), []string{"a1", "b1"}, clk.now())
