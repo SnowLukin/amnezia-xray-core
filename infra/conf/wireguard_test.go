@@ -1,6 +1,7 @@
 package conf_test
 
 import (
+	"encoding/json"
 	"testing"
 
 	. "github.com/xtls/xray-core/infra/conf"
@@ -89,7 +90,7 @@ func TestWireGuardAmneziaParameters(t *testing.T) {
 			},
 		},
 		{
-			// AmneziaWG 3.1 flags are JSON booleans next to the parameters.
+			// AmneziaWG 3.1 flags are booleans next to the parameters.
 			Input: `{
 				"secretKey": "` + testSecretKey + `",
 				"address": ["10.0.0.2/32"],
@@ -118,6 +119,33 @@ func TestWireGuardAmneziaParameters(t *testing.T) {
 			},
 		},
 		{
+			// Flags may also come as 0 and 1, the way awg configs and UAPI
+			// write them, as numbers or strings.
+			Input: `{
+				"secretKey": "` + testSecretKey + `",
+				"address": ["10.0.0.2/32"],
+				"peers": [{
+					"publicKey": "` + testPublicKey + `",
+					"endpoint": "1.2.3.4:27789"
+				}],
+				"awg": {
+					"randomTrailers": "1",
+					"disableCookies": 0
+				}
+			}`,
+			Parser: loadJSON(creator),
+			Output: &wireguard.DeviceConfig{
+				SecretKey: testSecretKey,
+				Endpoint:  []string{"10.0.0.2/32"},
+				Peers:     peers,
+				Mtu:       1420,
+				IsClient:  true,
+				Parameters: &wireguard.AmneziaParameters{
+					RandomTrailers: true,
+				},
+			},
+		},
+		{
 			// Without the awg block the device must come up as plain
 			// WireGuard instead of failing.
 			Input: `{
@@ -139,4 +167,13 @@ func TestWireGuardAmneziaParameters(t *testing.T) {
 			},
 		},
 	})
+}
+
+func TestAmneziaFlagRejectsOtherValues(t *testing.T) {
+	for _, value := range []string{`2`, `"yes"`, `[]`} {
+		var p AmneziaParameters
+		if err := json.Unmarshal([]byte(`{"randomTrailers": `+value+`}`), &p); err == nil {
+			t.Errorf("accepted %s as an AmneziaWG flag", value)
+		}
+	}
 }
