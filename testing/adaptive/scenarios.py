@@ -1638,6 +1638,41 @@ def provider_invalid_answer(stand, xray, work, name):
 
 
 @scenario()
+def provider_strict_answer(stand, xray, work, name):
+    """An answer with a key protocol 1 does not know is refused whole: the set
+    stays, and the second via is not asked, since it leads to the same backend."""
+    stand.answer(FRESH, version="v1")
+    prov = bench.provider_config(["direct", "net"], limits={"exhaustedMinInterval": "1s"})
+    cfg = bench.client_config(BANNED[:1], {"a": 1, "p-": 1}, providers=[prov])
+    m = Marks()
+
+    def strict():
+        answer_body(stand, {"protocol": 1, "version": "v2", "dns": {"servers": ["1.1.1.1"]},
+                            "outbounds": [bench.member(t, k, i, bench.PIN) for t, k, i in FRESH[:1]]})
+        refresh(c)
+
+    with bench.Client(xray, cfg, work, name) as c:
+        tr = bench.Traffic(rate=1, big=0)
+        run_timeline(tr, [(2, m.at("good", lambda: refresh(c))), (6, m.at("strict", strict))], 12)
+        st = c.status()["providers"][0]
+    applies = [e["fields"] for e in bench.events_of(c.events, "provider_apply", m["strict"])]
+    fetches = [e["fields"] for e in bench.events_of(c.events, "provider_fetch", m["strict"])]
+    reqs = stand.provider_requests(m["strict"])
+    refused = applies[0] if applies else {}
+    failed = sum(1 for r in tr.records if not r[1])
+    return [
+        check("answer with dns refused", refused.get("error"),
+              refused.get("ok") is False and 'unknown key "dns"' in (refused.get("error") or ""), 'unknown key "dns"'),
+        check("provider requests for it", len(reqs), len(reqs) == 1, "== 1"),
+        check("attempts (via, ok)", [(f.get("via"), f.get("ok")) for f in fetches],
+              [(f.get("via"), f.get("ok")) for f in fetches] == [("direct", True)], "[direct ok]"),
+        check("set kept (version, members)", (st.get("version"), st.get("members")),
+              st.get("version") == "v1" and st.get("members") == len(FRESH), f"(v1, {len(FRESH)})"),
+        check("user requests failed", failed, failed == 0, "== 0"),
+    ]
+
+
+@scenario()
 def provider_refresh_keeps_download(stand, xray, work, name):
     """Refreshes while the chosen outbound works: a long download on it goes on,
     also after the outbound leaves the set, until its drain ends."""
