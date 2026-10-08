@@ -8,6 +8,7 @@ import (
 
 	"github.com/xtls/xray-core/app/observatory/health"
 	. "github.com/xtls/xray-core/infra/conf"
+	"google.golang.org/protobuf/proto"
 )
 
 func TestHealthObservatoryConfig(t *testing.T) {
@@ -100,6 +101,18 @@ func buildHealth(t *testing.T, raw string) (*health.Config, error) {
 		return nil, err
 	}
 	return m.(*health.Config), nil
+}
+
+func TestHealthHostProbesConfig(t *testing.T) {
+	cfg, err := buildHealth(t, `{"subjectSelector": ["a"], "schedule": {"hostProbes": {"perMinute": 2, "reuse": "30s",
+		"maxOutbounds": 4, "timeout": "1m"}}}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := &health.HostProbesConfig{PerMinute: 2, Reuse: int64(30 * time.Second), MaxOutbounds: 4, Timeout: int64(time.Minute)}
+	if got := cfg.GetSchedule().GetHostProbes(); !proto.Equal(got, want) {
+		t.Fatalf("hostProbes %v, want %v", got, want)
+	}
 }
 
 func TestHealthReportInterval(t *testing.T) {

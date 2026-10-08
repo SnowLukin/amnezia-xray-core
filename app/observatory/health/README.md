@@ -108,7 +108,8 @@ decision made while the network check was failing ends nothing.
       "pauseWhenIdle": "2m",
       "quarantine": { "initial": "2m", "multiplier": 2, "max": "30m", "jitter": 0.3 },
       "concurrent": 1, "spacing": "2s", "spacingJitter": 0.3,
-      "perServerNamePerMinute": 3, "perMinute": 12, "suspectCooldown": "1m"
+      "perServerNamePerMinute": 3, "perMinute": 12, "suspectCooldown": "1m",
+      "hostProbes": { "perMinute": 4, "reuse": "15s", "maxOutbounds": 8, "timeout": "2m" }
     },
     "events": { "maxEvents": 1000, "maxBytes": 65536 },
     "network": { "remember": true, "maxNetworks": 16 },
@@ -145,7 +146,9 @@ matching probe profile an outbound is probed with a GET of
 Values that size what the observatory keeps have ceilings, and a larger
 value is taken as the ceiling: probe and network check timeouts 30 s,
 `concurrent` 8, `maxEvents` 4096, events `maxBytes` 256 KiB, `maxNetworks`
-64; for a provider `maxBytes` 1 MiB, `maxOutbounds` 128 and `drain` 30 min.
+64; for a provider `maxBytes` 1 MiB, `maxOutbounds` 128 and `drain` 30 min;
+for `hostProbes` `perMinute` half of `schedule.perMinute`, `reuse` 5 min,
+`maxOutbounds` 16 and `timeout` 10 min.
 
 - `costs` uses the format of `leastLoad`: a substring or a `regexp` of the
   tag and a value above zero. Lower is preferred. Equal costs prefer
@@ -175,6 +178,7 @@ value is taken as the ceiling: probe and network check timeouts 30 s,
   to the default outbound.
 - `report.interval`: a window with a decision is reported once it lasts
   this long, see Report. `"0s"` leaves only the report at the stop.
+- `hostProbes` limits the probes the host asks for, see Probes on request.
 
 ## Providers
 
@@ -304,6 +308,60 @@ a loop. A refresh for an exhausted balancer that brings the same set counts
 as a failure for the backoff. A failed host request and a failed network
 change refresh are retried after the backoff.
 
+## Probes on request
+
+The host may know more than the observatory, for example that the tunnel
+carried nothing after the device woke up, or that the user asked to
+reconnect. `RequestProbe` asks for probes of a `leastCost` balancer now and
+returns a ticket with the id of the request at once; the results appear in
+`Status` under `probe_requests` and in `ProbeResult`. Ids start from 1 in
+every run, so the host matches the `run` of the ticket with the one in
+Status. The limits below are those of `schedule.hostProbes`.
+
+- Without outbounds a request covers the outbound the balancer uses, then
+  its candidates that are not `lazy`: the usable ones from the cheapest, then
+  the ones in quarantine. Listed outbounds have to be candidates of the
+  balancer and are taken as they are, lazy ones too. A request covers at most
+  `maxOutbounds`. Before the first connection through the balancer it has no
+  candidates, and a request fails.
+- An outbound in quarantine is answered `down` without a probe: the request
+  does not shorten its rest. An outbound that works and proved it within
+  `reuse`, by a probe or by a connection that received `successBytes`, is
+  answered `ok` without a probe. A probe of the observer that runs or is due
+  answers the request first, and the probe of the host is then dropped.
+- A balancer has one open request at a time: a request for a balancer with
+  one open joins it and gets the same id.
+- Probes of the host come last. They wait while a probe of the observer waits
+  for the budget, start at most `perMinute` times a minute and take at most
+  half of the probe starts of a server name within a minute, so the
+  observer always has budget left for finding failures. Otherwise the usual
+  limits hold. They run without user traffic, but not without a network.
+- The result is evidence like that of any other probe. A failed probe rules
+  the outbound out and the balancer moves away from it (a pinned one reports
+  `pinned_down` and stays); it ends a return under way to that outbound. A
+  passed probe clears a suspicion as a false alarm and brings an exhausted
+  balancer back with `recovered`. A passed probe of a cheaper outbound does
+  not move the balancer and does not count toward a return.
+- A request ends when every outbound has an answer, after `timeout` (probes
+  that have not started are dropped, running ones finish), after a network
+  change, or when its balancer is gone.
+
+Results of an outbound:
+
+| `result` | `source` | Meaning |
+| --- | --- | --- |
+| `pending` | | Waits for a probe. |
+| `ok`, `failed` | `probe` | A probe answered, with `rtt_ms` and `error`; `probe_reason` names the probe of the observer that answered instead of one of the host. |
+| `ok` | `recent` | It proved to work `age_ms` ago. |
+| `down` | `quarantine` | It rests in quarantine for `quarantine_ms` more. |
+| `skipped` | `memory` | Memory is low, see Memory. |
+| `expired` | `timeout`, `network_change` | The request ended first. |
+| `gone` | | The balancer no longer offers the outbound, or the balancer is gone. |
+
+A host that calls in a loop costs at most `perMinute` probes a minute and a
+few kilobytes: the observer keeps the open requests and the latest four
+closed ones.
+
 ## Memory
 
 What the observatory keeps does not grow with the length of a session or the
@@ -331,6 +389,10 @@ its end with `SetMemoryLow(false)`. While memory is low:
 - Finding failures goes on as usual: confirming probes, failovers, rechecks
   of an exhausted balancer and the first network check. No user connection
   is ended for memory.
+- Probes the host asks for go on only for outbounds a balancer uses. The
+  others are answered `skipped` unless a probe of the observer answers them,
+  their probes that have not started are dropped, and one closed request is
+  kept.
 
 Once memory is back, what waited goes on from where it stopped. A host that
 never reports pressure, such as a desktop, gets the usual behavior.
@@ -350,6 +412,8 @@ when the core runs through a library that keeps the instance to itself:
 | `Pin(balancer, outbound, run)` / `pin` | Keep the balancer on an outbound. |
 | `Release(balancer, run)` / `release` | Let the balancer choose again. |
 | `RequestRefresh(provider)` / `refresh [provider]` | Fetch the set of a provider, or of every provider when empty, as soon as the limits allow. False when there is no such provider. |
+| `RequestProbe(request)` / `probe <balancer> [outbound...]` | Probe outbounds of a balancer now, see Probes on request. Returns the ticket at once or an error: no such balancer, no candidates yet, not a candidate, too many outbounds. The command waits for the result up to its timeout (`-t`) and prints it; over gRPC `wait_ms` does the same. |
+| `ProbeResult(id)` | One request as in Status and whether it ended; nil when it is no longer kept. |
 | `Status()` / `status` | Current state as JSON, see below. |
 | `DrainEvents()` / `events` | Events since the previous drain as a JSON array, and how many were dropped because the buffer was full. |
 | `TakeReport(final)` / `report take`, `report final` | The report when one is due, and a new window; nil (`null`) when none is due. See Report. |
@@ -368,10 +432,11 @@ Every event is `{"seq": n, "ts": unix_ms, "type": "...", "fields": {...}}`.
 | Type | Fields | When |
 | --- | --- | --- |
 | `switch` | `balancer`, `from`, `to`, `reason`, `held_ms`, `cost` | New connections go to another outbound. `reason`: `start`, `start_pinned`, `start_remembered`, `failover`, `upgrade`, `recovered`, `remembered`, `network_change`, `candidates_changed`, `pin`, `retired` (the previous one left its provider set). `held_ms` is the time on the previous one. |
-| `path_state` | `outbound`, `state`, `reason`; for `suspect` also `failures`, `targets`, `kinds`, `strong`; for `down` also `quarantine_ms`, `quarantine_level` and `provisional` when it was ruled out while the network check was failing | An outbound became `up`, `suspect`, `down` or `unknown`. `reason`: `traffic`, `probe`, `upgrade_probe`, `network_change`, `network_down`, `network_up`, `replaced` (a provider
+| `path_state` | `outbound`, `state`, `reason`; for `suspect` also `failures`, `targets`, `kinds`, `strong`; for `down` also `quarantine_ms`, `quarantine_level` and `provisional` when it was ruled out while the network check was failing | An outbound became `up`, `suspect`, `down` or `unknown`. `reason`: `traffic`, `probe`, `upgrade_probe`, `host_probe`, `network_change`, `network_down`, `network_up`, `replaced` (a provider
 changed its settings). `kinds` counts failures by kind: `dial_failed`, `dial_timeout`, `server_unverified`, `no_response`, `closed`, `stall`, `partial_stall`. |
-| `probe_start` | `outbound`, `reason`, `balancer`, `running` | A probe started. `reason`: `confirm`, `failover`, `network_change`, `remembered`, `recheck`, `upgrade`. `running` counts the outbound probes running now, this one included. Not written while memory is low. |
-| `probe_result` | `outbound`, `reason`, `balancer`, `ok`, `rtt_ms`, `bytes`, `error`, `stale` | A probe finished. `bytes` counts both directions above TLS. `stale` means it was made in the previous network and was ignored. |
+| `probe_start` | `outbound`, `reason`, `balancer`, `running`, `request` | A probe started. `reason`: `confirm`, `failover`, `network_change`, `remembered`, `recheck`, `upgrade`, `host`. `running` counts the outbound probes running now, this one included. `request` is the id of the request a `host` probe is for. Not written while memory is low. |
+| `probe_result` | `outbound`, `reason`, `balancer`, `ok`, `rtt_ms`, `bytes`, `error`, `stale`, `request` | A probe finished. `bytes` counts both directions above TLS. `stale` means it was made in the previous network and was ignored. |
+| `probe_request` | `request`, `balancer`, `outbounds`, `end`, `ms`, `probed`, `reused`, `ok`, `failed`, `down`, `skipped`, `expired`, `gone` | A request of the host that waited for a probe ended; one answered at once writes none. `end`: `done`, `timeout`, `network_change`, `gone`. The counts are by result; `probed` and `reused` count the answers of a probe and of a recent proof. |
 | `exhausted` | `balancer`, `from`, `candidates` | No usable candidate is left; traffic goes to `fallbackTag`. |
 | `pending_closed` | `outbound`, `connections`, `reason` | Connections of an outbound found down that had received nothing were ended. `reason` is the one the outbound went down for. |
 | `upgrade_start` | `balancer`, `from`, `to` | Probing a cheaper outbound to return to it. |
@@ -438,6 +503,7 @@ to this one. Reports of one run add up.
 | `path_down`, `path_suspect` | `path_state` events with those states. |
 | `pending_closed` | Connections ended by `pending_closed` events. |
 | `probes`, `probes_failed`, `probe_bytes` | `probe_result` events, the failed ones, and their `bytes`. |
+| `host_probe_requests`, `host_probes` | `probe_request` events, and `probe_result` events with reason `host`. |
 | `upgrade_attempts`, `upgrade_failures` | `upgrade_start` and `upgrade_failed` events. |
 | `network_changes`, `network_known`, `network_down` | `network_change` events, the ones with `known`, and `network_down` events. |
 | `provider_fetches`, `provider_fetch_failures`, `provider_triggers` | `provider_fetch` events, the ones without `ok`, and their count by `trigger`. |
@@ -457,4 +523,6 @@ the chosen outbound; per balancer the chosen and pinned outbound, whether it
 is exhausted, the time on the chosen outbound and the next return attempt;
 per provider the version of the set, its size, outbounds still draining,
 refreshes and failures, the age of the set, the next timed refresh and the
-backoff.
+backoff; the probe requests of the host (`probe_requests`), each with `id`,
+`balancer`, `age_ms`, `done`, `end` and the result per outbound, see Probes
+on request.

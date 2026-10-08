@@ -35,6 +35,8 @@ type reportCounts struct {
 	Probes                int64            `json:"probes"`
 	ProbesFailed          int64            `json:"probes_failed"`
 	ProbeBytes            int64            `json:"probe_bytes"`
+	HostProbeRequests     int64            `json:"host_probe_requests"`
+	HostProbes            int64            `json:"host_probes"`
 	UpgradeAttempts       int64            `json:"upgrade_attempts"`
 	UpgradeFailures       int64            `json:"upgrade_failures"`
 	PinnedDown            int64            `json:"pinned_down"`
@@ -150,6 +152,11 @@ func (r *report) count(typ string, f map[string]any) {
 			c.ProbesFailed++
 		}
 		c.ProbeBytes += number(f["bytes"])
+		if f["reason"] == "host" {
+			c.HostProbes++
+		}
+	case "probe_request":
+		c.HostProbeRequests++
 	case "upgrade_start":
 		c.UpgradeAttempts++
 	case "upgrade_failed":

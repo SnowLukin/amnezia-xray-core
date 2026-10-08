@@ -135,9 +135,11 @@ func TestConfigValuesHaveCeilings(t *testing.T) {
 	s := newSettings(&Config{
 		Probes:       []*ProbeProfile{{Timeout: huge, ProgressTimeout: huge}},
 		Connectivity: &ConnectivityConfig{Outbound: "direct", Destination: "https://check.test/", Timeout: huge},
-		Schedule:     &ScheduleConfig{Concurrent: 1 << 20},
-		Events:       &EventsConfig{MaxEvents: 1 << 30, MaxBytes: 1 << 40},
-		Network:      &NetworkConfig{MaxNetworks: 1 << 30},
+		Schedule: &ScheduleConfig{Concurrent: 1 << 20, HostProbes: &HostProbesConfig{
+			PerMinute: 1 << 20, Reuse: huge, MaxOutbounds: 1 << 20, Timeout: huge,
+		}},
+		Events:  &EventsConfig{MaxEvents: 1 << 30, MaxBytes: 1 << 40},
+		Network: &NetworkConfig{MaxNetworks: 1 << 30},
 		Providers: []*ProviderConfig{quietProvider(func(p *ProviderConfig) {
 			p.MaxBytes = 1 << 40
 			p.Apply.MaxOutbounds = 1 << 30
@@ -156,6 +158,10 @@ func TestConfigValuesHaveCeilings(t *testing.T) {
 		"answer bytes":         {p.maxBytes, maxAnswerBytes},
 		"outbounds":            {int64(p.maxOutbounds), maxProviderOutbounds},
 		"drain":                {int64(p.drain), int64(maxDrain)},
+		"host probes a minute": {int64(s.schedule.hostProbes.perMinute), defaultPerMinute / 2},
+		"host reuse":           {int64(s.schedule.hostProbes.reuse), int64(maxHostReuse)},
+		"host outbounds":       {int64(s.schedule.hostProbes.maxOutbounds), maxHostOutbounds},
+		"host timeout":         {int64(s.schedule.hostProbes.timeout), int64(maxHostTimeout)},
 	} {
 		if v[0] != v[1] {
 			t.Errorf("%s %d, want the ceiling %d", name, v[0], v[1])

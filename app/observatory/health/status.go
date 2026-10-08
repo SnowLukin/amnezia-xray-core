@@ -72,6 +72,8 @@ type statusView struct {
 	Paths        []pathStatusView     `json:"paths"`
 	Balancers    []balancerStatusView `json:"balancers"`
 	Providers    []providerStatusView `json:"providers,omitempty"`
+	// Probe requests of the host, from the oldest.
+	ProbeRequests []probeRequestView `json:"probe_requests,omitempty"`
 }
 
 func (e *engine) status(now time.Time) statusView {
@@ -177,6 +179,9 @@ func (e *engine) status(now time.Time) statusView {
 			}
 		}
 		v.Providers = append(v.Providers, pv)
+	}
+	for _, r := range e.requests {
+		v.ProbeRequests = append(v.ProbeRequests, r.view(now))
 	}
 	return v
 }

@@ -64,6 +64,11 @@ func foldReport(t *testing.T, raw []byte) (reportCounts, bool) {
 				c.ProbesFailed++
 			}
 			c.ProbeBytes += num(f["bytes"])
+			if f["reason"] == "host" {
+				c.HostProbes++
+			}
+		case "probe_request":
+			c.HostProbeRequests++
 		case "upgrade_start":
 			c.UpgradeAttempts++
 		case "upgrade_failed":
@@ -146,6 +151,10 @@ func TestReportAddsUpTheEvents(t *testing.T) {
 	te.setMemoryLow(false, at(14*time.Minute))
 	te.pin("auto", "a1", at(15*time.Minute))
 	te.release("auto", at(16*time.Minute))
+	if _, _, err := te.requestProbe("auto", []string{"a1"}, at(16*time.Minute+time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	te.run(t, at(16*time.Minute+2*time.Second), nil)
 	now := at(17 * time.Minute)
 	te.emit(now, "pending_closed", map[string]any{"outbound": "a1", "connections": 3, "reason": "traffic"})
 	te.emit(now, "pinned_down", map[string]any{"balancer": "auto", "outbound": "a1"})

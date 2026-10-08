@@ -20,6 +20,8 @@ const (
 	reasonRemembered
 	reasonRecheck
 	reasonUpgrade
+	// Last: probes of the host give way to those of the observer.
+	reasonHost
 )
 
 func (r probeReason) String() string {
@@ -38,6 +40,8 @@ func (r probeReason) String() string {
 		return "recheck"
 	case reasonUpgrade:
 		return "upgrade"
+	case reasonHost:
+		return "host"
 	default:
 		return "unknown"
 	}
@@ -52,6 +56,8 @@ type probeJob struct {
 	selector   string
 	notBefore  time.Time
 	generation uint64
+	// The request of the host that asked for the probe.
+	request uint64
 }
 
 type probeResult struct {
@@ -94,7 +100,12 @@ type engine struct {
 	spacedUntil   []time.Time
 	starts        []time.Time
 	startsByName  map[string][]time.Time
+	hostStarts    []time.Time
 	serverNameFor func(tag string) string
+
+	// Probe requests of the host, open ones and the latest closed ones.
+	requests  []*probeRequest
+	requestID uint64
 
 	generation uint64
 	networkID  string
@@ -879,12 +890,15 @@ func (e *engine) dropQueued(tag string, reason probeReason) {
 	e.queue = kept
 }
 
-func (e *engine) enqueue(tag string, reason probeReason, selectorTag string, at time.Time) {
+// enqueue returns the new job, or nil when one is already waiting or running.
+func (e *engine) enqueue(tag string, reason probeReason, selectorTag string, at time.Time) *probeJob {
 	if e.queued(tag, reason) {
-		return
+		return nil
 	}
 	e.nextID++
-	e.queue = append(e.queue, &probeJob{id: e.nextID, tag: tag, reason: reason, selector: selectorTag, notBefore: at, generation: e.generation})
+	j := &probeJob{id: e.nextID, tag: tag, reason: reason, selector: selectorTag, notBefore: at, generation: e.generation}
+	e.queue = append(e.queue, j)
+	return j
 }
 
 func (e *engine) enqueueConnectivity(now time.Time) {
@@ -938,6 +952,17 @@ func (e *engine) budgetWait(j *probeJob, now time.Time) time.Duration {
 	if len(byName) >= e.s.schedule.perServerName {
 		if w := byName[0].Add(time.Minute).Sub(now); w > wait {
 			wait = w
+		}
+	}
+	if j.reason == reasonHost {
+		// The host gets at most half of the probes of a server name, so a
+		// failover after its probes still finds the name in the budget.
+		e.hostStarts = pruneTimes(e.hostStarts, now)
+		if n := len(e.hostStarts); n >= e.s.schedule.hostProbes.perMinute {
+			wait = max(wait, e.hostStarts[n-e.s.schedule.hostProbes.perMinute].Add(time.Minute).Sub(now))
+		}
+		if share := max(e.s.schedule.perServerName/2, 1); len(byName) >= share {
+			wait = max(wait, byName[len(byName)-share].Add(time.Minute).Sub(now))
 		}
 	}
 	return wait
@@ -1007,8 +1032,12 @@ func (e *engine) tick(now time.Time) ([]*probeJob, time.Time) {
 	if now.Sub(e.lastGC) >= staleAfter {
 		e.gc(now, staleAfter)
 	}
+	soonest(e.serveRequests(now))
 
 	var start []*probeJob
+	// Once a probe of the observer waits for the budget, probes of the host
+	// wait behind it.
+	waiting := false
 	sort.SliceStable(e.queue, func(i, j int) bool { return e.queue[i].reason < e.queue[j].reason })
 	kept := e.queue[:0]
 	for _, j := range e.queue {
@@ -1024,11 +1053,16 @@ func (e *engine) tick(now time.Time) ([]*probeJob, time.Time) {
 			kept = append(kept, j)
 			continue
 		}
+		if j.reason == reasonHost && waiting {
+			kept = append(kept, j)
+			continue
+		}
 		w := e.budgetWait(j, now)
 		if w != 0 {
 			if w > 0 {
 				soonest(now.Add(w))
 			}
+			waiting = waiting || j.reason != reasonHost
 			kept = append(kept, j)
 			continue
 		}
@@ -1068,6 +1102,9 @@ func (e *engine) begin(j *probeJob, now time.Time) {
 	}
 	e.spacedUntil = append(e.spacedUntil, now.Add(e.jitter(e.s.schedule.spacing, e.s.schedule.spacingJitter)))
 	e.starts = append(e.starts, now)
+	if j.reason == reasonHost {
+		e.hostStarts = append(e.hostStarts, now)
+	}
 	name := e.serverName(j.tag)
 	e.startsByName[name] = append(e.startsByName[name], now)
 	p := e.path(j.tag)
@@ -1081,8 +1118,11 @@ func (e *engine) begin(j *probeJob, now time.Time) {
 	}
 	if !e.memoryLow {
 		// Its result repeats everything but running.
-		e.emit(now, "probe_start", map[string]any{"outbound": j.tag, "reason": j.reason.String(), "balancer": j.selector,
-			"running": running})
+		f := map[string]any{"outbound": j.tag, "reason": j.reason.String(), "balancer": j.selector, "running": running}
+		if j.request != 0 {
+			f["request"] = j.request
+		}
+		e.emit(now, "probe_start", f)
 	}
 }
 
@@ -1167,10 +1207,14 @@ func (e *engine) onProbeResult(j *probeJob, r probeResult, now time.Time) {
 		p.lastError = ""
 	}
 	stale := j.generation != e.generation
-	e.emit(now, "probe_result", map[string]any{
+	f := map[string]any{
 		"outbound": j.tag, "reason": j.reason.String(), "balancer": j.selector, "ok": r.ok,
 		"rtt_ms": r.rtt.Milliseconds(), "bytes": r.bytes, "error": r.err, "stale": stale,
-	})
+	}
+	if j.request != 0 {
+		f["request"] = j.request
+	}
+	e.emit(now, "probe_result", f)
 	if stale {
 		return
 	}
@@ -1178,9 +1222,12 @@ func (e *engine) onProbeResult(j *probeJob, r probeResult, now time.Time) {
 		e.sawSuccess("probe", now)
 	} else if e.networkDown {
 		// Without a network the failure says nothing about the outbound.
-		e.enqueue(j.tag, j.reason, j.selector, now)
+		if again := e.enqueue(j.tag, j.reason, j.selector, now); again != nil {
+			again.request = j.request
+		}
 		return
 	}
+	e.answerRequests(j, r, now)
 	switch j.reason {
 	case reasonConfirm:
 		if p.status != statusSuspect {
@@ -1247,7 +1294,22 @@ func (e *engine) onProbeResult(j *probeJob, r probeResult, now time.Time) {
 		}
 	case reasonUpgrade:
 		e.onUpgradeResult(j, r, p, now)
+	case reasonHost:
+		e.onHostProbeResult(p, r.ok, now)
 	}
+}
+
+// abandonReturns gives up the returns to an outbound that failed.
+func (e *engine) abandonReturns(tag string, now time.Time) {
+	for _, s := range e.sortedSelectors() {
+		if s.upgradeTarget != tag {
+			continue
+		}
+		s.upgradeTarget = ""
+		e.emit(now, "upgrade_failed", map[string]any{"balancer": s.tag, "outbound": tag, "successes": s.upgradeSuccesses})
+		e.scheduleUpgrade(s, now, false)
+	}
+	e.dropQueued(tag, reasonUpgrade)
 }
 
 // clearedSuspicion handles a confirming probe that found the outbound
@@ -1279,11 +1341,7 @@ func (e *engine) onUpgradeResult(j *probeJob, r probeResult, p *path, now time.T
 	}
 	if !r.ok {
 		e.markDown(p, "upgrade_probe", now)
-		for _, s := range waiting {
-			s.upgradeTarget = ""
-			e.emit(now, "upgrade_failed", map[string]any{"balancer": s.tag, "outbound": j.tag, "successes": s.upgradeSuccesses})
-			e.scheduleUpgrade(s, now, false)
-		}
+		e.abandonReturns(j.tag, now)
 		return
 	}
 	p.success(now)
@@ -1567,6 +1625,8 @@ func (e *engine) setMemoryLow(low bool, now time.Time) bool {
 	if low {
 		e.events.limit(e.s.maxEvents, min(e.s.maxBytes, lowMemoryEventBytes))
 		e.gc(now, 0)
+		e.dropHostProbesForMemory()
+		e.keepRequests()
 	} else {
 		e.events.limit(e.s.maxEvents, e.s.maxBytes)
 	}

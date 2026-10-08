@@ -125,6 +125,24 @@ message ScheduleConfig {
   // After a probe cleared a suspicion, the same outbound is not suspected
   // again for this long.
   int64 suspect_cooldown = 8;
+  // Probes the host asks for.
+  HostProbesConfig host_probes = 9;
+}
+
+// HostProbesConfig limits probes the host asks for on top of the probe
+// budget: they wait for the probes of the observer and never take more than
+// half of the budget.
+message HostProbesConfig {
+  // Host probe starts per minute, at most half of per_minute.
+  int32 per_minute = 1;
+  // An outbound that works and proved it within this long is answered
+  // without a probe.
+  int64 reuse = 2;
+  // Outbounds in one request.
+  int32 max_outbounds = 3;
+  // A request still waiting after this long ends; its probes that have not
+  // started are dropped.
+  int64 timeout = 4;
 }
 
 message EventsConfig {

@@ -39,6 +39,10 @@ const (
 	defaultPerServerName     = 3
 	defaultPerMinute         = 12
 	defaultSuspectCooldown   = time.Minute
+	defaultHostPerMinute     = 4
+	defaultHostReuse         = 15 * time.Second
+	defaultHostMaxOutbounds  = 8
+	defaultHostTimeout       = 2 * time.Minute
 	maxSuspectCooldown       = time.Hour
 	defaultMaxEvents         = 1000
 	defaultReportInterval    = 24 * time.Hour
@@ -79,6 +83,9 @@ const (
 	maxAnswerBytes       = 1 << 20
 	maxProviderOutbounds = 128
 	maxDrain             = 30 * time.Minute
+	maxHostReuse         = 5 * time.Minute
+	maxHostOutbounds     = 16
+	maxHostTimeout       = 10 * time.Minute
 )
 
 var (
@@ -170,6 +177,14 @@ type scheduleSettings struct {
 	perServerName   int
 	perMinute       int
 	suspectCooldown time.Duration
+	hostProbes      hostProbeSettings
+}
+
+type hostProbeSettings struct {
+	perMinute    int
+	reuse        time.Duration
+	maxOutbounds int
+	timeout      time.Duration
 }
 
 type settings struct {
@@ -381,6 +396,14 @@ func newSettings(c *Config) *settings {
 		perServerName:   num(sc.GetPerServerNamePerMinute(), defaultPerServerName),
 		perMinute:       num(sc.GetPerMinute(), defaultPerMinute),
 		suspectCooldown: dur(sc.GetSuspectCooldown(), defaultSuspectCooldown),
+	}
+	hp := sc.GetHostProbes()
+	s.schedule.hostProbes = hostProbeSettings{
+		// The observer keeps at least half of the budget for finding failures.
+		perMinute:    min(num(hp.GetPerMinute(), defaultHostPerMinute), max(s.schedule.perMinute/2, 1)),
+		reuse:        min(dur(hp.GetReuse(), defaultHostReuse), maxHostReuse),
+		maxOutbounds: min(num(hp.GetMaxOutbounds(), defaultHostMaxOutbounds), maxHostOutbounds),
+		timeout:      min(dur(hp.GetTimeout(), defaultHostTimeout), maxHostTimeout),
 	}
 	s.maxEvents = min(num(c.GetEvents().GetMaxEvents(), defaultMaxEvents), maxEvents)
 	s.maxBytes = int(min(size(c.GetEvents().GetMaxBytes(), defaultMaxEventBytes), maxEventBytes))

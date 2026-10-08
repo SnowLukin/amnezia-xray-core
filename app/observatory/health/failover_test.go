@@ -3,6 +3,7 @@ package health
 import (
 	"encoding/json"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 )
@@ -77,7 +78,10 @@ func TestFailoverProbesCandidatesOfDifferentServerNamesTogether(t *testing.T) {
 // A failover candidate behind the server name of a probe still running waits
 // for it, here a confirming probe of the dead outbound itself.
 func TestOneServerNameIsNeverProbedTwiceAtOnce(t *testing.T) {
-	te := newTestEngine(t, parallelConfig(2), &SelectorConfig{Costs: costs("a", 1, "b", 3)}, "a1", "a2", "a3", "b1")
+	cfg := parallelConfig(2)
+	// Room in the budget of the server name for the probes of the host too.
+	cfg.Schedule.PerServerNamePerMinute = 10
+	te := newTestEngine(t, cfg, &SelectorConfig{Costs: costs("a", 1, "b", 3)}, "a1", "a2", "a3", "b1")
 	te.serverNames(map[string]string{"a1": "r.example", "a2": "r.example", "a3": "r.example", "b1": "b.example"})
 	suspectWeak(te, "a1", 0)
 	jobs, _ := te.tick(at(3 * time.Second))
@@ -88,11 +92,19 @@ func TestOneServerNameIsNeverProbedTwiceAtOnce(t *testing.T) {
 		j  *probeJob
 		at time.Time
 	}
-	// The confirming probe hangs until 9 s; meanwhile strong evidence rules a1 out.
+	// The confirming probe hangs until 9 s; the host asks for probes of the
+	// balancer, and then strong evidence rules a1 out.
 	running := []pending{{jobs[0], at(9 * time.Second)}}
-	te.failN(3, "a1", failDial, at(4*time.Second))
 	var probed []string
-	for now := at(4 * time.Second); now.Before(at(time.Minute)); now = now.Add(100 * time.Millisecond) {
+	for now := at(3500 * time.Millisecond); now.Before(at(time.Minute)); now = now.Add(100 * time.Millisecond) {
+		if now.Equal(at(3500 * time.Millisecond)) {
+			if _, _, err := te.requestProbe("auto", nil, now); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if now.Equal(at(4 * time.Second)) {
+			te.failN(3, "a1", failDial, now)
+		}
 		kept := running[:0]
 		for _, p := range running {
 			if now.Before(p.at) {
@@ -110,11 +122,12 @@ func TestOneServerNameIsNeverProbedTwiceAtOnce(t *testing.T) {
 				}
 			}
 			running = append(running, pending{j, now.Add(time.Second)})
-			probed = append(probed, j.tag)
+			probed = append(probed, j.reason.String()+":"+j.tag)
 		}
 	}
-	if te.sel.current() != "b1" || !slices.Contains(probed, "a2") || !slices.Contains(probed, "a3") {
-		t.Fatalf("active %q after probes of %v, want b1 once a2 and a3 failed", te.sel.current(), probed)
+	if te.sel.current() != "b1" || !slices.Contains(probed, "failover:a2") || !slices.Contains(probed, "failover:a3") ||
+		!slices.ContainsFunc(probed, func(p string) bool { return strings.HasPrefix(p, "host:") }) {
+		t.Fatalf("active %q after probes %v, want b1 once a2 and a3 failed, and a probe for the host", te.sel.current(), probed)
 	}
 }
 

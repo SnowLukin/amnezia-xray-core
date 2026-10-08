@@ -67,14 +67,22 @@ type HealthConnectivityConfig struct {
 }
 
 type HealthScheduleConfig struct {
-	PauseWhenIdle          duration.Duration    `json:"pauseWhenIdle"`
-	Quarantine             *HealthBackoffConfig `json:"quarantine"`
-	Concurrent             int32                `json:"concurrent"`
-	Spacing                duration.Duration    `json:"spacing"`
-	SpacingJitter          float64              `json:"spacingJitter"`
-	PerServerNamePerMinute int32                `json:"perServerNamePerMinute"`
-	PerMinute              int32                `json:"perMinute"`
-	SuspectCooldown        duration.Duration    `json:"suspectCooldown"`
+	PauseWhenIdle          duration.Duration       `json:"pauseWhenIdle"`
+	Quarantine             *HealthBackoffConfig    `json:"quarantine"`
+	Concurrent             int32                   `json:"concurrent"`
+	Spacing                duration.Duration       `json:"spacing"`
+	SpacingJitter          float64                 `json:"spacingJitter"`
+	PerServerNamePerMinute int32                   `json:"perServerNamePerMinute"`
+	PerMinute              int32                   `json:"perMinute"`
+	SuspectCooldown        duration.Duration       `json:"suspectCooldown"`
+	HostProbes             *HealthHostProbesConfig `json:"hostProbes"`
+}
+
+type HealthHostProbesConfig struct {
+	PerMinute    int32             `json:"perMinute"`
+	Reuse        duration.Duration `json:"reuse"`
+	MaxOutbounds int32             `json:"maxOutbounds"`
+	Timeout      duration.Duration `json:"timeout"`
 }
 
 type HealthEventsConfig struct {
@@ -385,6 +393,14 @@ func (c *HealthObservatoryConfig) Build() (proto.Message, error) {
 			PerServerNamePerMinute: s.PerServerNamePerMinute,
 			PerMinute:              s.PerMinute,
 			SuspectCooldown:        int64(s.SuspectCooldown),
+		}
+		if hp := s.HostProbes; hp != nil {
+			out.Schedule.HostProbes = &health.HostProbesConfig{
+				PerMinute:    hp.PerMinute,
+				Reuse:        int64(hp.Reuse),
+				MaxOutbounds: hp.MaxOutbounds,
+				Timeout:      int64(hp.Timeout),
+			}
 		}
 	}
 	if e := c.Events; e != nil {
