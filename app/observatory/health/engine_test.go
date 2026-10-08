@@ -206,6 +206,23 @@ func TestWeakEvidenceIsConfirmedAndFalseAlarmBacksOff(t *testing.T) {
 	}
 }
 
+func TestTrafficThatAnswersASuspectIsAFalseAlarm(t *testing.T) {
+	cfg := &Config{Schedule: &ScheduleConfig{SuspectCooldown: int64(time.Minute)}}
+	te := newTestEngine(t, cfg, &SelectorConfig{Costs: costs("a", 1)}, "a1", "a2")
+	suspectWeak(te, "a1", 0)
+	te.onSuccess("a1", at(2500*time.Millisecond))
+	if jobs := te.run(t, at(3*time.Second), nil); len(jobs) != 0 {
+		t.Fatalf("probed an outbound that traffic had just answered: %+v", jobs)
+	}
+	if te.path("a1").status != statusUp {
+		t.Fatalf("a1 is %v, want up", te.path("a1").status)
+	}
+	suspectWeak(te, "a1", 30*time.Second)
+	if jobs, _ := te.tick(at(33 * time.Second)); len(jobs) != 0 {
+		t.Fatalf("probed again inside the cooldown")
+	}
+}
+
 func TestStrongEvidenceIgnoresFalseAlarmCooldown(t *testing.T) {
 	te := newTestEngine(t, nil, &SelectorConfig{Costs: costs("a", 1, "b", 3)}, "a1", "b1")
 	te.path("a1").cooldownUntil = at(time.Hour)

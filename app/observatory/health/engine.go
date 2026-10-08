@@ -242,6 +242,12 @@ func (e *engine) onSuccess(tag string, now time.Time) {
 		// Old connections may still work on an address that refuses new ones.
 		return
 	}
+	if p.status == statusSuspect {
+		// Traffic answered before the suspicion was proven: the same false
+		// alarm as a confirming probe that passes, without spending the probe.
+		e.dropQueued(p.tag, reasonConfirm)
+		e.backOffWeakEvidence(p, now)
+	}
 	p.success(now)
 	if p.status != statusUp {
 		p.quarantineLevel = 0
@@ -1056,6 +1062,11 @@ func (e *engine) onProbeResult(j *probeJob, r probeResult, now time.Time) {
 // clearedSuspicion handles a confirming probe that found the outbound
 // working: a false alarm, after which weak evidence waits longer.
 func (e *engine) clearedSuspicion(p *path, now time.Time) {
+	e.backOffWeakEvidence(p, now)
+	e.markUp(p, "probe", now)
+}
+
+func (e *engine) backOffWeakEvidence(p *path, now time.Time) {
 	if now.After(p.cooldownUntil.Add(maxSuspectCooldown)) {
 		// The last false alarm was long ago; start counting again.
 		p.falseAlarms = 0
@@ -1066,7 +1077,6 @@ func (e *engine) clearedSuspicion(p *path, now time.Time) {
 		cool = maxSuspectCooldown
 	}
 	p.cooldownUntil = now.Add(cool)
-	e.markUp(p, "probe", now)
 }
 
 func (e *engine) onUpgradeResult(j *probeJob, r probeResult, p *path, now time.Time) {
