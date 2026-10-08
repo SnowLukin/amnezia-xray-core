@@ -559,9 +559,9 @@ class Client:
         with open(self.log_path, errors="replace") as f:
             return sum(1 for line in f if "CopyRawConn splice" in line)
 
-    def api(self, *args):
+    def api(self, *args, timeout=10):
         out = subprocess.run([self.xray, "api", "health", f"--server=127.0.0.1:{API_PORT}", *args],
-                             capture_output=True, text=True, timeout=10)
+                             capture_output=True, text=True, timeout=timeout)
         if out.returncode != 0:
             raise RuntimeError(f"api health {args}: {out.stderr.strip()}")
         return json.loads(out.stdout)
@@ -947,7 +947,8 @@ def fold_report(events):
     """Adds up events the way the report of the core counts them. Returns the
     counters and whether there was a decision."""
     keys = ["events", "switches", "exhausted", "path_down", "path_suspect", "pending_closed", "probes",
-            "probes_failed", "probe_bytes", "upgrade_attempts", "upgrade_failures", "pinned_down",
+            "probes_failed", "probe_bytes", "host_probe_requests", "host_probes", "upgrade_attempts",
+            "upgrade_failures", "pinned_down",
             "network_changes", "network_known", "network_down", "provider_fetches", "provider_fetch_failures",
             "provider_applied", "provider_rejected", "provider_restart_needed", "pins", "releases", "memory_low"]
     c = dict.fromkeys(keys, 0)
@@ -973,6 +974,9 @@ def fold_report(events):
             c["probes"] += 1
             c["probes_failed"] += f.get("ok") is not True
             c["probe_bytes"] += f.get("bytes", 0)
+            c["host_probes"] += f.get("reason") == "host"
+        elif t == "probe_request":
+            c["host_probe_requests"] += 1
         elif t == "upgrade_start":
             c["upgrade_attempts"] += 1
         elif t == "upgrade_failed":

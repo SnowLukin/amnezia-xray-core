@@ -1313,6 +1313,123 @@ def pinned_start(stand, xray, work, name):
     return checks
 
 
+# ---- 8. probes the host asks for ------------------------------------------------
+
+HOST_PROBES_PER_MINUTE = 4
+
+
+def host_starts_peak(events, since=0, window=60.0):
+    """The most host probe starts inside any 60 s."""
+    ts = sorted(e["ts"] / 1000 for e in events if e["type"] == "probe_start"
+                and e["fields"].get("reason") == "host" and e["ts"] / 1000 >= since)
+    return max((sum(1 for u in ts[i:] if u < t + window - 0.005) for i, t in enumerate(ts)), default=0), len(ts)
+
+
+@scenario()
+def host_probe_failover(stand, xray, work, name):
+    """a1 dies while nothing uses it, so no user connection can notice. The host asks for
+    probes of the balancer: the request answers with its id at once, the command waits for
+    the result, and the failed probe of a1 moves the balancer to a2 without user traffic."""
+    cfg = bench.client_config(THREE, THREE_COSTS)
+    m = Marks()
+    with bench.Client(xray, cfg, work, name) as c:
+        tr = bench.Traffic(rate=2, big=0.5)
+        tr.start()
+        time.sleep(8)
+        tr.stop()
+        # Past hostProbes.reuse (15 s): the last proof of a1 no longer answers for it.
+        time.sleep(17)
+        bench.chaos(A0, "blackhole")
+        m["ask"] = time.time()
+        resp = c.api("-t", "25", "probe", "auto", timeout=30)
+        m["answer"] = time.time()
+        status = c.status()
+    request = resp.get("request") or {}
+    got = {o["outbound"]: f"{o['result']}/{o.get('source', '')}" for o in request.get("outbounds", [])}
+    sw = bench.switches(c.events, m["ask"])
+    took = sw[0]["ts"] / 1000 - m["ask"] if sw else None
+    after = [e for e in c.events if e["ts"] / 1000 >= m["ask"]]
+    a1_down = [e for e in after if e["type"] == "path_state" and e["fields"].get("outbound") == "a1"
+               and e["fields"].get("state") == "down"]
+    suspects = [e for e in after if e["type"] == "path_state" and e["fields"].get("state") == "suspect"]
+    host_failed = [e for e in after if e["type"] == "probe_result" and e["fields"].get("reason") == "host"
+                   and e["fields"].get("outbound") == "a1" and e["fields"].get("ok") is False
+                   and e["fields"].get("request") == resp.get("id")]
+    ended = [e for e in after if e["type"] == "probe_request" and e["fields"].get("request") == resp.get("id")]
+    kept = [r for r in status.get("probe_requests", []) if r["id"] == resp.get("id")]
+    peak, gap, _ = probe_checks(c.events, m["ask"])
+    return [
+        check("ticket of the run, as in status", f"id {resp.get('id')}, run {resp.get('run') == status.get('run')}",
+              resp.get("id") == 1 and resp.get("run") == status.get("run") and bool(kept), "id 1, same run, kept"),
+        check("request answered within the wait", f"{request.get('end')} after {round(m['answer'] - m['ask'], 1)} s",
+              request.get("done") is True and request.get("end") == "done", "done"),
+        check("answers", got, got.get("a1") == "failed/probe" and got.get("a2", "").startswith("ok/")
+              and got.get("b1", "").startswith("ok/"), "a1 failed/probe, a2 and b1 ok"),
+        check("a1 ruled out by the host probe", [e["fields"].get("reason") for e in a1_down],
+              len(a1_down) == 1 and a1_down[0]["fields"].get("reason") == "host_probe" and len(host_failed) == 1,
+              "host_probe"),
+        check("suspicions from traffic", len(suspects), not suspects, "== 0 (no traffic)"),
+        check("switch after the request, s", sw and f"{sw[0]['fields']['to']} ({sw[0]['fields']['reason']}) "
+              f"{round(took, 1)}", len(sw) == 1 and sw[0]["fields"]["to"] == "a2"
+              and sw[0]["fields"]["reason"] == "failover" and took <= 10, "a2 (failover) <= 10"),
+        check("probe_request event", ended and ended[0]["fields"].get("end"),
+              len(ended) == 1 and ended[0]["fields"].get("failed") == 1, "one, done, failed 1"),
+        at_once_check(peak),
+        per_name_check(c.events, server_names(status), m["ask"]),
+        leak_check(c),
+    ]
+
+
+@scenario()
+def host_probe_loop(stand, xray, work, name):
+    """The host asks for probes of the balancer over and over for 95 s while traffic flows;
+    a1 dies midway. Host probes stay within their own minute budget, the failover is as
+    quick as without the requests, and no server name is probed twice at once."""
+    cfg = bench.client_config(THREE, THREE_COSTS)
+    m = Marks()
+    stop = threading.Event()
+    calls = []
+
+    def ask_in_a_loop():
+        while not stop.is_set():
+            try:
+                r = c.api("-t", "1", "probe", "auto")
+                calls.append((time.time(), r["id"], None))
+            except Exception as e:
+                calls.append((time.time(), None, repr(e)))
+            time.sleep(0.1)
+
+    asker = threading.Thread(target=ask_in_a_loop, daemon=True)
+    with bench.Client(xray, cfg, work, name) as c:
+        tr = bench.Traffic(rate=2, big=0.5)
+        run_timeline(tr, [(5, asker.start), (40, m.at("fault", lambda: bench.chaos(A0, "blackhole"))),
+                          (100, stop.set)], 102)
+        asker.join(5)
+        status = c.status()
+    tr.save(os.path.join(work, f"{name}-traffic.json"))
+    rec, _ = bench.recovery(tr.records, m["fault"])
+    sw = bench.switches(c.events, m["fault"])
+    host_peak, host_n = host_starts_peak(c.events)
+    errors = [e for _, _, e in calls if e]
+    ids = {i for _, i, _ in calls if i}
+    peak, _, _ = probe_checks(c.events)
+    heap = [h for _, h, _ in c.mem]
+    return [
+        check("requests made", f"{len(calls)} calls, {len(ids)} requests, {len(errors)} errors",
+              len(calls) >= 60 and not errors, ">= 60 calls, no errors"),
+        check("host probe starts in any 60 s", f"{host_peak} ({host_n} in all)",
+              host_peak <= HOST_PROBES_PER_MINUTE, f"<= {HOST_PROBES_PER_MINUTE}"),
+        check("recovery, s", rec and round(rec, 1), rec is not None and rec <= 10, "<= 10 (failover_blackhole)"),
+        check("switches after the fault", [f"{e['fields']['to']} ({e['fields']['reason']})" for e in sw],
+              len(sw) == 1 and sw[0]["fields"]["to"] == "a2", "a2 once"),
+        at_once_check(peak),
+        per_name_check(c.events, server_names(status)),
+        check("heap in use, MB", heap and f"{round(min(heap) / 2**20, 1)}..{round(max(heap) / 2**20, 1)}", True,
+              "info"),
+        leak_check(c),
+    ]
+
+
 @scenario(slow=True)
 def soak(stand, xray, work, name):
     """Hours of traffic with a fault every five minutes: memory must not grow."""
