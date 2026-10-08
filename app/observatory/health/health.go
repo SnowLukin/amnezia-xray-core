@@ -144,12 +144,14 @@ func (o *Observer) Start() error {
 		return nil
 	}
 	o.started = true
+	running.Store(o)
 	go o.loop(o.done)
 	return nil
 }
 
 // Close implements common.Closable.
 func (o *Observer) Close() error {
+	running.CompareAndSwap(o, nil)
 	o.once.Do(func() { close(o.done) })
 	o.stopFetch()
 	o.closeProviders()
@@ -552,6 +554,16 @@ func (o *Observer) Status() []byte {
 func FromInstance(v *core.Instance) *Observer {
 	o, _ := v.GetFeature(extension.ObservatoryType()).(*Observer)
 	return o
+}
+
+var running atomic.Pointer[Observer]
+
+// Current returns the health observatory of the core running in this
+// process, or nil. It serves hosts that start the core through a library
+// that keeps the instance to itself; with several instances it is the one
+// started last.
+func Current() *Observer {
+	return running.Load()
 }
 
 func init() {

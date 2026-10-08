@@ -269,7 +269,8 @@ change refresh are retried after the backoff.
 
 The `HealthService` gRPC service (enable it in `api.services`) and
 `xray api health` expose the same calls; embedders can call the `Observer`
-methods directly (`health.FromInstance(instance)`):
+methods directly: `health.FromInstance(instance)`, or `health.Current()`
+when the core runs through a library that keeps the instance to itself:
 
 | Call | Purpose |
 | --- | --- |
