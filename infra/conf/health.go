@@ -87,6 +87,10 @@ type HealthNetworkConfig struct {
 	MaxNetworks int32 `json:"maxNetworks"`
 }
 
+type HealthReportConfig struct {
+	Interval *duration.Duration `json:"interval"`
+}
+
 type HealthCostTriggerConfig struct {
 	Cost  float32           `json:"cost"`
 	After duration.Duration `json:"for"`
@@ -263,6 +267,7 @@ type HealthObservatoryConfig struct {
 	Events          *HealthEventsConfig       `json:"events"`
 	Network         *HealthNetworkConfig      `json:"network"`
 	Providers       []*HealthProviderConfig   `json:"providers"`
+	Report          *HealthReportConfig       `json:"report"`
 }
 
 func checkSelectors(name string, selectors []string) error {
@@ -387,6 +392,9 @@ func (c *HealthObservatoryConfig) Build() (proto.Message, error) {
 	}
 	if n := c.Network; n != nil {
 		out.Network = &health.NetworkConfig{NoMemory: n.Remember != nil && !*n.Remember, MaxNetworks: n.MaxNetworks}
+	}
+	if r := c.Report; r != nil {
+		out.Report = &health.ReportConfig{Interval: optionalDuration(r.Interval)}
 	}
 	for _, p := range c.Providers {
 		if p == nil {

@@ -111,7 +111,8 @@ decision made while the network check was failing ends nothing.
       "perServerNamePerMinute": 3, "perMinute": 12, "suspectCooldown": "1m"
     },
     "events": { "maxEvents": 1000, "maxBytes": 65536 },
-    "network": { "remember": true, "maxNetworks": 16 }
+    "network": { "remember": true, "maxNetworks": 16 },
+    "report": { "interval": "24h" }
   },
   "routing": {
     "balancers": [{
@@ -172,6 +173,8 @@ value is taken as the ceiling: probe and network check timeouts 30 s,
   then needs no release call.
 - Set `fallbackTag` to a blackhole: without it, an empty choice sends traffic
   to the default outbound.
+- `report.interval`: a window with a decision is reported once it lasts
+  this long, see Report. `"0s"` leaves only the report at the stop.
 
 ## Providers
 
@@ -308,7 +311,8 @@ number of networks, outbounds and connections: what it knows about an
 outbound is forgotten once no balancer offers it, failures per outbound are
 capped, probes end by a deadline, and the config values that size anything
 have ceilings. For an open connection of a watched outbound it keeps under
-1 KB and no goroutine of its own.
+1 KB and no goroutine of its own. The report keeps fixed counters, the
+latest 10 switches and seven numbers per outbound.
 
 A host that watches the memory of the process, such as an iOS network
 extension close to its limit, reports pressure with `SetMemoryLow(true)` and
@@ -348,6 +352,8 @@ when the core runs through a library that keeps the instance to itself:
 | `RequestRefresh(provider)` / `refresh [provider]` | Fetch the set of a provider, or of every provider when empty, as soon as the limits allow. False when there is no such provider. |
 | `Status()` / `status` | Current state as JSON, see below. |
 | `DrainEvents()` / `events` | Events since the previous drain as a JSON array, and how many were dropped because the buffer was full. |
+| `TakeReport(final)` / `report take`, `report final` | The report when one is due, and a new window; nil (`null`) when none is due. See Report. |
+| `Report()` / `report` | The report a stop would bring now, as a snapshot that closes nothing; nil when it would bring none. |
 
 `run` names the run of the core the request is meant for, as `Status()`
 reports it; a request for another run is ignored, so a release sent to a
@@ -387,6 +393,59 @@ changed its settings). `kinds` counts failures by kind: `dial_failed`, `dial_tim
 | `provider_restart_needed` | `provider`, `version`, `sections` | The applied answer also changes sections the core reads only at start. |
 | `provider_skip` | `provider`, `trigger`, `reason`, `wait_ms` | A trigger wants a refresh that cannot start yet. `reason`: `min_interval`, `backoff`, `max_per_hour`, `idle`, `network_down`, `memory`. Reported once per trigger and reason until a refresh starts. |
 | `provider_drained` | `provider`, `outbound`, `replaced` | An outbound that left the set, or the old handler of a replaced one, was closed: after `drain`, at once without connections, or early to keep at most `maxOutbounds` draining. |
+
+## Report
+
+The observatory adds up its events into a report for the host to send, so
+the host needs neither the event log nor counters of its own. Every event is
+counted as it is written: a full log, or a host that never drains it,
+changes nothing in the report.
+
+A decision is a `switch` for any reason but `start`, `start_pinned` and
+`start_remembered`, `exhausted`, `upgrade_failed`, `pinned_down`, a
+`provider_apply` that was rejected or changed the set, and
+`provider_restart_needed`. Events the log dropped are no decision.
+
+`TakeReport(final)` returns the report when one is due and starts a new
+window:
+
+- `final`, before the host stops the core: due when the run had a decision,
+  with reason `stop`. Nothing is due after it, final or not.
+- Otherwise due once a window with a decision lasts `report.interval` by the
+  wall clock, which goes on while the device sleeps; reason `interval`. A
+  decision after a window that long without one goes with the next call.
+
+The core keeps no timer for it: the host asks, for example every 30 seconds,
+and a call with nothing due allocates nothing. Low memory does not make a
+report due. A host whose process may be killed without a stop keeps the
+snapshot of `Report()`, reason `snapshot`, replaces it after every report it
+takes, and sends the kept one when it starts again; the reason it sends is
+its own choice.
+
+Counters cover the window: from the start of the run or the previous report
+to this one. Reports of one run add up.
+
+| Field | Meaning |
+| --- | --- |
+| `health_run` | The run of the core, as `run` in Status. |
+| `report_reason` | `stop`, `interval` or `snapshot`. |
+| `report_index` | Number of the report in the run, from 1. |
+| `window_sec`, `session_sec` | Length of the window and of the run in seconds of the wall clock. |
+| `events` | Events written in the window. |
+| `events_dropped` | Events the log dropped in the window because it was full: they never reached `DrainEvents`. |
+| `switches`, `switch_reasons`, `switch_path` | `switch` events, their count by reason, and the latest 10 as `from>to:reason`. |
+| `exhausted`, `pinned_down` | Events of those types. |
+| `path_down`, `path_suspect` | `path_state` events with those states. |
+| `pending_closed` | Connections ended by `pending_closed` events. |
+| `probes`, `probes_failed`, `probe_bytes` | `probe_result` events, the failed ones, and their `bytes`. |
+| `upgrade_attempts`, `upgrade_failures` | `upgrade_start` and `upgrade_failed` events. |
+| `network_changes`, `network_known`, `network_down` | `network_change` events, the ones with `known`, and `network_down` events. |
+| `provider_fetches`, `provider_fetch_failures`, `provider_triggers` | `provider_fetch` events, the ones without `ok`, and their count by `trigger`. |
+| `provider_applied`, `provider_rejected`, `provider_restart_needed` | `provider_apply` events that changed the set, the rejected ones, and `provider_restart_needed` events. |
+| `pins`, `releases` | `pin` and `release` events. |
+| `memory_low` | `memory_low` events with `on`. |
+| `active`, `balancer_exhausted`, `network_up`, `connectivity` | At the time of the report: the chosen outbound by balancer, whether a balancer is exhausted, and the network as in Status. |
+| `paths` | The first 16 outbounds by tag. `state` and `ttfb_p50_ms` (over the whole life of the outbound, 0 without samples) as they are now; `active_ms`, `bytes_up`, `bytes_down`, `conns_ok`, `conns_failed`, `probes` and `probe_bytes` grown since the previous report. An outbound forgotten and seen again counts from zero. |
 
 ## Status
 

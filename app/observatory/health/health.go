@@ -116,6 +116,7 @@ func newObserver(ctx context.Context, config *Config) *Observer {
 	o.run = hex.EncodeToString(id[:])
 	o.runCtx, o.stopRun = context.WithCancel(ctx)
 	o.newHandler = o.createHandler
+	o.e.report.begin(o.clock())
 	for i, ps := range s.providers {
 		o.providers = append(o.providers, &providerRuntime{
 			p:        o.e.providers[i],
@@ -626,6 +627,38 @@ func (o *Observer) Status() []byte {
 	view.Run = o.run
 	o.mu.Unlock()
 	out, _ := json.Marshal(view)
+	return out
+}
+
+// TakeReport returns the report of the current window as JSON when one is
+// due and starts a new window; nil when none is due. A window with decisions
+// is due once it lasts the report interval. final asks for the last report
+// of this run before the host stops the core: it is due when the core made
+// any decision in the run, and nothing is due after it.
+func (o *Observer) TakeReport(final bool) []byte {
+	o.mu.Lock()
+	v := o.e.takeReport(final, o.now())
+	o.mu.Unlock()
+	return o.marshalReport(v)
+}
+
+// Report returns the report the host would get from TakeReport(true) now,
+// with report_reason snapshot, and closes nothing; nil when it would get
+// none. A host keeps it to send the window when the process is killed
+// before the stop.
+func (o *Observer) Report() []byte {
+	o.mu.Lock()
+	v := o.e.snapshotReport(o.now())
+	o.mu.Unlock()
+	return o.marshalReport(v)
+}
+
+func (o *Observer) marshalReport(v *reportView) []byte {
+	if v == nil {
+		return nil
+	}
+	v.Run = o.run
+	out, _ := json.Marshal(v)
 	return out
 }
 

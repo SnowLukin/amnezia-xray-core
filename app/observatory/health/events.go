@@ -24,6 +24,8 @@ type eventLog struct {
 	events    []json.RawMessage
 	bytes     int
 	dropped   uint64
+	// Dropped over the whole run; a drain does not reset it.
+	droppedTotal uint64
 }
 
 func newEventLog(maxEvents, maxBytes int) *eventLog {
@@ -35,6 +37,7 @@ func (l *eventLog) add(now time.Time, typ string, fields map[string]any) {
 	raw, err := json.Marshal(Event{Seq: l.seq, Time: now.UnixMilli(), Type: typ, Fields: fields})
 	if err != nil {
 		l.dropped++
+		l.droppedTotal++
 		return
 	}
 	l.events = append(l.events, raw)
@@ -48,6 +51,7 @@ func (l *eventLog) trim() {
 		l.events[0] = nil
 		l.events = l.events[1:]
 		l.dropped++
+		l.droppedTotal++
 	}
 }
 

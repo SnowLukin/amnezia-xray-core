@@ -134,6 +134,8 @@ type engine struct {
 	// The host reported that memory is low: work that only improves the
 	// choice waits, finding failures does not.
 	memoryLow bool
+
+	report report
 }
 
 func newEngine(s *settings, seed int64) *engine {
@@ -183,6 +185,7 @@ func (e *engine) path(tag string) *path {
 
 func (e *engine) emit(now time.Time, typ string, fields map[string]any) {
 	e.events.add(now, typ, fields)
+	e.report.count(typ, fields)
 }
 
 func (e *engine) noteDemand(now time.Time) {

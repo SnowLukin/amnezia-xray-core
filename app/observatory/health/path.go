@@ -105,6 +105,8 @@ type path struct {
 
 	serverName string
 	stats      pathStats
+	// The counters at the previous report.
+	reported pathTotals
 }
 
 type pathStats struct {

@@ -21,6 +21,7 @@ message Config {
   NetworkConfig network = 7;
   // Sources of fresh outbounds for balancers.
   repeated ProviderConfig providers = 8;
+  ReportConfig report = 9;
 }
 
 // PassiveConfig decides when user traffic makes an outbound suspect.
@@ -131,6 +132,13 @@ message EventsConfig {
   int32 max_events = 1;
   // Maximum size of kept events in bytes.
   int64 max_bytes = 2;
+}
+
+// ReportConfig sets when the host gets a report of the decisions.
+message ReportConfig {
+  // A window with decisions is reported once it is this long. Zero is the
+  // default of 24 hours, negative turns the periodic report off.
+  int64 interval = 1;
 }
 
 message NetworkConfig {

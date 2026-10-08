@@ -41,6 +41,7 @@ const (
 	defaultSuspectCooldown   = time.Minute
 	maxSuspectCooldown       = time.Hour
 	defaultMaxEvents         = 1000
+	defaultReportInterval    = 24 * time.Hour
 	defaultMaxEventBytes     = 64 * 1024
 	defaultMaxNetworks       = 16
 	defaultMinHold           = 2 * time.Minute
@@ -182,6 +183,8 @@ type settings struct {
 	remember     bool
 	maxNetworks  int
 	providers    []*providerSettings
+	// Zero turns the periodic report off.
+	reportInterval time.Duration
 }
 
 type providerSettings struct {
@@ -381,6 +384,7 @@ func newSettings(c *Config) *settings {
 	}
 	s.maxEvents = min(num(c.GetEvents().GetMaxEvents(), defaultMaxEvents), maxEvents)
 	s.maxBytes = int(min(size(c.GetEvents().GetMaxBytes(), defaultMaxEventBytes), maxEventBytes))
+	s.reportInterval = optional(c.GetReport().GetInterval(), defaultReportInterval)
 	s.remember = !c.GetNetwork().GetNoMemory()
 	s.maxNetworks = min(num(c.GetNetwork().GetMaxNetworks(), defaultMaxNetworks), maxNetworks)
 	for _, pc := range c.GetProviders() {

@@ -102,6 +102,22 @@ func buildHealth(t *testing.T, raw string) (*health.Config, error) {
 	return m.(*health.Config), nil
 }
 
+func TestHealthReportInterval(t *testing.T) {
+	for raw, want := range map[string]int64{
+		`{"subjectSelector": ["a"], "report": {}}`:                  0,
+		`{"subjectSelector": ["a"], "report": {"interval": "0s"}}`:  -1,
+		`{"subjectSelector": ["a"], "report": {"interval": "90m"}}`: int64(90 * time.Minute),
+	} {
+		cfg, err := buildHealth(t, raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := cfg.GetReport().GetInterval(); got != want {
+			t.Errorf("%s: interval %d, want %d", raw, got, want)
+		}
+	}
+}
+
 func TestHealthProvidersBuild(t *testing.T) {
 	cfg, err := buildHealth(t, `{
 	  "subjectSelector": ["a"],
