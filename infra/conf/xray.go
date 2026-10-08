@@ -409,6 +409,8 @@ type Config struct {
 	BurstObservatory *BurstObservatoryConfig `json:"burstObservatory"`
 	Version          *VersionConfig          `json:"version"`
 	Geodata          *GeodataConfig          `json:"geodata"`
+
+	HealthObservatory *HealthObservatoryConfig `json:"healthObservatory"`
 }
 
 func (c *Config) findInboundTag(tag string) int {
@@ -481,6 +483,10 @@ func (c *Config) Override(o *Config, fn string) {
 
 	if o.BurstObservatory != nil {
 		c.BurstObservatory = o.BurstObservatory
+	}
+
+	if o.HealthObservatory != nil {
+		c.HealthObservatory = o.HealthObservatory
 	}
 
 	if o.Version != nil {
@@ -633,6 +639,20 @@ func (c *Config) Build() (*core.Config, error) {
 		r, err := c.BurstObservatory.Build()
 		if err != nil {
 			return nil, errors.New("failed to build burst observatory configuration").Base(err)
+		}
+		config.App = append(config.App, serial.ToTypedMessage(r))
+	}
+
+	if err := checkLeastCost(c.RouterConfig, c.HealthObservatory); err != nil {
+		return nil, err
+	}
+	if c.HealthObservatory != nil {
+		if c.Observatory != nil || c.BurstObservatory != nil {
+			return nil, errors.New("healthObservatory cannot be used together with observatory or burstObservatory")
+		}
+		r, err := c.HealthObservatory.Build()
+		if err != nil {
+			return nil, errors.New("failed to build health observatory configuration").Base(err)
 		}
 		config.App = append(config.App, serial.ToTypedMessage(r))
 	}
