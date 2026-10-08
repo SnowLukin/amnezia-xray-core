@@ -238,7 +238,8 @@ func (e *engine) expireLeases(p *provider, now time.Time) bool {
 
 // renewalOf tells why a lease ended without a renewal: the backend answered
 // without one, the last refresh that asked failed, renewal is off, or no
-// refresh asked yet.
+// refresh that asked has ended, also when one is under way: what it brings
+// is not known yet.
 func renewalOf(p *provider, l *lease) string {
 	switch {
 	case l.failed:

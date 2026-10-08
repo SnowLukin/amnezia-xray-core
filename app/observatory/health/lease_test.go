@@ -324,6 +324,35 @@ func TestExpiryEventTellsWhyThereWasNoRenewal(t *testing.T) {
 	}
 }
 
+// After a renewal request the end of the lease tells failed when the
+// request failed, and pending while it is still under way: no answer about
+// the lease has come yet.
+func TestExpiryEventAfterARenewalRequest(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		done *refreshOutcome
+		want string
+	}{
+		{"failed", &refreshOutcome{err: "timeout"}, "failed"},
+		{"under way", nil, "pending"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			te := leaseEngine(t, renewing(func(e *ExpiryTrigger) { e.Jitter = -1 }),
+				&SelectorConfig{Costs: costs("p-x1", 1, "p-x2", 2)}, "p-x1", "p-x2")
+			te.lease(t0, map[string]time.Duration{"p-x1": time.Minute}, "p-x1", "p-x2")
+			j := expectRefresh(t, te, at(30*time.Second), "expiry")
+			if tc.done != nil {
+				te.onRefreshDone(j, *tc.done, at(31*time.Second))
+			}
+			te.eventsOf(t, "")
+			te.refreshAt(at(time.Minute))
+			if ev := te.lastOf(t, "provider_expired"); ev.Fields["outbound"] != "p-x1" || ev.Fields["renewal"] != tc.want {
+				t.Fatalf("expired %v, want renewal %s", ev.Fields, tc.want)
+			}
+		})
+	}
+}
+
 // Leaving an expired outbound never ends on another one: the balancer stays
 // where it is.
 func TestLeavingNeverMovesToAnotherExpired(t *testing.T) {
