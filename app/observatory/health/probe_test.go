@@ -3,8 +3,10 @@ package health_test
 import (
 	"bytes"
 	"compress/gzip"
+	gonet "net"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -56,6 +58,38 @@ func TestLeastCostAddedAtRuntimeNextToAnotherObservatoryDoesNotPanic(t *testing.
 	rule := &router.BalancingRule{Tag: "b", OutboundSelector: []string{"a"}, Strategy: "leastcost"}
 	if err := r.ReloadRules(&router.Config{BalancingRule: []*router.BalancingRule{rule}}, true); err != nil {
 		t.Logf("reload refused: %v", err)
+	}
+}
+
+func TestProbeEndsByItsDeadlineAndLeavesNothing(t *testing.T) {
+	ln, err := gonet.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	var held []gonet.Conn
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			held = append(held, c)
+		}
+	}()
+	o := probeInstance(t)
+	before := runtime.NumGoroutine()
+	start := time.Now()
+	ok, _, _ := health.Probe(o, "a1", "http://"+ln.Addr().String()+"/silent", 0)
+	if took := time.Since(start); ok || took > 5*time.Second {
+		t.Fatalf("a server that never answers: ok %v after %v, want a failure by the 4 s deadline", ok, took)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for runtime.NumGoroutine() > before && time.Now().Before(deadline) {
+		time.Sleep(100 * time.Millisecond)
+	}
+	if n := runtime.NumGoroutine(); n > before {
+		t.Fatalf("%d goroutines 5 s after the probe, %d before", n, before)
 	}
 }
 
