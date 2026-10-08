@@ -100,9 +100,9 @@ func leaseRef(serverTime, date, wall time.Time) (time.Time, string) {
 // acceptLeases takes the leases of an applied answer, the whole truth about
 // the outbounds of its set: a later end renews a lease, the same one brings
 // only a fresher clock, an earlier one shortens it, and an outbound without
-// one has no lease. Leases of outbounds that left the set go with them. It reports
-// whether an outbound expired or came back, which the balancers have yet to
-// see.
+// one has no lease. Leases of outbounds that left the set go with them. It
+// reports whether an outbound expired or came back, which the balancers
+// have yet to see.
 func (e *engine) acceptLeases(p *provider, tags []string, a leaseAnswer, now time.Time) (leaseCounts, bool) {
 	at := a.at
 	if at.IsZero() {
@@ -130,10 +130,13 @@ func (e *engine) acceptLeases(p *provider, tags []string, a leaseAnswer, now tim
 		// lease that never ends.
 		ttl := min(max(end.Sub(ref), -maxLease), maxLease)
 		if l == nil || end.After(l.end) {
-			if l != nil {
+			// A later end that passed already renews nothing, and a lease
+			// that ended stays so: no second provider_expired for it, on
+			// every answer of a backend whose ends trail its clock.
+			if l != nil && ttl > 0 {
 				c.renewed++
 			}
-			l = &lease{end: end}
+			l = &lease{end: end, expired: was && ttl <= 0}
 			if p.leases == nil {
 				p.leases = map[string]*lease{}
 			}

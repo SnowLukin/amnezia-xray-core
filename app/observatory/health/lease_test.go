@@ -530,6 +530,37 @@ func TestExpiredOnArrivalStartsNoRefresh(t *testing.T) {
 	}
 }
 
+// A later end that passed already is a new value but renews nothing: a
+// lease that ended stays so without another provider_expired, and one that
+// had not ended ends once. A backend whose ends trail its clock adds no
+// renewal and no decision to the report on every answer.
+func TestLaterEndThatPassedRenewsNothing(t *testing.T) {
+	te := leaseEngine(t, nil, &SelectorConfig{Costs: costs("p-x1", 1, "p-x2", 2)}, "p-x1", "p-x2")
+	te.lease(t0, map[string]time.Duration{"p-x1": time.Minute, "p-x2": time.Hour}, "p-x1", "p-x2")
+	te.refreshAt(at(time.Minute))
+	if !te.expired["p-x1"] {
+		t.Fatal("setup: p-x1 did not end")
+	}
+	te.eventsOf(t, "")
+	for i, now := range []time.Time{at(3 * time.Minute), at(4 * time.Minute)} {
+		c := te.sameSet(now, map[string]time.Time{"p-x1": now.Add(-time.Second), "p-x2": at(time.Hour)})
+		if c.renewed != 0 || c.expired != 1 || !te.expired["p-x1"] || !te.prov().leases["p-x1"].asked {
+			t.Fatalf("answer %d: counts %+v, expired %v", i, c, te.expired)
+		}
+	}
+	if evs := te.eventsOf(t, "provider_expired"); len(evs) != 0 {
+		t.Fatalf("the ended lease ended again: %+v", evs)
+	}
+	// The clock of the backend runs ahead now: the later end of p-x2 is
+	// past by it.
+	c, _ := te.acceptLeases(te.prov(), te.prov().tags, leaseAnswer{
+		ends: map[string]time.Time{"p-x1": at(4 * time.Minute), "p-x2": at(90 * time.Minute)}, serverTime: at(2 * time.Hour)}, at(5*time.Minute))
+	if evs := te.eventsOf(t, "provider_expired"); c.renewed != 0 || c.expired != 2 || len(evs) != 1 ||
+		evs[0].Fields["outbound"] != "p-x2" || evs[0].Fields["renewal"] != "refused" {
+		t.Fatalf("counts %+v, expired events %+v; want one of p-x2", c, evs)
+	}
+}
+
 // An end centuries off the clock it counts from, such as the zero time a
 // backend sends for a time it never set, ends the lease on arrival as any
 // end in the past does. The answer arrives a moment before it is applied,
