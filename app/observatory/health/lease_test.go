@@ -617,6 +617,29 @@ func TestFailedExpiryRetryWaitsForTrafficWhenIdle(t *testing.T) {
 	expectRefresh(t, te, at(2*time.Hour+time.Second), "expiry")
 }
 
+// While idle, a renewal that failed waits for traffic, and so does its
+// urgent point: the one wake left is the end of the lease, or a dead
+// backend would wake a sleeping device at the urgent point of every lease.
+func TestFailedRenewalAddsNoUrgentWakeWhenIdle(t *testing.T) {
+	te := leaseEngine(t, renewing(func(e *ExpiryTrigger) { e.Jitter = -1 }), &SelectorConfig{Costs: costs("p-", 1)}, "p-x1")
+	te.s.schedule.pauseWhenIdle = 2 * time.Minute
+	te.lease(t0, map[string]time.Duration{"p-x1": time.Hour}, "p-x1")
+	jobs, _ := te.tickProviders(at(30 * time.Minute))
+	if len(jobs) != 1 || jobs[0].trigger != triggerExpiry {
+		t.Fatalf("idle refreshes at the renewal %v", triggers(jobs))
+	}
+	te.onRefreshDone(jobs[0], refreshOutcome{err: "timeout"}, at(30*time.Minute))
+	te.eventsOf(t, "")
+	if jobs, wake := te.tickProviders(at(31 * time.Minute)); len(jobs) != 0 || wake != at(time.Hour) {
+		t.Fatalf("idle after a failed renewal: refreshes %v, wake %v; want the end of the lease, not the urgent point at 48m",
+			triggers(jobs), wake.Sub(t0))
+	}
+	if skips := te.eventsOf(t, "provider_skip"); len(skips) != 1 || skips[0].Fields["reason"] != "idle" {
+		t.Fatalf("skips %+v", skips)
+	}
+	expectRefresh(t, te, at(48*time.Minute), "expiry")
+}
+
 // An answer that brings a lease ended already gives no more: no refresh is
 // asked for it, which with a wrong clock would be a loop.
 func TestExpiredOnArrivalStartsNoRefresh(t *testing.T) {

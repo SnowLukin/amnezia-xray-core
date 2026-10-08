@@ -409,6 +409,25 @@ func TestCloseStopsDrainsAndClosesReplacedHandlers(t *testing.T) {
 	}
 }
 
+// A malformed Age counts as none: a negative one would date the answer
+// earlier and stretch its leases, the unsafe way.
+func TestParseAge(t *testing.T) {
+	for in, want := range map[string]time.Duration{
+		"":                     0,
+		"abc":                  0,
+		"-5":                   0,
+		"1.5":                  0,
+		" 600 ":                10 * time.Minute,
+		"0":                    0,
+		"9999999999":           maxLease,
+		"99999999999999999999": 0,
+	} {
+		if got := parseAge(in); got != want {
+			t.Errorf("Age %q: %v, want %v", in, got, want)
+		}
+	}
+}
+
 func TestParseAnswer(t *testing.T) {
 	a, err := parseAnswer([]byte(`{"outbounds": [{"tag": "x"}], "nextRefreshIn": "90m", "costs": {"x": 3}}`))
 	if err != nil || a.nextRefreshIn != 90*time.Minute || a.costs["x"] != 3 {
