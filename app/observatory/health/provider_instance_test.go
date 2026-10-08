@@ -2,6 +2,7 @@ package health_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -372,5 +373,100 @@ func TestBrokenJSONTriesNextVia(t *testing.T) {
 	}
 	if applies := w.since(0, "provider_apply"); len(applies) != 0 {
 		t.Fatalf("a broken answer reached the apply: %+v", applies)
+	}
+}
+
+// replyServer answers every request with one status, headers and body.
+type replyServer struct {
+	status int
+	header map[string]string
+	body   string
+	mu     sync.Mutex
+	n      int
+}
+
+func (s *replyServer) ServeHTTP(w http.ResponseWriter, _ *http.Request) {
+	s.mu.Lock()
+	s.n++
+	s.mu.Unlock()
+	for k, v := range s.header {
+		w.Header().Set(k, v)
+	}
+	w.WriteHeader(s.status)
+	_, _ = w.Write([]byte(s.body))
+}
+
+func (s *replyServer) requests() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.n
+}
+
+// waitRefreshed waits until the first refresh of the provider is over.
+func waitRefreshed(t *testing.T, obs *health.Observer) {
+	t.Helper()
+	var st struct {
+		Providers []struct {
+			Refreshes int  `json:"refreshes"`
+			Fetching  bool `json:"fetching"`
+		} `json:"providers"`
+	}
+	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+		if err := json.Unmarshal(obs.Status(), &st); err != nil {
+			t.Fatal(err)
+		}
+		if st.Providers[0].Refreshes > 0 && !st.Providers[0].Fetching {
+			return
+		}
+	}
+	t.Fatal("the refresh did not end")
+}
+
+// Only the backend itself ends the attempts: by asking to wait or with an
+// error body of the protocol. A bare status may come from a firewall or a
+// portal on one way, so the next via is tried.
+func TestBackendAnswerEndsTheAttempts(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		srv      *replyServer
+		requests int
+		fields   map[string]any
+	}{
+		{"503 with Retry-After", &replyServer{status: 503, header: map[string]string{"Retry-After": "7200"}}, 1,
+			// Two hours are cut to backoff.max.
+			map[string]any{"status": 503.0, "retry_after_ms": 1_800_000.0}},
+		{"503 without Retry-After", &replyServer{status: 503}, 2, map[string]any{"status": 503.0}},
+		{"429 with an error body", &replyServer{status: 429, header: map[string]string{"Content-Type": "application/json"},
+			body: `{"protocol": 1, "error": "rate_limited", "message": "slow down"}`}, 1,
+			map[string]any{"status": 429.0, "code": "rate_limited"}},
+		{"429 with a body of no protocol", &replyServer{status: 429, body: `{"error": "rate_limited"}`}, 2,
+			map[string]any{"status": 429.0}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ts := httptest.NewServer(tc.srv)
+			defer ts.Close()
+			obs := twoViaCore(t, ts.URL+"/set")
+			w := &eventWaiter{t: t, o: obs}
+			obs.RequestRefresh("fresh")
+			waitRefreshed(t, obs)
+			w.until("provider_fetch", nil)
+			fetches := w.since(0, "provider_fetch")
+			if tc.srv.requests() != tc.requests || len(fetches) != tc.requests {
+				t.Fatalf("%d requests, fetches %+v; want %d", tc.srv.requests(), fetches, tc.requests)
+			}
+			for k, v := range tc.fields {
+				if fetches[0].Fields[k] != v {
+					t.Errorf("fetch %s = %v, want %v", k, fetches[0].Fields[k], v)
+				}
+			}
+			for _, k := range []string{"code", "retry_after_ms"} {
+				if _, want := tc.fields[k]; !want && fetches[0].Fields[k] != nil {
+					t.Errorf("fetch has %s %v", k, fetches[0].Fields[k])
+				}
+			}
+			if strings.Contains(fmt.Sprint(fetches), "slow down") || strings.Contains(string(obs.Status()), "slow down") {
+				t.Error("the message of an error body was kept")
+			}
+		})
 	}
 }

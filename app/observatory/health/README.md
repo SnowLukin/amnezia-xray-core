@@ -229,6 +229,19 @@ is tried. An answer that is a JSON object but breaks the protocol ends the
 attempts: the backend itself sent it, and another entry leads to the same
 backend.
 
+An answer other than 200 may carry an error body of the protocol,
+`{"protocol": 1, "error": "<code>", "message": "..."}`. The core reads its
+first 4 KiB and takes only the code, into `provider_fetch`; the message may
+echo the request and is kept nowhere. A 429 or 503 with `Retry-After`, in
+seconds or as an HTTP date counted from the `Date` of the answer, holds
+every trigger, the host and an exhausted balancer too, for that long: at
+most `backoff.max`, then spread by up to `backoff.jitter` upward only, so no
+client comes back sooner than asked and clients told the same pause come
+back apart. Such a pause is no failure, and the backoff does not grow. An
+error body and `Retry-After` end the attempts, as the backend itself
+answered. A bare status may come from a firewall, a portal or a proxy on
+one way, and the next entry is tried.
+
 **Answer.**
 
 ```json
@@ -318,7 +331,8 @@ while the network is down.
 for `backoff`, counted from that attempt, so a failing refresh never runs in
 a loop. A refresh for an exhausted balancer that brings the same set counts
 as a failure for the backoff. A failed host request and a failed network
-change refresh are retried after the backoff.
+change refresh are retried after the backoff, or after the pause a busy
+backend asked for.
 
 ## Probes on request
 
@@ -467,10 +481,10 @@ changed its settings). `kinds` counts failures by kind: `dial_failed`, `dial_tim
 | `connectivity_ignored` | `failed_checks` | The check failed while an outbound worked; it is not used until the next network change. |
 | `network_change` | `network`, `known`, `generation` | The host reported a network change. |
 | `memory_low` | `on` | The host reported that memory is low (`on` true) or no longer. |
-| `provider_fetch` | `provider`, `trigger`, `retry`, `attempt`, `via`, `outbound`, `ok`, `status`, `ms`, `bytes`, `error` | One request of a refresh through one `via` entry; `outbound` is what the entry resolved to, `bytes` the size of the answer. A skipped entry has `ok` false and only `error`: `balancer exhausted`, `outbound down` or `no such outbound`. `error` never holds the URL. `trigger`: `host`, `exhausted`, `min_healthy`, `cost_above`, `network_change`, `next_refresh`, `max_age`, `interval`; `retry` counts failed refreshes before this one. An answer that breaks the protocol has `ok` true: the backend answered, and the refusal is the `provider_apply`'s. |
+| `provider_fetch` | `provider`, `trigger`, `retry`, `attempt`, `via`, `outbound`, `ok`, `status`, `ms`, `bytes`, `code`, `retry_after_ms`, `error` | One request of a refresh through one `via` entry; `outbound` is what the entry resolved to, `bytes` the size of the answer. `code` is the code of an error body of the protocol, `retry_after_ms` the pause `Retry-After` asked for, after the ceiling and before the spread. A skipped entry has `ok` false and only `error`: `balancer exhausted`, `outbound down` or `no such outbound`. `error` never holds the URL. `trigger`: `host`, `exhausted`, `min_healthy`, `cost_above`, `network_change`, `next_refresh`, `max_age`, `interval`; `retry` counts failed refreshes before this one. An answer that breaks the protocol has `ok` true: the backend answered, and the refusal is the `provider_apply`'s. |
 | `provider_apply` | `provider`, `trigger`, `ok`, `changed`, `added`, `replaced`, `removed`, `unchanged`, `version`, `exhausted`, `rules`, `routing_error`, `routing_ignored`, `error` | The answer was applied (`changed`), was the applied set already, or was rejected (`ok` false with `error`). `exhausted` tells whether the balancer had nothing usable at that moment. `rules` counts the routing rules applied with the set; `routing_ignored` tells that the answer had routing while `apply.routing` is off. |
 | `provider_restart_needed` | `provider`, `version`, `sections` | Kept for sections of the config the core reads only at start. Protocol 1 refuses an answer with such a section, so this version does not write it. |
-| `provider_skip` | `provider`, `trigger`, `reason`, `wait_ms` | A trigger wants a refresh that cannot start yet. `reason`: `min_interval`, `backoff`, `max_per_hour`, `idle`, `network_down`, `memory`. Reported once per trigger and reason until a refresh starts. |
+| `provider_skip` | `provider`, `trigger`, `reason`, `wait_ms` | A trigger wants a refresh that cannot start yet. `reason`: `min_interval`, `backoff`, `retry_after`, `max_per_hour`, `idle`, `network_down`, `memory`. Reported once per trigger and reason until a refresh starts. |
 | `provider_drained` | `provider`, `outbound`, `replaced` | An outbound that left the set, or the old handler of a replaced one, was closed: after `drain`, at once without connections, or early to keep at most `maxOutbounds` draining. |
 
 ## Report
@@ -521,6 +535,7 @@ to this one. Reports of one run add up.
 | `upgrade_attempts`, `upgrade_failures` | `upgrade_start` and `upgrade_failed` events. |
 | `network_changes`, `network_known`, `network_down` | `network_change` events, the ones with `known`, and `network_down` events. |
 | `provider_fetches`, `provider_fetch_failures`, `provider_triggers` | `provider_fetch` events, the ones without `ok`, and their count by `trigger`. |
+| `provider_retry_after` | `provider_fetch` events with `retry_after_ms`: a busy backend asked to wait. |
 | `provider_applied`, `provider_rejected`, `provider_restart_needed` | `provider_apply` events that changed the set, the rejected ones, and `provider_restart_needed` events. |
 | `pins`, `releases` | `pin` and `release` events. |
 | `memory_low` | `memory_low` events with `on`. |
@@ -536,7 +551,8 @@ first byte (p50, p90), failures by kind, probes and their bytes, and time as
 the chosen outbound; per balancer the chosen and pinned outbound, whether it
 is exhausted, the time on the chosen outbound and the next return attempt;
 per provider the version of the set, its size, outbounds still draining,
-refreshes and failures, the age of the set, the next timed refresh and the
-backoff; the probe requests of the host (`probe_requests`), each with `id`,
+refreshes and failures, the age of the set, the next timed refresh, the
+backoff and what is left of a pause a busy backend asked for
+(`retry_after_ms`); the probe requests of the host (`probe_requests`), each with `id`,
 `balancer`, `age_ms`, `done`, `end` and the result per outbound, see Probes
 on request.

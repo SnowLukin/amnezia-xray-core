@@ -59,6 +59,8 @@ const (
 
 	// The version of the provider protocol the core speaks.
 	providerProtocol = 1
+	// How much of an answer that is not 200 is read for its error code.
+	maxErrorBody = 4 << 10
 
 	defaultProviderTimeout      = 10 * time.Second
 	defaultRefreshInterval      = 2 * time.Hour

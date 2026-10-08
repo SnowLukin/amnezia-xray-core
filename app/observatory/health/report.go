@@ -46,6 +46,7 @@ type reportCounts struct {
 	ProviderFetches       int64            `json:"provider_fetches"`
 	ProviderFetchFailures int64            `json:"provider_fetch_failures"`
 	ProviderTriggers      map[string]int64 `json:"provider_triggers"`
+	ProviderRetryAfter    int64            `json:"provider_retry_after"`
 	ProviderApplied       int64            `json:"provider_applied"`
 	ProviderRejected      int64            `json:"provider_rejected"`
 	ProviderRestartNeeded int64            `json:"provider_restart_needed"`
@@ -182,6 +183,9 @@ func (r *report) count(typ string, f map[string]any) {
 				c.ProviderTriggers = map[string]int64{}
 			}
 			c.ProviderTriggers[trigger]++
+		}
+		if _, ok := f["retry_after_ms"]; ok {
+			c.ProviderRetryAfter++
 		}
 	case "provider_apply":
 		switch {

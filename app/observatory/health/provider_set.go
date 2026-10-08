@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -394,14 +395,15 @@ func (o *Observer) emit(typ string, fields map[string]any) {
 func (o *Observer) runRefresh(j *refreshJob) {
 	rt := o.runtimeFor(j.p)
 	var r refreshOutcome
-	if a, err := o.fetchSet(rt, j); err != nil {
+	if res, err := o.fetchSet(rt, j); err != nil {
 		r.err = err.Error()
-	} else if changed, err := o.applySet(rt, a, j); err != nil {
+		r.retryAfter = res.retryAfter
+	} else if changed, err := o.applySet(rt, res.answer, j); err != nil {
 		r.err = err.Error()
 	} else {
 		r.ok = true
 		r.changed = changed
-		r.nextRefreshIn = a.nextRefreshIn
+		r.nextRefreshIn = res.answer.nextRefreshIn
 	}
 	o.mu.Lock()
 	o.e.onRefreshDone(j, r, o.now())
@@ -409,14 +411,33 @@ func (o *Observer) runRefresh(j *refreshJob) {
 	o.wake()
 }
 
+// fetchResult is what one request through one via brought.
+type fetchResult struct {
+	answer *providerAnswer
+	status int
+	bytes  int
+	// The pause a busy backend asked for with Retry-After, at most
+	// backoff.max; zero without one.
+	retryAfter time.Duration
+	// The code of a protocol error body.
+	code string
+	// The Date of the answer; zero without one.
+	date time.Time
+	// The backend itself answered, in the protocol or by asking to wait.
+	// Another via leads to the same backend, so the attempts end.
+	backend bool
+}
+
 // fetchSet requests the set through the via outbounds in turn until one
-// brings a well-formed answer, or the backend answers against the protocol:
-// another via leads to the same backend. Every attempt is an event.
-func (o *Observer) fetchSet(rt *providerRuntime, j *refreshJob) (*providerAnswer, error) {
+// brings a well-formed answer or the backend itself answers. An answer that
+// a firewall, a portal or a server on the way may have given goes on to the
+// next via. Every attempt is an event.
+func (o *Observer) fetchSet(rt *providerRuntime, j *refreshJob) (fetchResult, error) {
 	via := rt.cfg.via
 	if len(via) == 0 {
 		via = []string{""}
 	}
+	var last fetchResult
 	var lastErr error
 	for i, v := range via {
 		o.mu.Lock()
@@ -432,41 +453,50 @@ func (o *Observer) fetchSet(rt *providerRuntime, j *refreshJob) (*providerAnswer
 			f["ok"] = false
 			f["error"] = skip
 			o.emit("provider_fetch", f)
-			lastErr = errors.New(skip)
+			last, lastErr = fetchResult{}, errors.New(skip)
 			continue
 		}
 		start := time.Now()
-		a, status, n, err := o.fetchOnce(rt.cfg, tag)
+		r, err := o.fetchOnce(rt.cfg, tag)
 		// An answer against the protocol still came from the backend: the
 		// request did its job and the refusal is the apply's, so the report
 		// counts it once, as rejected.
 		refused := isAnswerError(err)
 		f["ok"] = err == nil || refused
-		f["status"] = status
+		f["status"] = r.status
 		f["ms"] = time.Since(start).Milliseconds()
-		f["bytes"] = n
+		f["bytes"] = r.bytes
+		if r.code != "" {
+			f["code"] = r.code
+		}
+		if r.retryAfter > 0 {
+			f["retry_after_ms"] = r.retryAfter.Milliseconds()
+		}
 		if err != nil && !refused {
 			f["error"] = err.Error()
 		}
 		o.emit("provider_fetch", f)
 		if err == nil {
-			return a, nil
+			return r, nil
 		}
 		if refused {
 			o.emit("provider_apply", map[string]any{"provider": rt.cfg.tag, "trigger": j.trigger.String(),
 				"ok": false, "error": err.Error()})
-			return nil, err
 		}
-		lastErr = err
+		last, lastErr = r, err
+		if r.backend {
+			break
+		}
 		if low {
 			// One request at a time is enough; the backoff brings the next.
 			break
 		}
 	}
-	return nil, lastErr
+	return last, lastErr
 }
 
-func (o *Observer) fetchOnce(cfg *providerSettings, tag string) (*providerAnswer, int, int, error) {
+func (o *Observer) fetchOnce(cfg *providerSettings, tag string) (fetchResult, error) {
+	var r fetchResult
 	// Counted like a probe, so the request is not taken for user traffic.
 	var wire atomic.Int64
 	ctx, cancel := context.WithTimeout(withProbe(o.runCtx, &wire), cfg.timeout)
@@ -492,7 +522,7 @@ func (o *Observer) fetchOnce(cfg *providerSettings, tag string) (*providerAnswer
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, cfg.url, nil)
 	if err != nil {
-		return nil, 0, 0, err
+		return r, err
 	}
 	for k, v := range cfg.headers {
 		req.Header.Set(k, v)
@@ -503,36 +533,100 @@ func (o *Observer) fetchOnce(cfg *providerSettings, tag string) (*providerAnswer
 	resp, err := client.Do(req)
 	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
-			return nil, 0, 0, errors.New("timeout")
+			return r, errors.New("timeout")
 		}
 		// Events go to analytics; the URL may name more than it should.
 		if ue, ok := err.(*url.Error); ok {
 			err = ue.Err
 		}
-		return nil, 0, 0, err
+		return r, err
 	}
 	defer resp.Body.Close()
+	r.status = resp.StatusCode
+	if d, err := http.ParseTime(resp.Header.Get("Date")); err == nil {
+		r.date = d
+	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, resp.StatusCode, 0, fmt.Errorf("status %d", resp.StatusCode)
+		// Only the protocol and the code of an error body are read: its
+		// message may echo the request and is kept nowhere.
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBody))
+		r.bytes = len(body)
+		r.code = errorCode(body)
+		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusServiceUnavailable {
+			if ra := parseRetryAfter(resp.Header.Get("Retry-After"), r.date, o.now()); ra > 0 {
+				r.retryAfter = min(ra, cfg.backoff.max)
+			}
+		}
+		r.backend = r.code != "" || r.retryAfter > 0
+		return r, fmt.Errorf("status %d", resp.StatusCode)
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, cfg.maxBytes+1))
+	r.bytes = len(body)
 	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
 			err = errors.New("timeout")
 		}
-		return nil, resp.StatusCode, len(body), err
+		return r, err
 	}
 	if int64(len(body)) > cfg.maxBytes {
-		return nil, resp.StatusCode, len(body), fmt.Errorf("answer larger than %d bytes", cfg.maxBytes)
+		return r, fmt.Errorf("answer larger than %d bytes", cfg.maxBytes)
 	}
-	a, err := parseAnswer(body)
-	if err != nil && !isAnswerError(err) {
+	r.answer, err = parseAnswer(body)
+	switch {
+	case isAnswerError(err):
+		r.backend = true
+	case err != nil:
 		err = fmt.Errorf("invalid answer: %w", err)
 	}
-	if err != nil {
-		return nil, resp.StatusCode, len(body), err
+	return r, err
+}
+
+// errorCode returns the code of a protocol error body,
+// {"protocol": 1, "error": "<code>", "message": "..."}, or "" when the body
+// is not one: a firewall or a portal answers with a status as well, but not
+// in the protocol.
+func errorCode(body []byte) string {
+	var e struct {
+		Protocol *float64 `json:"protocol"`
+		Error    string   `json:"error"`
 	}
-	return a, resp.StatusCode, len(body), nil
+	if json.Unmarshal(body, &e) != nil || e.Protocol == nil || *e.Protocol < 1 || *e.Protocol != math.Trunc(*e.Protocol) {
+		return ""
+	}
+	// The code goes into events as it is, so it has to look like one.
+	if len(e.Error) == 0 || len(e.Error) > 32 {
+		return ""
+	}
+	for _, c := range e.Error {
+		if (c < 'a' || c > 'z') && c != '_' {
+			return ""
+		}
+	}
+	return e.Error
+}
+
+// parseRetryAfter reads Retry-After as seconds or as an HTTP date. A date
+// counts from the Date of the same answer, so a wrong clock of the device
+// does not stretch or cut the pause, or from the wall clock without one.
+// Zero, a date gone by and anything unreadable count as no header.
+func parseRetryAfter(value string, date, wall time.Time) time.Duration {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0
+	}
+	if secs, err := strconv.ParseInt(value, 10, 64); err == nil {
+		// Beyond a day it is the backoff ceiling anyway; the cap keeps the
+		// product from overflowing.
+		return time.Duration(min(max(secs, 0), int64(24*time.Hour/time.Second))) * time.Second
+	}
+	at, err := http.ParseTime(value)
+	if err != nil {
+		return 0
+	}
+	if date.IsZero() {
+		date = wall
+	}
+	return max(at.Sub(date), 0)
 }
 
 type outboundChange struct {

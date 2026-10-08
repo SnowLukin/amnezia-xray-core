@@ -92,6 +92,9 @@ func foldReport(t *testing.T, raw []byte) (reportCounts, bool) {
 			if trigger, ok := f["trigger"].(string); ok {
 				c.ProviderTriggers[trigger]++
 			}
+			if _, ok := f["retry_after_ms"]; ok {
+				c.ProviderRetryAfter++
+			}
 		case "provider_apply":
 			if f["ok"] == false {
 				c.ProviderRejected++
@@ -163,6 +166,8 @@ func TestReportAddsUpTheEvents(t *testing.T) {
 		"via": "", "outbound": "", "ok": true, "status": 200, "ms": int64(40), "bytes": 900})
 	te.emit(now, "provider_fetch", map[string]any{"provider": "p", "trigger": "exhausted", "retry": 1, "attempt": 1,
 		"via": "auto", "outbound": "", "ok": false, "error": "balancer exhausted"})
+	te.emit(now, "provider_fetch", map[string]any{"provider": "p", "trigger": "exhausted", "retry": 1, "attempt": 1,
+		"via": "", "outbound": "", "ok": false, "status": 429, "retry_after_ms": int64(60000), "error": "status 429"})
 	te.emit(now, "provider_apply", map[string]any{"provider": "p", "trigger": "host", "ok": false, "error": "bad"})
 	te.emit(now, "provider_apply", map[string]any{"provider": "p", "trigger": "host", "ok": true, "changed": false})
 	te.emit(now, "provider_apply", map[string]any{"provider": "p", "trigger": "host", "ok": true, "changed": true})

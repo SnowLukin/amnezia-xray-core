@@ -81,7 +81,10 @@ type provider struct {
 	// cannot run again at once.
 	failures     int
 	backoffUntil time.Time
-	skipped      map[refreshTrigger]string
+	// A busy backend asked every trigger to wait until then. It is no
+	// failure: the backoff does not grow.
+	retryAfterUntil time.Time
+	skipped         map[refreshTrigger]string
 
 	version   string
 	members   int
@@ -109,6 +112,8 @@ type refreshOutcome struct {
 	// The set differs from the previous one and was applied.
 	changed       bool
 	nextRefreshIn time.Duration
+	// The backend asked to wait this long, at most backoff.max.
+	retryAfter time.Duration
 }
 
 func (e *engine) provider(tag string) *provider {
@@ -298,6 +303,9 @@ func (p *provider) allowedAt(t refreshTrigger, now time.Time) (time.Time, string
 	if p.failures > 0 {
 		later(p.backoffUntil, "backoff")
 	}
+	// The backend asked for it: even the host and an exhausted balancer wait,
+	// since asking sooner only adds to the load that made it busy.
+	later(p.retryAfterUntil, "retry_after")
 	cut := 0
 	for cut < len(p.attempts) && now.Sub(p.attempts[cut]) >= time.Hour {
 		cut++
@@ -375,6 +383,13 @@ func (e *engine) onRefreshDone(j *refreshJob, r refreshOutcome, now time.Time) {
 			p.retry = j.trigger
 		case triggerMinHealthy:
 			p.minHealthyArmed = true
+		}
+		if r.retryAfter > 0 {
+			// A pause the backend chose is no failure. The spread only adds,
+			// so no client comes back sooner than asked, and clients told
+			// the same pause at once come back apart.
+			p.retryAfterUntil = now.Add(time.Duration(float64(r.retryAfter) * (1 + p.cfg.backoff.jitter*e.rnd.Float64())))
+			return
 		}
 	}
 	p.failures++

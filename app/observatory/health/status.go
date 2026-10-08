@@ -54,6 +54,7 @@ type providerStatusView struct {
 	NextTrigger    string `json:"next_trigger,omitempty"`
 	NextInMs       *int64 `json:"next_in_ms,omitempty"`
 	BackoffMs      int64  `json:"backoff_ms,omitempty"`
+	RetryAfterMs   int64  `json:"retry_after_ms,omitempty"`
 	AttemptsInHour int    `json:"attempts_last_hour"`
 }
 
@@ -172,6 +173,9 @@ func (e *engine) status(now time.Time) statusView {
 		}
 		if p.failures > 0 && now.Before(p.backoffUntil) {
 			pv.BackoffMs = p.backoffUntil.Sub(now).Milliseconds()
+		}
+		if now.Before(p.retryAfterUntil) {
+			pv.RetryAfterMs = p.retryAfterUntil.Sub(now).Milliseconds()
 		}
 		for _, t := range p.attempts {
 			if now.Sub(t) < time.Hour {

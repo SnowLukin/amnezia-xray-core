@@ -3,6 +3,7 @@ package health
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"testing"
 	"time"
 )
@@ -736,5 +737,102 @@ func TestProviderDefaultsAndOff(t *testing.T) {
 	s := newSettings(&Config{SubjectSelector: []string{"a"}, Providers: []*ProviderConfig{quietProvider(nil)}})
 	if !s.observes("p-x1") {
 		t.Fatal("outbounds of a provider are not observed")
+	}
+}
+
+func TestRetryAfterForms(t *testing.T) {
+	wall := time.Date(2026, 10, 8, 12, 0, 0, 0, time.UTC)
+	// The device clock runs an hour ahead of the server.
+	date := wall.Add(-time.Hour)
+	for _, tc := range []struct {
+		name, value string
+		date        time.Time
+		want        time.Duration
+	}{
+		{"seconds", "120", date, 2 * time.Minute},
+		{"seconds with spaces", " 7 ", time.Time{}, 7 * time.Second},
+		{"date from Date", date.Add(90 * time.Second).Format(http.TimeFormat), date, 90 * time.Second},
+		{"date without Date", wall.Add(time.Minute).Format(http.TimeFormat), time.Time{}, time.Minute},
+		{"date gone by", date.Add(-time.Minute).Format(http.TimeFormat), date, 0},
+		{"zero", "0", date, 0},
+		{"negative", "-5", date, 0},
+		{"garbage", "soon", date, 0},
+		{"none", "", date, 0},
+		{"far", "9999999999", date, 24 * time.Hour},
+	} {
+		if got := parseRetryAfter(tc.value, tc.date, wall); got != tc.want {
+			t.Errorf("%s: %q gives %v, want %v", tc.name, tc.value, got, tc.want)
+		}
+	}
+}
+
+// A busy backend holds every trigger, the host and an exhausted balancer
+// too, and the pause is no failure: the backoff does not grow.
+func TestRetryAfterHoldsEveryTriggerWithoutGrowingBackoff(t *testing.T) {
+	te := newProviderEngine(t, quietProvider(func(p *ProviderConfig) {
+		p.Triggers.SkipWhenExhausted = false
+		p.Limits.ExhaustedMinInterval = int64(time.Second)
+	}), nil, "a1")
+	te.exhaust(te.sel, t0)
+	j := expectRefresh(t, te, at(time.Second), "exhausted")
+	te.onRefreshDone(j, refreshOutcome{err: "status 429", retryAfter: time.Minute}, at(2*time.Second))
+	p := te.prov()
+	until := p.retryAfterUntil
+	if p.failures != 0 || !p.backoffUntil.IsZero() || until.Before(at(62*time.Second)) || until.After(at(80*time.Second)) {
+		t.Fatalf("failures %d, backoff until %v, wait until %v", p.failures, p.backoffUntil, until.Sub(t0))
+	}
+	expectNoRefresh(t, te, at(3*time.Second))
+	te.requestRefresh("fresh")
+	for now := at(4 * time.Second); now.Before(until); now = now.Add(5 * time.Second) {
+		if jobs, wake := te.refreshAt(now); len(jobs) != 0 || !wake.Equal(until) {
+			t.Fatalf("at %v: refreshes %v, wake %v; want none until %v", now.Sub(t0), triggers(jobs), wake.Sub(t0), until.Sub(t0))
+		}
+	}
+	var held []string
+	for _, e := range te.eventsOf(t, "provider_skip") {
+		held = append(held, fmt.Sprint(e.Fields["trigger"], ":", e.Fields["reason"]))
+	}
+	if fmt.Sprint(held) != "[exhausted:retry_after host:retry_after]" {
+		t.Fatalf("skips %v, want one retry_after per trigger", held)
+	}
+	if j := expectRefresh(t, te, until, "host"); j.retry != 0 {
+		t.Fatalf("the refresh after the pause counts %d failures", j.retry)
+	}
+}
+
+// The spread only adds to the pause: no client comes back sooner than the
+// backend asked.
+func TestRetryAfterJitterOnlyLater(t *testing.T) {
+	shortest, longest := time.Hour, time.Duration(0)
+	for seed := int64(1); seed <= 500; seed++ {
+		e := newEngine(newSettings(&Config{Providers: []*ProviderConfig{quietProvider(nil)}}), seed)
+		p := e.providers[0]
+		e.onRefreshDone(&refreshJob{p: p, trigger: triggerHost}, refreshOutcome{err: "status 503", retryAfter: 10 * time.Second}, t0)
+		wait := p.retryAfterUntil.Sub(t0)
+		shortest, longest = min(shortest, wait), max(longest, wait)
+	}
+	if shortest < 10*time.Second || longest > 13*time.Second || shortest > 10500*time.Millisecond || longest < 12500*time.Millisecond {
+		t.Fatalf("waits from %v to %v, want 10 s to 13 s, spread upward over the whole range", shortest, longest)
+	}
+}
+
+// 1000 clients told the same pause at once must not come back at once.
+func TestRetryAfterOfManyClientsSpreadOut(t *testing.T) {
+	const clients = 1000
+	bySecond := map[int]int{}
+	for c := 0; c < clients; c++ {
+		e := newEngine(newSettings(&Config{Providers: []*ProviderConfig{quietProvider(nil)}}), int64(c+1))
+		p := e.providers[0]
+		e.onRefreshDone(&refreshJob{p: p, trigger: triggerExhausted}, refreshOutcome{err: "status 429", retryAfter: time.Minute}, t0)
+		back := p.retryAfterUntil.Sub(t0)
+		if back < time.Minute || back > 78*time.Second {
+			t.Fatalf("client %d comes back after %v, want 60-78 s", c, back)
+		}
+		bySecond[int(back/time.Second)]++
+	}
+	for sec, n := range bySecond {
+		if n > clients/10 {
+			t.Fatalf("second %d gets %d of %d clients", sec, n, clients)
+		}
 	}
 }
