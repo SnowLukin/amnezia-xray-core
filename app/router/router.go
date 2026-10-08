@@ -252,7 +252,13 @@ func (r *Router) pickRouteInternal(ctx routing.Context) (*Rule, routing.Context,
 		ctx = routing_dns.ContextWithDNSClient(ctx, r.dns)
 	}
 
-	for _, rule := range r.rules {
+	// Rules change while routing. Every change builds a new slice or appends
+	// past the end of the current one, so a snapshot stays valid without the lock.
+	r.mu.Lock()
+	rules := r.rules
+	r.mu.Unlock()
+
+	for _, rule := range rules {
 		if rule.Apply(ctx) {
 			return rule, ctx, nil
 		}
@@ -265,7 +271,7 @@ func (r *Router) pickRouteInternal(ctx routing.Context) (*Rule, routing.Context,
 	ctx = routing_dns.ContextWithDNSClient(ctx, r.dns)
 
 	// Try applying rules again if we have IPs.
-	for _, rule := range r.rules {
+	for _, rule := range rules {
 		if rule.Apply(ctx) {
 			return rule, ctx, nil
 		}
