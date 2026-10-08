@@ -16,6 +16,7 @@ Environment:
   BENCH_TLS=1         user traffic is TLS 1.3 to the target. Only then does
                       XTLS Vision switch to direct copy, which splices on Linux.
   BENCH_LOGLEVEL      log level of the client, debug to see splices.
+  BENCH_CONCURRENT    schedule.concurrent of the client: probes at a time.
 """
 import datetime
 import http.client
@@ -47,6 +48,7 @@ CLIENT_BIN = os.environ.get("BENCH_CLIENT_BIN", "")
 HOST = os.environ.get("BENCH_HOST", "10.0.2.2" if ADB_SERIAL else "127.0.0.1")
 TLS = os.environ.get("BENCH_TLS") == "1"
 LOGLEVEL = os.environ.get("BENCH_LOGLEVEL", "warning")
+CONCURRENT = int(os.environ.get("BENCH_CONCURRENT", "1"))
 
 OFFSET = int(os.environ.get("BENCH_PORT_OFFSET", "0"))
 TARGET_TLS_PORT = 18998 + OFFSET
@@ -228,6 +230,8 @@ def client_config(members, costs, health=None, strategy=None, burst=None, loglev
         "connectivity": {"outbound": "net", "destination": f"http://{HOST}:{CONNECTIVITY_PORT}/204",
                          "timeout": "2s"},
     }
+    if "BENCH_CONCURRENT" in os.environ:
+        h["schedule"] = {"concurrent": CONCURRENT}
     for k, v in (health or {}).items():
         if isinstance(v, dict) and isinstance(h.get(k), dict):
             h[k] = h[k] | v

@@ -109,9 +109,10 @@ message ScheduleConfig {
   int64 pause_when_idle = 1;
   // How long a failed outbound rests before it may be probed again.
   Backoff quarantine = 2;
-  // Probes running at the same time.
+  // Probes running at the same time, never two of one server name.
   int32 concurrent = 3;
-  // Minimum pause between probe starts.
+  // Minimum pause between probe starts; with concurrent above one, that many
+  // may start within it.
   int64 spacing = 4;
   // Random spread of spacing.
   double spacing_jitter = 5;

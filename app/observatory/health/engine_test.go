@@ -331,8 +331,8 @@ func TestSharedCandidateAnswersEveryBalancer(t *testing.T) {
 	}
 	e.onProbeResult(jobs[0], probeResult{ok: true}, at(2*time.Second))
 	for _, s := range []*selector{s1, s2} {
-		if s.current() != "b1" || s.failoverProbing != "" {
-			t.Fatalf("%s on %q, waiting for %q", s.tag, s.current(), s.failoverProbing)
+		if s.current() != "b1" || len(s.failoverProbing) != 0 {
+			t.Fatalf("%s on %q, waiting for %v", s.tag, s.current(), s.failoverProbing)
 		}
 	}
 }

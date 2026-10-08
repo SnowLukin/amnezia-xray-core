@@ -1,6 +1,7 @@
 package health
 
 import (
+	"math"
 	"math/rand"
 	"slices"
 	"sort"
@@ -76,8 +77,8 @@ type engine struct {
 	running map[uint64]*probeJob
 	nextID  uint64
 
-	lastStart     time.Time
-	nextSpacing   time.Duration
+	// When the spacing after each recent probe start ends.
+	spacedUntil   []time.Time
 	starts        []time.Time
 	startsByName  map[string][]time.Time
 	serverNameFor func(tag string) string
@@ -409,8 +410,10 @@ type selector struct {
 	pinnedUntil time.Time
 	exhausted   bool
 
+	// Candidates of the failover under way: every one tried, and the ones
+	// whose probe has not answered yet.
 	failoverTried   map[string]bool
-	failoverProbing string
+	failoverProbing map[string]bool
 
 	upgradeAt        time.Time
 	upgradeTarget    string
@@ -520,9 +523,14 @@ func (e *engine) updateCandidates(s *selector, candidates []string, now time.Tim
 	snap := append([]string(nil), candidates...)
 	s.snapshot.Store(&snap)
 	lostProbe := false
-	if s.failoverProbing != "" && !s.hasCandidate(s.failoverProbing) {
-		s.failoverProbing = ""
-		lostProbe = true
+	for t := range s.failoverProbing {
+		if !s.hasCandidate(t) {
+			delete(s.failoverProbing, t)
+			lostProbe = true
+		}
+	}
+	if lostProbe {
+		e.dropUnclaimedFailover()
 	}
 	if s.upgradeTarget != "" && !s.hasCandidate(s.upgradeTarget) {
 		s.upgradeTarget = ""
@@ -543,7 +551,7 @@ func (e *engine) updateCandidates(s *selector, candidates []string, now time.Tim
 		}
 	case lostProbe && e.path(cur).status == statusDown:
 		e.failover(s, now)
-	case s.upgradeAt.IsZero() && s.upgradeTarget == "" && s.failoverProbing == "":
+	case s.upgradeAt.IsZero() && s.upgradeTarget == "" && len(s.failoverProbing) == 0:
 		// Nothing was cheaper at the last switch; a new cheaper candidate is
 		// worth a return.
 		e.scheduleUpgrade(s, now, true)
@@ -599,7 +607,8 @@ func (e *engine) switchTo(s *selector, tag string, reason string, now time.Time)
 	s.activeSince = now
 	s.exhausted = false
 	s.failoverTried = nil
-	s.failoverProbing = ""
+	s.failoverProbing = nil
+	e.dropUnclaimedFailover()
 	s.upgradeTarget = ""
 	s.upgradeSuccesses = 0
 	if reason == "upgrade" {
@@ -621,7 +630,8 @@ func (e *engine) exhaust(s *selector, now time.Time) {
 	s.setActive("")
 	s.activeSince = time.Time{}
 	s.exhausted = true
-	s.failoverProbing = ""
+	s.failoverProbing = nil
+	e.dropUnclaimedFailover()
 	s.upgradeTarget = ""
 	e.emit(now, "exhausted", map[string]any{"balancer": s.tag, "from": from, "candidates": len(s.candidates)})
 }
@@ -637,26 +647,25 @@ func (e *engine) failover(s *selector, now time.Time) {
 	if cur := s.current(); cur != "" {
 		s.failoverTried[cur] = true
 	}
-	next := e.ranked(s, now, func(t string) bool { return s.failoverTried[t] })
-	if len(next) == 0 {
-		e.exhaust(s, now)
-		return
-	}
-	cand := next[0]
-	s.failoverTried[cand] = true
 	if !s.cfg.switchAfterProbe {
-		e.switchTo(s, cand, "failover", now)
+		next := e.ranked(s, now, func(t string) bool { return s.failoverTried[t] })
+		if len(next) == 0 {
+			e.exhaust(s, now)
+			return
+		}
+		e.switchTo(s, next[0], "failover", now)
 		return
 	}
-	s.failoverProbing = cand
-	e.enqueue(cand, reasonFailover, s.tag, now)
+	if !e.probeCandidates(s, now) {
+		e.exhaust(s, now)
+	}
 }
 
 // leaveRetiring moves the balancer off an outbound that left its provider
 // set. Unlike a failover the outbound still works, so the balancer stays on
 // it while there is nothing else to take.
 func (e *engine) leaveRetiring(s *selector, now time.Time) {
-	if s.pinned != "" || s.failoverProbing != "" {
+	if s.pinned != "" {
 		return
 	}
 	if e.path(s.current()).status == statusDown {
@@ -667,21 +676,109 @@ func (e *engine) leaveRetiring(s *selector, now time.Time) {
 		s.failoverTried = map[string]bool{}
 	}
 	s.failoverTried[s.current()] = true
-	next := e.ranked(s, now, func(t string) bool { return s.failoverTried[t] })
-	if len(next) == 0 {
-		// Staying; once the drain ends, a failover considers every candidate
-		// again, also the ones that failed here and rested since.
-		s.failoverTried = nil
-		return
-	}
-	cand := next[0]
-	s.failoverTried[cand] = true
 	if !s.cfg.switchAfterProbe {
-		e.switchTo(s, cand, "retired", now)
+		if next := e.ranked(s, now, func(t string) bool { return s.failoverTried[t] }); len(next) > 0 {
+			e.switchTo(s, next[0], "retired", now)
+			return
+		}
+	} else if e.probeCandidates(s, now) {
 		return
 	}
-	s.failoverProbing = cand
-	e.enqueue(cand, reasonFailover, s.tag, now)
+	// Staying; once the drain ends, a failover considers every candidate
+	// again, also the ones that failed here and rested since.
+	s.failoverTried = nil
+}
+
+// probeCandidates moves the balancer to the cheapest candidate that passed
+// its probe, once no cheaper candidate is open: being probed or not tried
+// yet. Until then it probes the cheapest open candidates, up to concurrent
+// at a time, so that dead candidates do not cost a probe timeout each in
+// turn. It reports false when no candidate is left.
+func (e *engine) probeCandidates(s *selector, now time.Time) bool {
+	cur := s.current()
+	ranked := e.ranked(s, now, func(t string) bool { return t == cur })
+	if tag := e.failoverChoice(s, ranked); tag != "" {
+		reason := "failover"
+		if e.retiring[cur] {
+			reason = "retired"
+		}
+		e.switchTo(s, tag, reason, now)
+		return true
+	}
+	if s.failoverProbing == nil {
+		s.failoverProbing = map[string]bool{}
+	}
+	names := map[string]bool{}
+	for t := range s.failoverProbing {
+		names[e.serverName(t)] = true
+	}
+	open := math.Inf(1)
+	for _, t := range ranked {
+		if len(s.failoverProbing) >= e.s.schedule.concurrent {
+			break
+		}
+		c := e.cost(s, t)
+		switch {
+		case s.failoverProbing[t]:
+		case s.failoverTried[t]:
+			if e.path(t).status == statusUp {
+				// It passed and waits for cheaper ones; nothing after it is better.
+				return true
+			}
+			continue
+		case names[e.serverName(t)]:
+			// Its turn comes when the probe of its server name has answered.
+		case s.cfg.isLazy(t) && open < c:
+			// Lazy outbounds are tried only once everything cheaper is down.
+		default:
+			s.failoverTried[t] = true
+			s.failoverProbing[t] = true
+			names[e.serverName(t)] = true
+			e.enqueue(t, reasonFailover, s.tag, now)
+		}
+		open = math.Min(open, c)
+	}
+	return len(s.failoverProbing) > 0
+}
+
+// failoverChoice returns the cheapest candidate that passed its probe in the
+// failover under way, unless a cheaper candidate is still open.
+func (e *engine) failoverChoice(s *selector, ranked []string) string {
+	open := math.Inf(1)
+	for _, t := range ranked {
+		c := e.cost(s, t)
+		switch {
+		case s.failoverProbing[t] || !s.failoverTried[t]:
+			open = math.Min(open, c)
+		case e.path(t).status == statusUp:
+			if open < c {
+				return ""
+			}
+			return t
+		}
+	}
+	return ""
+}
+
+// dropUnclaimedFailover forgets failover probes that have not started and
+// that no balancer waits for any more.
+func (e *engine) dropUnclaimedFailover() {
+	kept := e.queue[:0]
+	for _, j := range e.queue {
+		if j.reason != reasonFailover || e.claimed(j.tag) {
+			kept = append(kept, j)
+		}
+	}
+	e.queue = kept
+}
+
+func (e *engine) claimed(tag string) bool {
+	for _, s := range e.selectors {
+		if s.failoverProbing[tag] {
+			return true
+		}
+	}
+	return false
 }
 
 // refreshCandidates applies a change of retiring outbounds to every balancer.
@@ -780,7 +877,8 @@ func (e *engine) enqueueConnectivity(now time.Time) {
 }
 
 // budgetWait returns how long the job has to wait for the probe budget, or
-// -1 when all probe slots are busy.
+// -1 while it waits for a running probe to end: all probe slots are busy or
+// one probes its server name.
 func (e *engine) budgetWait(j *probeJob, now time.Time) time.Duration {
 	if len(e.running) >= e.s.schedule.concurrent {
 		return -1
@@ -788,11 +886,27 @@ func (e *engine) budgetWait(j *probeJob, now time.Time) time.Duration {
 	if j.reason == reasonConnectivity {
 		return 0
 	}
-	var wait time.Duration
-	if !e.lastStart.IsZero() {
-		if w := e.lastStart.Add(e.nextSpacing).Sub(now); w > wait {
-			wait = w
+	name := e.serverName(j.tag)
+	for _, r := range e.running {
+		if r.reason != reasonConnectivity && e.serverName(r.tag) == name {
+			// Simultaneous handshakes to one server name are a censor signal.
+			return -1
 		}
+	}
+	var wait time.Duration
+	// At most concurrent probes start within one spacing: with one slot that
+	// is a pause after every start, with more the starts may come together.
+	spaced := e.spacedUntil[:0]
+	for _, t := range e.spacedUntil {
+		if t.After(now) {
+			spaced = append(spaced, t)
+		}
+	}
+	e.spacedUntil = spaced
+	if n := len(spaced); n >= e.s.schedule.concurrent {
+		ends := slices.Clone(spaced)
+		slices.SortFunc(ends, func(a, b time.Time) int { return a.Compare(b) })
+		wait = ends[n-e.s.schedule.concurrent].Sub(now)
 	}
 	e.starts = pruneTimes(e.starts, now)
 	if len(e.starts) >= e.s.schedule.perMinute {
@@ -800,7 +914,6 @@ func (e *engine) budgetWait(j *probeJob, now time.Time) time.Duration {
 			wait = w
 		}
 	}
-	name := e.serverName(j.tag)
 	byName := pruneTimes(e.startsByName[name], now)
 	e.startsByName[name] = byName
 	if len(byName) >= e.s.schedule.perServerName {
@@ -923,15 +1036,21 @@ func (e *engine) begin(j *probeJob, now time.Time) {
 	if j.reason == reasonConnectivity {
 		return
 	}
-	e.lastStart = now
-	e.nextSpacing = e.jitter(e.s.schedule.spacing, e.s.schedule.spacingJitter)
+	e.spacedUntil = append(e.spacedUntil, now.Add(e.jitter(e.s.schedule.spacing, e.s.schedule.spacingJitter)))
 	e.starts = append(e.starts, now)
 	name := e.serverName(j.tag)
 	e.startsByName[name] = append(e.startsByName[name], now)
 	p := e.path(j.tag)
 	p.probing = true
 	p.lastProbe = now
-	e.emit(now, "probe_start", map[string]any{"outbound": j.tag, "reason": j.reason.String(), "balancer": j.selector})
+	running := 0
+	for _, r := range e.running {
+		if r.reason != reasonConnectivity {
+			running++
+		}
+	}
+	e.emit(now, "probe_start", map[string]any{"outbound": j.tag, "reason": j.reason.String(), "balancer": j.selector,
+		"running": running})
 }
 
 func (e *engine) recheckExhausted(s *selector, now time.Time) time.Time {
@@ -954,7 +1073,7 @@ func (e *engine) recheckExhausted(s *selector, now time.Time) time.Time {
 }
 
 func (e *engine) maybeUpgrade(s *selector, now time.Time) time.Time {
-	if s.upgradeAt.IsZero() || s.exhausted || s.pinned != "" || s.upgradeTarget != "" || s.failoverProbing != "" {
+	if s.upgradeAt.IsZero() || s.exhausted || s.pinned != "" || s.upgradeTarget != "" || len(s.failoverProbing) > 0 {
 		return time.Time{}
 	}
 	if now.Before(s.upgradeAt) {
@@ -1047,20 +1166,22 @@ func (e *engine) onProbeResult(j *probeJob, r probeResult, now time.Time) {
 			e.markDown(p, "probe", now)
 		}
 		for _, s := range e.sortedSelectors() {
-			if s.failoverProbing != j.tag {
+			if !s.failoverProbing[j.tag] {
 				continue
 			}
-			s.failoverProbing = ""
+			delete(s.failoverProbing, j.tag)
 			cur := s.current()
 			switch {
-			case r.ok && s.hasCandidate(j.tag) && e.retiring[cur]:
-				e.switchTo(s, j.tag, "retired", now)
-			case r.ok && s.hasCandidate(j.tag):
-				e.switchTo(s, j.tag, "failover", now)
 			case !s.exhausted && e.path(cur).status == statusDown:
 				e.failover(s, now)
 			case e.retiring[cur]:
 				e.leaveRetiring(s, now)
+			case s.pinned == "":
+				// The outbound works again; a candidate that passed still moves
+				// the balancer, nothing more is probed.
+				if tag := e.failoverChoice(s, e.ranked(s, now, func(t string) bool { return t == cur })); tag != "" {
+					e.switchTo(s, tag, "failover", now)
+				}
 			}
 		}
 	case reasonRecheck:
@@ -1356,7 +1477,7 @@ func (e *engine) onNetworkChange(id string, now time.Time) {
 	e.queue = e.queue[:0]
 	for _, s := range e.sortedSelectors() {
 		s.failoverTried = nil
-		s.failoverProbing = ""
+		s.failoverProbing = nil
 		s.upgradeTarget = ""
 		s.penaltyServed = false
 		if s.cfg.onNetworkChange != NetworkChangeMode_IGNORE {

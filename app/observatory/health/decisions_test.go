@@ -80,7 +80,7 @@ func TestFailoverSurvivesNetworkChangeDuringItsProbe(t *testing.T) {
 		},
 		func(j *probeJob, now time.Time) bool { return j.tag != "a1" }, nil)
 	if te.sel.current() == "a1" {
-		t.Fatalf("a minute later new connections still go to dead a1 (%v), waiting for a probe of %q that is not queued (queue %d, running %d)",
+		t.Fatalf("a minute later new connections still go to dead a1 (%v), waiting for probes of %v that are not queued (queue %d, running %d)",
 			te.path("a1").status, te.sel.failoverProbing, len(te.queue), len(te.running))
 	}
 }

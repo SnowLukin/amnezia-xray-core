@@ -86,7 +86,9 @@ def conns_on(port, before, after):
 
 
 def probe_checks(events, since=0):
-    """Budget checks over probe starts: one at a time, spacing, per server name."""
+    """Budget checks over probe starts: probes at once, spacing, per server name.
+    The spacing is the shortest time in which one start more than the probes
+    allowed at once happened: the pause between two starts with one probe at a time."""
     starts = [e for e in events if e["type"] == "probe_start" and e["ts"] / 1000 >= since]
     results = [e for e in events if e["type"] == "probe_result" and e["ts"] / 1000 >= since]
     # Overlap: a probe starts while another one has not reported yet.
@@ -95,8 +97,19 @@ def probe_checks(events, since=0):
     for _, d in timeline:
         running += d
         peak = max(peak, running)
-    gaps = [(b["ts"] - a["ts"]) / 1000 for a, b in zip(starts, starts[1:])]
+    n = bench.CONCURRENT
+    gaps = [(b["ts"] - a["ts"]) / 1000 for a, b in zip(starts, starts[n:])]
     return peak, (min(gaps) if gaps else None), len(starts)
+
+
+def at_once_check(peak):
+    return check("probes at once", peak, peak <= bench.CONCURRENT, f"<= {bench.CONCURRENT}")
+
+
+def spacing_check(gap, need=False):
+    n = bench.CONCURRENT
+    name = "min pause between probes, s" if n == 1 else f"min time for {n + 1} probe starts, s"
+    return check(name, gap and round(gap, 2), gap >= 1.4 if gap is not None else not need, ">= 1.4")
 
 
 def leak_check(c):
@@ -245,7 +258,7 @@ def jitter_check(events, since=0, spacing=2.0):
 def failover(stand, xray, work, name, port, mode, limit, members=THREE, costs=THREE_COSTS, expect_to=None,
              traffic=None, duration=40, tag="a1", count_conns=True, kinds=None, confirm=False, immediate=False,
              redials=False):
-    """One fault on the address of the chosen outbound.
+    """One fault on the address of the chosen outbound, or on a list of addresses at once.
 
     kinds: one of these failure kinds must be in the suspicion of the outbound.
     confirm: the evidence is weak, so a confirming probe must fail and rule the
@@ -253,12 +266,14 @@ def failover(stand, xray, work, name, port, mode, limit, members=THREE, costs=TH
     probe. count_conns is off for a mode that the proxy cannot count (refuse). redials: the
     transport dials the address again by itself (gRPC does after a failure)."""
     cfg = bench.client_config(members, costs)
+    ports = port if isinstance(port, list) else [port]
     m = Marks()
     with bench.Client(xray, cfg, work, name, profile=True) as c, bench.ConnSampler() as cs:
         tr = traffic or bench.Traffic(rate=2, big=0.5)
         mech = []
         sample = [(10 + s, lambda s=s: mech.append(c.mechanism_heap(f"{s}"))) for s in (1, 5, 8, 10, 12, 15)]
-        run_timeline(tr, [(10, m.at("fault", lambda: bench.chaos(port, mode)))] + sample, duration)
+        fault = m.at("fault", lambda: bench.chaos(",".join(map(str, ports)), mode))
+        run_timeline(tr, [(10, fault)] + sample, duration)
         end = time.time()
         peak = max((h for t, h, _ in c.mem if t >= m["fault"]), default=0)
         base = max((h for t, h, _ in c.mem if t < m["fault"]), default=0)
@@ -284,7 +299,7 @@ def failover(stand, xray, work, name, port, mode, limit, members=THREE, costs=TH
         if count_conns:
             # The proxy also sees what a transport dials by itself, such as a gRPC client
             # reconnecting in the background; with the access log at hand that is no verdict.
-            n = cs.between(port, t_sw, end)
+            n = cs.between(ports, t_sw, end)
             judged = routed is None or not redials
             checks.append(check("connections at the dead address after switch", n, n == 0 or not judged,
                                 "== 0" if judged else "info (the transport redials)"))
@@ -361,6 +376,23 @@ def failover_impostor(stand, xray, work, name):
     site; the stand cannot make one on macOS, where Go takes the trust store from the system."""
     return failover(stand, xray, work, name, A0, f"redirect:{IMPOSTOR}", 5, expect_to="a2",
                     kinds=("server_unverified", "dial_failed"), immediate=True)
+
+
+@scenario()
+def failover_two_dead(stand, xray, work, name):
+    """The chosen outbound and the next one as cheap die at once; the dearer b1 works."""
+    return failover(stand, xray, work, name, [A0, A1], "blackhole", 15, expect_to="b1")
+
+
+CHAIN = [("a1", "reality", 0), ("b1", "tcp_tls", 0), ("w1", "ws", 0), ("g1", "grpc", 0)]
+
+
+@scenario()
+def failover_chain(stand, xray, work, name):
+    """Three outbounds behind different server names die at once and the dearest one works:
+    probed one at a time, every dead candidate costs its probe timeout in turn."""
+    return failover(stand, xray, work, name, [A0, B0, address_port("ws", 0)], "blackhole", 18, members=CHAIN,
+                    costs={"a": 1, "b": 2, "w": 3, "g": 4}, expect_to="g1")
 
 
 # What each fault is, with the recovery it must meet on every transport.
@@ -677,8 +709,8 @@ def exhausted(stand, xray, work, name):
             # frozen server frozen for that long and longer after new handshakes.
             check("recovery after one path returned, s", rec and round(rec, 1), rec is not None and rec <= 180,
                   "<= 180"),
-            check("probes at once", peak, peak <= 1, "<= 1"),
-            check("min pause between probes, s", gap and round(gap, 2), gap is None or gap >= 1.4, ">= 1.4"),
+            at_once_check(peak),
+            spacing_check(gap),
             probe_conn_check(cs, probe_events, ports, m["down"]),
             connectivity_conn_check(cs, c.events, m["down"]),
             per_name_check(c.events, names, m["down"]),
@@ -1128,8 +1160,8 @@ def probe_limits(stand, xray, work, name):
     probed = {e["fields"]["outbound"] for e in c.events if e["type"] == "probe_start"}
     seen_names = sorted({names[o] for o in probed})
     return [check("probes", n, n >= 6, ">= 6"),
-            check("probes at once", peak, peak <= 1, "<= 1"),
-            check("min pause between probes, s", gap and round(gap, 2), gap is not None and gap >= 1.4, ">= 1.4"),
+            at_once_check(peak),
+            spacing_check(gap, need=True),
             per_name_check(c.events, names, m["down"]),
             check("server names of the probed paths", seen_names,
                   seen_names == ["example.com", "std.example.com", "ws.example.com"], "example.com, std., ws."),
@@ -1171,8 +1203,8 @@ def probe_spacing(stand, xray, work, name):
                 and e["ts"] / 1000 >= m["net"]]
     peak, gap, n = probe_checks(c.events, m["net"])
     return [check("probes for the return", len(upgrades), len(upgrades) == successes, f"== {successes}"),
-            check("probes at once", peak, peak <= 1, "<= 1"),
-            check("min pause between probes, s", gap and round(gap, 2), gap is not None and gap >= 1.4, ">= 1.4"),
+            at_once_check(peak),
+            spacing_check(gap, need=True),
             jitter_check(c.events, m["net"]),
             leak_check(c)]
 

@@ -46,10 +46,15 @@ the config.
    probe is not sent.
 4. **Failover.** The chosen outbound goes down and rests in quarantine with a
    growing, jittered backoff. The balancer moves new connections to the
-   cheapest usable candidate, after probing it if `switchAfterProbe`. When
-   nothing is left, the balancer returns no tag and traffic goes to
-   `fallbackTag`; quarantined candidates are rechecked while users keep
-   trying.
+   cheapest usable candidate, after probing it if `switchAfterProbe`. Up to
+   `concurrent` candidates are probed at once, cheapest first and one per
+   server name, so dead candidates do not cost a probe timeout each in
+   turn. The balancer takes the cheapest candidate that passed once every
+   cheaper one has failed: a dearer one that answers first waits for them.
+   Probes that answer after the move only record the state of their
+   outbound. When nothing is left, the balancer returns no tag and traffic
+   goes to `fallbackTag`; quarantined candidates are rechecked while users
+   keep trying.
 5. **Return to cheaper.** Not before `minHold`, on `upgrade.interval` (with a
    random phase per device) or after a network change. The cheaper candidate
    must pass `upgrade.successes` probes in a row, `upgrade.spacing` apart. A
@@ -59,11 +64,13 @@ the config.
    forgotten. If the network was seen before, the outbound that last worked
    there is tried first, with one probe and no round over all candidates.
 
-Probes run one at a time (`concurrent`), at least `spacing` apart, within
-`perMinute` in total and `perServerNamePerMinute` per TLS or REALITY server
-name: several near-simultaneous handshakes to one server name are a known
-censor signal. Without user traffic for `pauseWhenIdle` there are no probes
-and no timers.
+At most `concurrent` probes run at a time and at most `concurrent` start
+within one `spacing`: with the default of one, probes run one by one at
+least `spacing` apart. They stay within `perMinute` in total and
+`perServerNamePerMinute` per TLS or REALITY server name, and two probes of
+one server name never run at once: several near-simultaneous handshakes to
+one server name are a known censor signal. Without user traffic for
+`pauseWhenIdle` there are no probes and no timers.
 
 Existing connections stay where they are; only new connections move. The
 exception is an outbound found down: its connections that have received
@@ -311,7 +318,7 @@ Every event is `{"seq": n, "ts": unix_ms, "type": "...", "fields": {...}}`.
 | `switch` | `balancer`, `from`, `to`, `reason`, `held_ms`, `cost` | New connections go to another outbound. `reason`: `start`, `start_pinned`, `start_remembered`, `failover`, `upgrade`, `recovered`, `remembered`, `network_change`, `candidates_changed`, `pin`, `retired` (the previous one left its provider set). `held_ms` is the time on the previous one. |
 | `path_state` | `outbound`, `state`, `reason`; for `suspect` also `failures`, `targets`, `kinds`, `strong`; for `down` also `quarantine_ms`, `quarantine_level` and `provisional` when it was ruled out while the network check was failing | An outbound became `up`, `suspect`, `down` or `unknown`. `reason`: `traffic`, `probe`, `upgrade_probe`, `network_change`, `network_down`, `network_up`, `replaced` (a provider
 changed its settings). `kinds` counts failures by kind: `dial_failed`, `dial_timeout`, `server_unverified`, `no_response`, `closed`, `stall`, `partial_stall`. |
-| `probe_start` | `outbound`, `reason`, `balancer` | A probe started. `reason`: `confirm`, `failover`, `network_change`, `remembered`, `recheck`, `upgrade`. |
+| `probe_start` | `outbound`, `reason`, `balancer`, `running` | A probe started. `reason`: `confirm`, `failover`, `network_change`, `remembered`, `recheck`, `upgrade`. `running` counts the outbound probes running now, this one included. |
 | `probe_result` | `outbound`, `reason`, `balancer`, `ok`, `rtt_ms`, `bytes`, `error`, `stale` | A probe finished. `bytes` counts both directions above TLS. `stale` means it was made in the previous network and was ignored. |
 | `exhausted` | `balancer`, `from`, `candidates` | No usable candidate is left; traffic goes to `fallbackTag`. |
 | `pending_closed` | `outbound`, `connections`, `reason` | Connections of an outbound found down that had received nothing were ended. `reason` is the one the outbound went down for. |

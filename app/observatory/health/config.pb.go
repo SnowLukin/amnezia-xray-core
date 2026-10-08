@@ -718,9 +718,10 @@ type ScheduleConfig struct {
 	PauseWhenIdle int64 `protobuf:"varint,1,opt,name=pause_when_idle,json=pauseWhenIdle,proto3" json:"pause_when_idle,omitempty"`
 	// How long a failed outbound rests before it may be probed again.
 	Quarantine *Backoff `protobuf:"bytes,2,opt,name=quarantine,proto3" json:"quarantine,omitempty"`
-	// Probes running at the same time.
+	// Probes running at the same time, never two of one server name.
 	Concurrent int32 `protobuf:"varint,3,opt,name=concurrent,proto3" json:"concurrent,omitempty"`
-	// Minimum pause between probe starts.
+	// Minimum pause between probe starts; with concurrent above one, that many
+	// may start within it.
 	Spacing int64 `protobuf:"varint,4,opt,name=spacing,proto3" json:"spacing,omitempty"`
 	// Random spread of spacing.
 	SpacingJitter float64 `protobuf:"fixed64,5,opt,name=spacing_jitter,json=spacingJitter,proto3" json:"spacing_jitter,omitempty"`
