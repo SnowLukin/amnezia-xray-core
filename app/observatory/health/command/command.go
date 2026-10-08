@@ -60,6 +60,13 @@ func (s *service) Pin(_ context.Context, r *PinRequest) (*PinResponse, error) {
 	return &PinResponse{Ok: s.observer.Pin(r.Balancer, r.Outbound)}, nil
 }
 
+func (s *service) Refresh(_ context.Context, r *RefreshRequest) (*RefreshResponse, error) {
+	if err := s.ready(); err != nil {
+		return nil, err
+	}
+	return &RefreshResponse{Ok: s.observer.RequestRefresh(r.Provider)}, nil
+}
+
 func (s *service) Register(server *grpc.Server) {
 	RegisterHealthServiceServer(server, s)
 }

@@ -42,11 +42,22 @@ message PinResponse {
   bool ok = 1;
 }
 
+message RefreshRequest {
+  // Provider to refresh. Empty refreshes every provider.
+  string provider = 1;
+}
+
+message RefreshResponse {
+  // False when no provider has this tag.
+  bool ok = 1;
+}
+
 service HealthService {
   rpc GetStatus(GetStatusRequest) returns (GetStatusResponse) {}
   rpc DrainEvents(DrainEventsRequest) returns (DrainEventsResponse) {}
   rpc NetworkChanged(NetworkChangedRequest) returns (NetworkChangedResponse) {}
   rpc Pin(PinRequest) returns (PinResponse) {}
+  rpc Refresh(RefreshRequest) returns (RefreshResponse) {}
 }
 
 message Config {}

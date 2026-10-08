@@ -9,7 +9,7 @@ import (
 
 var cmdHealth = &base.Command{
 	CustomFlags: true,
-	UsageLine:   "{{.Exec}} api health [--server=127.0.0.1:8080] <status|events|network [id]|lost|pin <balancer> <outbound>|release <balancer>>",
+	UsageLine:   "{{.Exec}} api health [--server=127.0.0.1:8080] <status|events|network [id]|lost|pin <balancer> <outbound>|release <balancer>|refresh [provider]>",
 	Short:       "Query and control the health observatory",
 	Long: `
 Query and control the health observatory. Output is JSON.
@@ -24,6 +24,7 @@ Commands:
 	lost                        the device has no network
 	pin <balancer> <outbound>   keep the balancer on the outbound
 	release <balancer>          let the balancer choose again
+	refresh [provider]          fetch the outbounds of a provider, or of all
 
 Arguments:
 
@@ -82,6 +83,16 @@ func executeHealth(cmd *base.Command, args []string) {
 		r, err := client.Pin(ctx, req)
 		if err != nil {
 			base.Fatalf("health %s: %s", a[0], err)
+		}
+		fmt.Printf("{\"ok\":%t}\n", r.Ok)
+	case "refresh":
+		req := &healthService.RefreshRequest{}
+		if len(a) > 1 {
+			req.Provider = a[1]
+		}
+		r, err := client.Refresh(ctx, req)
+		if err != nil {
+			base.Fatalf("health refresh: %s", err)
 		}
 		fmt.Printf("{\"ok\":%t}\n", r.Ok)
 	default:

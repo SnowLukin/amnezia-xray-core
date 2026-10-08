@@ -23,6 +23,7 @@ const (
 	HealthService_DrainEvents_FullMethodName    = "/xray.core.app.observatory.health.command.HealthService/DrainEvents"
 	HealthService_NetworkChanged_FullMethodName = "/xray.core.app.observatory.health.command.HealthService/NetworkChanged"
 	HealthService_Pin_FullMethodName            = "/xray.core.app.observatory.health.command.HealthService/Pin"
+	HealthService_Refresh_FullMethodName        = "/xray.core.app.observatory.health.command.HealthService/Refresh"
 )
 
 // HealthServiceClient is the client API for HealthService service.
@@ -33,6 +34,7 @@ type HealthServiceClient interface {
 	DrainEvents(ctx context.Context, in *DrainEventsRequest, opts ...grpc.CallOption) (*DrainEventsResponse, error)
 	NetworkChanged(ctx context.Context, in *NetworkChangedRequest, opts ...grpc.CallOption) (*NetworkChangedResponse, error)
 	Pin(ctx context.Context, in *PinRequest, opts ...grpc.CallOption) (*PinResponse, error)
+	Refresh(ctx context.Context, in *RefreshRequest, opts ...grpc.CallOption) (*RefreshResponse, error)
 }
 
 type healthServiceClient struct {
@@ -83,6 +85,16 @@ func (c *healthServiceClient) Pin(ctx context.Context, in *PinRequest, opts ...g
 	return out, nil
 }
 
+func (c *healthServiceClient) Refresh(ctx context.Context, in *RefreshRequest, opts ...grpc.CallOption) (*RefreshResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RefreshResponse)
+	err := c.cc.Invoke(ctx, HealthService_Refresh_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // HealthServiceServer is the server API for HealthService service.
 // All implementations must embed UnimplementedHealthServiceServer
 // for forward compatibility.
@@ -91,6 +103,7 @@ type HealthServiceServer interface {
 	DrainEvents(context.Context, *DrainEventsRequest) (*DrainEventsResponse, error)
 	NetworkChanged(context.Context, *NetworkChangedRequest) (*NetworkChangedResponse, error)
 	Pin(context.Context, *PinRequest) (*PinResponse, error)
+	Refresh(context.Context, *RefreshRequest) (*RefreshResponse, error)
 	mustEmbedUnimplementedHealthServiceServer()
 }
 
@@ -112,6 +125,9 @@ func (UnimplementedHealthServiceServer) NetworkChanged(context.Context, *Network
 }
 func (UnimplementedHealthServiceServer) Pin(context.Context, *PinRequest) (*PinResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Pin not implemented")
+}
+func (UnimplementedHealthServiceServer) Refresh(context.Context, *RefreshRequest) (*RefreshResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Refresh not implemented")
 }
 func (UnimplementedHealthServiceServer) mustEmbedUnimplementedHealthServiceServer() {}
 func (UnimplementedHealthServiceServer) testEmbeddedByValue()                       {}
@@ -206,6 +222,24 @@ func _HealthService_Pin_Handler(srv interface{}, ctx context.Context, dec func(i
 	return interceptor(ctx, in, info, handler)
 }
 
+func _HealthService_Refresh_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RefreshRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(HealthServiceServer).Refresh(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: HealthService_Refresh_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(HealthServiceServer).Refresh(ctx, req.(*RefreshRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // HealthService_ServiceDesc is the grpc.ServiceDesc for HealthService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -228,6 +262,10 @@ var HealthService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Pin",
 			Handler:    _HealthService_Pin_Handler,
+		},
+		{
+			MethodName: "Refresh",
+			Handler:    _HealthService_Refresh_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
