@@ -51,10 +51,10 @@ func (t *countingTracker) Dialed(conn gonet.Conn, err error, r, w stats.Counter)
 	return t.inner.Dialed(conn, err, r, w)
 }
 
-func (t *countingTracker) Finished() {
+func (t *countingTracker) Finished(err error) {
 	t.c.finished.Add(1)
 	if t.inner != nil {
-		t.inner.Finished()
+		t.inner.Finished(err)
 	}
 }
 

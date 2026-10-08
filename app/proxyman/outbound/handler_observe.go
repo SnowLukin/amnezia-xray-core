@@ -24,8 +24,10 @@ func (h *Handler) process(ctx context.Context, link *transport.Link) error {
 		return h.proxy.Process(ctx, link, h)
 	}
 	d := &observedDialer{Handler: h}
-	defer d.finish()
-	return h.proxy.Process(ctx, link, d)
+	var err error
+	defer func() { d.finish(err) }()
+	err = h.proxy.Process(ctx, link, d)
+	return err
 }
 
 // observed makes mux workers dial through the observer as well.
@@ -87,7 +89,7 @@ func (d *observedDialer) Dial(ctx context.Context, dest net.Destination) (stat.C
 	}
 	if finished {
 		// Nobody reports when such a connection ends; only its dial is judged.
-		tracker.Finished()
+		tracker.Finished(nil)
 		return conn, nil
 	}
 	d.mu.Lock()
@@ -106,13 +108,13 @@ func (d *observedDialer) Dial(ctx context.Context, dest net.Destination) (stat.C
 	return &stat.CounterConnection{Connection: conn, ReadCounter: read, WriteCounter: write}, nil
 }
 
-func (d *observedDialer) finish() {
+func (d *observedDialer) finish(err error) {
 	d.mu.Lock()
 	trackers := d.trackers
 	d.trackers = nil
 	d.finished = true
 	d.mu.Unlock()
 	for _, t := range trackers {
-		t.Finished()
+		t.Finished(err)
 	}
 }

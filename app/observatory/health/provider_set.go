@@ -220,8 +220,10 @@ func (o *Observer) fetchOnce(cfg *providerSettings, tag string) (*providerAnswer
 	var wire atomic.Int64
 	ctx, cancel := context.WithTimeout(withProbe(o.fetchCtx, &wire), cfg.timeout)
 	defer cancel()
+	// Keep-alive stays on: a server told to close the connection after the
+	// answer may lose its last bytes on some transports. The connection is
+	// closed here once the answer is read.
 	transport := &http.Transport{
-		DisableKeepAlives: true,
 		DialContext: func(_ context.Context, network, addr string) (net.Conn, error) {
 			dest, err := net.ParseDestination(network + ":" + addr)
 			if err != nil {

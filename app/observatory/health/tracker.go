@@ -241,9 +241,16 @@ func (t *connTracker) onWrite(n int64) {
 }
 
 // Finished implements outbound.DialTracker.
-func (t *connTracker) Finished() {
+func (t *connTracker) Finished(err error) {
 	if t.state.Swap(trackerFinished) == trackerFinished {
 		return
+	}
+	// Ended by a failure before any answer: a transport that connects
+	// lazily, such as XHTTP, shows a dead server this way. A connection the
+	// user closed ends canceled and tells nothing.
+	if err != nil && !goerrors.Is(err, context.Canceled) && !t.udp && !t.spliced.Load() &&
+		t.firstRead.Load() == 0 && t.mark(reportedNoResponse) {
+		t.o.failure(t, failClosed)
 	}
 	t.o.untrack(t)
 	t.o.finished(t)
@@ -273,10 +280,17 @@ func (t *connTracker) sweep(now int64) (watching, drop bool) {
 	firstWrite, firstRead := t.firstWrite.Load(), t.firstRead.Load()
 	lastWrite, lastRead := t.lastWrite.Load(), t.lastRead.Load()
 	if firstRead == 0 {
-		if firstWrite == 0 || t.has(reportedNoResponse) {
+		if t.has(reportedNoResponse) {
 			return false, false
 		}
-		if now-firstWrite > int64(p.firstByteTimeout) && t.mark(reportedNoResponse) {
+		from := firstWrite
+		if from == 0 {
+			// Nothing went out yet. On a working path one side speaks within
+			// seconds of the dial; a transport that connects lazily can hold
+			// the request inside when its server is gone.
+			from = t.dialed.Load()
+		}
+		if now-from > int64(p.firstByteTimeout) && t.mark(reportedNoResponse) {
 			t.o.failure(t, failNoResponse)
 			return false, false
 		}
@@ -384,7 +398,7 @@ func (t *probeTracker) Dialed(_ net.Conn, err error, read, write stats.Counter) 
 	return &probeCounter{t.bytes, read}, &probeCounter{t.bytes, write}
 }
 
-func (t *probeTracker) Finished() {}
+func (t *probeTracker) Finished(error) {}
 
 type probeCounter struct {
 	bytes *atomic.Int64
@@ -429,7 +443,7 @@ func (t *witnessTracker) Dialed(_ net.Conn, err error, read, write stats.Counter
 	return &witnessCounter{t, read}, write
 }
 
-func (t *witnessTracker) Finished() {}
+func (t *witnessTracker) Finished(error) {}
 
 type witnessCounter struct {
 	t     *witnessTracker

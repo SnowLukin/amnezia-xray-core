@@ -25,8 +25,10 @@ func (o *Observer) probe(tag string, ps *probeSettings) probeResult {
 	ctx, cancel := context.WithTimeout(withProbe(o.ctx, &bytes), ps.timeout)
 	defer cancel()
 
+	// Keep-alive stays on: a server told to close the connection after the
+	// answer races its last bytes on some transports, such as WebSocket. The
+	// connection is closed here once the answer is read.
 	transport := &http.Transport{
-		DisableKeepAlives:  true,
 		DisableCompression: true,
 		DialContext: func(_ context.Context, network, addr string) (net.Conn, error) {
 			dest, err := net.ParseDestination(network + ":" + addr)

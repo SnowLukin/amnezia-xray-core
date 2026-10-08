@@ -14,7 +14,10 @@ the config.
    - about the path, whatever the destination: the dial failed, the dial did
      not finish within `dialTimeout`, REALITY did not verify the server;
    - possibly about one destination: no first byte within
-     `firstByteTimeout`, a written request without an answer for
+     `firstByteTimeout` of the request, or of the dial when nothing could be
+     sent, a request whose connection ended before any answer
+     (a transport that connects lazily, such as XHTTP, shows a reset of its
+     server this way), a written request without an answer for
      `stallTimeout`, or a young connection that received less than
      `successBytes` and went silent for `stallTimeout`. The last one is what a
      censor freezing connections after the first kilobytes looks like.
@@ -277,7 +280,7 @@ Every event is `{"seq": n, "ts": unix_ms, "type": "...", "fields": {...}}`.
 | --- | --- | --- |
 | `switch` | `balancer`, `from`, `to`, `reason`, `held_ms`, `cost` | New connections go to another outbound. `reason`: `start`, `start_pinned`, `start_remembered`, `failover`, `upgrade`, `recovered`, `remembered`, `network_change`, `candidates_changed`, `pin`, `retired` (the previous one left its provider set). `held_ms` is the time on the previous one. |
 | `path_state` | `outbound`, `state`, `reason`; for `suspect` also `failures`, `targets`, `kinds`, `strong`; for `down` also `quarantine_ms`, `quarantine_level` and `provisional` when it was ruled out while the network check was failing | An outbound became `up`, `suspect`, `down` or `unknown`. `reason`: `traffic`, `probe`, `upgrade_probe`, `network_change`, `network_down`, `network_up`, `replaced` (a provider
-changed its settings). `kinds` counts failures by kind: `dial_failed`, `dial_timeout`, `server_unverified`, `no_response`, `stall`, `partial_stall`. |
+changed its settings). `kinds` counts failures by kind: `dial_failed`, `dial_timeout`, `server_unverified`, `no_response`, `closed`, `stall`, `partial_stall`. |
 | `probe_start` | `outbound`, `reason`, `balancer` | A probe started. `reason`: `confirm`, `failover`, `network_change`, `remembered`, `recheck`, `upgrade`. |
 | `probe_result` | `outbound`, `reason`, `balancer`, `ok`, `rtt_ms`, `bytes`, `error`, `stale` | A probe finished. `bytes` counts both directions above TLS. `stale` means it was made in the previous network and was ignored. |
 | `exhausted` | `balancer`, `from`, `candidates` | No usable candidate is left; traffic goes to `fallbackTag`. |

@@ -37,6 +37,9 @@ const (
 	failNoResponse
 	failStall
 	failPartialStall
+	// The connection sent a request and ended before any answer, as a
+	// transport that connects lazily does when its server resets it.
+	failClosed
 )
 
 func (k failureKind) String() string {
@@ -53,6 +56,8 @@ func (k failureKind) String() string {
 		return "stall"
 	case failPartialStall:
 		return "partial_stall"
+	case failClosed:
+		return "closed"
 	default:
 		return "unknown"
 	}
@@ -107,7 +112,7 @@ type pathStats struct {
 	connsFailed    int64
 	bytesUp        int64
 	bytesDown      int64
-	failuresByKind [failPartialStall + 1]int64
+	failuresByKind [failClosed + 1]int64
 	ttfb           histogram
 	probes         int64
 	probesFailed   int64

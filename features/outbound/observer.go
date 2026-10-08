@@ -25,7 +25,7 @@ type DialTracker interface {
 	// nil, the returned counters replace read and write for this connection
 	// and must forward to them (either may be nil).
 	Dialed(conn gonet.Conn, err error, read, write stats.Counter) (stats.Counter, stats.Counter)
-	// Finished is called once the handler stops processing the connection.
-	// Connections multiplexed over a shared one may never get this call.
-	Finished()
+	// Finished is called once the handler stops processing the connection,
+	// with the error processing ended with, if any.
+	Finished(err error)
 }

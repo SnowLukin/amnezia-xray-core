@@ -2,6 +2,7 @@ package health
 
 import (
 	"context"
+	goerrors "errors"
 	gonet "net"
 	"testing"
 	"time"
@@ -31,8 +32,11 @@ func newTestObserver() (*Observer, *fakeClock) {
 	return o, clk
 }
 
+var lastConn uint32
+
 func openTracker(o *Observer, target string, udp bool) (*connTracker, *trackerReadCounter, *trackerWriteCounter) {
-	t := &connTracker{o: o, tag: "a1", target: target, udp: udp, started: o.nowNano(), conn: 1}
+	lastConn++
+	t := &connTracker{o: o, tag: "a1", target: target, udp: udp, started: o.nowNano(), conn: lastConn}
 	r, w := t.Dialed(nil, nil, nil, nil)
 	return t, r.(*trackerReadCounter), w.(*trackerWriteCounter)
 }
@@ -100,6 +104,45 @@ func TestNoFirstByteIsNoticed(t *testing.T) {
 	tr.sweep(o.nowNano())
 	if failures(o, failNoResponse) != 1 {
 		t.Fatalf("a request without any answer was not noticed")
+	}
+}
+
+func TestNothingSentOrReceivedSinceDialIsNoticed(t *testing.T) {
+	o, clk := newTestObserver()
+	tr, _, _ := openTracker(o, "x.test", false)
+	clk.advance(3 * time.Second)
+	if watching, _ := tr.sweep(o.nowNano()); !watching || failures(o, failNoResponse) != 0 {
+		t.Fatalf("3 s after the dial: watching %v, failures %d", watching, failures(o, failNoResponse))
+	}
+	clk.advance(3 * time.Second)
+	tr.sweep(o.nowNano())
+	if failures(o, failNoResponse) != 1 {
+		t.Fatal("a connection with no byte either way 6 s after its dial was not noticed")
+	}
+}
+
+func TestConnectionEndedByFailureBeforeAnyAnswerIsNoticed(t *testing.T) {
+	o, _ := newTestObserver()
+	broken := goerrors.New("failed to read response version > io: read/write on closed pipe")
+	tr, _, w := openTracker(o, "x.test", false)
+	w.Add(400)
+	tr.Finished(broken)
+	unsent, _, _ := openTracker(o, "y.test", false)
+	unsent.Finished(broken)
+	if failures(o, failClosed) != 2 {
+		t.Fatalf("%d of 2 connections ended by a failure before any answer were noticed", failures(o, failClosed))
+	}
+	answered, r, w := openTracker(o, "z.test", false)
+	w.Add(400)
+	r.Add(100)
+	answered.Finished(broken)
+	canceled, _, w := openTracker(o, "w.test", false)
+	w.Add(400)
+	canceled.Finished(context.Canceled)
+	quiet, _, _ := openTracker(o, "v.test", false)
+	quiet.Finished(nil)
+	if failures(o, failClosed) != 2 {
+		t.Fatal("an answered, canceled or cleanly ended connection counted as a failure")
 	}
 }
 
