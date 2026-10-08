@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -26,9 +27,11 @@ import (
 	"github.com/xtls/xray-core/common/serial"
 	"github.com/xtls/xray-core/common/session"
 	"github.com/xtls/xray-core/core"
+	"github.com/xtls/xray-core/features/dns"
 	"github.com/xtls/xray-core/features/outbound"
 	"github.com/xtls/xray-core/proxy"
 	"github.com/xtls/xray-core/transport"
+	"github.com/xtls/xray-core/transport/internet"
 	_ "github.com/xtls/xray-core/transport/internet/tcp"
 	"github.com/xtls/xray-core/transport/pipe"
 	"golang.org/x/crypto/curve25519"
@@ -414,15 +417,210 @@ func TestClientConcurrentFirstConnections(t *testing.T) {
 	}
 	wg.Wait()
 	s.waitConns(t)
+	if n := h.initCount(); n != 1 {
+		t.Fatalf("4 connections created %d devices, want 1", n)
+	}
 	h.mu.Lock()
 	dev := h.dev
 	h.mu.Unlock()
 	roundTrip(t, oh, s)
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if h.dev != dev {
+	if h.dev != dev || h.inits != 1 {
 		t.Fatal("the outbound replaced its device")
 	}
+}
+
+func (h *Handler) initCount() int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.inits
+}
+
+// slowDNS resolves the endpoint of an outbound to loopback after a delay, or
+// fails.
+type slowDNS struct {
+	dns.Client
+	delay   time.Duration
+	err     error
+	lookups atomic.Int32
+}
+
+func (d *slowDNS) LookupIP(string, dns.IPOption) ([]net.IP, uint32, error) {
+	d.lookups.Add(1)
+	time.Sleep(d.delay)
+	if d.err != nil {
+		return nil, 0, d.err
+	}
+	return []net.IP{{127, 0, 0, 1}}, 0, nil
+}
+
+// newResolvingClient returns a client outbound, outside any instance, that
+// reaches s by the name localhost through d.
+func newResolvingClient(t testing.TB, s *testServer, priv string, addr netip.Addr, d dns.Client) *Handler {
+	t.Helper()
+	_, port, err := stdnet.SplitHostPort(s.endpoint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := &Handler{
+		conf: &DeviceConfig{
+			IsClient:    true,
+			SecretKey:   priv,
+			Mtu:         1420,
+			NoKernelTun: true,
+			Peers: []*PeerConfig{{
+				PublicKey:  s.pub,
+				Endpoint:   "localhost:" + port,
+				AllowedIps: []string{"0.0.0.0/0"},
+			}},
+			Parameters: testParams,
+		},
+		dns:            d,
+		streamSettings: &internet.MemoryStreamConfig{},
+		localAddresses: []netip.Addr{addr},
+	}
+	t.Cleanup(func() { h.Close() })
+	return h
+}
+
+// waitInit waits until a connection is creating the stack of h.
+func waitInit(t testing.TB, h *Handler) {
+	t.Helper()
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(5 * time.Millisecond) {
+		h.mu.Lock()
+		running := h.initDone != nil
+		h.mu.Unlock()
+		if running {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("no connection creates the stack")
+		}
+	}
+}
+
+type acquired struct {
+	tnet *Net
+	err  error
+}
+
+func acquireAsync(h *Handler, ctx context.Context) <-chan acquired {
+	ch := make(chan acquired, 1)
+	go func() {
+		tnet, err := h.acquire(ctx)
+		ch <- acquired{tnet, err}
+	}()
+	return ch
+}
+
+// TestClientWakeHoldsNoLock creates the stack with an endpoint that takes a
+// second to resolve. Meanwhile, other connections, Sleep and Close must not
+// wait for it.
+func TestClientWakeHoldsNoLock(t *testing.T) {
+	priv, pub := testKeys(t)
+	addr := netip.MustParseAddr("10.9.0.2")
+	s := startTestServer(t, testParams, testPeer{pub, addr})
+	base := goroutineBase(t)
+	d := &slowDNS{delay: time.Second}
+	h := newResolvingClient(t, s, priv, addr, d)
+
+	first := acquireAsync(h, context.Background())
+	waitInit(t, h)
+	start := time.Now()
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := h.acquire(canceled); !goerrors.Is(err, context.Canceled) {
+		t.Fatalf("a canceled connection waiting for the stack got %v", err)
+	}
+	if h.Sleep() {
+		t.Fatal("the outbound slept while a connection created its stack")
+	}
+	if waited := time.Since(start); waited > 500*time.Millisecond {
+		t.Fatalf("waited %v for the stack in creation", waited)
+	}
+	second := acquireAsync(h, context.Background())
+
+	r1, r2 := <-first, <-second
+	if r1.err != nil || r2.err != nil {
+		t.Fatal(r1.err, r2.err)
+	}
+	if r1.tnet != r2.tnet || h.initCount() != 1 || d.lookups.Load() != 1 {
+		t.Fatalf("2 connections created %d devices with %d lookups, want 1", h.initCount(), d.lookups.Load())
+	}
+	ctx, cancelDial := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancelDial()
+	conn, err := r1.tnet.DialContextTCPAddrPort(ctx, netip.AddrPortFrom(testServerAddr, 7))
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn.Close()
+	h.release()
+	h.release()
+	s.waitConns(t)
+	if !h.Sleep() {
+		t.Fatal("an idle outbound refused to sleep")
+	}
+	waitGoroutines(t, base)
+}
+
+func TestClientCloseDuringWake(t *testing.T) {
+	priv, pub := testKeys(t)
+	addr := netip.MustParseAddr("10.9.0.2")
+	s := startTestServer(t, testParams, testPeer{pub, addr})
+	base := goroutineBase(t)
+	h := newResolvingClient(t, s, priv, addr, &slowDNS{delay: time.Second})
+
+	first := acquireAsync(h, context.Background())
+	waitInit(t, h)
+	start := time.Now()
+	h.Close()
+	if waited := time.Since(start); waited > 500*time.Millisecond {
+		t.Fatalf("Close waited %v for the stack in creation", waited)
+	}
+	if r := <-first; r.err == nil {
+		t.Fatal("a connection got the stack of a closed outbound")
+	}
+	if h.holds() {
+		t.Fatal("a closed outbound kept the stack created meanwhile")
+	}
+	waitGoroutines(t, base)
+}
+
+// TestClientFailedWakeIsShared checks that the connections waiting for a
+// failing init share its error, and that the next ones get it for a while
+// instead of trying again at once.
+func TestClientFailedWakeIsShared(t *testing.T) {
+	priv, pub := testKeys(t)
+	addr := netip.MustParseAddr("10.9.0.2")
+	s := startTestServer(t, testParams, testPeer{pub, addr})
+	base := goroutineBase(t)
+	d := &slowDNS{delay: 300 * time.Millisecond, err: goerrors.New("no such host")}
+	h := newResolvingClient(t, s, priv, addr, d)
+
+	var wg sync.WaitGroup
+	for range 3 {
+		wg.Go(func() {
+			if _, err := h.acquire(context.Background()); err == nil {
+				t.Error("a connection got the stack of a failed init")
+			}
+		})
+	}
+	wg.Wait()
+	if n := d.lookups.Load(); n != 1 {
+		t.Fatalf("3 connections looked the endpoint up %d times, want 1", n)
+	}
+	if _, err := h.acquire(context.Background()); err == nil || d.lookups.Load() != 1 {
+		t.Fatal("a connection right after a failed init tried again")
+	}
+	time.Sleep(initRetryDelay)
+	if _, err := h.acquire(context.Background()); err == nil || d.lookups.Load() != 2 {
+		t.Fatal("a connection after initRetryDelay did not try again")
+	}
+	if h.holds() {
+		t.Fatal("a failed init kept a stack or a device")
+	}
+	waitGoroutines(t, base)
 }
 
 func TestClientRefusesConnectionsAfterClose(t *testing.T) {
@@ -464,6 +662,8 @@ func TestClientFailedInitKeepsNothing(t *testing.T) {
 			t.Fatal("a failed init kept a stack or a device")
 		}
 		waitGoroutines(t, base)
+		// Let the next connection try again instead of getting this error.
+		time.Sleep(initRetryDelay)
 	}
 }
 

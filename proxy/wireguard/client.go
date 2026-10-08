@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/amnezia-vpn/amneziawg-go/v3/tun"
 
@@ -51,7 +52,23 @@ type Handler struct {
 	dev    *device.Device
 	active int
 	closed bool
+
+	// initDone is closed when the connection creating the stack and the
+	// device is done with it, and is nil while none is. The creation runs
+	// outside mu: it can take seconds when the endpoint needs DNS, and the
+	// connections waiting for it must be able to give up.
+	initDone chan struct{}
+	// initErr fails the connections that come shortly after a failed init,
+	// so that each of them does not try again.
+	initErr     error
+	initErrTime time.Time
+	// inits counts the devices created, for tests.
+	inits int
 }
+
+// initRetryDelay is how long connections fail with the error of the last init
+// before one tries again.
+const initRetryDelay = time.Second
 
 // dnsServers resolve domain targets inside the tunnel.
 var dnsServers = []netip.Addr{
@@ -278,26 +295,73 @@ func (h *Handler) closeLocked() {
 // device on first use. The stack stays until the connection calls release.
 func (h *Handler) acquire(ctx context.Context) (*Net, error) {
 	h.mu.Lock()
-	defer h.mu.Unlock()
-	if h.closed {
-		return nil, errors.New("outbound closed")
-	}
-	if h.dev == nil {
-		if err := h.init(ctx); err != nil {
+	for h.dev == nil {
+		if h.closed {
+			h.mu.Unlock()
+			return nil, errors.New("outbound closed")
+		}
+		if h.initErr != nil && time.Since(h.initErrTime) < initRetryDelay {
+			err := h.initErr
+			h.mu.Unlock()
 			return nil, err
 		}
-	}
-	// The bind takes the device down when its socket closes unexpectedly.
-	if err := h.dev.Up(); err != nil {
-		return nil, err
+		if done := h.initDone; done != nil {
+			h.mu.Unlock()
+			select {
+			case <-done:
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+			h.mu.Lock()
+			continue
+		}
+
+		done := make(chan struct{})
+		h.initDone = done
+		h.mu.Unlock()
+		// The device keeps the context for reopening its bind long after
+		// this connection ends; it must not end with it. This connection
+		// finishes the init even when it is canceled, for those waiting.
+		tnet, dev, err := h.init(context.WithoutCancel(ctx))
+		h.mu.Lock()
+		h.initDone = nil
+		close(done)
+		if err != nil {
+			h.initErr, h.initErrTime = err, time.Now()
+			h.mu.Unlock()
+			return nil, err
+		}
+		h.initErr = nil
+		h.inits++
+		if h.closed {
+			h.mu.Unlock()
+			dev.Close()
+			return nil, errors.New("outbound closed")
+		}
+		h.tnet, h.dev = tnet, dev
 	}
 	h.active++
-	return h.tnet, nil
+	tnet, dev := h.tnet, h.dev
+	h.mu.Unlock()
+
+	// The bind takes the device down when its socket closes unexpectedly.
+	if err := dev.Up(); err != nil {
+		h.release()
+		return nil, err
+	}
+	return tnet, nil
 }
 
-// init creates the stack and the device; h.mu must be held. On failure it
-// keeps nothing, and the next connection starts over.
-func (h *Handler) init(ctx context.Context) (err error) {
+// release ends the use of the stack that acquire returned.
+func (h *Handler) release() {
+	h.mu.Lock()
+	h.active--
+	h.mu.Unlock()
+}
+
+// init creates the stack and the device. Only one connection runs it at a
+// time, without h.mu. On failure it keeps nothing.
+func (h *Handler) init(ctx context.Context) (_ *Net, _ *device.Device, err error) {
 	var t tun.Device
 	var tnet *Net
 	if h.kernelTun {
@@ -306,7 +370,7 @@ func (h *Handler) init(ctx context.Context) (err error) {
 		t, tnet, _, err = CreateNetTUN(h.localAddresses, dnsServers, int(h.conf.Mtu), true)
 	}
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
 	listenFunc := func() (net.PacketConn, error) {
 		dest, err := net.ParseDestination("udp:" + h.conf.Peers[0].Endpoint)
@@ -390,15 +454,14 @@ func (h *Handler) init(ctx context.Context) (err error) {
 	}
 	err = dev.IpcSet(cfg.String())
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
 	rt.open()
 	err = dev.Up()
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
-	h.tnet, h.dev = tnet, dev
-	return nil
+	return tnet, dev, nil
 }
 
 // writeAmneziaParams appends AmneziaWG parameters to the device IPC config.
