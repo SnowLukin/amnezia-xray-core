@@ -112,7 +112,8 @@ type provider struct {
 	// one has no end. At most one per outbound of the set.
 	leases map[string]*lease
 	// How far the clock the last answer counts from is ahead of the device,
-	// and which clock that is: server, date or device.
+	// and which clock that is: server, date or device; none when the answer
+	// named no lease.
 	skew  time.Duration
 	clock string
 }

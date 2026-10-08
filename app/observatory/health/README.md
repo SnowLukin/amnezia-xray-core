@@ -681,6 +681,6 @@ age of the set, the next timed refresh, the backoff, what is left of a pause
 a busy backend asked for (`retry_after_ms`), the next renewal of a lease
 (`renew_in_ms`, below zero while it waits for a limit), the leases that
 ended (`expired`), and the `skew_ms` and `clock` of the last answer as in
-`provider_apply`; the probe requests of the host (`probe_requests`), each with `id`,
+`provider_apply`, none when it named no lease; the probe requests of the host (`probe_requests`), each with `id`,
 `balancer`, `age_ms`, `done`, `end` and the result per outbound, see Probes
 on request.

@@ -110,7 +110,6 @@ func (e *engine) acceptLeases(p *provider, tags []string, a leaseAnswer, now tim
 	}
 	wall := at.Round(0)
 	ref, clock := leaseRef(a.serverTime, a.date, wall)
-	p.skew, p.clock = ref.Sub(wall), clock
 	var c leaseCounts
 	moved := false
 	inSet := make(map[string]bool, len(tags))
@@ -178,6 +177,12 @@ func (e *engine) acceptLeases(p *provider, tags []string, a leaseAnswer, now tim
 		if !inSet[tag] {
 			moved = e.dropLease(p, tag) || moved
 		}
+	}
+	// The clock tells about leases, as provider_apply does: an answer
+	// without one has none to tell.
+	p.skew, p.clock = 0, ""
+	if c.leases > 0 {
+		p.skew, p.clock = ref.Sub(wall), clock
 	}
 	moved = e.expireLeases(p, now) || moved
 	for _, l := range p.leases {

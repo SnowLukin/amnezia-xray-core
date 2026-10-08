@@ -96,6 +96,29 @@ func TestLeaseFallsBackToTheDeviceClock(t *testing.T) {
 	}
 }
 
+// Status tells the clock of the last answer as provider_apply does: one
+// that names no lease tells none, however it was dated.
+func TestClockOnlyOfAnAnswerWithLeases(t *testing.T) {
+	te := leaseEngine(t, nil, &SelectorConfig{Costs: costs("p-", 1)}, "p-x1")
+	tags := []string{"p-x1"}
+	clockOf := func() string {
+		pv := te.status(at(time.Minute)).Providers[0]
+		return fmt.Sprint(pv.Clock, " ", pv.SkewMs)
+	}
+	te.acceptLeases(te.prov(), tags, leaseAnswer{date: t0.Add(-300 * time.Millisecond), at: t0}, t0)
+	if got := clockOf(); got != " 0" {
+		t.Fatalf("an answer without leases: clock %q", got)
+	}
+	te.acceptLeases(te.prov(), tags, leaseAnswer{ends: map[string]time.Time{"p-x1": at(2 * time.Hour)}, serverTime: at(time.Hour), at: t0}, t0)
+	if got := clockOf(); got != "server 3600000" {
+		t.Fatalf("an answer with a lease: clock %q", got)
+	}
+	te.acceptLeases(te.prov(), tags, leaseAnswer{serverTime: at(time.Hour), at: t0}, t0)
+	if got := clockOf(); got != " 0" {
+		t.Fatalf("an answer that names no lease any more: clock %q", got)
+	}
+}
+
 func TestLeaseCappedAt30Days(t *testing.T) {
 	te := leaseEngine(t, nil, &SelectorConfig{Costs: costs("p-", 1)}, "p-x1")
 	te.acceptLeases(te.prov(), []string{"p-x1"},
