@@ -2,13 +2,30 @@
 
 One machine, no root: Xray servers for five transports, a TCP proxy that
 breaks server addresses on command, a local HTTP target instead of the
-internet, and an Xray client built from this branch. See README.md.
+internet, and an Xray client built from this branch.
+
+Environment:
+  BENCH_PORT_OFFSET   moves every port, so two benches can run side by side.
+  BENCH_CLIENT        adb:<serial> runs the client under test on an Android
+                      device or emulator; everything else stays here.
+  BENCH_CLIENT_BIN    the client binary for that device, built with
+                      GOOS=android GOARCH=arm64 CGO_ENABLED=0 go build
+                      -ldflags=-checklinkname=0 ./main
+  BENCH_HOST          the address the client reaches this machine at:
+                      127.0.0.1 locally, 10.0.2.2 from an emulator.
+  BENCH_TLS=1         user traffic is TLS 1.3 to the target. Only then does
+                      XTLS Vision switch to direct copy, which splices on Linux.
+  BENCH_LOGLEVEL      log level of the client, debug to see splices.
 """
+import http.client
 import json
 import os
+import shlex
 import socket
+import ssl
 import struct
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -16,13 +33,22 @@ import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CERT_DIR = os.path.join(HERE, "certs")
+TARGET_CERT = os.path.join(CERT_DIR, "target.crt")
+TARGET_KEY = os.path.join(CERT_DIR, "target.key")
 
 UUID = "5f88c4df-2a2d-4b68-9b27-5d21339abb60"
 REALITY_PRIVATE = "ODyRd0nJyxk9us_UzqG_jJM4NLTSPPLZfkpcCzuCvUk"
 REALITY_PUBLIC = "SFQq-6EUyhY12O_zOjI9pVdY1b7y3aVaevZJg8JDaEw"
 
-# BENCH_PORT_OFFSET moves every port, so two benches can run side by side.
+CLIENT = os.environ.get("BENCH_CLIENT", "")
+ADB_SERIAL = CLIENT[len("adb:"):] if CLIENT.startswith("adb:") else None
+CLIENT_BIN = os.environ.get("BENCH_CLIENT_BIN", "")
+HOST = os.environ.get("BENCH_HOST", "10.0.2.2" if ADB_SERIAL else "127.0.0.1")
+TLS = os.environ.get("BENCH_TLS") == "1"
+LOGLEVEL = os.environ.get("BENCH_LOGLEVEL", "warning")
+
 OFFSET = int(os.environ.get("BENCH_PORT_OFFSET", "0"))
+TARGET_TLS_PORT = 18998 + OFFSET
 TARGET_PORT = 18999 + OFFSET
 CHAOS_CONTROL = 19000 + OFFSET
 PROVIDER_PORT = 19002 + OFFSET
@@ -61,6 +87,12 @@ def ensure_cert(xray):
     if not os.path.exists(crt):
         subprocess.run([xray, "tls", "cert", "--domain=example.com", "--file=" + os.path.join(CERT_DIR, "example")],
                        check=True, stdout=subprocess.DEVNULL)
+    # The key xray writes is labelled as RSA whatever it is, which OpenSSL
+    # rejects, so the target gets its own pair.
+    if not os.path.exists(TARGET_CERT):
+        subprocess.run(["openssl", "req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1",
+                        "-nodes", "-days", "3650", "-subj", "/CN=target.test", "-keyout", TARGET_KEY,
+                        "-out", TARGET_CERT], check=True, capture_output=True)
     out = subprocess.run(["openssl", "x509", "-in", crt, "-noout", "-fingerprint", "-sha256"],
                          check=True, capture_output=True, text=True).stdout
     return out.strip().split("=", 1)[1]
@@ -121,7 +153,7 @@ def member(tag, kind, index=0, pin=None):
     if kind == "reality":
         user["flow"] = "xtls-rprx-vision"
     return {"tag": tag, "protocol": "vless",
-            "settings": {"vnext": [{"address": "127.0.0.1", "port": address_port(kind, index), "users": [user]}]},
+            "settings": {"vnext": [{"address": HOST, "port": address_port(kind, index), "users": [user]}]},
             "streamSettings": streams[kind]}
 
 
@@ -137,7 +169,7 @@ def provider_config(via, triggers=None, limits=None, apply=None):
     """A provider served by provider.py. Every trigger is off unless the
     scenario turns it on, so a scenario sees only the trigger it checks."""
     return {
-        "tag": "fresh", "url": f"http://127.0.0.1:{PROVIDER_PORT}/set",
+        "tag": "fresh", "url": f"http://{HOST}:{PROVIDER_PORT}/set",
         "headers": {"Authorization": "Bearer bench-token"}, "via": via, "timeout": "3s", "allowPlainHttp": True,
         "triggers": {"interval": "0s", "minHealthy": 0, "whenExhausted": False, "maxAge": "0s",
                      "onNetworkChange": "never"} | (triggers or {}),
@@ -146,7 +178,7 @@ def provider_config(via, triggers=None, limits=None, apply=None):
     }
 
 
-def client_config(members, costs, health=None, strategy=None, burst=None, loglevel="warning", providers=None):
+def client_config(members, costs, health=None, strategy=None, burst=None, loglevel=LOGLEVEL, providers=None):
     """members: list of (tag, kind, address index)."""
     outbounds = [member(t, k, i, PIN) for t, k, i in members]
     outbounds += [{"tag": "direct", "protocol": "freedom", "settings": {"finalRules": [{"action": "allow"}]}},
@@ -182,7 +214,7 @@ def client_config(members, costs, health=None, strategy=None, burst=None, loglev
         "subjectSelector": subjects,
         "probes": [{"destination": f"http://probe.test:{TARGET_PORT}/bytes/32768", "minBytes": 32768,
                     "expectStatus": [200], "timeout": "6s", "progressTimeout": "3s"}],
-        "connectivity": {"outbound": "direct", "destination": f"http://127.0.0.1:{CONNECTIVITY_PORT}/204",
+        "connectivity": {"outbound": "direct", "destination": f"http://{HOST}:{CONNECTIVITY_PORT}/204",
                          "timeout": "2s"},
     }
     for k, v in (health or {}).items():
@@ -213,13 +245,15 @@ class Stand:
         self.provider_log = os.path.join(workdir, "provider.log")
 
     def __enter__(self):
-        busy = [p for p in [TARGET_PORT, CHAOS_CONTROL, PROVIDER_PORT, SOCKS_PORT, API_PORT, METRICS_PORT]
+        busy = [p for p in [TARGET_PORT, TARGET_TLS_PORT, CHAOS_CONTROL, PROVIDER_PORT, SOCKS_PORT, API_PORT,
+                            METRICS_PORT]
                 + [server_port(k) for k in TRANSPORTS] + all_address_ports() if port_open(p)]
         if busy:
             raise RuntimeError(f"ports already in use, another bench running? {busy}")
         open(self.target_log, "w").close()
         self.procs.append(subprocess.Popen(
-            ["python3", os.path.join(HERE, "target.py"), str(TARGET_PORT), self.target_log],
+            ["python3", os.path.join(HERE, "target.py"), str(TARGET_PORT), self.target_log, str(TARGET_TLS_PORT),
+             TARGET_CERT, TARGET_KEY],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
         path = os.path.join(self.workdir, "server.json")
         with open(path, "w") as f:
@@ -236,11 +270,12 @@ class Stand:
         self.procs.append(subprocess.Popen(
             ["python3", os.path.join(HERE, "provider.py"), str(PROVIDER_PORT), self.provider_answer,
              self.provider_log], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
-        wait_port(TARGET_PORT)
-        wait_port(CHAOS_CONTROL)
-        wait_port(PROVIDER_PORT)
-        for k in TRANSPORTS:
-            wait_port(server_port(k))
+        try:
+            for p in [TARGET_PORT, TARGET_TLS_PORT, CHAOS_CONTROL, PROVIDER_PORT] + [server_port(k) for k in TRANSPORTS]:
+                wait_port(p)
+        except RuntimeError:
+            self.__exit__()
+            raise
         return self
 
     def __exit__(self, *exc):
@@ -326,18 +361,139 @@ def chaos_conns():
     return res
 
 
+class LocalProcess:
+    """The client as a process on this machine."""
+
+    splices = sys.platform.startswith("linux")
+
+    def __init__(self, binary):
+        self.binary = binary
+        self.clock_offset = 0.0
+
+    def start(self, config, log, env):
+        self.proc = subprocess.Popen([self.binary, "run", "-c", config], stdout=open(log, "w"),
+                                     stderr=subprocess.STDOUT, env=dict(os.environ, **env))
+
+    def stop(self):
+        self.proc.terminate()
+        try:
+            self.proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            self.proc.kill()
+
+    def cpu_seconds(self):
+        out = subprocess.run(["ps", "-o", "time=", "-p", str(self.proc.pid)], capture_output=True,
+                             text=True).stdout.strip()
+        total = 0.0
+        for p in out.replace("-", ":").split(":"):
+            total = total * 60 + float(p)
+        return total
+
+
+class AdbProcess:
+    """The client on an Android device over adb. Its socks, API and metrics
+    ports are forwarded to the same ports here, so the bench talks to it as
+    to a local client; the log is pulled when it stops."""
+
+    # A Linux kernel: XTLS Vision splices there.
+    splices = True
+    # USER_HZ of Android kernels, the unit of utime and stime in /proc.
+    CLOCK_TICKS = 100
+    _pushed = {}
+
+    def __init__(self, serial, binary):
+        if not binary:
+            raise RuntimeError("BENCH_CLIENT_BIN must name the client binary for the device")
+        self.serial = serial
+        self.binary = binary
+        self.dir = f"/data/local/tmp/adaptive-bench-{OFFSET}"
+        self.ports = [SOCKS_PORT, API_PORT, METRICS_PORT]
+
+    def adb(self, *args, timeout=120, check=True):
+        out = subprocess.run(["adb", "-s", self.serial, *args], capture_output=True, text=True, timeout=timeout)
+        if check and out.returncode != 0:
+            raise RuntimeError(f"adb {' '.join(args)}: {out.stderr.strip() or out.stdout.strip()}")
+        return out.stdout
+
+    def shell(self, command, **kw):
+        return self.adb("shell", command, **kw)
+
+    def _push_binary(self):
+        st = os.stat(self.binary)
+        stamp = (self.binary, st.st_mtime, st.st_size)
+        if AdbProcess._pushed.get(self.serial) == stamp:
+            return
+        self.shell(f"mkdir -p {self.dir}")
+        self.adb("push", self.binary, f"{self.dir}/xray", timeout=300)
+        self.shell(f"chmod 755 {self.dir}/xray")
+        AdbProcess._pushed[self.serial] = stamp
+
+    def _measure_clock(self):
+        """Device clock minus ours, from the round trip with the smallest delay."""
+        best = None
+        for _ in range(5):
+            t0 = time.time()
+            remote = float(self.shell("date +%s.%N").strip())
+            t1 = time.time()
+            if best is None or t1 - t0 < best[0]:
+                best = (t1 - t0, remote - (t0 + t1) / 2)
+        self.clock_offset = best[1]
+
+    def start(self, config, log, env):
+        self.log = log
+        self._push_binary()
+        self.shell(f"[ -f {self.dir}/client.pid ] && kill $(cat {self.dir}/client.pid) 2>/dev/null", check=False)
+        self.adb("push", config, f"{self.dir}/client.json")
+        for p in self.ports:
+            self.adb("forward", f"tcp:{p}", f"tcp:{p}")
+        self._measure_clock()
+        envs = " ".join(f"{k}={shlex.quote(v)}" for k, v in env.items())
+        command = (f"cd {self.dir} && echo $$ > client.pid && "
+                   f"exec env {envs} ./xray run -c client.json > client.log 2>&1")
+        self.proc = subprocess.Popen(["adb", "-s", self.serial, "shell", command], stdin=subprocess.DEVNULL,
+                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    def stop(self):
+        self.shell(f"kill $(cat {self.dir}/client.pid)", check=False)
+        try:
+            self.proc.wait(timeout=15)
+        except subprocess.TimeoutExpired:
+            self.shell(f"kill -9 $(cat {self.dir}/client.pid)", check=False)
+            self.proc.kill()
+        self.adb("pull", f"{self.dir}/client.log", self.log, check=False)
+        for p in self.ports:
+            self.adb("forward", "--remove", f"tcp:{p}", check=False)
+
+    def cpu_seconds(self):
+        pid = self.shell(f"cat {self.dir}/client.pid").strip()
+        fields = self.shell(f"cat /proc/{pid}/stat").rsplit(")", 1)[1].split()
+        # utime and stime are fields 14 and 15 of the line; fields here start at 3.
+        return (int(fields[11]) + int(fields[12])) / self.CLOCK_TICKS
+
+
+def client_process(xray):
+    if ADB_SERIAL:
+        return AdbProcess(ADB_SERIAL, CLIENT_BIN)
+    return LocalProcess(xray)
+
+
 class Client:
-    """The Xray client under test with its API, metrics and event log."""
+    """The Xray client under test with its API, metrics and event log.
+
+    xray is the local binary: it runs the client unless BENCH_CLIENT says
+    otherwise, and always serves as the API command line."""
 
     def __init__(self, xray, config, workdir, name, profile=False):
         # profile records every allocation, so small heaps of the mechanism
         # show up in heap profiles (the default records one per 512 KB).
-        self.env = dict(os.environ, GODEBUG="memprofilerate=1") if profile else None
+        self.env = {"GODEBUG": "memprofilerate=1"} if profile else {}
         self.xray = xray
+        self.process = client_process(xray)
         self.path = os.path.join(workdir, f"client-{name}.json")
         with open(self.path, "w") as f:
             json.dump(config, f, indent=1)
         self.log_path = os.path.join(workdir, f"client-{name}.log")
+        self.loglevel = config["log"]["loglevel"]
         self.events = []
         self.dropped = 0
         self.mem = []
@@ -345,10 +501,8 @@ class Client:
         self.has_health = "healthObservatory" in config
 
     def __enter__(self):
-        self.proc = subprocess.Popen([self.xray, "run", "-c", self.path], stdout=open(self.log_path, "w"),
-                                     stderr=subprocess.STDOUT, env=self.env)
-        wait_port(SOCKS_PORT)
-        wait_port(API_PORT)
+        self.process.start(self.path, self.log_path, self.env)
+        wait_ready()
         self.thread = threading.Thread(target=self._poll, daemon=True)
         self.thread.start()
         return self
@@ -360,12 +514,19 @@ class Client:
             self.drain()
             with open(self.log_path.replace(".log", "-events.json"), "w") as f:
                 json.dump({"dropped": self.dropped, "events": self.events}, f, indent=1)
-        self.proc.terminate()
-        try:
-            self.proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            self.proc.kill()
+        self.process.stop()
         wait_closed(SOCKS_PORT)
+
+    def cpu_seconds(self):
+        return self.process.cpu_seconds()
+
+    def splices(self):
+        """Connections the client spliced, from its debug log; None when the
+        log does not tell or the platform never splices."""
+        if self.loglevel != "debug" or not self.process.splices:
+            return None
+        with open(self.log_path, errors="replace") as f:
+            return sum(1 for line in f if "CopyRawConn splice" in line)
 
     def api(self, *args):
         out = subprocess.run([self.xray, "api", "health", f"--server=127.0.0.1:{API_PORT}", *args],
@@ -379,6 +540,10 @@ class Client:
 
     def drain(self):
         r = self.api("events")
+        # Event times come from the client's clock; scenarios compare them with ours.
+        shift = round(self.process.clock_offset * 1000)
+        for e in r["events"]:
+            e["ts"] -= shift
         self.events.extend(r["events"])
         self.dropped += r["dropped"]
 
@@ -391,6 +556,12 @@ class Client:
                                    timeout=3).read().decode()
         goroutines = int(g.split("total ")[1].split("\n")[0])
         return vars_["memstats"]["HeapInuse"], goroutines
+
+    def goroutines(self, function):
+        """How many goroutines of the client have function in their stack."""
+        dump = urllib.request.urlopen(f"http://127.0.0.1:{METRICS_PORT}/debug/pprof/goroutine?debug=1",
+                                      timeout=3).read().decode()
+        return sum(int(block.split(" @", 1)[0]) for block in dump.split("\n\n") if " @" in block and function in block)
 
     def gc_memory(self):
         urllib.request.urlopen(f"http://127.0.0.1:{METRICS_PORT}/debug/pprof/heap?gc=1", timeout=5).read()
@@ -430,6 +601,25 @@ def parse_size(s):
     return float(s)
 
 
+def wait_ready(timeout=60):
+    """Waits until the client answers on socks and metrics. A port forwarded
+    by adb accepts connections before the client listens, so an open port
+    alone proves nothing."""
+    end = time.time() + timeout
+    while time.time() < end:
+        try:
+            with socket.create_connection(("127.0.0.1", SOCKS_PORT), timeout=2) as s:
+                s.settimeout(2)
+                s.sendall(b"\x05\x01\x00")
+                if s.recv(2) == b"\x05\x00":
+                    urllib.request.urlopen(f"http://127.0.0.1:{METRICS_PORT}/debug/vars", timeout=2).read()
+                    return
+        except (OSError, http.client.HTTPException):
+            pass
+        time.sleep(0.2)
+    raise RuntimeError("client did not start")
+
+
 def wait_closed(port, timeout=5):
     end = time.time() + timeout
     while time.time() < end:
@@ -445,11 +635,13 @@ class Traffic:
 
     big is the share of requests that download 64 KB instead of an empty
     answer. plan, when given, is a list of (host, path, body bytes) cycled
-    instead. timeout is how long a request waits, like an app would.
+    instead. timeout is how long a request waits, like an app would. tls
+    makes every request HTTPS.
     """
 
-    def __init__(self, rate=2.0, big=0.5, targets=None, timeout=10.0, plan=None):
+    def __init__(self, rate=2.0, big=0.5, targets=None, timeout=10.0, plan=None, tls=TLS):
         self.rate = rate
+        self.tls = tls
         self.big = big
         self.targets = targets or TARGETS[:3]
         self.timeout = timeout
@@ -468,6 +660,11 @@ class Traffic:
         self._stop.set()
         self.thread.join(timeout=10)
         time.sleep(self.timeout + 0.5)
+
+    def save(self, path):
+        """Writes the requests as (start, ok, seconds, bytes, host) for a later look."""
+        with self._lock, open(path, "w") as f:
+            json.dump(sorted(self.records), f)
 
     def _run(self):
         i = 0
@@ -490,25 +687,13 @@ class Traffic:
         ok = False
         size = 0
         try:
-            s = socket.create_connection(("127.0.0.1", SOCKS_PORT), timeout=self.timeout)
-            s.settimeout(self.timeout)
-            s.sendall(b"\x05\x01\x00")
-            s.recv(2)
-            hb = host.encode()
-            s.sendall(b"\x05\x01\x00\x03" + bytes([len(hb)]) + hb + struct.pack(">H", TARGET_PORT))
-            rep = s.recv(10)
-            if len(rep) >= 2 and rep[1] == 0:
+            s = open_stream(host, self.timeout, self.tls)
+            if s is not None:
                 s.sendall(f"GET {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n".encode())
-                data = b""
-                deadline = t0 + self.timeout
-                while time.time() < deadline:
-                    chunk = s.recv(65536)
-                    if not chunk:
-                        break
-                    data += chunk
-                ok = data.startswith(b"HTTP/1.1 20") and len(data.split(b"\r\n\r\n", 1)[-1]) >= want
-                size = len(data)
-            s.close()
+                head, body = read_answer(s, t0 + self.timeout)
+                ok = head.startswith(b"HTTP/1.1 20") and body >= want
+                size = len(head) + body
+                s.close()
         except OSError:
             pass
         with self._lock:
@@ -549,29 +734,68 @@ class ConnSampler:
         return after[-1].get(port, 0) - before[-1].get(port, 0)
 
 
-def download(host, path, timeout=120):
-    """One request through the client; returns body bytes received."""
+def open_stream(host, timeout, tls=TLS):
+    """A connection through the client's socks inbound to the target as host,
+    over TLS 1.3 if tls; None when the client refused it."""
     s = socket.create_connection(("127.0.0.1", SOCKS_PORT), timeout=timeout)
     s.settimeout(timeout)
     s.sendall(b"\x05\x01\x00")
     s.recv(2)
     hb = host.encode()
-    s.sendall(b"\x05\x01\x00\x03" + bytes([len(hb)]) + hb + struct.pack(">H", TARGET_PORT))
-    s.recv(10)
-    s.sendall(f"GET {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n".encode())
-    head = b""
-    while b"\r\n\r\n" not in head:
-        chunk = s.recv(65536)
-        if not chunk:
-            break
-        head += chunk
-    body = len(head.split(b"\r\n\r\n", 1)[1]) if b"\r\n\r\n" in head else 0
+    port = TARGET_TLS_PORT if tls else TARGET_PORT
+    s.sendall(b"\x05\x01\x00\x03" + bytes([len(hb)]) + hb + struct.pack(">H", port))
+    rep = s.recv(10)
+    if len(rep) < 2 or rep[1] != 0:
+        s.close()
+        return None
+    return TLS_CLIENT.wrap_socket(s, server_hostname=host) if tls else s
+
+
+def _tls_client():
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    ctx.minimum_version = ssl.TLSVersion.TLSv1_3
+    return ctx
+
+
+TLS_CLIENT = _tls_client()
+
+
+def read_answer(s, deadline=None):
+    """Reads one HTTP answer up to its Content-Length, as a browser does: a
+    connection may end with a reset after a complete answer. Returns the head
+    and how many body bytes came, whatever stopped the reading."""
     buf = bytearray(1 << 20)
-    while True:
-        n = s.recv_into(buf)
-        if n == 0:
-            break
-        body += n
+    data = b""
+    head, length, body = b"", None, 0
+    try:
+        while deadline is None or time.time() < deadline:
+            n = s.recv_into(buf)
+            if n == 0:
+                break
+            if length is None:
+                data += bytes(buf[:n])
+                if b"\r\n\r\n" not in data:
+                    continue
+                head, rest = data.split(b"\r\n\r\n", 1)
+                length = next((int(line.split(b":", 1)[1]) for line in head.split(b"\r\n")
+                               if line.lower().startswith(b"content-length:")), 0)
+                body = len(rest)
+            else:
+                body += n
+            if body >= length:
+                break
+    except OSError:
+        pass
+    return head, body
+
+
+def download(host, path, timeout=120, tls=TLS):
+    """One request through the client; returns body bytes received."""
+    s = open_stream(host, timeout, tls)
+    s.sendall(f"GET {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n".encode())
+    _, body = read_answer(s)
     s.close()
     return body
 

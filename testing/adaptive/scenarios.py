@@ -6,7 +6,6 @@ BENCH_IDLE_MIN (default 10), BENCH_FLAP_MIN (10), BENCH_SOAK_MIN (120).
 """
 import json
 import os
-import subprocess
 import threading
 import time
 
@@ -106,6 +105,7 @@ def failover(stand, xray, work, name, port, mode, limit, members=THREE, costs=TH
         end = time.time()
         peak = max((h for t, h, _ in c.mem if t >= m["fault"]), default=0)
         base = max((h for t, h, _ in c.mem if t < m["fault"]), default=0)
+    tr.save(os.path.join(work, f"{name}-traffic.json"))
     rec, fails = bench.recovery(tr.records, m["fault"])
     sw = bench.switches(c.events, m["fault"])
     checks = [
@@ -137,6 +137,12 @@ def failover(stand, xray, work, name, port, mode, limit, members=THREE, costs=TH
     mpeak = max(mech, default=0)
     checks.append(check("mechanism heap peak, MB", round(mpeak / 2**20, 2), mpeak <= 2 * 2**20, "<= 2"))
     checks.append(check("whole heap growth incl. user conns, MB", round((peak - base) / 2**20, 2), True, "info"))
+    if noticed:
+        kinds = noticed["fields"].get("kinds") or {}
+        checks.append(check("evidence kinds", ",".join(f"{k}:{v}" for k, v in sorted(kinds.items())) or "-", True,
+                            "info"))
+    if c.splices() is not None:
+        checks.append(check("spliced connections", c.splices(), True, "info"))
     return checks
 
 
@@ -216,6 +222,35 @@ def short_glitch(stand, xray, work, name):
                           (13, lambda: bench.chaos(A0, "pass"))], 40)
     sw = bench.switches(c.events, m["fault"])
     return [check("switches after 3 s pause", len(sw), len(sw) == 0, "== 0")]
+
+
+@scenario()
+def splice_keepalive(stand, xray, work, name):
+    """A TLS connection that stays open after its answers. On Linux Vision
+    splices the answers past the counters; requests sent after that must not
+    look unanswered when the connection then idles."""
+    cfg = bench.client_config(THREE, THREE_COSTS, loglevel="debug")
+    pad = "x" * 300
+    with bench.Client(xray, cfg, work, name) as c:
+        s = bench.open_stream("t1.test", 30, tls=True)
+        answers = []
+        for path in ("/bytes/65536", "/204", "/204"):
+            s.sendall(f"GET {path} HTTP/1.1\r\nHost: t1.test\r\nX-Pad: {pad}\r\n\r\n".encode())
+            answers.append(bench.read_answer(s, time.time() + 30)[1])
+            time.sleep(2)
+        # Longer than stallTimeout with the connection open and idle.
+        time.sleep(12)
+        st = c.status()
+        sweeping = c.goroutines("sweepLoop")
+        s.close()
+    a1 = {p["outbound"]: p for p in st["paths"]}["a1"]
+    kinds = a1.get("failures_by_kind") or {}
+    checks = [check("answers", answers, answers == [65536, 0, 0], "[65536, 0, 0]"),
+              check("failures on the idle connection", kinds or 0, not kinds, "== 0"),
+              check("sweep goroutines while it idles", sweeping, sweeping == 0, "== 0")]
+    if c.splices() is not None:
+        checks.append(check("spliced connections", c.splices(), c.splices() == 1, "== 1"))
+    return checks
 
 
 @scenario(slow=True)
@@ -327,7 +362,7 @@ def check_unreachable_witness(stand, xray, work, name):
     """As check_unreachable, but sites outside the tunnel work and prove that the network is there."""
     cfg = bench.client_config(THREE, THREE_COSTS,
                               health={"connectivity": {"maxPause": "20s", "witnesses": ["direct"]}})
-    cfg["dns"] = {"hosts": {"w.test": "127.0.0.1"}}
+    cfg["dns"] = {"hosts": {"w.test": bench.HOST}}
     cfg["routing"]["rules"].insert(0, {"domain": ["full:w.test"], "outboundTag": "direct"})
     next(o for o in cfg["outbounds"] if o["tag"] == "direct")["settings"]["domainStrategy"] = "UseIPv4"
     tunnel = bench.TARGETS[:3]
@@ -395,36 +430,55 @@ def memory_idle_members(stand, xray, work, name):
     return [check("heap: 20 members with health vs 1 plain, MB", round(diff, 2), diff <= 1, "<= 1")]
 
 
-@scenario()
-def throughput(stand, xray, work, name):
-    size = 1 << 30
-    plain = bench.plain(bench.client_config([("b1", "tcp_tls", 0)], {"b": 1}), "b1")
-    observed = bench.client_config([("b1", "tcp_tls", 0)], {"b": 1})
+def throughput_run(stand, xray, work, name, members, tls, splice=False):
+    """Downloads through the same outbound with and without the mechanism,
+    best of two each. BENCH_THROUGHPUT_MB sets the size (default 1024). With
+    splice the client logs at debug level to count spliced connections."""
+    size = int(float(os.environ.get("BENCH_THROUGHPUT_MB", "1024")) * (1 << 20))
+    loglevel = "debug" if splice else bench.LOGLEVEL
+    tag = members[0][0]
+    plain = bench.plain(bench.client_config(members, {tag[0]: 1}, loglevel=loglevel), tag)
+    observed = bench.client_config(members, {tag[0]: 1}, loglevel=loglevel)
     res = {}
+    splices = {}
     for label, cfg in (("plain", plain), ("observed", observed)) * 2:
         with bench.Client(xray, cfg, work, f"{name}-{label}") as c:
-            cpu0 = cpu_seconds(c.proc.pid)
+            cpu0 = c.cpu_seconds()
             t0 = time.time()
-            got = bench.download("t1.test", f"/bytes/{size}")
+            got = bench.download("t1.test", f"/bytes/{size}", tls=tls)
             dt = time.time() - t0
-            cpu = cpu_seconds(c.proc.pid) - cpu0
+            cpu = c.cpu_seconds() - cpu0
         assert got == size, f"downloaded {got} of {size}"
+        splices[label] = c.splices()
         best = res.get(label)
         if best is None or dt < best[0]:
             res[label] = (dt, cpu)
     slower = (res["observed"][0] / res["plain"][0] - 1) * 100
     cpu = (res["observed"][1] / res["plain"][1] - 1) * 100
-    return [check("download 1 GB slower with health, %", round(slower, 1), slower <= 2, "<= 2"),
-            check("client CPU higher with health, %", round(cpu, 1), cpu <= 2, "<= 2")]
+    mb = size / (1 << 20)
+    checks = [check(f"download {mb:g} MB slower with health, %", round(slower, 1), slower <= 2, "<= 2"),
+              check("client CPU higher with health, %", round(cpu, 1), cpu <= 2, "<= 2"),
+              check("MB/s plain vs observed", f"{mb / res['plain'][0]:.0f} vs {mb / res['observed'][0]:.0f}", True,
+                    "info"),
+              check("client CPU s plain vs observed", f"{res['plain'][1]:.2f} vs {res['observed'][1]:.2f}", True,
+                    "info")]
+    if splice and splices["observed"] is not None:
+        # The mechanism must not keep the connection from splicing.
+        checks.append(check("spliced plain vs observed", f"{splices['plain']} vs {splices['observed']}",
+                            splices["plain"] == splices["observed"] == 1, "1 vs 1"))
+    return checks
 
 
-def cpu_seconds(pid):
-    out = subprocess.run(["ps", "-o", "time=", "-p", str(pid)], capture_output=True, text=True).stdout.strip()
-    parts = [float(x) for x in out.replace("-", ":").split(":")]
-    total = 0.0
-    for p in parts:
-        total = total * 60 + p
-    return total
+@scenario()
+def throughput(stand, xray, work, name):
+    return throughput_run(stand, xray, work, name, [("b1", "tcp_tls", 0)], bench.TLS)
+
+
+@scenario()
+def throughput_spliced(stand, xray, work, name):
+    """REALITY with Vision and TLS inside: on Linux the download is spliced,
+    which the debug log shows."""
+    return throughput_run(stand, xray, work, name, [("a1", "reality", 0)], True, splice=True)
 
 
 # ---- 2. return to cheaper outbounds and network changes ------------------------

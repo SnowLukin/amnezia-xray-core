@@ -1,5 +1,9 @@
 """Stands in for the internet behind the bench servers.
 
+    target.py <port> <log> [<tls port> <cert> <key>]
+
+The same answers come over plain HTTP and, on the TLS port, over TLS 1.3.
+
 GET /204             empty answer
 GET /bytes/N         N bytes
 GET /hold/S          one byte per second for S seconds
@@ -7,6 +11,7 @@ GET /slow/N/S        N bytes spread over S seconds
 Every request is logged as "host path" lines to the file given as argv[2],
 so the bench can count probes separately from user traffic.
 """
+import ssl
 import sys
 import threading
 import time
@@ -73,12 +78,31 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
 
 
+class TLSServer(ThreadingHTTPServer):
+    """Handshakes in the request thread, so a frozen client does not stall
+    the accept loop."""
+
+    def __init__(self, address, handler, context):
+        super().__init__(address, handler)
+        self.context = context
+
+    def finish_request(self, request, client_address):
+        with self.context.wrap_socket(request, server_side=True) as tls:
+            super().finish_request(tls, client_address)
+
+
 def main():
     global LOG
     port = int(sys.argv[1])
     if len(sys.argv) > 2:
         LOG = open(sys.argv[2], "a", buffering=1)
     ThreadingHTTPServer.daemon_threads = True
+    if len(sys.argv) > 5:
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.minimum_version = ssl.TLSVersion.TLSv1_3
+        ctx.load_cert_chain(sys.argv[4], sys.argv[5])
+        tls = TLSServer(("127.0.0.1", int(sys.argv[3])), Handler, ctx)
+        threading.Thread(target=tls.serve_forever, daemon=True).start()
     ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
 
 
