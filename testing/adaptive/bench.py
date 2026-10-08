@@ -311,8 +311,10 @@ class Stand:
         open(self.provider_bodies_log, "w").close()
         provider_mode("ok")
 
-    def answer(self, members, costs=None, version=None, next_refresh=None):
-        """Sets what the provider serves: members as (tag, kind, address index)."""
+    def answer(self, members, costs=None, version=None, next_refresh=None, expires=None, server_time=None):
+        """Sets what the provider serves: members as (tag, kind, address index).
+        expires (by tag) and server_time take "@+Ns", the time of each
+        request plus N seconds."""
         body = {"outbounds": [member(t, k, i, PIN) for t, k, i in members]}
         if costs:
             body["costs"] = costs
@@ -320,6 +322,10 @@ class Stand:
             body["version"] = version
         if next_refresh:
             body["nextRefreshIn"] = next_refresh
+        if expires:
+            body["expiresAt"] = expires
+        if server_time:
+            body["serverTime"] = server_time
         with open(self.provider_answer, "w") as f:
             json.dump(body, f)
 

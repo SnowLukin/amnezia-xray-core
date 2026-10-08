@@ -1,7 +1,9 @@
 """Serves a set of outbounds the way a backend would, for provider scenarios.
 
 Run:      provider.py <port> <answer file> <log file>
-GET /set                     the answer file as JSON, read on every request
+GET /set                     the answer file as JSON, read on every request; a string
+                             "@+Ns" or "@-Ns" in it becomes the time N seconds from now
+                             in RFC 3339, for expiresAt and serverTime
 POST /set                    the same; the body of the request goes to <log file>.bodies
 GET /control?mode=<mode>     changes how /set answers:
   ok            the answer file
@@ -14,6 +16,7 @@ and the body of a POST as a JSON line {ts, auth, type, bytes, body} to the bodie
 file; a body that is not JSON is kept as a string.
 """
 import json
+import re
 import sys
 import threading
 import time
@@ -25,6 +28,16 @@ LOCK = threading.Lock()
 ANSWER = None
 LOG = None
 BODIES = None
+
+
+MOMENT = re.compile(rb'"@([+-]\d+)s"')
+
+
+def moments(body):
+    """Puts the time of the request into "@+Ns" strings of an answer."""
+    now = time.time()
+    return MOMENT.sub(lambda m: b'"' + time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now + int(m.group(1))))
+                      .encode() + b'"', body)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -66,7 +79,7 @@ class Handler(BaseHTTPRequestHandler):
             self.reply(200, b'{"outbounds": [{"tag": ')
         else:
             with open(ANSWER, "rb") as f:
-                self.reply(200, f.read())
+                self.reply(200, moments(f.read()))
 
     def do_POST(self):
         raw = self.rfile.read(int(self.headers.get("Content-Length") or 0))

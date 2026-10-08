@@ -1870,3 +1870,127 @@ def provider_limits(stand, xray, work, name):
         check("min_interval skips reported", len(skips), 0 < len(skips) <= len(ok_phase) + 1, "one per wait"),
         check("pauses after failures, s", g_fail, within and g_fail == sorted(g_fail), "5, 10, 20 +-30% growing"),
     ]
+
+
+def lease_ends(events, tag, since=0):
+    return [e for e in bench.events_of(events, "provider_expired", since) if e["fields"]["outbound"] == tag]
+
+
+@scenario()
+def provider_lease_expiry(stand, xray, work, name):
+    """The lease of the chosen outbound ends while the provider is down: the
+    balancer moves to the outbound whose lease runs on, without a probe of the
+    expired one or ruling it out, and a long download on it goes on."""
+    size, seconds = 16 << 20, 40
+    stand.answer([("x1", "reality", 1), ("x2", "reality", 2)], costs={"x1": 1, "x2": 2},
+                 expires={"x1": "@+30s", "x2": "@+300s"}, server_time="@+0s")
+    prov = bench.provider_config(["direct"], limits={"exhaustedMinInterval": "1s", "backoff": {"initial": "5s"}})
+    cfg = bench.client_config([("p-x1", "reality", 1)], {"p-": 1}, providers=[prov])
+    m = Marks()
+    got = {}
+
+    def long_download():
+        try:
+            got["bytes"] = bench.download("t1.test", f"/slow/{size}/{seconds}", timeout=seconds + 20)
+        except OSError as e:
+            got["error"] = repr(e)
+        got["end"] = time.time()
+
+    with bench.Client(xray, cfg, work, name) as c:
+        tr = bench.Traffic(rate=2, big=0.5)
+        dl = threading.Thread(target=long_download, daemon=True)
+        run_timeline(tr, [(2, m.at("answer", lambda: refresh(c))), (4, dl.start),
+                          (10, m.at("down", lambda: bench.provider_mode("status:500")))], 50)
+        dl.join(timeout=30)
+    applied = [e for e in bench.events_of(c.events, "provider_apply", m["answer"]) if e["fields"].get("ok")]
+    t_apply = applied[0]["ts"] / 1000 if applied else None
+    ended = lease_ends(c.events, "p-x1", m["answer"])
+    t_end = ended[0]["ts"] / 1000 if ended else None
+    left = [e for e in bench.switches(c.events, m["answer"]) if e["fields"]["from"] == "p-x1"]
+    probed = [e for e in bench.probes(c.events, m["answer"]) if e["fields"]["outbound"] == "p-x1"]
+    down = [e for e in bench.events_of(c.events, "path_state", m["answer"])
+            if e["fields"]["outbound"] == "p-x1" and e["fields"]["state"] == "down"]
+    asked = [e for e in bench.events_of(c.events, "provider_fetch", t_end or m["down"])
+             if e["fields"].get("trigger") == "expiry"]
+    failed = sum(1 for r in tr.records if not r[1])
+    return [
+        check("lease of p-x1 ended after the answer, s", t_end and t_apply and round(t_end - t_apply, 1),
+              t_end is not None and t_apply is not None and 29 <= t_end - t_apply <= 33, "30 .. 33"),
+        check("expired event (active, renewal)", ended and (ended[0]["fields"]["active"], ended[0]["fields"]["renewal"]),
+              bool(ended) and ended[0]["fields"]["active"] is True and ended[0]["fields"]["renewal"] == "pending",
+              "(True, pending)"),
+        check("balancer left the expired outbound", left and f"{left[0]['fields']['to']} {left[0]['fields']['reason']}",
+              bool(left) and left[0]["fields"]["to"] == "p-x2" and left[0]["fields"]["reason"] == "expired"
+              and t_end is not None and left[0]["ts"] / 1000 - t_end <= 5, "p-x2 expired within 5 s"),
+        check("probes of the expired outbound", len(probed), not probed, "== 0"),
+        check("expired outbound ruled out", len(down), not down, "== 0"),
+        check("refresh for the ended lease", len(asked), len(asked) >= 1, ">= 1 expiry"),
+        check("long download complete, MB", round(got.get("bytes", 0) / 2**20, 1), got.get("bytes") == size,
+              f"== {size >> 20}"),
+        check("download outlived the lease, s", got.get("end") and t_end and round(got["end"] - t_end, 1),
+              t_end is not None and got.get("end", 0) > t_end + 3, "> 3"),
+        check("user requests failed", failed, failed == 0, "== 0"),
+    ]
+
+
+@scenario()
+def provider_all_expired(stand, xray, work, name):
+    """The only lease ends while the provider is down: traffic goes on through
+    the expired outbound rather than to the fallback, and the provider is
+    asked again with a growing backoff."""
+    stand.answer([("x1", "reality", 1)], expires={"x1": "@+10s"}, server_time="@+0s")
+    prov = bench.provider_config(["direct"], limits={
+        "exhaustedMinInterval": "1s", "maxPerHour": 0,
+        "backoff": {"initial": "2s", "multiplier": 2, "max": "16s", "jitter": 0.3}})
+    cfg = bench.client_config([("p-x1", "reality", 1)], {"p-": 1}, providers=[prov])
+    m = Marks()
+    with bench.Client(xray, cfg, work, name) as c:
+        tr = bench.Traffic(rate=2, big=0.5)
+        run_timeline(tr, [(2, m.at("answer", lambda: refresh(c))),
+                          (3, m.at("down", lambda: bench.provider_mode("status:500")))], 45)
+        st = c.status()
+    ended = lease_ends(c.events, "p-x1", m["answer"])
+    t_end = ended[0]["ts"] / 1000 if ended else None
+    exhausted = bench.events_of(c.events, "exhausted", m["answer"])
+    left = [e for e in bench.switches(c.events, m["answer"]) if e["fields"]["from"] == "p-x1"]
+    reqs = [t for t, _, _ in stand.provider_requests(m["down"])]
+    g = gaps(reqs)[:3]
+    base = [2, 4, 8]
+    within = len(g) == 3 and all(0.7 * b - 0.3 <= x <= 1.3 * b + 0.3 for x, b in zip(g, base))
+    after = [r for r in tr.records if t_end and r[0] >= t_end + 1]
+    failed = sum(1 for r in after if not r[1])
+    active = (st.get("balancers") or [{}])[0].get("active")
+    return [
+        check("lease ended", len(ended), len(ended) == 1, "== 1"),
+        check("exhausted", len(exhausted), not exhausted, "== 0"),
+        check("still on the expired outbound", (active, len(left)), active == "p-x1" and not left, "(p-x1, 0)"),
+        check("requests after the end", len(after), len(after) >= 40, ">= 40"),
+        check("of them failed", failed, failed == 0, "== 0"),
+        check("pauses between provider requests, s", g, within and g == sorted(g), "2, 4, 8 +-30% growing"),
+    ]
+
+
+@scenario()
+def provider_clock_skew(stand, xray, work, name):
+    """The provider runs a day ahead of the device: a lease of 40 seconds by
+    its clock still ends 40 seconds after the answer."""
+    stand.answer([("x1", "reality", 1)], expires={"x1": "@+86440s"}, server_time="@+86400s")
+    prov = bench.provider_config(["direct"], limits={"exhaustedMinInterval": "1s"})
+    cfg = bench.client_config([("p-x1", "reality", 1)], {"p-": 1}, providers=[prov])
+    m = Marks()
+    with bench.Client(xray, cfg, work, name) as c:
+        tr = bench.Traffic(rate=1, big=0)
+        run_timeline(tr, [(2, m.at("answer", lambda: refresh(c))),
+                          (4, lambda: bench.provider_mode("status:500"))], 50)
+    applied = [e for e in bench.events_of(c.events, "provider_apply", m["answer"]) if e["fields"].get("ok")]
+    first = applied[0] if applied else {"fields": {}, "ts": 0}
+    skew = first["fields"].get("skew_ms")
+    ended = lease_ends(c.events, "p-x1", m["answer"])
+    took = ended[0]["ts"] / 1000 - first["ts"] / 1000 if ended and applied else None
+    return [
+        check("skew_ms of the answer", skew, skew is not None and abs(skew - 86_400_000) <= 5000,
+              "86 400 000 +- 5000"),
+        check("clock", first["fields"].get("clock"), first["fields"].get("clock") == "server", "server"),
+        check("lease ended after the answer, s", took and round(took, 1), took is not None and 37 <= took <= 43,
+              "40 +- 3"),
+    ]
