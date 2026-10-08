@@ -282,3 +282,95 @@ func TestRefreshUnderLowMemoryTriesOneVia(t *testing.T) {
 		t.Fatalf("requests through %v, %d failures; want the dead via alone after the missing one", vias, st.Providers[0].Failures)
 	}
 }
+
+// twoViaCore runs a core whose provider at url is reached through direct,
+// then direct2; both work, so only the answer decides whether the second is
+// tried.
+func twoViaCore(t *testing.T, url string) *health.Observer {
+	t.Helper()
+	cfg, err := core.LoadConfig("json", strings.NewReader(`{
+	  "log": {"loglevel": "none"},
+	  "outbounds": [
+	    {"tag": "direct", "protocol": "freedom", "settings": {"finalRules": [{"action": "allow"}]}},
+	    {"tag": "direct2", "protocol": "freedom", "settings": {"finalRules": [{"action": "allow"}]}}
+	  ],
+	  "routing": {"balancers": [{"tag": "auto", "selector": ["p-"], "strategy": {"type": "leastCost", "settings": {}}}]},
+	  "healthObservatory": {
+	    "subjectSelector": ["p-"],
+	    "providers": [{
+	      "tag": "fresh", "url": "`+url+`", "allowPlainHttp": true, "via": ["direct", "direct2"], "timeout": "3s",
+	      "triggers": {"interval": "0s", "minHealthy": 0, "whenExhausted": false, "maxAge": "0s", "onNetworkChange": "never"},
+	      "limits": {"backoff": {"initial": "1h"}},
+	      "apply": {"balancer": "auto", "tagPrefix": "p-", "protocols": ["freedom"]}
+	    }]
+	  }
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	inst, err := core.New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := inst.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { inst.Close() })
+	return health.FromInstance(inst)
+}
+
+func (s *setServer) requests() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.auth)
+}
+
+// An answer that is JSON but breaks the protocol comes from the backend
+// itself: the other via leads to the same backend, so it is not asked, and
+// the report counts the answer once, as rejected.
+func TestSchemaErrorEndsTheAttempts(t *testing.T) {
+	srv := &setServer{}
+	srv.set(`{"protocol": 1, "outbounds": [{"tag": "x1", "protocol": "freedom"}], "dns": {"servers": ["1.1.1.1"]}}`)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	obs := twoViaCore(t, ts.URL+"/set")
+	w := &eventWaiter{t: t, o: obs}
+	obs.RequestRefresh("fresh")
+	apply := w.until("provider_apply", nil)
+	fetches := w.since(0, "provider_fetch")
+	if srv.requests() != 1 || len(fetches) != 1 || fetches[0].Fields["ok"] != true || fetches[0].Fields["error"] != nil {
+		t.Fatalf("%d requests, fetches %+v; want one that the backend answered", srv.requests(), fetches)
+	}
+	if apply.Fields["ok"] != false || apply.Fields["error"] != `invalid answer: unknown key "dns"` {
+		t.Fatalf("apply %v", apply.Fields)
+	}
+	var report map[string]any
+	if err := json.Unmarshal(obs.Report(), &report); err != nil {
+		t.Fatal(err)
+	}
+	if report["provider_rejected"] != 1.0 || report["provider_fetch_failures"] != 0.0 || report["provider_applied"] != 0.0 {
+		t.Fatalf("report rejected %v, fetch failures %v, applied %v", report["provider_rejected"],
+			report["provider_fetch_failures"], report["provider_applied"])
+	}
+}
+
+// A body that is not JSON may have been broken on the way: the next via is
+// tried.
+func TestBrokenJSONTriesNextVia(t *testing.T) {
+	srv := &setServer{}
+	srv.set(`{"outbounds": [{"tag": `)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	obs := twoViaCore(t, ts.URL+"/set")
+	w := &eventWaiter{t: t, o: obs}
+	obs.RequestRefresh("fresh")
+	w.until("provider_fetch", func(e health.Event) bool { return e.Fields["via"] == "direct2" })
+	fetches := w.since(0, "provider_fetch")
+	if srv.requests() != 2 || len(fetches) != 2 || fetches[0].Fields["ok"] != false ||
+		!strings.Contains(fetches[0].Fields["error"].(string), "invalid answer") {
+		t.Fatalf("%d requests, fetches %+v; want both via tried", srv.requests(), fetches)
+	}
+	if applies := w.since(0, "provider_apply"); len(applies) != 0 {
+		t.Fatalf("a broken answer reached the apply: %+v", applies)
+	}
+}

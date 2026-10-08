@@ -59,9 +59,9 @@ type drainingOutbound struct {
 	since int64
 }
 
-// providerAnswer is a parsed provider response:
+// providerAnswer is a parsed provider response in protocol 1:
 //
-//	{"outbounds": [...], "costs": {"tag": 1}, "nextRefreshIn": "2h", "version": "..."}
+//	{"protocol": 1, "outbounds": [...], "costs": {"tag": 1}, "nextRefreshIn": "2h", "version": "..."}
 type providerAnswer struct {
 	// The outbounds as sent, handed to the config loader in one piece.
 	outbounds     json.RawMessage
@@ -69,10 +69,10 @@ type providerAnswer struct {
 	costs         map[string]float64
 	nextRefreshIn time.Duration
 	version       string
-	// Rules and balancers in the format of the config file.
-	routing json.RawMessage
-	// Sections the core cannot change while it runs, such as dns.
-	restart []string
+	// Rules, balancers and the domain strategy in the format of the config
+	// file; withStrategy tells whether the strategy was there at all.
+	routing      json.RawMessage
+	withStrategy bool
 }
 
 type outboundHead struct {
@@ -80,73 +80,123 @@ type outboundHead struct {
 	Protocol string `json:"protocol"`
 }
 
-// Answer keys applied without a restart, and keys that only name the answer.
-var answerKeys = map[string]bool{"outbounds": true, "costs": true, "routing": true, "nextRefreshIn": true, "version": true, "hash": true}
+// Keys of an answer in protocol 1. The set keys make up the set, and an
+// answer without a version is named by a hash of them. The meta keys only
+// say how to take the set: an answer that differs in them alone is the same
+// set. Any other key refuses the whole answer, so a backend never takes a
+// key for applied that the core threw away; a new key is protocol 2.
+var (
+	setKeys  = map[string]bool{"outbounds": true, "costs": true, "routing": true}
+	metaKeys = map[string]bool{"protocol": true, "version": true, "hash": true, "nextRefreshIn": true}
+)
+
+// answerError is an answer that is a JSON object but breaks protocol 1. The
+// backend itself answered, so no other via is tried: it leads to the same
+// backend.
+type answerError struct{ msg string }
+
+func (e *answerError) Error() string { return "invalid answer: " + e.msg }
+
+func answerErrorf(format string, args ...any) error {
+	return &answerError{msg: fmt.Sprintf(format, args...)}
+}
+
+func isAnswerError(err error) bool {
+	var ae *answerError
+	return errors.As(err, &ae)
+}
 
 // parseAnswer decodes the body once into its sections; everything else reads
 // a section, and the outbounds stay one piece of the answer until they are
-// built.
+// built. A body that is not a JSON object is a broken answer, which another
+// via may bring whole; an object against the protocol is an answerError.
 func parseAnswer(body []byte) (*providerAnswer, error) {
 	var sections map[string]json.RawMessage
 	if err := json.Unmarshal(body, &sections); err != nil {
 		return nil, err
 	}
+	if sections == nil {
+		return nil, errors.New("not a JSON object")
+	}
+	for _, key := range slices.Sorted(maps.Keys(sections)) {
+		switch {
+		case key == "healthObservatory":
+			return nil, answerErrorf("healthObservatory is not accepted in an answer")
+		case !setKeys[key] && !metaKeys[key]:
+			return nil, answerErrorf("unknown key %q", cut(key))
+		}
+	}
+	if p := sections["protocol"]; !isNull(p) {
+		var n float64
+		if p[0] == '"' || json.Unmarshal(p, &n) != nil || n != providerProtocol {
+			return nil, answerErrorf("protocol %s is not supported", cut(string(p)))
+		}
+	}
 	a := &providerAnswer{outbounds: sections["outbounds"]}
 	if isNull(a.outbounds) {
-		return nil, errors.New("no outbounds")
+		return nil, answerErrorf("no outbounds")
 	}
 	if err := json.Unmarshal(a.outbounds, &a.heads); err != nil {
-		return nil, fmt.Errorf("outbounds: %w", err)
+		return nil, answerErrorf("outbounds: %v", err)
 	}
 	if len(a.heads) == 0 {
-		return nil, errors.New("no outbounds")
+		return nil, answerErrorf("no outbounds")
 	}
 	if c := sections["costs"]; !isNull(c) {
 		if err := json.Unmarshal(c, &a.costs); err != nil {
-			return nil, fmt.Errorf("costs: %w", err)
+			return nil, answerErrorf("costs: %v", err)
 		}
 	}
 	next, err := parseRefreshIn(sections["nextRefreshIn"])
 	if err != nil {
-		return nil, err
+		return nil, answerErrorf("%v", err)
 	}
 	a.nextRefreshIn = next
 	for _, key := range []string{"version", "hash"} {
 		if v := sections[key]; a.version == "" && !isNull(v) {
 			if err := json.Unmarshal(v, &a.version); err != nil {
-				return nil, fmt.Errorf("%s: %w", key, err)
+				return nil, answerErrorf("%s: %v", key, err)
 			}
-		}
-	}
-	for key := range sections {
-		if !answerKeys[key] {
-			a.restart = append(a.restart, key)
 		}
 	}
 	if r := sections["routing"]; !isNull(r) {
 		var parts map[string]json.RawMessage
 		if err := json.Unmarshal(r, &parts); err != nil {
-			return nil, fmt.Errorf("routing: %w", err)
+			return nil, answerErrorf("routing: %v", err)
 		}
-		a.routing = r
-		atStart := false
-		for key := range parts {
-			if key != "rules" && key != "balancers" {
-				a.restart = append(a.restart, "routing."+key)
-				delete(parts, key)
-				atStart = true
+		for _, key := range slices.Sorted(maps.Keys(parts)) {
+			if key != "rules" && key != "balancers" && key != "domainStrategy" {
+				return nil, answerErrorf("routing: unknown key %q", cut(key))
 			}
 		}
-		if atStart {
-			// The domain strategy and the like are read once at start.
-			a.routing, _ = json.Marshal(parts)
+		if ds := parts["domainStrategy"]; !isNull(ds) {
+			// The config loader takes a strategy it does not know for AsIs.
+			var name string
+			if json.Unmarshal(ds, &name) != nil || !slices.ContainsFunc(domainStrategies, func(s string) bool {
+				return strings.EqualFold(s, name)
+			}) {
+				return nil, answerErrorf("routing: unknown domainStrategy %s", cut(string(ds)))
+			}
+			a.withStrategy = true
 		}
+		a.routing = r
 	}
-	sort.Strings(a.restart)
 	if a.version == "" {
 		a.version = setHash(sections)
 	}
 	return a, nil
+}
+
+var domainStrategies = []string{"AsIs", "IPIfNonMatch", "IPOnDemand"}
+
+// cut shortens a key or a value of an answer for an error, so that one odd
+// answer cannot fill the event log.
+func cut(s string) string {
+	const limit = 64
+	if len(s) > limit {
+		return s[:limit] + "..."
+	}
+	return s
 }
 
 func isNull(raw json.RawMessage) bool {
@@ -173,12 +223,13 @@ func parseRefreshIn(raw json.RawMessage) (time.Duration, error) {
 	return max(time.Duration(secs*float64(time.Second)), 0), nil
 }
 
-// setHash names an answer by everything in it except nextRefreshIn, so the
-// same set sent again, however formatted, is known as the applied one.
+// setHash names an answer by its set keys, so the same set sent again,
+// however formatted and whatever its meta keys say, is known as the applied
+// one.
 func setHash(sections map[string]json.RawMessage) string {
 	keys := make([]string, 0, len(sections))
 	for key := range sections {
-		if key != "nextRefreshIn" {
+		if setKeys[key] {
 			keys = append(keys, key)
 		}
 	}
@@ -359,7 +410,8 @@ func (o *Observer) runRefresh(j *refreshJob) {
 }
 
 // fetchSet requests the set through the via outbounds in turn until one
-// brings a well-formed answer. Every attempt is an event.
+// brings a well-formed answer, or the backend answers against the protocol:
+// another via leads to the same backend. Every attempt is an event.
 func (o *Observer) fetchSet(rt *providerRuntime, j *refreshJob) (*providerAnswer, error) {
 	via := rt.cfg.via
 	if len(via) == 0 {
@@ -385,16 +437,25 @@ func (o *Observer) fetchSet(rt *providerRuntime, j *refreshJob) (*providerAnswer
 		}
 		start := time.Now()
 		a, status, n, err := o.fetchOnce(rt.cfg, tag)
-		f["ok"] = err == nil
+		// An answer against the protocol still came from the backend: the
+		// request did its job and the refusal is the apply's, so the report
+		// counts it once, as rejected.
+		refused := isAnswerError(err)
+		f["ok"] = err == nil || refused
 		f["status"] = status
 		f["ms"] = time.Since(start).Milliseconds()
 		f["bytes"] = n
-		if err != nil {
+		if err != nil && !refused {
 			f["error"] = err.Error()
 		}
 		o.emit("provider_fetch", f)
 		if err == nil {
 			return a, nil
+		}
+		if refused {
+			o.emit("provider_apply", map[string]any{"provider": rt.cfg.tag, "trigger": j.trigger.String(),
+				"ok": false, "error": err.Error()})
+			return nil, err
 		}
 		lastErr = err
 		if low {
@@ -465,8 +526,11 @@ func (o *Observer) fetchOnce(cfg *providerSettings, tag string) (*providerAnswer
 		return nil, resp.StatusCode, len(body), fmt.Errorf("answer larger than %d bytes", cfg.maxBytes)
 	}
 	a, err := parseAnswer(body)
+	if err != nil && !isAnswerError(err) {
+		err = fmt.Errorf("invalid answer: %w", err)
+	}
 	if err != nil {
-		return nil, resp.StatusCode, len(body), fmt.Errorf("invalid answer: %w", err)
+		return nil, resp.StatusCode, len(body), err
 	}
 	return a, resp.StatusCode, len(body), nil
 }
@@ -507,11 +571,12 @@ func (o *Observer) applySet(rt *providerRuntime, a *providerAnswer, j *refreshJo
 	if err != nil {
 		return fail(err)
 	}
-	restart := a.restart
 	var routing *router.Config
 	if len(a.routing) > 0 {
 		if !rt.cfg.routing || o.replaceRules == nil {
-			restart = append(restart, "routing")
+			// Whether to take routing from a provider is the choice of the
+			// client: the set applies without it.
+			fields["routing_ignored"] = true
 		} else {
 			setTags := make([]string, 0, len(changes)+len(unchanged))
 			for _, c := range changes {
@@ -609,7 +674,7 @@ func (o *Observer) applySet(rt *providerRuntime, a *providerAnswer, j *refreshJo
 	// Outside the observer lock: rebuilt leastCost balancers ask the observer
 	// for their selectors.
 	if routing != nil {
-		if err := o.replaceRules(routing, false); err != nil {
+		if err := o.replaceRules(routing, a.withStrategy); err != nil {
 			fields["routing_error"] = err.Error()
 		} else {
 			fields["rules"] = len(routing.Rule)
@@ -650,10 +715,6 @@ func (o *Observer) applySet(rt *providerRuntime, a *providerAnswer, j *refreshJo
 	fields["unchanged"] = len(unchanged)
 	fields["exhausted"] = exhausted
 	o.e.emit(now, "provider_apply", fields)
-	if len(restart) > 0 {
-		sort.Strings(restart)
-		o.e.emit(now, "provider_restart_needed", map[string]any{"provider": rt.cfg.tag, "version": a.version, "sections": restart})
-	}
 	o.mu.Unlock()
 	o.settleDrains(rt)
 	return true, nil

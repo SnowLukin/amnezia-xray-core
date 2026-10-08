@@ -20,6 +20,7 @@ func TestProviderRoutingAppliesInRunningCore(t *testing.T) {
 	defer ts.Close()
 	cfg, err := core.LoadConfig("json", strings.NewReader(`{
 	  "log": {"loglevel": "none"},
+	  "dns": {"hosts": {"lan.test": "10.1.2.3"}},
 	  "outbounds": [
 	    {"tag": "block", "protocol": "blackhole"},
 	    {"tag": "direct", "protocol": "freedom"}
@@ -60,15 +61,21 @@ func TestProviderRoutingAppliesInRunningCore(t *testing.T) {
 		return route.GetOutboundTag()
 	}
 	w := &eventWaiter{t: t, o: obs}
+	if got := pick("lan.test"); got == "block" {
+		t.Fatal("setup: lan.test matches an IP rule before the answer")
+	}
 
-	srv.set(`{"outbounds": [{"tag": "x1", "protocol": "freedom"}],
-	  "routing": {"rules": [{"domain": ["full:blocked.test"], "outboundTag": "block"},
-	                        {"domain": ["full:a.test"], "balancerTag": "auto"}],
-	    "balancers": [{"tag": "auto", "selector": ["p-"], "strategy": {"type": "leastCost", "settings": {}}, "fallbackTag": "block"}]},
-	  "dns": {"servers": ["1.1.1.1"]}}`)
+	routingWith := func(strategy string) string {
+		return `"routing": {"domainStrategy": "` + strategy + `",
+	    "rules": [{"domain": ["full:blocked.test"], "outboundTag": "block"},
+	              {"ip": ["10.1.2.0/24"], "outboundTag": "block"},
+	              {"domain": ["full:a.test"], "balancerTag": "auto"}],
+	    "balancers": [{"tag": "auto", "selector": ["p-"], "strategy": {"type": "leastCost", "settings": {}}, "fallbackTag": "block"}]}`
+	}
+	srv.set(`{"protocol": 1, "outbounds": [{"tag": "x1", "protocol": "freedom"}], ` + routingWith("IPIfNonMatch") + `}`)
 	obs.RequestRefresh("fresh")
 	ev := w.until("provider_apply", nil)
-	if ev.Fields["ok"] != true || ev.Fields["rules"] != 2.0 {
+	if ev.Fields["ok"] != true || ev.Fields["rules"] != 3.0 {
 		t.Fatalf("apply %v", ev.Fields)
 	}
 	if got := pick("blocked.test"); got != "block" {
@@ -77,14 +84,26 @@ func TestProviderRoutingAppliesInRunningCore(t *testing.T) {
 	if got := pick("a.test"); got != "p-x1" {
 		t.Fatalf("the balancer rebuilt from the answer routes a.test to %q, want p-x1", got)
 	}
-	restart := ""
-	for _, e := range w.all {
-		if e.Type == "provider_restart_needed" {
-			restart = strings.Join(toStrings(e.Fields["sections"]), ",")
-		}
+	// The domain strategy of the answer works without a restart: the name
+	// resolves into the range of an IP rule.
+	if got := pick("lan.test"); got != "block" {
+		t.Fatalf("with IPIfNonMatch from the answer lan.test goes to %q, want block", got)
 	}
-	if restart != "dns" {
-		t.Fatalf("restart needed for %q, want dns", restart)
+
+	// A section the core reads only at start refuses the whole answer.
+	from := len(w.all)
+	srv.set(`{"protocol": 1, "outbounds": [{"tag": "x2", "protocol": "freedom"}], ` + routingWith("AsIs") + `,
+	  "dns": {"servers": ["1.1.1.1"]}}`)
+	obs.RequestRefresh("fresh")
+	ev = w.until("provider_apply", nil)
+	if ev.Fields["ok"] != false || !strings.Contains(ev.Fields["error"].(string), `unknown key "dns"`) {
+		t.Fatalf("an answer with dns: apply %v", ev.Fields)
+	}
+	if len(w.since(from, "provider_restart_needed")) != 0 {
+		t.Fatal("a refused answer asked for a restart")
+	}
+	if got := pick("lan.test"); got != "block" || pick("a.test") != "p-x1" {
+		t.Fatalf("a refused answer changed the routing: lan.test to %q, a.test to %q", got, pick("a.test"))
 	}
 
 	srv.set(`{"outbounds": [{"tag": "x1", "protocol": "freedom"}],
@@ -95,14 +114,4 @@ func TestProviderRoutingAppliesInRunningCore(t *testing.T) {
 	if ev.Fields["ok"] != false || pick("blocked.test") != "block" {
 		t.Fatalf("a routing to an unknown outbound: apply %v, blocked.test now goes to %q", ev.Fields, pick("blocked.test"))
 	}
-}
-
-func toStrings(v any) []string {
-	items, _ := v.([]any)
-	out := make([]string, 0, len(items))
-	for _, it := range items {
-		s, _ := it.(string)
-		out = append(out, s)
-	}
-	return out
 }

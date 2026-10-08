@@ -11,19 +11,28 @@ import (
 	"github.com/xtls/xray-core/common/net"
 )
 
-func TestAnswerSectionsTheCoreCannotChangeAskForARestart(t *testing.T) {
-	a, err := parseAnswer([]byte(`{"outbounds": [{"tag": "x"}], "dns": {"servers": ["1.1.1.1"]},
+// Protocol 1 knows its keys: the routing of an answer changes on the fly with
+// its domain strategy, and a section of the config the core reads only at
+// start refuses the answer instead of asking for a restart.
+func TestAnswerKeysOfProtocol1(t *testing.T) {
+	a, err := parseAnswer([]byte(`{"protocol": 1, "outbounds": [{"tag": "x"}],
 		"routing": {"domainStrategy": "IPIfNonMatch", "rules": []}}`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Join(a.restart, ",") != "dns,routing.domainStrategy" || string(a.routing) != `{"rules":[]}` {
-		t.Fatalf("restart %v, routing %s", a.restart, a.routing)
+	if !a.withStrategy || !strings.Contains(string(a.routing), "IPIfNonMatch") {
+		t.Fatalf("strategy taken %v, routing %s", a.withStrategy, a.routing)
 	}
-	b, _ := parseAnswer([]byte(`{"outbounds": [{"tag": "x"}], "dns": {"servers": ["8.8.8.8"]}}`))
-	c, _ := parseAnswer([]byte(`{"outbounds": [{"tag": "x"}]}`))
-	if b.version == c.version {
-		t.Fatal("a set whose dns changed is named like the one without dns")
+	if a, _ := parseAnswer([]byte(`{"outbounds": [{"tag": "x"}], "routing": {"rules": []}}`)); a.withStrategy {
+		t.Fatal("routing without a strategy asks to change it")
+	}
+	for body, want := range map[string]string{
+		`{"outbounds": [{"tag": "x"}], "dns": {"servers": ["1.1.1.1"]}}`:     `invalid answer: unknown key "dns"`,
+		`{"outbounds": [{"tag": "x"}], "routing": {"domainStrategy": "Ip"}}`: `invalid answer: routing: unknown domainStrategy "Ip"`,
+	} {
+		if _, err := parseAnswer([]byte(body)); err == nil || !isAnswerError(err) || err.Error() != want {
+			t.Errorf("%s: %v, want %s", body, err, want)
+		}
 	}
 }
 
@@ -110,7 +119,9 @@ func TestApplyRoutingWithTheSet(t *testing.T) {
 	}
 }
 
-func TestRoutingNotAllowedAsksForARestart(t *testing.T) {
+// Routing off is the choice of the client, not a change the host has to
+// restart for: the set applies without it.
+func TestRoutingIgnoredWhenOff(t *testing.T) {
 	f := newApplyFixture(t, time.Minute)
 	f.o.parseRouting = testRouting
 	called := false
@@ -119,8 +130,40 @@ func TestRoutingNotAllowedAsksForARestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	raw, _ := f.o.DrainEvents()
-	if called || !strings.Contains(string(raw), `"provider_restart_needed"`) || !strings.Contains(string(raw), `"routing"`) {
-		t.Fatalf("routing applied %v; events %s", called, raw)
+	var evs []Event
+	_ = json.Unmarshal(raw, &evs)
+	var apply map[string]any
+	for _, e := range evs {
+		if e.Type == "provider_restart_needed" {
+			t.Fatalf("routing off asks for a restart: %s", raw)
+		}
+		if e.Type == "provider_apply" {
+			apply = e.Fields
+		}
+	}
+	if called || apply["ok"] != true || apply["changed"] != true || apply["routing_ignored"] != true {
+		t.Fatalf("routing applied %v; apply %v", called, apply)
+	}
+}
+
+// The strategy of the answer goes to the router only when the answer has one.
+func TestApplyRoutingTakesTheStrategyOfTheAnswer(t *testing.T) {
+	own := `{"tag": "auto", "selector": ["p-"], "strategy": "leastcost"}`
+	for _, tc := range []struct {
+		routing string
+		want    bool
+	}{
+		{`{"rules": [], "balancers": [` + own + `]}`, false},
+		{`{"rules": [], "balancers": [` + own + `], "domainStrategy": "IPOnDemand"}`, true},
+	} {
+		f := newApplyFixture(t, time.Minute)
+		f.rt.cfg.routing = true
+		f.o.parseRouting = testRouting
+		var called, withStrategy bool
+		f.o.replaceRules = func(_ *router.Config, ws bool) error { called, withStrategy = true, ws; return nil }
+		if _, err := f.apply(t, routingAnswer(t, tc.routing)); err != nil || !called || withStrategy != tc.want {
+			t.Fatalf("%s: err %v, applied %v, with the strategy %v", tc.routing, err, called, withStrategy)
+		}
 	}
 }
 

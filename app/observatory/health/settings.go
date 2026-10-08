@@ -57,6 +57,9 @@ const (
 	defaultMaxPenalty        = 2 * time.Hour
 	maxJitter                = 0.9
 
+	// The version of the provider protocol the core speaks.
+	providerProtocol = 1
+
 	defaultProviderTimeout      = 10 * time.Second
 	defaultRefreshInterval      = 2 * time.Hour
 	defaultRefreshJitter        = 0.2

@@ -1702,8 +1702,8 @@ type ProviderApply struct {
 	// to a server; an outbound that sends traffic straight out, such as
 	// freedom, is refused unless listed here.
 	Protocols []string `protobuf:"bytes,5,rep,name=protocols,proto3" json:"protocols,omitempty"`
-	// Applies the routing rules and balancers of an answer without a restart.
-	// Off, they only ask the host for a restart like other sections do.
+	// Applies the routing rules, balancers and domain strategy of an answer
+	// without a restart. Off, the routing of an answer is ignored.
 	Routing       bool `protobuf:"varint,6,opt,name=routing,proto3" json:"routing,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache

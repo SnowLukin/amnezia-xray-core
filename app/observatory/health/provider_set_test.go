@@ -351,12 +351,16 @@ func TestApplySameVersionDoesNothing(t *testing.T) {
 	if changed, _ := f.apply(t, set); !changed {
 		t.Fatal("first apply did not change anything")
 	}
+	x1 := f.m.GetHandler("p-x1").(*fakeHandler)
 	f.created = nil
 	if changed, err := f.apply(t, answer(t, fakeOutbound{Tag: "x1", V: 1})); changed || err != nil {
 		t.Fatalf("same set: changed %v, %v", changed, err)
 	}
-	if ev := f.lastApply(t); ev["changed"] != false || len(f.created) != 0 {
+	if ev := f.lastApply(t); ev["ok"] != true || ev["changed"] != false || ev["version"] != set.version || len(f.created) != 0 {
 		t.Fatalf("same set built %d handlers, event %v", len(f.created), ev)
+	}
+	if f.m.GetHandler("p-x1") != x1 || x1.closes() != 0 || f.m.tags() != "p-x1" {
+		t.Fatalf("same set touched the handlers: %s, p-x1 kept %v, closed %d", f.m.tags(), f.m.GetHandler("p-x1") == x1, x1.closes())
 	}
 }
 
@@ -401,21 +405,12 @@ func TestCloseStopsDrainsAndClosesReplacedHandlers(t *testing.T) {
 }
 
 func TestParseAnswer(t *testing.T) {
-	if _, err := parseAnswer([]byte(`{"outbounds": [`)); err == nil {
-		t.Fatal("broken JSON parsed")
-	}
-	if _, err := parseAnswer([]byte(`{"outbounds": []}`)); err == nil {
-		t.Fatal("empty set accepted")
-	}
 	a, err := parseAnswer([]byte(`{"outbounds": [{"tag": "x"}], "nextRefreshIn": "90m", "costs": {"x": 3}}`))
 	if err != nil || a.nextRefreshIn != 90*time.Minute || a.costs["x"] != 3 {
 		t.Fatalf("parsed %+v, %v", a, err)
 	}
 	if a, _ := parseAnswer([]byte(`{"outbounds": [{"tag": "x"}], "nextRefreshIn": 600}`)); a.nextRefreshIn != 10*time.Minute {
 		t.Fatalf("seconds parsed as %v", a.nextRefreshIn)
-	}
-	if _, err := parseAnswer([]byte(`{"outbounds": [{"tag": "x"}], "nextRefreshIn": "soon"}`)); err == nil {
-		t.Fatal("bad nextRefreshIn accepted")
 	}
 	if a, _ := parseAnswer([]byte(`{"outbounds": [{"tag": "x"}], "version": "v7", "hash": "h"}`)); a.version != "v7" {
 		t.Fatalf("version %q, want the one the server sent", a.version)
@@ -425,6 +420,46 @@ func TestParseAnswer(t *testing.T) {
 	a3, _ := parseAnswer([]byte(`{"outbounds": [{"tag": "x", "v": 2}]}`))
 	if a1.version != a2.version || a1.version == a3.version {
 		t.Fatalf("hashes: %s %s %s; want equal for the same set and different for another", a1.version, a2.version, a3.version)
+	}
+	if _, err := parseAnswer([]byte(`{"protocol": 1, "outbounds": [{"tag": "x"}]}`)); err != nil {
+		t.Fatalf("protocol 1 refused: %v", err)
+	}
+	// A JSON object against the protocol is the answer of the backend; only
+	// a body that is no object at all may be a broken answer on the way.
+	for _, body := range []string{`{"outbounds": [`, `[]`, `"x"`, `null`} {
+		if _, err := parseAnswer([]byte(body)); err == nil || isAnswerError(err) {
+			t.Errorf("%s: %v, want a broken answer", body, err)
+		}
+	}
+	for body, want := range map[string]string{
+		`{"outbounds": []}`:                                                     "no outbounds",
+		`{"protocol": 2, "outbounds": [{"tag": "x"}]}`:                          "protocol 2 is not supported",
+		`{"protocol": 0, "outbounds": [{"tag": "x"}]}`:                          "protocol 0 is not supported",
+		`{"protocol": "1", "outbounds": [{"tag": "x"}]}`:                        `protocol "1" is not supported`,
+		`{"outbounds": [{"tag": "x"}], "dns": {}}`:                              `unknown key "dns"`,
+		`{"outbounds": [{"tag": "x"}], "inbounds": []}`:                         `unknown key "inbounds"`,
+		`{"outbounds": [{"tag": "x"}], "healthObservatory": {}}`:                "healthObservatory is not accepted in an answer",
+		`{"outbounds": [{"tag": "x"}], "routing": {"rules": [], "foo": 1}}`:     `routing: unknown key "foo"`,
+		`{"outbounds": [{"tag": "x"}], "nextRefreshIn": "soon"}`:                "nextRefreshIn",
+		`{"outbounds": [{"tag": "x"}], "` + strings.Repeat("k", 1000) + `": 1}`: "...",
+		`{"outbounds": {"tag": "x"}}`:                                           "outbounds:",
+	} {
+		_, err := parseAnswer([]byte(body))
+		if err == nil || !isAnswerError(err) || !strings.Contains(err.Error(), want) || len(err.Error()) > 200 {
+			t.Errorf("%.80s: %v, want a refusal about %q", body, err, want)
+		}
+	}
+}
+
+// The version names the set: an answer that differs only in how to take it
+// is the applied set again, not a new one to build.
+func TestVersionIgnoresMetaKeys(t *testing.T) {
+	a1, _ := parseAnswer([]byte(`{"outbounds": [{"tag": "x"}], "costs": {"x": 2}}`))
+	a2, _ := parseAnswer([]byte(`{"protocol": 1, "outbounds": [{"tag": "x"}], "costs": {"x": 2}, "nextRefreshIn": "1h"}`))
+	a3, _ := parseAnswer([]byte(`{"outbounds": [{"tag": "x"}], "costs": {"x": 3}}`))
+	a4, _ := parseAnswer([]byte(`{"outbounds": [{"tag": "x"}], "costs": {"x": 2}, "routing": {"rules": []}}`))
+	if a1.version != a2.version || a1.version == a3.version || a1.version == a4.version {
+		t.Fatalf("versions %s %s %s %s; want the first two equal and the others apart", a1.version, a2.version, a3.version, a4.version)
 	}
 }
 
@@ -622,7 +657,7 @@ func TestAnswerIsParsedInOnePass(t *testing.T) {
 		outs = append(outs, fmt.Sprintf(`{"tag": "x%d", "protocol": "vless", "settings": {"pad": %q}}`, i, pad))
 	}
 	body := []byte(`{"outbounds": [` + strings.Join(outs, ",") + `], "costs": {"x1": 2},
-		"routing": {"rules": [], "balancers": []}, "dns": {"servers": ["1.1.1.1"]}}`)
+		"routing": {"rules": [], "balancers": []}, "nextRefreshIn": "1h"}`)
 	var before, after runtime.MemStats
 	runtime.GC()
 	runtime.ReadMemStats(&before)

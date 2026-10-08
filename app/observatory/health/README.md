@@ -223,19 +223,31 @@ order until one brings a well-formed answer: an outbound tag, or the tag of a
 `leastCost` balancer, which means its current choice. An exhausted balancer,
 an outbound in quarantine and a tag with no outbound are skipped. Without `via` the request is
 routed like any other connection. Each attempt has its own `timeout`;
-redirects are not followed.
+redirects are not followed. A body that is not a JSON object, is cut short
+or is larger than `maxBytes` may have broken on the way, and the next entry
+is tried. An answer that is a JSON object but breaks the protocol ends the
+attempts: the backend itself sent it, and another entry leads to the same
+backend.
 
 **Answer.**
 
 ```json
 {
+  "protocol": 1,
   "outbounds": [ { "tag": "x1", "protocol": "vless", "settings": {}, "streamSettings": {} } ],
   "costs": { "x1": 1 },
-  "routing": { "rules": [], "balancers": [] },
+  "routing": { "rules": [], "balancers": [], "domainStrategy": "IPIfNonMatch" },
   "nextRefreshIn": "90m",
   "version": "2026-10-08.3"
 }
 ```
+
+The answer is read strictly. `protocol` is 1 or left out. A key not shown
+here, a section of the config such as `dns`, `inbounds` or `policy`, and
+`healthObservatory` refuse the whole answer, so a backend never takes a key
+for applied that the core threw away; a new key is a new protocol. A refused
+answer changes nothing and is reported in `provider_apply` with `ok` false
+and the reason.
 
 `outbounds` use the format of the config file and need unique tags. Their
 protocols must be in `apply.protocols`; by default `vless`, `vmess`,
@@ -245,24 +257,24 @@ answer cannot send traffic straight out with `freedom`.
 balancer for them.
 `nextRefreshIn` (a duration or seconds) replaces `interval` until the next
 refresh. `version` (or `hash`) names the set; without it the set is named by
-a hash of everything in the answer except `nextRefreshIn`. A set with the
-same name as the applied one changes nothing.
+a hash of `outbounds`, `costs` and `routing`, so an answer that differs only
+in `protocol` or `nextRefreshIn` is the same set. A set with the same name as
+the applied one changes nothing.
 
-`routing` takes `rules` and `balancers` in the format of the config file and
-replaces all rules and balancers at once, without a restart, when
-`apply.routing` is on. Rules refer to the final tags, `tagPrefix` included.
+`routing` takes `rules`, `balancers` and `domainStrategy` in the format of
+the config file and replaces all rules and balancers at once, and the domain
+strategy when the answer has one, without a restart, when `apply.routing` is
+on; any other key in it refuses the answer. Rules refer to the final tags, `tagPrefix` included.
 The answer is refused when a rule or a fallback goes to an outbound or a
 balancer that does not exist (Xray would take its default outbound for it,
 which may be outside the tunnel), when the leastCost balancer of the
 provider is gone, when a leastCost balancer chooses outbounds nothing
 observes, or when a rule has a webhook, which would post every matching
 connection with its destination. Balancers the new routing no longer has are forgotten, with the
-outbounds they remembered per network. Everything else in an answer, such as `dns`, `inbounds`, `policy`
-or `routing.domainStrategy`, is read by Xray only at start: the core leaves
-it alone and reports it in `provider_restart_needed`, and the host restarts
-the core with a fresh config when it suits, for example once everything is
-exhausted or nobody uses the tunnel. So does `routing` while
-`apply.routing` is off.
+outbounds they remembered per network. While `apply.routing` is off the
+routing of an answer is ignored, which `provider_apply` tells with
+`routing_ignored`: taking routing from a provider is the choice of the
+client.
 
 **Apply.** Every outbound gets `tagPrefix` in front of its tag.
 `apply.balancer` has to be a `leastCost` balancer with a selector that
@@ -455,9 +467,9 @@ changed its settings). `kinds` counts failures by kind: `dial_failed`, `dial_tim
 | `connectivity_ignored` | `failed_checks` | The check failed while an outbound worked; it is not used until the next network change. |
 | `network_change` | `network`, `known`, `generation` | The host reported a network change. |
 | `memory_low` | `on` | The host reported that memory is low (`on` true) or no longer. |
-| `provider_fetch` | `provider`, `trigger`, `retry`, `attempt`, `via`, `outbound`, `ok`, `status`, `ms`, `bytes`, `error` | One request of a refresh through one `via` entry; `outbound` is what the entry resolved to, `bytes` the size of the answer. A skipped entry has `ok` false and only `error`: `balancer exhausted`, `outbound down` or `no such outbound`. `error` never holds the URL. `trigger`: `host`, `exhausted`, `min_healthy`, `cost_above`, `network_change`, `next_refresh`, `max_age`, `interval`; `retry` counts failed refreshes before this one. |
-| `provider_apply` | `provider`, `trigger`, `ok`, `changed`, `added`, `replaced`, `removed`, `unchanged`, `version`, `exhausted`, `rules`, `routing_error`, `error` | The answer was applied (`changed`), was the applied set already, or was rejected (`ok` false with `error`). `exhausted` tells whether the balancer had nothing usable at that moment. `rules` counts the routing rules applied with the set. |
-| `provider_restart_needed` | `provider`, `version`, `sections` | The applied answer also changes sections the core reads only at start. |
+| `provider_fetch` | `provider`, `trigger`, `retry`, `attempt`, `via`, `outbound`, `ok`, `status`, `ms`, `bytes`, `error` | One request of a refresh through one `via` entry; `outbound` is what the entry resolved to, `bytes` the size of the answer. A skipped entry has `ok` false and only `error`: `balancer exhausted`, `outbound down` or `no such outbound`. `error` never holds the URL. `trigger`: `host`, `exhausted`, `min_healthy`, `cost_above`, `network_change`, `next_refresh`, `max_age`, `interval`; `retry` counts failed refreshes before this one. An answer that breaks the protocol has `ok` true: the backend answered, and the refusal is the `provider_apply`'s. |
+| `provider_apply` | `provider`, `trigger`, `ok`, `changed`, `added`, `replaced`, `removed`, `unchanged`, `version`, `exhausted`, `rules`, `routing_error`, `routing_ignored`, `error` | The answer was applied (`changed`), was the applied set already, or was rejected (`ok` false with `error`). `exhausted` tells whether the balancer had nothing usable at that moment. `rules` counts the routing rules applied with the set; `routing_ignored` tells that the answer had routing while `apply.routing` is off. |
+| `provider_restart_needed` | `provider`, `version`, `sections` | Kept for sections of the config the core reads only at start. Protocol 1 refuses an answer with such a section, so this version does not write it. |
 | `provider_skip` | `provider`, `trigger`, `reason`, `wait_ms` | A trigger wants a refresh that cannot start yet. `reason`: `min_interval`, `backoff`, `max_per_hour`, `idle`, `network_down`, `memory`. Reported once per trigger and reason until a refresh starts. |
 | `provider_drained` | `provider`, `outbound`, `replaced` | An outbound that left the set, or the old handler of a replaced one, was closed: after `drain`, at once without connections, or early to keep at most `maxOutbounds` draining. |
 
