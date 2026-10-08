@@ -100,25 +100,32 @@ func (x *PeerConfig) GetAllowedIps() []string {
 
 // AmneziaWG obfuscation parameters.
 type AmneziaParameters struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Jc            string                 `protobuf:"bytes,1,opt,name=jc,proto3" json:"jc,omitempty"`
-	Jmin          string                 `protobuf:"bytes,2,opt,name=jmin,proto3" json:"jmin,omitempty"`
-	Jmax          string                 `protobuf:"bytes,3,opt,name=jmax,proto3" json:"jmax,omitempty"`
-	S1            string                 `protobuf:"bytes,4,opt,name=s1,proto3" json:"s1,omitempty"`
-	S2            string                 `protobuf:"bytes,5,opt,name=s2,proto3" json:"s2,omitempty"`
-	S3            string                 `protobuf:"bytes,6,opt,name=s3,proto3" json:"s3,omitempty"`
-	S4            string                 `protobuf:"bytes,7,opt,name=s4,proto3" json:"s4,omitempty"`
-	H1            string                 `protobuf:"bytes,8,opt,name=h1,proto3" json:"h1,omitempty"`
-	H2            string                 `protobuf:"bytes,9,opt,name=h2,proto3" json:"h2,omitempty"`
-	H3            string                 `protobuf:"bytes,10,opt,name=h3,proto3" json:"h3,omitempty"`
-	H4            string                 `protobuf:"bytes,11,opt,name=h4,proto3" json:"h4,omitempty"`
-	I1            string                 `protobuf:"bytes,12,opt,name=i1,proto3" json:"i1,omitempty"`
-	I2            string                 `protobuf:"bytes,13,opt,name=i2,proto3" json:"i2,omitempty"`
-	I3            string                 `protobuf:"bytes,14,opt,name=i3,proto3" json:"i3,omitempty"`
-	I4            string                 `protobuf:"bytes,15,opt,name=i4,proto3" json:"i4,omitempty"`
-	I5            string                 `protobuf:"bytes,16,opt,name=i5,proto3" json:"i5,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Jc    string                 `protobuf:"bytes,1,opt,name=jc,proto3" json:"jc,omitempty"`
+	Jmin  string                 `protobuf:"bytes,2,opt,name=jmin,proto3" json:"jmin,omitempty"`
+	Jmax  string                 `protobuf:"bytes,3,opt,name=jmax,proto3" json:"jmax,omitempty"`
+	S1    string                 `protobuf:"bytes,4,opt,name=s1,proto3" json:"s1,omitempty"`
+	S2    string                 `protobuf:"bytes,5,opt,name=s2,proto3" json:"s2,omitempty"`
+	S3    string                 `protobuf:"bytes,6,opt,name=s3,proto3" json:"s3,omitempty"`
+	S4    string                 `protobuf:"bytes,7,opt,name=s4,proto3" json:"s4,omitempty"`
+	H1    string                 `protobuf:"bytes,8,opt,name=h1,proto3" json:"h1,omitempty"`
+	H2    string                 `protobuf:"bytes,9,opt,name=h2,proto3" json:"h2,omitempty"`
+	H3    string                 `protobuf:"bytes,10,opt,name=h3,proto3" json:"h3,omitempty"`
+	H4    string                 `protobuf:"bytes,11,opt,name=h4,proto3" json:"h4,omitempty"`
+	I1    string                 `protobuf:"bytes,12,opt,name=i1,proto3" json:"i1,omitempty"`
+	I2    string                 `protobuf:"bytes,13,opt,name=i2,proto3" json:"i2,omitempty"`
+	I3    string                 `protobuf:"bytes,14,opt,name=i3,proto3" json:"i3,omitempty"`
+	I4    string                 `protobuf:"bytes,15,opt,name=i4,proto3" json:"i4,omitempty"`
+	I5    string                 `protobuf:"bytes,16,opt,name=i5,proto3" json:"i5,omitempty"`
+	// AmneziaWG 3.1 appends random bytes to handshake messages and pads
+	// transport packets. Both sides must agree: a peer without it drops every
+	// handshake.
+	RandomTrailers bool `protobuf:"varint,17,opt,name=random_trailers,json=randomTrailers,proto3" json:"random_trailers,omitempty"`
+	// Stops answering handshakes under load with cookies; it matters to the side
+	// that receives handshake initiations.
+	DisableCookies bool `protobuf:"varint,18,opt,name=disable_cookies,json=disableCookies,proto3" json:"disable_cookies,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *AmneziaParameters) Reset() {
@@ -263,6 +270,20 @@ func (x *AmneziaParameters) GetI5() string {
 	return ""
 }
 
+func (x *AmneziaParameters) GetRandomTrailers() bool {
+	if x != nil {
+		return x.RandomTrailers
+	}
+	return false
+}
+
+func (x *AmneziaParameters) GetDisableCookies() bool {
+	if x != nil {
+		return x.DisableCookies
+	}
+	return false
+}
+
 type DeviceConfig struct {
 	state       protoimpl.MessageState `protogen:"open.v1"`
 	SecretKey   string                 `protobuf:"bytes,1,opt,name=secret_key,json=secretKey,proto3" json:"secret_key,omitempty"`
@@ -395,7 +416,7 @@ const file_proxy_wireguard_config_proto_rawDesc = "" +
 	"\n" +
 	"keep_alive\x18\x04 \x01(\tR\tkeepAlive\x12\x1f\n" +
 	"\vallowed_ips\x18\x05 \x03(\tR\n" +
-	"allowedIps\"\x9b\x02\n" +
+	"allowedIps\"\xed\x02\n" +
 	"\x11AmneziaParameters\x12\x0e\n" +
 	"\x02jc\x18\x01 \x01(\tR\x02jc\x12\x12\n" +
 	"\x04jmin\x18\x02 \x01(\tR\x04jmin\x12\x12\n" +
@@ -413,7 +434,9 @@ const file_proxy_wireguard_config_proto_rawDesc = "" +
 	"\x02i2\x18\r \x01(\tR\x02i2\x12\x0e\n" +
 	"\x02i3\x18\x0e \x01(\tR\x02i3\x12\x0e\n" +
 	"\x02i4\x18\x0f \x01(\tR\x02i4\x12\x0e\n" +
-	"\x02i5\x18\x10 \x01(\tR\x02i5\"\xfe\x02\n" +
+	"\x02i5\x18\x10 \x01(\tR\x02i5\x12'\n" +
+	"\x0frandom_trailers\x18\x11 \x01(\bR\x0erandomTrailers\x12'\n" +
+	"\x0fdisable_cookies\x18\x12 \x01(\bR\x0edisableCookies\"\xfe\x02\n" +
 	"\fDeviceConfig\x12\x1d\n" +
 	"\n" +
 	"secret_key\x18\x01 \x01(\tR\tsecretKey\x12\x1a\n" +

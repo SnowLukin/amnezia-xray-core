@@ -222,6 +222,14 @@ func writeAmneziaParams(cfg *strings.Builder, p *AmneziaParameters) {
 			cfg.WriteString(param.key + "=" + param.value + "\n")
 		}
 	}
+	// Unset flags are not written, so older configs produce the same IPC text
+	// and the device keeps its defaults.
+	if p.RandomTrailers {
+		cfg.WriteString("random_trailers=true\n")
+	}
+	if p.DisableCookies {
+		cfg.WriteString("disable_cookies=true\n")
+	}
 }
 
 // Process implements proxy.Outbound.Process.
