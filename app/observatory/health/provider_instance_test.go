@@ -488,6 +488,44 @@ func TestBackendAnswerEndsTheAttempts(t *testing.T) {
 	}
 }
 
+// A status whose body never ends, as a portal or a proxy may send, holds
+// the next via for a moment, not for the whole timeout.
+func TestEndlessErrorBodyMovesOnSoon(t *testing.T) {
+	var mu sync.Mutex
+	n := 0
+	done := make(chan struct{})
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		n++
+		first := n == 1
+		mu.Unlock()
+		if !first {
+			_, _ = w.Write([]byte(`{"outbounds": [{"tag": "x1", "protocol": "freedom"}]}`))
+			return
+		}
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"protocol": 1, `))
+		w.(http.Flusher).Flush()
+		select {
+		case <-r.Context().Done():
+		case <-done:
+		}
+	}))
+	defer ts.Close()
+	defer close(done)
+	obs := twoViaCore(t, ts.URL+"/set", `, "timeout": "10s"`)
+	w := &eventWaiter{t: t, o: obs}
+	obs.RequestRefresh("fresh")
+	if ev := w.until("provider_apply", nil); ev.Fields["ok"] != true {
+		t.Fatalf("apply %v", ev.Fields)
+	}
+	fetches := w.since(0, "provider_fetch")
+	if len(fetches) != 2 || fetches[0].Fields["status"] != 503.0 || fetches[0].Fields["code"] != nil ||
+		fetches[0].Fields["ms"].(float64) > 5000 {
+		t.Fatalf("fetches %+v; want a 503 given up on soon, then direct2", fetches)
+	}
+}
+
 // An entry skipped after a via that was asked does not hide what that via
 // met: the next request tells the backend the status, not a network failure.
 func TestSkippedViaKeepsTheFailureBeforeIt(t *testing.T) {

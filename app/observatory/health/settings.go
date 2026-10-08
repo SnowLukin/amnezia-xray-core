@@ -60,8 +60,11 @@ const (
 
 	// The version of the provider protocol the core speaks.
 	providerProtocol = 1
-	// How much of an answer that is not 200 is read for its error code.
-	maxErrorBody = 4 << 10
+	// How much of an answer that is not 200 is read for its error code, and
+	// how long the read may take after the status: a backend sends its error
+	// body along with the status.
+	maxErrorBody  = 4 << 10
+	errorBodyWait = 2 * time.Second
 	// The reason an answer was refused, as events, Status and the next
 	// request tell it.
 	maxFailureText = 200

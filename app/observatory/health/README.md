@@ -234,8 +234,9 @@ attempts: the backend itself sent it, and another entry leads to the same
 backend.
 
 An answer other than 200 may carry an error body of the protocol,
-`{"protocol": 1, "error": "<code>", "message": "..."}`. The core reads its
-first 4 KiB and takes only the code, into `provider_fetch`; the message may
+`{"protocol": 1, "error": "<code>", "message": "..."}`, sent along with the
+status. The core reads its first 4 KiB, waiting at most 2 seconds after the
+status, and takes only the code, into `provider_fetch`; the message may
 echo the request and is kept nowhere. A 429 or 503 with `Retry-After`, in
 seconds or as an HTTP date counted from the `Date` of the answer, holds
 every trigger, the host and an exhausted balancer too, for that long: at

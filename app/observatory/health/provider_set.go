@@ -581,8 +581,13 @@ func (o *Observer) fetchOnce(cfg *providerSettings, tag string, body []byte) (fe
 	}
 	if resp.StatusCode != http.StatusOK {
 		// Only the protocol and the code of an error body are read: its
-		// message may echo the request and is kept nowhere.
+		// message may echo the request and is kept nowhere. A portal or a
+		// proxy may send a status and then a body that never ends; it must
+		// not hold the next via for the whole timeout, so the read ends
+		// errorBodyWait after the status, with whatever came by then.
+		wait := time.AfterFunc(errorBodyWait, cancel)
 		errorBody, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBody))
+		wait.Stop()
 		r.bytes = len(errorBody)
 		r.code = errorCode(errorBody)
 		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusServiceUnavailable {
