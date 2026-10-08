@@ -31,7 +31,8 @@ func TestHandlerSleepAsksProxy(t *testing.T) {
 			t.Errorf("Sleep() = %v after %d calls, want %v after 1", got, p.calls, asleep)
 		}
 	}
-	if (&Handler{proxy: plainProxy{}}).Sleep() {
-		t.Error("a handler whose proxy cannot sleep reported sleeping")
+	// Such a proxy holds nothing to release.
+	if !(&Handler{proxy: plainProxy{}}).Sleep() {
+		t.Error("a handler whose proxy holds nothing refused to sleep")
 	}
 }

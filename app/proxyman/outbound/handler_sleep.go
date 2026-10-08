@@ -9,12 +9,11 @@ import (
 
 var _ outbound.Sleeper = (*Handler)(nil)
 
-// Sleep implements outbound.Sleeper for the proxy of the handler. It also
-// returns false when the proxy has nothing to release: to tell such proxies
-// apart, check whether GetOutbound implements outbound.Sleeper.
+// Sleep implements outbound.Sleeper for the proxy of the handler. A proxy
+// that is not a Sleeper holds nothing to release, so the handler is asleep.
 func (h *Handler) Sleep() bool {
 	if s, ok := h.proxy.(outbound.Sleeper); ok {
 		return s.Sleep()
 	}
-	return false
+	return true
 }
