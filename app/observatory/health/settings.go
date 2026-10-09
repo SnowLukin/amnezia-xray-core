@@ -67,8 +67,8 @@ const (
 	minSleepAfter     = 10 * time.Second
 	// An outbound that refused to sleep is asked again after the longer of
 	// sleep.after and minSleepRetry, doubling with every refusal up to
-	// maxSleepRetry: its connections may be invisible to the observer, and
-	// they end by themselves.
+	// maxSleepRetry: the observer may not follow all of its connections,
+	// such as one idle for long, and they end by themselves.
 	minSleepRetry = time.Minute
 	maxSleepRetry = 30 * time.Minute
 

@@ -23,6 +23,23 @@ the config.
      `stallTimeout`, or a young connection that received less than
      `successBytes` and went silent for `stallTimeout`. The last one is what a
      censor freezing connections after the first kilobytes looks like.
+
+   An outbound that carries its connections inside a tunnel it keeps, such
+   as WireGuard, reaches its server once for all of them. Each connection
+   through the tunnel counts as a dial of the server instead, which ends
+   when the server answers anything after the connection started: its own
+   first packet back, traffic of other connections, or the handshake a
+   connection asks for once it has waited a second, which a working server
+   answers whatever the destination. A tunnel that cannot be set up is a
+   failed dial, and a server that answers nothing within `dialTimeout` a
+   dial that did not finish: both are about the path. A connection that
+   failed inside the tunnel before the server answered waits for it a little
+   longer, up to 11 s, so that a slow tunnel and a dead one are told apart;
+   an answer that comes too late for it is held against nothing. Inside the
+   tunnel, TCP connections are judged by their traffic like any other: a
+   destination that refuses the connection shows as one that ended before
+   any answer, one that drops it as no first byte. UDP flows are judged by
+   their dial alone.
 2. **Suspicion.** `failures` path failures, or `failures` failures over at
    least `distinctTargets` destinations, since the last proof that the path
    works. A connection that downloads `successBytes` is such a proof and
@@ -163,6 +180,10 @@ for `hostProbes` `perMinute` half of `schedule.perMinute`, `reuse` 5 min,
 - A mux outbound counts one failure per connection to its server, however
   many user connections ride on it, so it is ruled out later than one
   without mux.
+- A WireGuard outbound repeats a lost handshake after 5 s, and the
+  connections waiting for it count as dialing meanwhile: keep `dialTimeout`
+  above that and a round trip, as the default does, or a lost packet at a
+  wake counts as a failure.
 - `lazy` outbounds are never probed in the background and are only tried
   when everything cheaper is down.
 - `confirm`: `auto` probes only destination failures, `always` probes every
@@ -580,13 +601,13 @@ is low, when all of this holds:
 
 A use is a switch to or away from it, a probe, a connection the observatory
 follows, the start and the end of a provider request through it as a `via`,
-and the start and the end of every connection its handler gives it.
-WireGuard dials past the handler, so the observatory sees none of its
-dials, and a connection that reaches it other than by a balancer, a rule
-straight at its tag, a `fallbackTag` or a `dialerProxy` chain, creates its
-tunnel again all the same: the handler of an outbound that can sleep tells
-the observatory of each connection, so such a use wakes it in Status too
-and it sleeps again after the last one. The outbound has the last word: it
+and the start and the end of every connection its handler gives it. A
+connection that reaches it other than by a balancer, a rule straight at its
+tag, a `fallbackTag` or a `dialerProxy` chain, creates its tunnel again all
+the same, before it reports anything about the tunnel, and the observatory
+follows the connections only of outbounds it judges: the handler of an
+outbound that can sleep tells the observatory of each connection, so such
+a use wakes it in Status too and it sleeps again after the last one. The outbound has the last word: it
 refuses while a connection uses it. A refused sleep, or one an open
 connection the observatory follows holds back, is asked for again after
 `sleep.after`, at least a minute, doubling with every refusal in a row up
@@ -683,7 +704,7 @@ Every event is `{"seq": n, "ts": unix_ms, "type": "...", "fields": {...}}`.
 | --- | --- | --- |
 | `switch` | `balancer`, `from`, `to`, `reason`, `held_ms`, `cost` | New connections go to another outbound. `reason`: `start`, `start_pinned`, `start_remembered`, `start_with`, `failover`, `upgrade`, `recovered`, `remembered`, `network_change`, `network_up` (the network check passed again and brought back outbounds ruled out while it failed, to a balancer that had nothing usable), `candidates_changed`, `pin`, `retired` (the previous one left its provider set), `expired` (the lease of the previous one ended; one that failed as well is left with `failover`). `held_ms` is the time on the previous one. |
 | `path_state` | `outbound`, `state`, `reason`; for `suspect` also `failures`, `targets`, `kinds`, `strong`; for `down` also `quarantine_ms`, `quarantine_level` and `provisional` when it was ruled out while the network check was failing | An outbound became `up`, `suspect`, `down` or `unknown`. `reason`: `traffic`, `probe`, `upgrade_probe`, `host_probe`, `network_change`, `network_down`, `network_up`, `replaced` (a provider
-changed its settings). `kinds` counts failures by kind: `dial_failed`, `dial_timeout`, `server_unverified`, `no_response`, `closed`, `stall`, `partial_stall`. |
+changed its settings). `kinds` counts failures by kind: `dial_failed`, `dial_timeout`, `server_unverified`, `no_response`, `closed`, `stall`, `partial_stall`. For an outbound with a tunnel, `dial_failed` and `dial_timeout` tell that the tunnel could not be set up or that its server did not answer a connection, see How it decides. |
 | `probe_start` | `outbound`, `reason`, `balancer`, `running`, `request` | A probe started. `reason`: `confirm`, `failover`, `network_change`, `remembered`, `recheck`, `upgrade`, `host`. `running` counts the outbound probes running now, this one included. `request` is the id of the request a `host` probe is for. |
 | `probe_result` | `outbound`, `reason`, `balancer`, `ok`, `rtt_ms`, `bytes`, `error`, `stale`, `request` | A probe finished. `bytes` counts both directions above TLS. `stale` means it was made in the previous network and was ignored. |
 | `probe_request` | `request`, `balancer`, `outbounds`, `end`, `ms`, `probed`, `reused`, `ok`, `failed`, `down`, `skipped`, `expired`, `gone` | A request of the host that waited for a probe ended; one answered at once writes none. `end`: `done`, `timeout`, `network_change`, `gone`. The counts are by result; `probed` and `reused` count the answers of a probe and of a recent proof. |
