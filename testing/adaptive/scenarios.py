@@ -1917,7 +1917,7 @@ def provider_lease_expiry(stand, xray, work, name):
     failed = sum(1 for r in tr.records if not r[1])
     return [
         check("lease of p-x1 ended after the answer, s", t_end and t_apply and round(t_end - t_apply, 1),
-              t_end is not None and t_apply is not None and 29 <= t_end - t_apply <= 33, "30 .. 33"),
+              t_end is not None and t_apply is not None and 29 <= t_end - t_apply <= 33, "29 .. 33"),
         check("expired event (active, renewal)", ended and (ended[0]["fields"]["active"], ended[0]["fields"]["renewal"]),
               bool(ended) and ended[0]["fields"]["active"] is True and ended[0]["fields"]["renewal"] == "failed",
               "(True, failed)"),
