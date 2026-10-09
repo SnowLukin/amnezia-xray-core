@@ -660,6 +660,34 @@ func TestDrainWithoutConnectionsEndsAtOnce(t *testing.T) {
 	}
 }
 
+// The API closes an outbound it removes. One it removed while it drained is
+// not closed again when the drain ends: a VLESS outbound with pre-connections
+// panics on a second close.
+func TestDrainLeavesAnOutboundTheAPIRemovedClosed(t *testing.T) {
+	f := newApplyFixture(t, time.Hour)
+	if _, err := f.apply(t, answer(t, fakeOutbound{Tag: "x1", V: 1}, fakeOutbound{Tag: "x2", V: 1})); err != nil {
+		t.Fatal(err)
+	}
+	f.follow("p-x1", "p-x2")
+	x1 := f.m.GetHandler("p-x1").(*fakeHandler)
+	tr := f.o.StartDial(context.Background(), "p-x1", net.TCPDestination(net.ParseAddress("192.0.2.7"), 443), nil)
+	tr.Dialed(nil, nil, nil, nil)
+	if _, err := f.apply(t, answer(t, fakeOutbound{Tag: "x2", V: 1})); err != nil {
+		t.Fatal(err)
+	}
+	if x1.closes() != 0 || len(f.rt.draining) != 1 {
+		t.Fatalf("setup: closed %d times, %d draining", x1.closes(), len(f.rt.draining))
+	}
+	// What HandlerService.RemoveOutbound does.
+	_ = f.m.RemoveHandler(context.Background(), "p-x1")
+	_ = x1.Close()
+	tr.Finished(nil)
+	f.o.SetMemoryLow(true)
+	if len(f.rt.draining) != 0 || x1.closes() != 1 {
+		t.Fatalf("after the drain: %d draining, closed %d times", len(f.rt.draining), x1.closes())
+	}
+}
+
 func TestDrainWaitsForOpenConnections(t *testing.T) {
 	f := newApplyFixture(t, 100*time.Millisecond)
 	if _, err := f.apply(t, answer(t, fakeOutbound{Tag: "x1", V: 1}, fakeOutbound{Tag: "x2", V: 1})); err != nil {

@@ -169,8 +169,21 @@ func (s *handlerServer) AddOutbound(ctx context.Context, request *AddOutboundReq
 	return &AddOutboundResponse{}, nil
 }
 
+// RemoveOutbound removes the outbound and closes it, as RemoveInbound does
+// for an inbound. The outbound manager only forgets a handler, since the
+// health observatory keeps the ones it takes out draining; one removed here
+// would keep what it holds, such as the tunnel of a WireGuard outbound.
 func (s *handlerServer) RemoveOutbound(ctx context.Context, request *RemoveOutboundRequest) (*RemoveOutboundResponse, error) {
-	return &RemoveOutboundResponse{}, s.ohm.RemoveHandler(ctx, request.Tag)
+	handler := s.ohm.GetHandler(request.Tag)
+	if err := s.ohm.RemoveHandler(ctx, request.Tag); err != nil {
+		return nil, err
+	}
+	if handler != nil {
+		if err := handler.Close(); err != nil {
+			errors.LogWarningInner(ctx, err, "failed to close outbound ", request.Tag)
+		}
+	}
+	return &RemoveOutboundResponse{}, nil
 }
 
 func (s *handlerServer) AlterOutbound(ctx context.Context, request *AlterOutboundRequest) (*AlterOutboundResponse, error) {
