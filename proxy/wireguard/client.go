@@ -2,16 +2,12 @@ package wireguard
 
 import (
 	"context"
-	goerrors "errors"
 	"fmt"
 	gonet "net"
 	"net/netip"
 	reflect "reflect"
-	"slices"
 	"strings"
 	"sync"
-	"sync/atomic"
-	"time"
 
 	"github.com/amnezia-vpn/amneziawg-go/v3/tun"
 
@@ -30,6 +26,7 @@ import (
 	"github.com/xtls/xray-core/features/dns"
 	"github.com/xtls/xray-core/features/policy"
 	"github.com/xtls/xray-core/features/stats"
+	"github.com/xtls/xray-core/proxy"
 	"github.com/xtls/xray-core/transport"
 	"github.com/xtls/xray-core/transport/internet"
 )
@@ -43,56 +40,16 @@ type Handler struct {
 	uplinkCounter   stats.Counter
 	downlinkCounter stats.Counter
 
-	localAddresses []netip.Addr
-	kernelTun      bool
+	tun  tun.Device
+	tnet *Net
+	dev  *device.Device
+	mu   sync.Mutex
 
-	// The stack and the device are created by the first connection, so an
-	// outbound that carries none holds neither. Both are set or both are nil.
-	// active counts the connections using them; Sleep releases them at zero.
-	mu     sync.Mutex
-	tnet   *Net
-	dev    *device.Device
-	active int
-	closed bool
-
-	// initDone is closed when the connection creating the stack and the
-	// device is done with it, and is nil while none is. The creation runs
-	// outside mu: it can take seconds when the endpoint needs DNS, and the
-	// connections waiting for it must be able to give up.
-	initDone chan struct{}
-	// initErr fails the connections that come shortly after a failed init,
-	// so that each of them does not try again.
-	initErr     error
-	initErrTime time.Time
-	// inits counts the devices the outbound took into use, for tests.
-	inits int
-	// ifName is the name of the kernel interface, kept across wakes. init
-	// sets it while initDone is set; mu guards it otherwise.
-	ifName string
-
-	// For the observer of the outbound, see client_observe.go: the server
-	// the tunnel reaches, the peers to ask for a handshake, and the
-	// datagrams the devices of the outbound received, across wakes.
-	server   net.Destination
-	peerKeys []device.NoisePublicKey
-	received atomic.Uint64
+	// received counts what the server sends, see client_observe.go.
+	received receivedCounter
 }
 
-var errOutboundClosed = goerrors.New("outbound closed")
-
-// initRetryDelay is how long connections fail with the error of the last init
-// before one tries again.
-const initRetryDelay = time.Second
-
-// dnsServers resolve domain targets inside the tunnel.
-var dnsServers = []netip.Addr{
-	netip.MustParseAddr("1.1.1.1"),
-	netip.MustParseAddr("1.0.0.1"),
-	netip.MustParseAddr("2606:4700:4700::1111"),
-	netip.MustParseAddr("2606:4700:4700::1001"),
-}
-
-func NewClient(ctx context.Context, conf *DeviceConfig) (*Handler, error) {
+func NewClient(ctx context.Context, conf *DeviceConfig) (proxy.Outbound, error) {
 	v := core.MustFromContext(ctx)
 	p := v.GetFeature(policy.ManagerType()).(policy.Manager)
 	d := v.GetFeature(dns.ClientType()).(dns.Client)
@@ -149,21 +106,20 @@ func NewClient(ctx context.Context, conf *DeviceConfig) (*Handler, error) {
 	if err != nil {
 		errors.LogWarningInner(context.Background(), err, "Failed to check kernel TUN support")
 	}
-	kernelTun := !conf.NoKernelTun && kernelTunSupported
-	if kernelTun {
+	var tun tun.Device
+	var tnet *Net
+	if !conf.NoKernelTun && kernelTunSupported {
 		errors.LogWarning(context.Background(), "Using kernel TUN")
+		tun, tnet, err = createKernelTun(localAddresses, []netip.Addr{netip.MustParseAddr("1.1.1.1"), netip.MustParseAddr("1.0.0.1"), netip.MustParseAddr("2606:4700:4700::1111"), netip.MustParseAddr("2606:4700:4700::1001")}, int(conf.Mtu))
 	} else {
 		errors.LogWarning(context.Background(), "Using gVisor TUN")
-		// The gVisor stack refuses an address it already has. It is created
-		// on first use now, so check here to keep failing at load.
-		for i, addr := range localAddresses {
-			if slices.Contains(localAddresses[:i], addr) {
-				return nil, errors.New("duplicate address ", addr)
-			}
-		}
+		tun, tnet, _, err = deferNetTUN(localAddresses, []netip.Addr{netip.MustParseAddr("1.1.1.1"), netip.MustParseAddr("1.0.0.1"), netip.MustParseAddr("2606:4700:4700::1111"), netip.MustParseAddr("2606:4700:4700::1001")}, int(conf.Mtu), true)
+	}
+	if err != nil {
+		return nil, err
 	}
 
-	return &Handler{
+	return newOutbound(&Handler{
 		conf:          conf,
 		policyManager: p,
 		dns:           d,
@@ -172,16 +128,13 @@ func NewClient(ctx context.Context, conf *DeviceConfig) (*Handler, error) {
 		uplinkCounter:   uplinkCounter,
 		downlinkCounter: downlinkCounter,
 
-		localAddresses: localAddresses,
-		kernelTun:      kernelTun,
-
-		server:   tunnelServer(conf),
-		peerKeys: handshakePeers(conf),
-	}, nil
+		tun:  tun,
+		tnet: tnet,
+	})
 }
 
 // Process implements proxy.Outbound.Process.
-func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer internet.Dialer) error {
+func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer internet.Dialer) (err error) {
 	outbounds := session.OutboundsFromContext(ctx)
 	ob := outbounds[len(outbounds)-1]
 	if !ob.Target.IsValid() {
@@ -189,21 +142,23 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
 	}
 	ob.Name = "wireguard"
 	ob.CanSpliceCopy = 3
-
 	td := h.startTunnelDial(ctx, dialer)
-	defer td.end()
+	defer func() { td.end(err) }()
 
-	tnet, err := h.acquire(ctx)
-	if err != nil {
-		td.failed(err)
+	if h.dev == nil {
+		if err := h.init(ctx); err != nil {
+			return err
+		}
+	}
+
+	if err := h.dev.Up(); err != nil {
 		return err
 	}
-	defer h.release()
-	td.entered()
 
+	td.entered()
 	var addr netip.Addr
 	if ob.Target.Address.Family().IsDomain() {
-		ip, err := h.resolveRemote(tnet, ob.Target.Address.String())
+		ip, err := h.resolveRemote(ob.Target.Address.String())
 		if err != nil {
 			td.failedInside()
 			return errors.New("failed to resolve domain").Base(err)
@@ -246,10 +201,10 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
 		var err error
 		if sessionPolicy.Timeouts.Handshake != 0 {
 			timeoutCtx, timeoutCancel := context.WithTimeout(ctx, sessionPolicy.Timeouts.Handshake)
-			conn, err = tnet.DialContextTCPAddrPort(timeoutCtx, addrPort)
+			conn, err = h.tnet.DialContextTCPAddrPort(timeoutCtx, addrPort)
 			timeoutCancel()
 		} else {
-			conn, err = tnet.DialContextTCPAddrPort(ctx, addrPort)
+			conn, err = h.tnet.DialContextTCPAddrPort(ctx, addrPort)
 		}
 		if err != nil {
 			td.failedInside()
@@ -260,18 +215,17 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
 		reader = buf.NewReader(conn)
 		writer = buf.NewWriter(conn)
 	case net.Network_UDP:
-		conn, err := tnet.DialUDPAddrPort(netip.AddrPort{}, addrPort)
+		conn, err := h.tnet.DialUDPAddrPort(netip.AddrPort{}, addrPort)
 		if err != nil {
 			return errors.New("failed to create UDP connection").Base(err)
 		}
 		defer conn.Close()
 		c := &udpConnClient{
-			PacketConn: td.openedPacket(conn.(*internet.PacketConnWrapper).PacketConn),
-			resolveFunc: func(host string) (net.IP, error) {
-				return h.resolveRemote(tnet, host)
-			},
-			dest: gonet.UDPAddrFromAddrPort(addrPort),
+			PacketConn:  conn.(*internet.PacketConnWrapper).PacketConn,
+			resolveFunc: h.resolveRemote,
+			dest:        gonet.UDPAddrFromAddrPort(addrPort),
 		}
+		c.PacketConn = td.openedPacket(c.PacketConn)
 		reader = c
 		writer = c
 	default:
@@ -298,117 +252,27 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
 	return nil
 }
 
-// Close ends the connections in flight and releases the stack and the device.
-// The handler accepts no connections afterwards.
 func (h *Handler) Close() (err error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	h.closed = true
-	h.closeLocked()
-	// A running init releases the name once it finds the outbound closed.
-	if h.initDone == nil {
-		releaseKernelTunName(h.ifName)
-		h.ifName = ""
+	if h.dev != nil {
+		h.dev.Close()
+		h.dev = nil
+		h.tun = nil
+	} else if h.tun != nil {
+		h.tun.Close()
+		h.tun = nil
 	}
 	return nil
 }
 
-func (h *Handler) closeLocked() {
+func (h *Handler) init(ctx context.Context) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	if h.dev != nil {
-		// The device closes the stack as well.
-		h.dev.Close()
+		return nil
 	}
-	h.tnet, h.dev = nil, nil
-}
-
-// acquire returns the stack for one connection, creating the stack and the
-// device on first use. The stack stays until the connection calls release.
-func (h *Handler) acquire(ctx context.Context) (*Net, error) {
-	h.mu.Lock()
-	for h.dev == nil {
-		if h.closed {
-			h.mu.Unlock()
-			return nil, errOutboundClosed
-		}
-		if h.initErr != nil && time.Since(h.initErrTime) < initRetryDelay {
-			err := h.initErr
-			h.mu.Unlock()
-			return nil, err
-		}
-		if done := h.initDone; done != nil {
-			h.mu.Unlock()
-			select {
-			case <-done:
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			}
-			h.mu.Lock()
-			continue
-		}
-
-		done := make(chan struct{})
-		h.initDone = done
-		h.mu.Unlock()
-		// The device keeps the context for reopening its bind long after
-		// this connection ends; it must not end with it. This connection
-		// finishes the init even when it is canceled, for those waiting.
-		tnet, dev, err := h.init(context.WithoutCancel(ctx))
-		h.mu.Lock()
-		h.initDone = nil
-		close(done)
-		if h.closed {
-			// Close left what the init created to it.
-			releaseKernelTunName(h.ifName)
-			h.ifName = ""
-			h.mu.Unlock()
-			if dev != nil {
-				dev.Close()
-			}
-			return nil, errOutboundClosed
-		}
-		if err != nil {
-			h.initErr, h.initErrTime = err, time.Now()
-			h.mu.Unlock()
-			return nil, err
-		}
-		h.initErr = nil
-		h.inits++
-		h.tnet, h.dev = tnet, dev
-	}
-	h.active++
-	tnet, dev := h.tnet, h.dev
-	h.mu.Unlock()
-
-	// The bind takes the device down when its socket closes unexpectedly.
-	if err := dev.Up(); err != nil {
-		h.release()
-		return nil, err
-	}
-	return tnet, nil
-}
-
-// release ends the use of the stack that acquire returned.
-func (h *Handler) release() {
-	h.mu.Lock()
-	h.active--
-	h.mu.Unlock()
-}
-
-// init creates the stack and the device. Only one connection runs it at a
-// time, without h.mu. On failure it keeps nothing.
-func (h *Handler) init(ctx context.Context) (_ *Net, _ *device.Device, err error) {
-	var t tun.Device
-	var tnet *Net
-	if h.kernelTun {
-		// The interface keeps its name across wakes, so that the wake of
-		// another outbound cannot take it in between.
-		t, tnet, h.ifName, err = createKernelTun(h.ifName, h.localAddresses, dnsServers, int(h.conf.Mtu))
-	} else {
-		t, tnet, _, err = CreateNetTUN(h.localAddresses, dnsServers, int(h.conf.Mtu), true)
-	}
-	if err != nil {
-		return nil, nil, err
-	}
+	resolveFunc := h.resolveLocal
 	listenFunc := func() (net.PacketConn, error) {
 		dest, err := net.ParseDestination("udp:" + h.conf.Peers[0].Endpoint)
 		if err != nil {
@@ -442,16 +306,10 @@ func (h *Handler) init(ctx context.Context) (_ *Net, _ *device.Device, err error
 				WriteCounter: h.uplinkCounter,
 			}
 		}
+		pktConn = h.received.wrap(pktConn)
 		return pktConn, nil
 	}
-	// The device opens the bind as soon as the stack reports itself up, which
-	// can happen before NewDevice returns: fill the bind in before.
-	bind := &bind{
-		resolveFunc: h.resolveLocal,
-		listenFunc:  listenFunc,
-		reserved:    h.conf.Reserved,
-		received:    &h.received,
-	}
+	bind := &bind{}
 	logger := &device.Logger{
 		Verbosef: func(format string, args ...any) {
 			log.Record(&log.GeneralMessage{
@@ -466,32 +324,15 @@ func (h *Handler) init(ctx context.Context) (_ *Net, _ *device.Device, err error
 			})
 		},
 	}
-	rt := newReadyTun(t)
-	dev := device.NewDevice(rt, bind, logger)
-	defer func() {
-		if err != nil {
-			dev.Close()
-		}
-	}()
-	bind.setDownFunc(dev.Down)
-	err = dev.IpcSet(clientIPC(h.conf))
-	if err != nil {
-		return nil, nil, err
-	}
-	rt.open()
-	err = dev.Up()
-	if err != nil {
-		return nil, nil, err
-	}
-	return tnet, dev, nil
-}
-
-// clientIPC is the IPC config of the device of an outbound.
-func clientIPC(conf *DeviceConfig) string {
+	dev := device.NewDevice(h.tun, bind, logger)
+	bind.resolveFunc = resolveFunc
+	bind.listenFunc = listenFunc
+	bind.downFunc = dev.Down
+	bind.reserved = h.conf.Reserved
 	var cfg strings.Builder
-	cfg.WriteString("private_key=" + conf.SecretKey + "\n")
-	writeAmneziaParams(&cfg, conf.Parameters)
-	for _, peer := range conf.Peers {
+	cfg.WriteString("private_key=" + h.conf.SecretKey + "\n")
+	writeAmneziaParams(&cfg, h.conf.Parameters)
+	for _, peer := range h.conf.Peers {
 		cfg.WriteString("public_key=" + peer.PublicKey + "\n")
 		writeProtocolVersion(&cfg, peer.ProtocolVersion)
 		if peer.PreSharedKey != "" {
@@ -505,50 +346,16 @@ func clientIPC(conf *DeviceConfig) string {
 			cfg.WriteString("persistent_keepalive_interval=" + peer.KeepAlive + "\n")
 		}
 	}
-	return cfg.String()
-}
-
-// writeProtocolVersion appends the protocol version of a peer, right after
-// its public_key, when the config has one; without it the text stays as it
-// was before the field existed.
-func writeProtocolVersion(cfg *strings.Builder, version string) {
-	if version != "" {
-		cfg.WriteString("protocol_version=" + version + "\n")
+	err := dev.IpcSet(cfg.String())
+	if err != nil {
+		return err
 	}
-}
-
-// writeAmneziaParams appends AmneziaWG parameters to the device IPC config.
-// Must run before the first public_key: the device section ends at the first peer.
-func writeAmneziaParams(cfg *strings.Builder, p *AmneziaParameters) {
-	if p == nil {
-		return
+	err = dev.Up()
+	if err != nil {
+		return err
 	}
-
-	// Unset values and flags are not written, so older configs produce the
-	// same IPC text and the device keeps its defaults.
-	for _, param := range []struct{ key, value string }{
-		{"jc", p.Jc}, {"jmin", p.Jmin}, {"jmax", p.Jmax},
-		{"s1", p.S1}, {"s2", p.S2}, {"s3", p.S3}, {"s4", p.S4},
-		{"h1", p.H1}, {"h2", p.H2}, {"h3", p.H3}, {"h4", p.H4},
-		{"i1", p.I1}, {"i2", p.I2}, {"i3", p.I3}, {"i4", p.I4}, {"i5", p.I5},
-		{"header_protection_key", p.HeaderProtectionKey},
-		{"content_padding_addition", p.ContentPaddingAddition},
-		{"rekey_after_time", p.RekeyAfterTime},
-		{"rekey_timeout", p.RekeyTimeout},
-		{"reject_after_time", p.RejectAfterTime},
-		{"keepalive_timeout", p.KeepaliveTimeout},
-		{"max_handshake_attempts", p.MaxHandshakeAttempts},
-	} {
-		if param.value != "" {
-			cfg.WriteString(param.key + "=" + param.value + "\n")
-		}
-	}
-	if p.RandomTrailers {
-		cfg.WriteString("random_trailers=true\n")
-	}
-	if p.DisableCookies {
-		cfg.WriteString("disable_cookies=true\n")
-	}
+	h.dev = dev
+	return nil
 }
 
 func (h *Handler) resolveLocal(host string) (net.IP, error) {
@@ -558,9 +365,9 @@ func (h *Handler) resolveLocal(host string) (net.IP, error) {
 	})
 }
 
-func (h *Handler) resolveRemote(tnet *Net, host string) (net.IP, error) {
+func (h *Handler) resolveRemote(host string) (net.IP, error) {
 	return resolveDomain(host, h.conf.DomainStrategy, func(host string) ([]net.IP, error) {
-		addrs, err := tnet.LookupHost(host)
+		addrs, err := h.tnet.LookupHost(host)
 		if err != nil {
 			return nil, err
 		}

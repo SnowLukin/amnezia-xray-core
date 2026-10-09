@@ -58,7 +58,7 @@ func TestMeasureClients(t *testing.T) {
 	t.Logf("NumCPU %d, GOMAXPROCS %d, %d outbounds; KiB relative to the first line", runtime.NumCPU(), runtime.GOMAXPROCS(0), n)
 	measure("before the outbounds")
 	ohs := make([]outbound.Handler, n)
-	hs := make([]*Handler, n)
+	hs := make([]*lazyClient, n)
 	for i := range n {
 		ohs[i], hs[i] = addTestClient(t, inst, "wg"+strconv.Itoa(i), s, privs[i], addrs[i], testParams)
 	}

@@ -1,13 +1,9 @@
 package wireguard
 
 import (
-	stdnet "net"
-	"net/netip"
+	"context"
 	"strings"
 	"testing"
-
-	"github.com/amnezia-vpn/amneziawg-go/v3/device"
-	"github.com/xtls/xray-core/common/net"
 )
 
 func TestWriteAmneziaParams(t *testing.T) {
@@ -101,52 +97,23 @@ func TestWriteAmneziaParams(t *testing.T) {
 	}
 }
 
-func TestClientIPC(t *testing.T) {
-	conf := &DeviceConfig{
-		SecretKey: "aa",
-		Peers: []*PeerConfig{{
-			PublicKey:    "bb",
-			PreSharedKey: "cc",
-			Endpoint:     "1.2.3.4:51820",
-			AllowedIps:   []string{"0.0.0.0/0", "::/0"},
-			KeepAlive:    "25",
-		}},
-		Parameters: &AmneziaParameters{Jc: "3", S4: "25"},
-	}
-	// The text a config without the 3.1 keys produced before they existed.
-	old := "private_key=aa\njc=3\ns4=25\n" +
-		"public_key=bb\npreshared_key=cc\nendpoint=1.2.3.4:51820\n" +
-		"allowed_ip=0.0.0.0/0\nallowed_ip=::/0\npersistent_keepalive_interval=25\n"
-	if got := clientIPC(conf); got != old {
-		t.Errorf("got %q, want %q", got, old)
-	}
-
-	conf.Peers[0].KeepAlive = "25-35"
-	conf.Peers[0].ProtocolVersion = "1"
-	conf.Parameters.RekeyTimeout = "4-6"
-	want := "private_key=aa\njc=3\ns4=25\nrekey_timeout=4-6\n" +
-		"public_key=bb\nprotocol_version=1\npreshared_key=cc\nendpoint=1.2.3.4:51820\n" +
-		"allowed_ip=0.0.0.0/0\nallowed_ip=::/0\npersistent_keepalive_interval=25-35\n"
-	if got := clientIPC(conf); got != want {
-		t.Errorf("got %q, want %q", got, want)
+func TestWriteProtocolVersion(t *testing.T) {
+	// Without the field the text stays as it was before the field existed.
+	for version, want := range map[string]string{"": "", "1": "protocol_version=1\n"} {
+		var cfg strings.Builder
+		writeProtocolVersion(&cfg, version)
+		if cfg.String() != want {
+			t.Errorf("version %q: got %q, want %q", version, cfg.String(), want)
+		}
 	}
 }
 
-// TestDeviceTakesAmnezia31Keys hands the IPC text of every 3.1 key to a
-// device and reads it back, so the names and formats are those the device
-// knows.
+// TestDeviceTakesAmnezia31Keys has a client write every 3.1 key to its device
+// and reads them back, so the names and formats are those the device knows
+// and they reach it from where the client writes its IPC config.
 func TestDeviceTakesAmnezia31Keys(t *testing.T) {
 	priv, _ := testKeys(t)
 	_, peer := testKeys(t)
-	tun, _, _, err := CreateNetTUN([]netip.Addr{netip.MustParseAddr("10.9.0.2")}, nil, 1420, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	dev := device.NewDevice(tun, &bind{
-		listenFunc: func() (net.PacketConn, error) { return stdnet.ListenPacket("udp", "127.0.0.1:0") },
-	}, device.NewLogger(device.LogLevelSilent, ""))
-	defer dev.Close()
-
 	params := &AmneziaParameters{
 		S1: "20", S2: "78", S3: "15", S4: "12",
 		HeaderProtectionKey:    "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
@@ -158,7 +125,11 @@ func TestDeviceTakesAmnezia31Keys(t *testing.T) {
 		MaxHandshakeAttempts:   "15-20",
 	}
 	conf := &DeviceConfig{
-		SecretKey: priv,
+		IsClient:    true,
+		SecretKey:   priv,
+		Endpoint:    []string{"10.9.0.2"},
+		Mtu:         1420,
+		NoKernelTun: true,
 		Peers: []*PeerConfig{{
 			PublicKey:       peer,
 			Endpoint:        "127.0.0.1:1",
@@ -168,14 +139,18 @@ func TestDeviceTakesAmnezia31Keys(t *testing.T) {
 		}},
 		Parameters: params,
 	}
-	if err := dev.IpcSet(clientIPC(conf)); err != nil {
+	c := newBareClient(t, conf, nil)
+	h, err := c.wake(context.Background())
+	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := dev.IpcGet()
+	defer h.Close()
+	got, err := h.dev.IpcGet()
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, line := range []string{
+		"s4=12",
 		"header_protection_key=" + params.HeaderProtectionKey,
 		"content_padding_addition=16-64",
 		"rekey_after_time=110-130",
@@ -192,7 +167,8 @@ func TestDeviceTakesAmnezia31Keys(t *testing.T) {
 
 	// The device refuses any other protocol version.
 	conf.Peers[0].ProtocolVersion = "2"
-	if err := dev.IpcSet(clientIPC(conf)); err == nil {
+	if h, err := c.wake(context.Background()); err == nil {
+		h.Close()
 		t.Error("the device took protocol_version=2")
 	}
 }

@@ -9,11 +9,9 @@ import (
 	"github.com/amnezia-vpn/amneziawg-go/v3/tun"
 )
 
-func createKernelTun(name string, _, _ []netip.Addr, _ int) (tdev tun.Device, tnet *Net, _ string, err error) {
-	return nil, nil, name, errors.New("not implemented")
+func createKernelTun([]netip.Addr, []netip.Addr, int) (tdev tun.Device, tnet *Net, err error) {
+	return nil, nil, errors.New("not implemented")
 }
-
-func releaseKernelTunName(string) {}
 
 func KernelTunSupported() (bool, error) {
 	return false, nil

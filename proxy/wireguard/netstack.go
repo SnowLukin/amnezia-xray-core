@@ -16,7 +16,6 @@ import (
 	"net/netip"
 	"os"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 
@@ -46,15 +45,13 @@ type netTun struct {
 	mtu            int
 	dnsServers     []netip.Addr
 	hasV4, hasV6   bool
-
 	// closed ends Read and WriteNotify. incomingPacket itself is never
 	// closed: the channel endpoint calls WriteNotify outside its lock, so a
 	// send can still be on its way when the stack closes.
-	closed    chan struct{}
-	closeOnce sync.Once
+	closed chan struct{}
 }
 
-func CreateNetTUN(localAddresses, dnsServers []netip.Addr, mtu int, handleLocal bool) (_ tun.Device, _ *Net, _ *stack.Stack, err error) {
+func CreateNetTUN(localAddresses, dnsServers []netip.Addr, mtu int, handleLocal bool) (tun.Device, *Net, *stack.Stack, error) {
 	opts := stack.Options{
 		NetworkProtocols:   []stack.NetworkProtocolFactory{ipv4.NewProtocol, ipv6.NewProtocol},
 		TransportProtocols: []stack.TransportProtocolFactory{tcp.NewProtocol, udp.NewProtocol, icmp.NewProtocol6, icmp.NewProtocol4},
@@ -69,14 +66,6 @@ func CreateNetTUN(localAddresses, dnsServers []netip.Addr, mtu int, handleLocal 
 		mtu:            mtu,
 		closed:         make(chan struct{}),
 	}
-	// Clients create the stack on first use and again on the next connection
-	// when that fails: a failed stack must not keep running.
-	defer func() {
-		if err != nil {
-			dev.stack.Destroy()
-			dev.ep.Close()
-		}
-	}()
 	sackEnabledOpt := tcpip.TCPSACKEnabled(true) // TCP SACK is disabled by default
 	tcpipErr := dev.stack.SetTransportProtocolOption(tcp.ProtocolNumber, &sackEnabledOpt)
 	if tcpipErr != nil {
@@ -191,17 +180,19 @@ func (tun *netTun) WriteNotify() {
 	}
 }
 
-// Close may be called more than once, and while the stack is still sending:
-// clients close their stack whenever they sleep.
+// Close must run only once, which readyTun sees to for a device, and may run
+// while the stack still sends.
 func (tun *netTun) Close() error {
-	tun.closeOnce.Do(func() {
-		close(tun.closed)
-		tun.stack.RemoveNIC(1)
-		tun.stack.Close()
-		tun.ep.RemoveNotify(tun.notifyHandle)
-		tun.ep.Close()
+	close(tun.closed)
+	tun.stack.RemoveNIC(1)
+	tun.stack.Close()
+	tun.ep.RemoveNotify(tun.notifyHandle)
+	tun.ep.Close()
+
+	if tun.events != nil {
 		close(tun.events)
-	})
+	}
+
 	return nil
 }
 

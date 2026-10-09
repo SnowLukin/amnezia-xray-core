@@ -75,18 +75,16 @@ func handshakePeers(conf *DeviceConfig) []device.NoisePublicKey {
 // renews the session keys, as the device does every two minutes anyway. A
 // device sends one at most every device.RekeyTimeout, so the connections
 // waiting at once ask for one between them. It reports false once the
-// outbound is closed.
+// Handler is closed: a connection asks only after its device was up, and
+// only Close takes the device away, also when its outbound sleeps or closes.
 func (h *Handler) askHandshake() bool {
 	h.mu.Lock()
-	dev, closed := h.dev, h.closed
+	dev := h.dev
 	h.mu.Unlock()
-	if closed {
+	if dev == nil {
 		return false
 	}
-	if dev == nil {
-		return true
-	}
-	for _, k := range h.peerKeys {
+	for _, k := range handshakePeers(h.conf) {
 		if p := dev.LookupPeer(k); p != nil {
 			p.SendHandshakeInitiation(false)
 		}
@@ -94,9 +92,32 @@ func (h *Handler) askHandshake() bool {
 	return true
 }
 
+// receivedCounter counts the datagrams a client receives from its server: a
+// connection tells from it whether the server answered, see tunnelDial.
+type receivedCounter struct{ atomic.Uint64 }
+
+// wrap counts the datagrams the bind reads from its socket.
+func (r *receivedCounter) wrap(pc net.PacketConn) net.PacketConn {
+	return &countedPacketConn{PacketConn: pc, received: r}
+}
+
+type countedPacketConn struct {
+	net.PacketConn
+	received *receivedCounter
+}
+
+func (c *countedPacketConn) ReadFrom(p []byte) (int, net.Addr, error) {
+	n, addr, err := c.PacketConn.ReadFrom(p)
+	if err == nil {
+		c.received.Add(1)
+	}
+	return n, addr, err
+}
+
 // tunnelDial follows one connection through the tunnel for the observer of
 // the outbound. A nil one does nothing, so Process calls it either way.
 type tunnelDial struct {
+	// The Handler whose device carries the connection.
 	h       *Handler
 	tracker outbound.DialTracker
 	// Ends with the user connection, also when the observer aborts it.
@@ -126,17 +147,34 @@ type tunnelCounters struct {
 }
 
 // startTunnelDial starts following the connection when an observer follows
-// the outbound: the handler then gives the proxy an outbound.TunnelDialer.
+// the outbound, or takes over the dial a lazyClient started before its wake.
 func (h *Handler) startTunnelDial(ctx context.Context, dialer internet.Dialer) *tunnelDial {
+	if s, ok := dialer.(startedDial); ok {
+		if s.td != nil {
+			s.td.h = h
+		}
+		return s.td
+	}
+	t := startTunnelDial(ctx, dialer, tunnelServer(h.conf))
+	if t != nil {
+		t.h = h
+	}
+	return t
+}
+
+// startTunnelDial starts following the connection to server when an
+// observer follows the outbound: the handler then gives the proxy an
+// outbound.TunnelDialer.
+func startTunnelDial(ctx context.Context, dialer internet.Dialer, server net.Destination) *tunnelDial {
 	td, ok := dialer.(outbound.TunnelDialer)
 	if !ok {
 		return nil
 	}
-	tracker := td.StartTunnelDial(ctx, h.server)
+	tracker := td.StartTunnelDial(ctx, server)
 	if tracker == nil {
 		return nil
 	}
-	return &tunnelDial{h: h, tracker: tracker, ctx: ctx, settled: make(chan struct{})}
+	return &tunnelDial{tracker: tracker, ctx: ctx, settled: make(chan struct{})}
 }
 
 // failed reports that the connection got no tunnel: the device could not be
@@ -280,10 +318,16 @@ func (t *tunnelDial) failedInside() {
 	}
 }
 
-// end stops following the connection. A dial still open tells nothing: the
-// connection ended before the server answered or could not.
-func (t *tunnelDial) end() {
+// end stops following the connection, which ended with err. Before the
+// connection entered the tunnel, err tells why it got none. After, a dial
+// still open tells nothing: the connection ended before the server answered
+// or could not.
+func (t *tunnelDial) end(err error) {
 	if t == nil {
+		return
+	}
+	if err != nil && t.since.IsZero() {
+		t.failed(err)
 		return
 	}
 	t.settle(context.Canceled)

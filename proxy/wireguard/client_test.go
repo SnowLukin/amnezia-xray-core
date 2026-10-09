@@ -221,7 +221,7 @@ func newTestInstance(t testing.TB) *core.Instance {
 
 // addTestClient adds a WireGuard outbound that connects to s from addr and
 // returns it with its proxy.
-func addTestClient(t testing.TB, inst *core.Instance, tag string, s *testServer, priv string, addr netip.Addr, params *AmneziaParameters) (outbound.Handler, *Handler) {
+func addTestClient(t testing.TB, inst *core.Instance, tag string, s *testServer, priv string, addr netip.Addr, params *AmneziaParameters) (outbound.Handler, *lazyClient) {
 	t.Helper()
 	return addTestClientConf(t, inst, tag, testClientConf(s, priv, addr, params))
 }
@@ -244,7 +244,7 @@ func testClientConf(s *testServer, priv string, addr netip.Addr, params *Amnezia
 	}
 }
 
-func addTestClientConf(t testing.TB, inst *core.Instance, tag string, conf *DeviceConfig) (outbound.Handler, *Handler) {
+func addTestClientConf(t testing.TB, inst *core.Instance, tag string, conf *DeviceConfig) (outbound.Handler, *lazyClient) {
 	t.Helper()
 	err := core.AddOutboundHandler(inst, &core.OutboundHandlerConfig{
 		Tag:            tag,
@@ -255,7 +255,7 @@ func addTestClientConf(t testing.TB, inst *core.Instance, tag string, conf *Devi
 		t.Fatal(err)
 	}
 	oh := inst.GetFeature(outbound.ManagerType()).(outbound.Manager).GetHandler(tag)
-	return oh, oh.(proxy.GetOutbound).GetOutbound().(*Handler)
+	return oh, oh.(proxy.GetOutbound).GetOutbound().(*lazyClient)
 }
 
 // testConn is one connection dispatched to an outbound.
@@ -373,10 +373,11 @@ func waitGoroutines(t testing.TB, want int) {
 	}
 }
 
-func (h *Handler) holds() bool {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	return h.tnet != nil || h.dev != nil
+// holds reports whether the outbound holds a stack and a device.
+func (c *lazyClient) holds() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.h != nil
 }
 
 func TestClientCreatesStackOnFirstUse(t *testing.T) {
@@ -431,20 +432,20 @@ func TestClientConcurrentFirstConnections(t *testing.T) {
 		t.Fatalf("4 connections created %d devices, want 1", n)
 	}
 	h.mu.Lock()
-	dev := h.dev
+	awake := h.h
 	h.mu.Unlock()
 	roundTrip(t, oh, s)
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if h.dev != dev || h.inits != 1 {
+	if h.h != awake || h.inits != 1 {
 		t.Fatal("the outbound replaced its device")
 	}
 }
 
-func (h *Handler) initCount() int {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	return h.inits
+func (c *lazyClient) initCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.inits
 }
 
 // slowDNS resolves the endpoint of an outbound to loopback after a delay, or
@@ -467,35 +468,50 @@ func (d *slowDNS) LookupIP(string, dns.IPOption) ([]net.IP, uint32, error) {
 
 // newResolvingClient returns a client outbound, outside any instance, that
 // reaches s by the name localhost through d.
-func newResolvingClient(t testing.TB, s *testServer, priv string, addr netip.Addr, d dns.Client) *Handler {
+func newResolvingClient(t testing.TB, s *testServer, priv string, addr netip.Addr, d dns.Client) *lazyClient {
 	t.Helper()
 	_, port, err := stdnet.SplitHostPort(s.endpoint)
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := &Handler{
-		conf: &DeviceConfig{
-			IsClient:    true,
-			SecretKey:   priv,
-			Mtu:         1420,
-			NoKernelTun: true,
-			Peers: []*PeerConfig{{
-				PublicKey:  s.pub,
-				Endpoint:   "localhost:" + port,
-				AllowedIps: []string{"0.0.0.0/0"},
-			}},
-			Parameters: testParams,
-		},
-		dns:            d,
-		streamSettings: &internet.MemoryStreamConfig{},
-		localAddresses: []netip.Addr{addr},
+	return newBareClient(t, &DeviceConfig{
+		IsClient:    true,
+		SecretKey:   priv,
+		Endpoint:    []string{addr.String()},
+		Mtu:         1420,
+		NoKernelTun: true,
+		Peers: []*PeerConfig{{
+			PublicKey:  s.pub,
+			Endpoint:   "localhost:" + port,
+			AllowedIps: []string{"0.0.0.0/0"},
+		}},
+		Parameters: testParams,
+	}, d)
+}
+
+// newBareClient returns a gVisor client outbound outside any instance, as
+// NewClient would build it, that resolves its endpoint through d.
+func newBareClient(t testing.TB, conf *DeviceConfig, d dns.Client) *lazyClient {
+	t.Helper()
+	addrs := make([]netip.Addr, len(conf.Endpoint))
+	for i, a := range conf.Endpoint {
+		addrs[i] = netip.MustParseAddr(a)
 	}
-	t.Cleanup(func() { h.Close() })
-	return h
+	tun, _, _, err := deferNetTUN(addrs, nil, int(conf.Mtu), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ob, err := newOutbound(&Handler{conf: conf, dns: d, streamSettings: &internet.MemoryStreamConfig{}, tun: tun})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := ob.(*lazyClient)
+	t.Cleanup(func() { c.Close() })
+	return c
 }
 
 // waitInit waits until a connection is creating the stack of h.
-func waitInit(t testing.TB, h *Handler) {
+func waitInit(t testing.TB, h *lazyClient) {
 	t.Helper()
 	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(5 * time.Millisecond) {
 		h.mu.Lock()
@@ -511,15 +527,15 @@ func waitInit(t testing.TB, h *Handler) {
 }
 
 type acquired struct {
-	tnet *Net
-	err  error
+	h   *Handler
+	err error
 }
 
-func acquireAsync(h *Handler, ctx context.Context) <-chan acquired {
+func acquireAsync(c *lazyClient, ctx context.Context) <-chan acquired {
 	ch := make(chan acquired, 1)
 	go func() {
-		tnet, err := h.acquire(ctx)
-		ch <- acquired{tnet, err}
+		h, err := c.acquire(ctx)
+		ch <- acquired{h, err}
 	}()
 	return ch
 }
@@ -555,12 +571,12 @@ func TestClientWakeHoldsNoLock(t *testing.T) {
 	if r1.err != nil || r2.err != nil {
 		t.Fatal(r1.err, r2.err)
 	}
-	if r1.tnet != r2.tnet || h.initCount() != 1 || d.lookups.Load() != 1 {
+	if r1.h != r2.h || h.initCount() != 1 || d.lookups.Load() != 1 {
 		t.Fatalf("2 connections created %d devices with %d lookups, want 1", h.initCount(), d.lookups.Load())
 	}
 	ctx, cancelDial := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancelDial()
-	conn, err := r1.tnet.DialContextTCPAddrPort(ctx, netip.AddrPortFrom(testServerAddr, 7))
+	conn, err := r1.h.tnet.DialContextTCPAddrPort(ctx, netip.AddrPortFrom(testServerAddr, 7))
 	if err != nil {
 		t.Fatal(err)
 	}
