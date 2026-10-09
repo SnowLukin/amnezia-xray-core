@@ -1353,8 +1353,9 @@ def held_on_dead_pin(c, cs, start, release):
 
 
 def failover_after_release(c, tr, release):
-    """After the release of a dead pinned a1 the balancer moves to a2 after one probe of it,
-    and nothing is rechecked: the network did not change under the pin."""
+    """After the release of a dead pinned a1 the balancer moves to a2 after one round of failover
+    probes, a2 first and b1 beside it when two probes run at once, and nothing is rechecked: the
+    network did not change under the pin."""
     after = [e for e in c.events if e["ts"] / 1000 >= release]
     sw = next((e for e in after if e["type"] == "switch"), None)
     took = sw and round(sw["ts"] / 1000 - release, 2)
@@ -1366,7 +1367,10 @@ def failover_after_release(c, tr, release):
         check("first switch after the release, s", sw and f"{sw['fields']['to']} ({sw['fields']['reason']}) {took}",
               bool(sw) and sw["fields"]["to"] == "a2" and sw["fields"]["reason"] == "failover"
               and took <= PROBE_TIMEOUT, f"a2 (failover) <= {PROBE_TIMEOUT}"),
-        check("probes before that switch", before, before == ["a2 failover"], "one: a2 failover"),
+        check("probes before that switch", before,
+              before[:1] == ["a2 failover"] and len(before) <= bench.CONCURRENT
+              and all(p.endswith(" failover") for p in before),
+              f"a2 failover first, <= {bench.CONCURRENT} failover"),
         check("rechecks without a network change under the pin", len(rechecks), not rechecks, "== 0"),
         check("recovery after the release, s", rec and round(rec, 1), rec is not None and rec <= 10, "<= 10"),
     ]
