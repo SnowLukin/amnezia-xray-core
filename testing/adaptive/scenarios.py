@@ -2079,3 +2079,50 @@ def provider_token_rotation(stand, xray, work, name):
         check("tokens in events, Status, reports", shown, not shown, "none"),
         check("report provider_auth_failed", counted, counted == 1, "== 1"),
     ]
+
+
+def rfc3339(t):
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t))
+
+
+@scenario()
+def provider_initial(stand, xray, work, name):
+    """The core starts with the set a connect brought: the balancer is on an
+    outbound of it before the provider is asked, the first request comes from
+    a trigger rather than the start, and a quiet session reports nothing."""
+    stand.answer(FRESH, version="v1")
+    now = time.time()
+    initial = {"protocol": 1, "version": "v1", "outbounds": [bench.member(t, k, i, bench.PIN) for t, k, i in FRESH],
+               "expiresAt": {"x1": rfc3339(now + 600), "x2": rfc3339(now + 600)}, "serverTime": rfc3339(now)}
+    prov = bench.provider_config(["direct"], triggers={"interval": "10s", "jitter": 0}, limits={"minInterval": "1s"})
+    prov["initial"] = initial
+    # The outbound of the config is dearer, so the start takes one of the set.
+    cfg = bench.client_config(BANNED[:1], {"a": 5, "p-": 1}, providers=[prov])
+    with bench.Client(xray, cfg, work, name) as c:
+        start = time.time()
+        tr = bench.Traffic(rate=1, big=0)
+        run_timeline(tr, [], 15)
+        st = c.status()["providers"][0]
+    reqs = stand.provider_requests(start - 5)
+    first_req = reqs[0][0] if reqs else None
+    applies = [e["fields"] for e in c.events if e["type"] == "provider_apply"]
+    first_switch = next((e for e in c.events if e["type"] == "switch"), None)
+    fetches = [e["fields"] for e in c.events if e["type"] == "provider_fetch"]
+    failed = sum(1 for r in tr.records if not r[1])
+    return [
+        check("initial set applied (trigger, added, clock)",
+              applies and (applies[0].get("trigger"), applies[0].get("added"), applies[0].get("clock")),
+              bool(applies) and applies[0].get("trigger") == "initial" and applies[0].get("added") == len(FRESH)
+              and applies[0].get("clock") == "server", f"(initial, {len(FRESH)}, server)"),
+        check("first switch", first_switch and f"{first_switch['fields']['to']} {first_switch['fields']['reason']}",
+              first_switch is not None and first_switch["fields"]["to"].startswith("p-")
+              and (first_req is None or first_switch["ts"] / 1000 < first_req), "p-* before any provider request"),
+        check("first provider request after the start, s", first_req and round(first_req - start, 1),
+              first_req is not None and first_req - start >= 8, ">= 8 (interval)"),
+        check("trigger of the first request", fetches and fetches[0].get("trigger"),
+              bool(fetches) and fetches[0].get("trigger") == "interval", "interval"),
+        check("set kept (version, members)", (st.get("version"), st.get("members")),
+              st.get("version") == "v1" and st.get("members") == len(FRESH), f"(v1, {len(FRESH)})"),
+        check("final report of the quiet session", c.final_report, c.final_report is None and not c.reports, "null"),
+        check("user requests failed", failed, failed == 0, "== 0"),
+    ]
