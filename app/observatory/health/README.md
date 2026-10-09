@@ -167,7 +167,8 @@ for `hostProbes` `perMinute` half of `schedule.perMinute`, `reuse` 5 min,
 - `onNetworkChange` of the strategy: `recheck` forgets and probes the chosen
   outbound once (or the one remembered for the network), `forget` only
   forgets, `ignore` keeps everything. A pinned balancer is rechecked once
-  its pin is released, if the network changed meanwhile.
+  its pin is released, if the network changed meanwhile; its outbound is
+  not probed when traffic or a probe has already judged it there.
 - `upgrade.interval` cannot be zero; a very long interval such as `8760h`
   leaves only returns after network changes.
 - `startPinned` keeps the balancer on one outbound until the host releases

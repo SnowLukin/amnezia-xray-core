@@ -1606,7 +1606,8 @@ func (e *engine) recheckChoice(s *selector, known bool, now time.Time) {
 		e.enqueue(tag, reasonRemembered, s.tag, now)
 		return
 	}
-	if cur := s.current(); cur != "" {
+	// Under a pin, traffic or a probe may have judged it in this network already.
+	if cur := s.current(); cur != "" && e.path(cur).status == statusUnknown {
 		e.enqueue(cur, reasonNetwork, s.tag, now)
 	}
 	u := s.cfg.upgrade

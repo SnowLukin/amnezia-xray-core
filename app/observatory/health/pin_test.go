@@ -36,6 +36,30 @@ func TestNetworkChangeUnderPinIsRecheckedOnRelease(t *testing.T) {
 	}
 }
 
+// A release probes nothing when traffic or a probe has already shown that the
+// pinned outbound works in the new network.
+func TestReleaseSkipsTheRecheckOfAnOutboundSeenWorking(t *testing.T) {
+	sc := &SelectorConfig{Costs: costs("a", 1, "b", 3), StartPinned: "a1", StartPinnedFor: int64(30 * time.Second)}
+	for _, how := range []string{"traffic", "host probe"} {
+		t.Run(how, func(t *testing.T) {
+			te := newTestEngine(t, nil, sc, "a1", "b1")
+			te.onNetworkChange("cafe", at(10*time.Second))
+			te.noteDemand(at(10 * time.Second))
+			if how == "traffic" {
+				te.onSuccess("a1", at(11*time.Second))
+			} else {
+				te.ask(t, at(11*time.Second), "a1")
+				if jobs := te.run(t, at(11*time.Second), nil); !slices.Equal(reasons(jobs), []string{"host:a1"}) {
+					t.Fatalf("setup: probes %v for the host", reasons(jobs))
+				}
+			}
+			if jobs := te.run(t, at(31*time.Second), nil); len(jobs) != 0 || te.sel.pinned != "" {
+				t.Fatalf("probes %v after the timer released the pin (pinned %q)", reasons(jobs), te.sel.pinned)
+			}
+		})
+	}
+}
+
 // A release probes nothing when the network did not change under the pin:
 // after a change before the pin, and after a recheck an earlier release
 // already made.
