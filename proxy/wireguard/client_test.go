@@ -41,12 +41,15 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip/network/ipv4"
 )
 
-// testParams are AmneziaWG parameters both ends of the tests use.
+// testParams are AmneziaWG parameters both ends of the tests use: testJc
+// junk packets before each initiation.
 var testParams = &AmneziaParameters{
-	Jc: "3", Jmin: "50", Jmax: "1000",
+	Jc: strconv.Itoa(testJc), Jmin: "50", Jmax: "1000",
 	S1: "20", S2: "78", S3: "15",
 	H1: "39131278", H2: "832138185", H3: "1436957857", H4: "1635877746",
 }
+
+const testJc = 3
 
 // testServerAddr is where the test server echoes, inside the tunnel.
 var testServerAddr = netip.MustParseAddr("10.9.0.1")

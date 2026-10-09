@@ -2,12 +2,15 @@ package wireguard
 
 import (
 	"context"
+	"encoding/hex"
 	goerrors "errors"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/amnezia-vpn/amneziawg-go/v3/device"
+	"github.com/xtls/xray-core/common/errors"
 	"github.com/xtls/xray-core/common/net"
 	"github.com/xtls/xray-core/features/outbound"
 	"github.com/xtls/xray-core/features/stats"
@@ -77,6 +80,14 @@ func handshakePeers(conf *DeviceConfig) []device.NoisePublicKey {
 // waiting at once ask for one between them. It reports false once the
 // Handler is closed: a connection asks only after its device was up, and
 // only Close takes the device away, also when its outbound sleeps or closes.
+//
+// The first handshake of a device is the exception. A device that has
+// completed none askHandshakeAfter after it sent its first datagram lost
+// the initiation or the response, one datagram each way, and would repeat
+// it only device.RekeyTimeout after the first: after the progressTimeout of
+// a probe that wakes the outbound, which then fails and rules out a working
+// tunnel. The first ask that late has it repeat the handshake at once, and
+// only that one: a server that is gone costs it one handshake more.
 func (h *Handler) askHandshake() bool {
 	h.mu.Lock()
 	dev := h.dev
@@ -84,17 +95,63 @@ func (h *Handler) askHandshake() bool {
 	if dev == nil {
 		return false
 	}
+	var unfinished map[string]bool
+	if first := h.recv.firstSent.Load(); first != 0 && time.Since(time.Unix(0, first)) >= askHandshakeAfter &&
+		h.recv.checked.CompareAndSwap(false, true) {
+		unfinished = withoutHandshake(dev)
+		if len(unfinished) > 0 {
+			errors.LogInfo(context.Background(), "the first handshake of the tunnel is unanswered after ",
+				time.Since(time.Unix(0, first)).Round(time.Millisecond), " with ", h.recv.Load(),
+				" datagrams received, repeating it")
+		}
+	}
 	for _, k := range handshakePeers(h.conf) {
 		if p := dev.LookupPeer(k); p != nil {
+			if unfinished[hex.EncodeToString(k[:])] {
+				// The peer has no keys to expire yet: this ends the wait
+				// for the repeat.
+				p.ExpireCurrentKeypairs()
+			}
 			p.SendHandshakeInitiation(false)
 		}
 	}
 	return true
 }
 
+// withoutHandshake returns the public keys, in hex, of the peers of dev that
+// have never completed a handshake.
+func withoutHandshake(dev *device.Device) map[string]bool {
+	cfg, err := dev.IpcGet()
+	if err != nil {
+		return nil
+	}
+	peers := map[string]bool{}
+	var peer string
+	for _, line := range strings.Split(cfg, "\n") {
+		key, value, _ := strings.Cut(line, "=")
+		switch key {
+		case "public_key":
+			peer = value
+			peers[peer] = true
+		case "last_handshake_time_sec", "last_handshake_time_nsec":
+			if value != "0" {
+				delete(peers, peer)
+			}
+		}
+	}
+	return peers
+}
+
 // receivedCounter counts the datagrams a client receives from its server: a
-// connection tells from it whether the server answered, see tunnelDial.
-type receivedCounter struct{ atomic.Uint64 }
+// connection tells from it whether the server answered, see tunnelDial. It
+// also notes when the device sent its first datagram, for askHandshake.
+type receivedCounter struct {
+	atomic.Uint64
+	// In Unix nanoseconds, zero before.
+	firstSent atomic.Int64
+	// askHandshake has checked the first handshake.
+	checked atomic.Bool
+}
 
 // wrap counts the datagrams the bind reads from its socket.
 func (r *receivedCounter) wrap(pc net.PacketConn) net.PacketConn {
@@ -112,6 +169,13 @@ func (c *countedPacketConn) ReadFrom(p []byte) (int, net.Addr, error) {
 		c.received.Add(1)
 	}
 	return n, addr, err
+}
+
+func (c *countedPacketConn) WriteTo(p []byte, addr net.Addr) (int, error) {
+	if c.received.firstSent.Load() == 0 {
+		c.received.firstSent.CompareAndSwap(0, time.Now().UnixNano())
+	}
+	return c.PacketConn.WriteTo(p, addr)
 }
 
 // tunnelDial follows one connection through the tunnel for the observer of

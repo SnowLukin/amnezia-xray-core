@@ -21,6 +21,7 @@ import (
 	"github.com/xtls/xray-core/app/observatory/health"
 	"github.com/xtls/xray-core/common/net"
 	"github.com/xtls/xray-core/core"
+	"github.com/xtls/xray-core/features/outbound"
 	"golang.org/x/crypto/curve25519"
 )
 
@@ -44,9 +45,51 @@ func wireGuardKeys(t *testing.T) (priv, pub string) {
 type udpGate struct {
 	addr    string
 	blocked atomic.Bool
+	// Handshake responses of the server still to lose, as the network
+	// loses a datagram now and then.
+	loseResponses atomic.Int64
 	// Datagrams from the outbound, whatever became of them.
 	sent atomic.Int64
+	// Datagrams from the server, whatever became of them.
+	answered atomic.Int64
 }
+
+// waitQuiet waits until neither side has sent anything for d.
+func (g *udpGate) waitQuiet(t *testing.T, d time.Duration) {
+	t.Helper()
+	n, held := g.sent.Load()+g.answered.Load(), time.Now()
+	for deadline := held.Add(d + 15*time.Second); time.Since(held) < d; time.Sleep(20 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("the tunnel never went quiet")
+		}
+		if m := g.sent.Load() + g.answered.Load(); m != n {
+			n, held = m, time.Now()
+		}
+	}
+}
+
+// lost tells whether the datagram b from the server is a handshake response
+// the gate is to lose.
+func (g *udpGate) lost(b []byte) bool {
+	if len(b) != wireGuardResponseSize || b[0] != wireGuardResponseType {
+		return false
+	}
+	for {
+		n := g.loseResponses.Load()
+		if n <= 0 {
+			return false
+		}
+		if g.loseResponses.CompareAndSwap(n, n-1) {
+			return true
+		}
+	}
+}
+
+// The handshake response of plain WireGuard: its type and size.
+const (
+	wireGuardResponseType = 2
+	wireGuardResponseSize = 92
+)
 
 func startUDPGate(t *testing.T, server string) *udpGate {
 	t.Helper()
@@ -89,7 +132,8 @@ func startUDPGate(t *testing.T, server string) *udpGate {
 			if err != nil {
 				return
 			}
-			if c := client.Load(); c != nil && !g.blocked.Load() {
+			g.answered.Add(1)
+			if c := client.Load(); c != nil && !g.blocked.Load() && !g.lost(b[:n]) {
 				front.WriteToUDP(b[:n], c)
 			}
 		}
@@ -125,6 +169,14 @@ type wireGuardFailover struct {
 
 func startWireGuardFailover(t *testing.T, ts *httptest.Server, passive string) *wireGuardFailover {
 	t.Helper()
+	// Probes take long enough for the first handshake of a tunnel under the
+	// race detector, which slows its cryptography down to seconds.
+	return startWireGuard(t, ts, passive, `{"destination": "http://10.10.0.1/probe", "timeout": "8s", "progressTimeout": "8s"}`)
+}
+
+// startWireGuard is startWireGuardFailover with the probe of the observer.
+func startWireGuard(t *testing.T, ts *httptest.Server, passive, probe string) *wireGuardFailover {
+	t.Helper()
 	serverPriv, serverPub := wireGuardKeys(t)
 	priv1, pub1 := wireGuardKeys(t)
 	priv2, pub2 := wireGuardKeys(t)
@@ -136,8 +188,6 @@ func startWireGuardFailover(t *testing.T, ts *httptest.Server, passive string) *
 		  "address": ["` + addr + `/32"], "noKernelTun": true,
 		  "peers": [{"publicKey": "` + serverPub + `", "endpoint": "` + endpoint + `", "allowedIPs": ["0.0.0.0/0"]}]}}`
 	}
-	// Probes take long enough for the first handshake of a tunnel under the
-	// race detector, which slows its cryptography down to seconds.
 	cfg, err := core.LoadConfig("json", strings.NewReader(`{
 	  "log": {"loglevel": "none"},
 	  "inbounds": [{"tag": "server", "listen": "127.0.0.1", "port": `+strconv.Itoa(port)+`, "protocol": "wireguard",
@@ -158,8 +208,8 @@ func startWireGuardFailover(t *testing.T, ts *httptest.Server, passive string) *
 	  "healthObservatory": {
 	    "subjectSelector": ["w"],
 	    "passive": `+passive+`,
-	    "probes": [{"destination": "http://10.10.0.1/probe", "timeout": "8s", "progressTimeout": "8s"}],
-	    "schedule": {"spacing": "10ms", "suspectCooldown": "1s"}
+	    "probes": [`+probe+`],
+	    "schedule": {"spacing": "10ms", "suspectCooldown": "1s", "hostProbes": {"reuse": "1ms"}}
 	  }
 	}`))
 	if err != nil {
@@ -342,6 +392,47 @@ func TestWireGuardOutboundFailsOverWhenItsServerStopsAnswering(t *testing.T) {
 	stopUsers()
 	if err := f.get("10.10.0.1", "/small", 10*time.Second); err != nil {
 		t.Fatal("after the failover:", err)
+	}
+}
+
+// A probe that wakes a sleeping WireGuard outbound passes although the
+// network loses the handshake response of its new device. The tunnel asks
+// for the handshake again once the server has answered nothing for a
+// second, well within progressTimeout. The device alone repeats it only
+// device.RekeyTimeout after the first: the probe would fail for no
+// progress and put a working outbound in quarantine.
+func TestWireGuardProbeWakesThroughALostHandshakeResponse(t *testing.T) {
+	ts := targetServer(t)
+	// progressTimeout is below RekeyTimeout, as the default of 4 s is, and
+	// leaves the race detector room for the two handshakes.
+	f := startWireGuard(t, ts, `{"sweepInterval": "50ms"}`,
+		`{"destination": "http://10.10.0.1/probe", "timeout": "8s", "progressTimeout": "4800ms"}`)
+	// The balancer gets its candidates, and w1 its first tunnel.
+	if err := f.get("10.10.0.1", "/small", 10*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	// The connection closes before w1 sleeps: the server would otherwise
+	// repeat its end of it to the next device, which the gate reaches as
+	// well, and that would answer the waiting probe.
+	f.w1.waitQuiet(t, 500*time.Millisecond)
+	w1 := f.inst.GetFeature(outbound.ManagerType()).(outbound.Manager).GetHandler("w1").(outbound.Sleeper)
+	for deadline := time.Now().Add(10 * time.Second); !w1.Sleep(); time.Sleep(20 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("w1 refused to sleep after its connection")
+		}
+	}
+
+	f.w1.loseResponses.Store(1)
+	from := f.mark()
+	if _, err := f.obs.RequestProbe(health.ProbeRequest{Balancer: "auto", Outbounds: []string{"w1"}}); err != nil {
+		t.Fatal(err)
+	}
+	result := f.first(from, "probe_result", about("w1"))
+	if left := f.w1.loseResponses.Load(); left != 0 {
+		t.Fatalf("the probe woke no tunnel: %d handshake responses left to lose", left)
+	}
+	if result.Fields["ok"] != true {
+		t.Fatalf("the probe through the woken w1 failed: %v", result.Fields)
 	}
 }
 

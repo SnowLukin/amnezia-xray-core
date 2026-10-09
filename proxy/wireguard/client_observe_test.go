@@ -38,6 +38,8 @@ type testRelay struct {
 	drop atomic.Int64
 	// Datagrams still let through, either way; below zero, all of them.
 	allow atomic.Int64
+	// Datagrams from the server to drop before any of them passes again.
+	dropReplies atomic.Int64
 	// Datagrams from the client, whatever became of them.
 	sent atomic.Int64
 	wg   sync.WaitGroup
@@ -83,7 +85,7 @@ func startTestRelay(t testing.TB, server string) *testRelay {
 			if err != nil {
 				return
 			}
-			if c := r.client.Load(); c != nil && r.pass() {
+			if c := r.client.Load(); c != nil && !take(&r.dropReplies) && r.pass() {
 				front.WriteToUDP(b[:n], c)
 			}
 		}
@@ -97,14 +99,8 @@ func startTestRelay(t testing.TB, server string) *testRelay {
 }
 
 func (r *testRelay) pass() bool {
-	for {
-		n := r.drop.Load()
-		if n <= 0 {
-			break
-		}
-		if r.drop.CompareAndSwap(n, n-1) {
-			return false
-		}
+	if take(&r.drop) {
+		return false
 	}
 	for {
 		n := r.allow.Load()
@@ -115,6 +111,20 @@ func (r *testRelay) pass() bool {
 			return false
 		}
 		if r.allow.CompareAndSwap(n, n-1) {
+			return true
+		}
+	}
+}
+
+// take takes one from n unless it is down to zero, and reports whether it
+// did.
+func take(n *atomic.Int64) bool {
+	for {
+		v := n.Load()
+		if v <= 0 {
+			return false
+		}
+		if n.CompareAndSwap(v, v-1) {
 			return true
 		}
 	}
@@ -392,9 +402,80 @@ func TestObservedTunnelProvesItself(t *testing.T) {
 	}
 }
 
-// A wake whose first handshake is lost is no failure: the device repeats
-// the handshake after device.RekeyTimeout, within dialTimeout. A connection
-// inside the tunnel that gave up before the answer only waited too long.
+// A wake whose first handshake is lost, one datagram either way, repeats it
+// once the server has answered nothing for askHandshakeAfter, not
+// device.RekeyTimeout later: a probe that wakes the outbound gives up
+// sooner than that. The connection that woke it comes through.
+func TestObservedTunnelWakeRepeatsALostHandshake(t *testing.T) {
+	for _, lost := range []string{"initiation", "response"} {
+		t.Run(lost, func(t *testing.T) {
+			priv, pub := testKeys(t)
+			addr := netip.MustParseAddr("10.9.0.2")
+			s := startTestServer(t, testParams, testPeer{pub, addr})
+			r := startTestRelay(t, s.endpoint)
+			inst, o := newObservedInstance(t, testPassive())
+			conf := testClientConf(s, priv, addr, testParams)
+			conf.Peers[0].Endpoint = r.addr
+			oh, h := addTestClientConf(t, inst, "wg", conf)
+
+			if lost == "initiation" {
+				// The junk packets and the initiation.
+				r.drop.Store(int64(testJc + 1))
+			} else {
+				r.dropReplies.Store(1)
+			}
+			start := time.Now()
+			if err := tcpEcho(oh, "ping"); err != nil {
+				t.Fatal(err)
+			}
+			if took := time.Since(start); took >= device.RekeyTimeout {
+				t.Fatalf("the connection came through after %v, once the device repeated the handshake by itself", took)
+			}
+			if left := r.drop.Load() + r.dropReplies.Load(); left != 0 {
+				t.Fatalf("%d datagrams left to drop: the wake lost nothing", left)
+			}
+			s.waitConns(t)
+			if got := kinds(t, o, "wg"); got != "" {
+				t.Fatalf("a wake that repeated its handshake left failures %s", got)
+			}
+			if !h.Sleep() {
+				t.Fatal("an idle outbound refused to sleep")
+			}
+		})
+	}
+}
+
+// A wake to a server that answers nothing repeats its first handshake a
+// single time a second later, and then only every device.RekeyTimeout, as
+// a device does.
+func TestObservedTunnelWakeToADeadServerRepeatsOnce(t *testing.T) {
+	priv, pub := testKeys(t)
+	addr := netip.MustParseAddr("10.9.0.2")
+	s := startTestServer(t, testParams, testPeer{pub, addr})
+	r := startTestRelay(t, s.endpoint)
+	r.freeze()
+	inst, _ := newObservedInstance(t, testPassive())
+	conf := testClientConf(s, priv, addr, testParams)
+	conf.Peers[0].Endpoint = r.addr
+	oh, _ := addTestClientConf(t, inst, "wg", conf)
+
+	start := time.Now()
+	c := dial(oh, tcpTo(testServerAddr, 7))
+	defer c.close()
+	waitFor(t, 15*time.Second, "an initiation", func() bool { return r.sent.Load() > 0 })
+	// The device itself repeats the second one after RekeyTimeout and a
+	// jitter.
+	time.Sleep(time.Until(start.Add(device.RekeyTimeout)))
+	if sent, want := r.sent.Load(), int64(2*(testJc+1)); sent != want {
+		t.Fatalf("the client sent %d datagrams within %v, want the junk packets and the initiations of two handshakes, %d",
+			sent, device.RekeyTimeout, want)
+	}
+}
+
+// A wake whose first handshake is lost is no failure, nor is the loss of
+// the handshake it repeats at once: the device repeats it again after
+// device.RekeyTimeout, within dialTimeout. A connection inside the tunnel
+// that gave up before the answer only waited too long.
 func TestObservedTunnelWakeLosesItsHandshake(t *testing.T) {
 	priv, pub := testKeys(t)
 	addr := netip.MustParseAddr("10.9.0.2")
@@ -407,9 +488,9 @@ func TestObservedTunnelWakeLosesItsHandshake(t *testing.T) {
 	conf.Peers[0].Endpoint = r.addr
 	oh, h := addTestClientConf(t, inst, "wg", conf)
 
-	// The junk packets and the initiation of the first handshake.
-	jc := 3
-	r.drop.Store(int64(jc + 1))
+	// The junk packets and the initiations of the first handshake and of
+	// the one it repeats at once.
+	r.drop.Store(2 * (testJc + 1))
 	start := time.Now()
 	gaveUp := dial(oh, tcpTo(testServerAddr, 7))
 	if err := gaveUp.echo([]byte("ping"), 15*time.Second); err == nil {

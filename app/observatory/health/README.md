@@ -203,8 +203,12 @@ for `hostProbes` `perMinute` half of `schedule.perMinute`, `reuse` 5 min,
   without mux.
 - A WireGuard outbound repeats a lost handshake after 5 s, and the
   connections waiting for it count as dialing meanwhile: keep `dialTimeout`
-  above that and a round trip, as the default does, or a lost packet at a
-  wake counts as a failure.
+  above that and a round trip, as the default does, or a lost packet counts
+  as a failure. The first handshake of a new tunnel, at a wake, is the
+  exception: once a connection or a probe has waited a second for it in
+  vain, the tunnel repeats it at once, a single time. A probe that wakes the
+  outbound thus gets through a lost packet within its `progressTimeout`,
+  which is shorter than 5 s.
 - `lazy` outbounds are never probed in the background and are only tried
   when everything cheaper is down.
 - `confirm`: `auto` probes only destination failures, `always` probes every
