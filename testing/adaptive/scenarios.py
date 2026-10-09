@@ -1450,9 +1450,11 @@ def hybrid_pin_timer(stand, xray, work, name):
 
 @scenario()
 def hybrid_pin_network(stand, xray, work, name):
-    """The network changes under the pin while a1 works. Nothing is probed until the pin is
-    released, by its timer and later by the host; then a1 is probed once in the new network,
-    as after a change without the pin, and the balancer stays on it."""
+    """The network changes under the pin while a1 works, and nothing is probed until the pin is
+    released. Traffic pauses over the change under the start pin, so the release by the timer
+    probes a1 once in the new network, as after a change without the pin. Under the pin of the
+    host traffic shows a1 working in the new network, so the release by the host probes nothing.
+    The balancer stays on a1."""
     m = Marks()
     seen = {}
     with bench.Client(xray, hybrid_config(), work, name) as c:
@@ -1460,12 +1462,16 @@ def hybrid_pin_network(stand, xray, work, name):
         m["start"] = time.time()
         tr.start()
         time.sleep(5)
+        tr.paused.set()
+        time.sleep(1)
         m["net1"] = time.time()
         c.network("cafe")
         released = wait_for(lambda: bench.events_of(c.events, "release", m["start"]), HYBRID_PIN_FOR + 15)
         if released:
             m["timer"] = released[0]["ts"] / 1000
-        time.sleep(5)
+        time.sleep(3)
+        tr.paused.clear()
+        time.sleep(2)
         run = c.status()["run"]
         m["pin"] = time.time()
         seen["pin"] = c.api("pin", "auto", "a1", run)
@@ -1480,26 +1486,29 @@ def hybrid_pin_network(stand, xray, work, name):
     if "timer" not in m:
         return [check("release by the timer", None, False, f"{HYBRID_PIN_FOR} s after the pin")]
     checks = []
-    for label, net, release, upto in (("timer", m["net1"], m["timer"], m["pin"]),
-                                      ("host", m["net2"], m["release"], None)):
+    for label, net, release in (("timer", m["net1"], m["timer"]), ("host", m["net2"], m["release"])):
         held = [e for e in bench.probes(c.events, net) if e["ts"] / 1000 < release]
-        after = bench.probes(c.events, release, upto)
-        first = after[0] if after else None
-        took = first and round(first["ts"] / 1000 - release, 2)
-        result = first and first_event(c.events, "probe_result", first["ts"] / 1000, outbound="a1",
-                                       reason="network_change")
-        checks += [
-            check(f"probes under the pin after the change ({label})", len(held), not held, "== 0"),
-            check(f"probes after the release by {label}, s",
-                  [f"{e['fields']['outbound']} {e['fields']['reason']}" for e in after] + [took],
-                  len(after) == 1 and first["fields"]["outbound"] == "a1"
-                  and first["fields"]["reason"] == "network_change" and took <= 3,
-                  "one: a1 network_change <= 3 (a spacing)"),
-            check(f"its result ({label})", result and result["fields"].get("ok"),
-                  bool(result) and result["fields"].get("ok") is True, "ok"),
-        ]
+        checks.append(check(f"probes under the pin after the change ({label})", len(held), not held, "== 0"))
+    after = bench.probes(c.events, m["timer"], m["pin"])
+    first = after[0] if after else None
+    took = first and round(first["ts"] / 1000 - m["timer"], 2)
+    result = first and first_event(c.events, "probe_result", first["ts"] / 1000, outbound="a1",
+                                   reason="network_change")
+    seen_up = first_event(c.events, "path_state", m["net2"], outbound="a1", state="up", reason="traffic")
+    up_in = seen_up and round(seen_up["ts"] / 1000 - m["net2"], 1)
+    after_host = [f"{e['fields']['outbound']} {e['fields']['reason']}" for e in bench.probes(c.events, m["release"])]
     sw = [f"{e['fields']['to']} ({e['fields']['reason']})" for e in bench.switches(c.events)]
     return checks + [
+        check("probes after the release by timer, s",
+              [f"{e['fields']['outbound']} {e['fields']['reason']}" for e in after] + [took],
+              len(after) == 1 and first["fields"]["outbound"] == "a1"
+              and first["fields"]["reason"] == "network_change" and took <= 3,
+              "one: a1 network_change <= 3 (a spacing)"),
+        check("its result (timer)", result and result["fields"].get("ok"),
+              bool(result) and result["fields"].get("ok") is True, "ok"),
+        check("a1 up by traffic under the pin of the host, s after the change", up_in,
+              bool(seen_up) and seen_up["ts"] / 1000 < m["release"], "before the release"),
+        check("probes after the release by host", after_host, not after_host, "none"),
         check("pin and release of the host", f"{seen['pin']}, {seen['release']}",
               seen["pin"] == seen["release"] == {"ok": True}, "ok, ok"),
         check("switches", sw, sw == ["a1 (start_pinned)"], "a1 (start_pinned) only"),
