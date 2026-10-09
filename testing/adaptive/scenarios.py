@@ -271,7 +271,8 @@ def failover(stand, xray, work, name, port, mode, limit, members=THREE, costs=TH
     confirm: the evidence is weak, so a confirming probe must fail and rule the
     outbound out. immediate: the evidence is strong and rules it out without a
     probe. count_conns is off for a mode that the proxy cannot count (refuse). redials: the
-    transport dials the address again by itself (gRPC does after a failure)."""
+    transport dials the address again by itself (gRPC does after a failure, a WireGuard device
+    repeats its handshake for up to 90 s). mode may be a callable that sets the fault itself."""
     cfg = bench.client_config(members, costs)
     ports = port if isinstance(port, list) else [port]
     m = Marks()
@@ -279,7 +280,7 @@ def failover(stand, xray, work, name, port, mode, limit, members=THREE, costs=TH
         tr = traffic or bench.Traffic(rate=2, big=0.5)
         mech = []
         sample = [(10 + s, lambda s=s: mech.append(c.mechanism_heap(f"{s}"))) for s in (1, 5, 8, 10, 12, 15)]
-        fault = m.at("fault", lambda: bench.chaos(",".join(map(str, ports)), mode))
+        fault = m.at("fault", mode if callable(mode) else lambda: bench.chaos(",".join(map(str, ports)), mode))
         run_timeline(tr, [(10, fault)] + sample, duration)
         end = time.time()
         peak = max((h for t, h, _ in c.mem if t >= m["fault"]), default=0)
@@ -310,6 +311,11 @@ def failover(stand, xray, work, name, port, mode, limit, members=THREE, costs=TH
             judged = routed is None or not redials
             checks.append(check("connections at the dead address after switch", n, n == 0 or not judged,
                                 "== 0" if judged else "info (the transport redials)"))
+            if set(ports) & set(bench.UDP_PORTS):
+                # A UDP address counts sockets as connections; the handshakes the device
+                # repeats come through the one it has.
+                up, _ = cs.packets(ports, t_sw, end)
+                checks.append(check("datagrams to the dead address after switch", up, True, "info"))
         recheck = [e for e in c.events if e["type"] == "probe_start" and e["ts"] / 1000 > t_sw]
         checks.append(check("probes after switch", len(recheck), len(recheck) == 0, "== 0"))
     # The event log alone must tell the story: when the path became suspect or
@@ -491,14 +497,14 @@ def one_dead_site(stand, xray, work, name):
             leak_check(c)]
 
 
-def glitch(stand, xray, work, name, mode):
+def glitch(stand, xray, work, name, mode, members=THREE, costs=THREE_COSTS, port=A0):
     """The address of the chosen outbound is gone for 3 s, then back."""
-    cfg = bench.client_config(THREE, THREE_COSTS)
+    cfg = bench.client_config(members, costs)
     m = Marks()
     with bench.Client(xray, cfg, work, name) as c:
         tr = bench.Traffic(rate=2, big=0.5)
-        run_timeline(tr, [(10, m.at("fault", lambda: bench.chaos(A0, mode))),
-                          (13, lambda: bench.chaos(A0, "pass"))], 40)
+        run_timeline(tr, [(10, m.at("fault", lambda: bench.chaos(port, mode))),
+                          (13, lambda: bench.chaos(port, "pass"))], 40)
     sw = bench.switches(c.events, m["fault"])
     downs = [e for e in c.events if e["type"] == "path_state" and e["fields"].get("state") == "down"
              and e["ts"] / 1000 >= m["fault"]]
@@ -2656,9 +2662,8 @@ def provider_slots_last_resort(stand, xray, work, name):
 
 # ---- AmneziaWG: sleep and wake ------------------------------------------------
 #
-# No failover scenario here: passive detection for AmneziaWG comes elsewhere.
-# Nor one for low memory: SetMemoryLow has no API call or command, only the Go
-# call a host makes.
+# No scenario for low memory: SetMemoryLow has no API call or command, only the
+# Go call a host makes.
 
 AWG_SLEEP = 10  # sleep.after: its minimum
 AWG_MEMBERS = [("v1", "reality", 0), ("w1", "awg", 0)]
@@ -2847,4 +2852,65 @@ def awg_wake(stand, xray, work, name):
         checks.append(check("user connections after the pin by outbound", routed,
                             set(routed) == {"w1"} and routed["w1"] >= 10, "w1 only, >= 10"))
     checks.append(leak_check(c))
+    return checks
+
+
+# ---- AmneziaWG: failover by traffic alone ---------------------------------------
+#
+# w1 and w2 are peers of the one AmneziaWG server, each behind a UDP address of its
+# own, so that one fails alone, as one of two servers would. Each connection through a
+# tunnel is a dial of its server for the observatory, which ends when the server answers
+# anything; a server that answers nothing within dialTimeout is a dial that timed out.
+
+AWG_PAIR = [("w1", "awg", 0), ("w2", "awg", 1)]
+AWG_PAIR_COSTS = {"w1": 1, "w2": 3}
+W1 = bench.AWG_ADDRESSES[0]
+
+
+@scenario()
+def awg_failover_blackhole(stand, xray, work, name):
+    """The address of w1 drops every datagram both ways. The connections of users wait for
+    the server in vain: dials that time out, strong evidence that rules w1 out without a
+    probe. The device of w1 goes on with its handshakes after the switch."""
+    return failover(stand, xray, work, name, W1, "blackhole", 10, members=AWG_PAIR, costs=AWG_PAIR_COSTS,
+                    expect_to="w2", tag="w1", kinds=("dial_timeout",), immediate=True, redials=True)
+
+
+@scenario()
+def awg_short_glitch(stand, xray, work, name):
+    """Datagrams of w1 lost both ways for 3 s. Connections that began meanwhile wait for the
+    server, and the first answer after the glitch, to any of them, ends every wait well
+    within dialTimeout."""
+    return glitch(stand, xray, work, name, "blackhole", members=AWG_PAIR, costs=AWG_PAIR_COSTS, port=W1)
+
+
+def cut_after(port, more, marks):
+    """A fault for a UDP address that one socket of the client uses, as a censor that lets
+    the first datagrams of a flow through and drops the rest: from the call on, the address
+    forwards more datagrams each way, then none. drop_after counts from the first datagram
+    of the socket, and the address counts those of earlier clients too, so its counters are
+    taken before the client starts. Marks the cut in marks."""
+    base = bench.chaos_stats()[port]
+
+    def cut():
+        marks["cut"] = time.time()
+        now = bench.chaos_stats()[port]
+        bench.chaos(port, f"drop_after:{max(now[3] - base[3], now[4] - base[4]) + more}")
+    return cut
+
+
+@scenario()
+def awg_failover_freeze(stand, xray, work, name):
+    """The address of w1 cuts its flow under steady traffic: 20 more datagrams each way, then
+    none. Requests caught in the middle stall, weak evidence that waits for stallTimeout; the
+    connections that begin after the cut wait for the server in vain, and their dials time
+    out first: strong evidence, as for a blackhole."""
+    m = Marks()
+    tr = bench.Traffic(rate=2, big=0.5)
+    checks = failover(stand, xray, work, name, W1, cut_after(W1, 20, m), 10, members=AWG_PAIR,
+                      costs=AWG_PAIR_COSTS, traffic=tr, expect_to="w2", tag="w1", kinds=("dial_timeout",),
+                      immediate=True, redials=True)
+    # The cut comes some datagrams after the call: a request it catches got part of its answer.
+    caught = [r for r in tr.records if r[0] >= m["cut"] - tr.timeout and not r[1] and r[3] > 0]
+    checks.append(check("requests cut in the middle of their answer", len(caught), True, "info"))
     return checks
