@@ -265,8 +265,9 @@ func TestGetProviderSet(t *testing.T) {
 		}
 		return r
 	}
-	if r := get(0); r.Json != "" || r.Seq != 0 {
-		t.Fatalf("before an answer: %+v", r)
+	first := get(0)
+	if first.Json != "" {
+		t.Fatalf("before an answer: %+v", first)
 	}
 	health.FromInstance(inst).RequestRefresh("fresh")
 	var r *command.GetProviderSetResponse
@@ -279,11 +280,11 @@ func TestGetProviderSet(t *testing.T) {
 		Version string            `json:"version"`
 		Headers map[string]string `json:"headers"`
 	}
-	if err := json.Unmarshal([]byte(r.Json), &set); err != nil || r.Seq != 1 || set.Version != "v1" || set.Headers["Authorization"] != "Bearer t2" {
+	if err := json.Unmarshal([]byte(r.Json), &set); err != nil || r.Seq != first.Seq+1 || set.Version != "v1" || set.Headers["Authorization"] != "Bearer t2" {
 		t.Fatalf("set %+v: %v", r, err)
 	}
-	if r := get(1); r.Json != "" || r.Seq != 1 {
-		t.Fatalf("nothing newer: %+v", r)
+	if again := get(r.Seq); again.Json != "" || again.Seq != r.Seq {
+		t.Fatalf("nothing newer: %+v", again)
 	}
 	if _, err := s.GetProviderSet(ctx, &command.GetProviderSetRequest{Provider: "other"}); err == nil {
 		t.Fatal("a set of no provider")

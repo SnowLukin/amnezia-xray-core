@@ -132,6 +132,8 @@ type applyFixture struct {
 	rt      *providerRuntime
 	m       *fakeManager
 	created []*fakeHandler
+	// The number of the kept set at the start of the run.
+	seq0 uint64
 }
 
 func newApplyFixture(t *testing.T, drain time.Duration, mods ...func(*ProviderConfig)) *applyFixture {
@@ -144,7 +146,7 @@ func newApplyFixture(t *testing.T, drain time.Duration, mods ...func(*ProviderCo
 	})
 	o := newObserver(context.Background(), &Config{Providers: []*ProviderConfig{pc}})
 	t.Cleanup(func() { o.Close() })
-	f := &applyFixture{o: o, rt: o.providers[0], m: newFakeManager()}
+	f := &applyFixture{o: o, rt: o.providers[0], m: newFakeManager(), seq0: o.e.providers[0].seq}
 	o.ohm = f.m
 	o.parseOutbounds = func(raw json.RawMessage) ([]*core.OutboundHandlerConfig, error) {
 		var set []fakeOutbound

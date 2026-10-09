@@ -123,7 +123,12 @@ func newObserver(ctx context.Context, config *Config) *Observer {
 	o.runCtx, o.stopRun = context.WithCancel(ctx)
 	o.newHandler = o.createHandler
 	o.e.report.begin(o.clock())
+	// The number of the kept set starts from the wall clock in
+	// milliseconds, so it grows across runs too: a host that asks with the
+	// number it kept from the run before gets the set of this one.
+	seq := uint64(max(o.clock().UnixMilli(), 0))
 	for i, ps := range s.providers {
+		o.e.providers[i].seq = seq
 		o.providers = append(o.providers, &providerRuntime{
 			p:        o.e.providers[i],
 			cfg:      ps,

@@ -24,12 +24,16 @@ func leasedAnswer(t *testing.T, version string, server, end time.Time, more stri
 	return a
 }
 
+// providerSet asks for the kept set with numbers counted from the start of
+// the run: after and the number it returns are less the number the run
+// started with.
 func (f *applyFixture) providerSet(t *testing.T, after uint64) (map[string]json.RawMessage, uint64) {
 	t.Helper()
-	raw, seq, err := f.o.ProviderSet("fresh", after)
+	raw, seq, err := f.o.ProviderSet("fresh", f.seq0+after)
 	if err != nil {
 		t.Fatal(err)
 	}
+	seq -= f.seq0
 	if raw == nil {
 		return nil, seq
 	}
@@ -81,7 +85,7 @@ func TestProviderSetRoundTripsAsInitial(t *testing.T) {
 		t.Fatal(err)
 	}
 	raw, seq, err := f.o.ProviderSet("fresh", 0)
-	if err != nil || seq != 2 {
+	if err != nil || seq != f.seq0+2 {
 		t.Fatalf("set %s, seq %d, %v", raw, seq, err)
 	}
 	var doc struct {
@@ -117,7 +121,7 @@ func TestProviderSetRoundTripsAsInitial(t *testing.T) {
 	}
 	// What the second core keeps is what the first one kept.
 	again, seq, err := g.o.ProviderSet("fresh", 0)
-	if err != nil || seq != 1 {
+	if err != nil || seq != g.seq0+1 {
 		t.Fatalf("set of the second core %s, seq %d, %v", again, seq, err)
 	}
 }
@@ -158,7 +162,7 @@ func TestProviderSetSeqGrowsOnSetLeaseAndHeaders(t *testing.T) {
 	step("another set", 7, apply(answer(t, fakeOutbound{Tag: "x1", V: 1})))
 	f.o.mu.Lock()
 	defer f.o.mu.Unlock()
-	if st := f.o.e.status(now).Providers[0]; st.AnswerSeq != 7 {
+	if st := f.o.e.status(now).Providers[0]; st.AnswerSeq != f.seq0+7 {
 		t.Fatalf("status answer_seq %d", st.AnswerSeq)
 	}
 }
@@ -204,7 +208,7 @@ func TestProviderSetUnchangedAllocatesNothing(t *testing.T) {
 	}
 	_, seq := f.providerSet(t, 0)
 	if allocs := testing.AllocsPerRun(100, func() {
-		if raw, _, err := f.o.ProviderSet("fresh", seq); raw != nil || err != nil {
+		if raw, _, err := f.o.ProviderSet("fresh", f.seq0+seq); raw != nil || err != nil {
 			t.Fatal("a set newer than the one the host has")
 		}
 	}); allocs != 0 {
@@ -329,5 +333,33 @@ func TestKeptLeaseRenewsAtTheSamePointAcrossRestarts(t *testing.T) {
 		if raw, _, err = g.o.ProviderSet("fresh", 0); err != nil {
 			t.Fatal(err)
 		}
+	}
+}
+
+// The number of the kept set grows across runs: a host that asks with the
+// number it kept from the run before gets the set the new run started with,
+// rather than nothing until this run counts past it.
+func TestProviderSetSeqGrowsAcrossRuns(t *testing.T) {
+	before := time.Now().UnixMilli()
+	f, _ := initialFixture(t, "")
+	if f.seq0 < uint64(before) {
+		t.Fatalf("the run starts at %d, before the wall clock %d", f.seq0, before)
+	}
+	if _, err := f.apply(t, answer(t, fakeOutbound{Tag: "x1", V: 1})); err != nil {
+		t.Fatal(err)
+	}
+	raw, kept, err := f.o.ProviderSet("fresh", 0)
+	if err != nil || raw == nil {
+		t.Fatalf("set %s, %v", raw, err)
+	}
+	// A host that starts the core again at once does so milliseconds later.
+	for time.Now().UnixMilli() <= int64(kept) {
+		time.Sleep(time.Millisecond)
+	}
+	g, _ := initialFixture(t, string(raw))
+	g.o.applyInitial()
+	again, seq, err := g.o.ProviderSet("fresh", kept)
+	if err != nil || again == nil || seq <= kept {
+		t.Fatalf("asked with %d of the run before: set %v, seq %d, %v", kept, again != nil, seq, err)
 	}
 }
