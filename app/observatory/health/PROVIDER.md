@@ -371,7 +371,10 @@ after a long pause, an `expiry` request.
 - **Outbounds.** Keep the tags and the settings of an outbound stable
   between answers, so that it keeps its connections. Put IP addresses into
   the outbounds and the server name apart: an answer cannot bring the `dns`
-  a new name may need.
+  a new name may need. The core builds outbounds with the config loader
+  of Xray, so an outbound it would refuse at start is refused in an answer
+  too: for example, VLESS or Trojan without TLS or REALITY to a public
+  address.
 - **Leases.** Give leases much longer than the refresh interval, a day for
   a refresh every 2 hours, and at least ten times the shortest pause
   between refreshes. Put an end for every leased outbound into every
