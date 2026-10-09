@@ -442,19 +442,19 @@ kept set would lie over a fresh token in the config, which then needs
 **Base config.** A backend that generates the config of the core names it
 with `baseVersion`, at most 256 bytes; without one there, the `baseVersion`
 of a fresh `initial`, the answer of the connect that brought the config,
-names it. A set the host kept named the config of an earlier run, so its
-`baseVersion` never becomes the base. The body of every request tells the
-base, and an answer may name the one the backend serves now: an applied
-answer that names another one, the same set and a kept initial set at the
-start as well, gives `provider_base_changed` once per value, so a host
-learns also of a change it put off. The host then fetches the config anew
-and restarts the core when that is cheap, after a random delay, as a fleet
-that restarts at once loads the backend like a storm. An answer that names
-the base of the core again ends the change, and a later one is told again;
-an answer without `baseVersion` changes nothing. The set applies whatever
-base it names: the backend answers with outbounds that work with the base
-of the request. Without a base nothing is told, and Status shows what the
-answers name.
+names it, also when its outbounds do not build. A set the host kept named
+the config of an earlier run, so its `baseVersion` never becomes the base.
+The body of every request tells the base, and an answer may name the one
+the backend serves now: an applied answer that names another one, the same
+set and a kept initial set at the start as well, gives
+`provider_base_changed` once per value, so a host learns also of a change
+it put off. The host then fetches the config anew and restarts the core
+when that is cheap, after a random delay, as a fleet that restarts at once
+loads the backend like a storm. An answer that names the base of the core
+again ends the change, and a later one is told again; an answer without
+`baseVersion` changes nothing. The set applies whatever base it names: the
+backend answers with outbounds that work with the base of the request.
+Without a base nothing is told, and Status shows what the answers name.
 
 **Triggers.** Any trigger may start a refresh:
 
@@ -695,7 +695,7 @@ changed its settings). `kinds` counts failures by kind: `dial_failed`, `dial_tim
 | `memory_low` | `on` | The host reported that memory is low (`on` true) or no longer. |
 | `provider_fetch` | `provider`, `trigger`, `retry`, `attempt`, `via`, `outbound`, `method`, `refresh`, `ok`, `status`, `ms`, `bytes`, `code`, `retry_after_ms`, `error` | One request of a refresh through one `via` entry; `outbound` is what the entry resolved to, `refresh` the number of the refresh as the body tells it, `bytes` the size of the answer. `code` is the code of an error body of the protocol, `retry_after_ms` the pause `Retry-After` asked for, after the ceiling and before the spread. A skipped entry has `ok` false and only `error`: `balancer exhausted`, `outbound down` or `no such outbound`. `error` never holds the URL. `trigger`: `host`, `exhausted`, `expiry`, `min_healthy`, `cost_above`, `network_change`, `next_refresh`, `max_age`, `interval`; `retry` counts failed refreshes before this one. An answer that breaks the protocol has `ok` true: the backend answered, and the refusal is the `provider_apply`'s. |
 | `provider_apply` | `provider`, `trigger`, `ok`, `changed`, `added`, `replaced`, `removed`, `unchanged`, `version`, `exhausted`, `rules`, `routing_error`, `routing_ignored`, `leases`, `renewed`, `expired`, `skew_ms`, `clock`, `headers`, `headers_stale`, `base_version`, `error` | The answer was applied (`changed`), was the applied set already, or was rejected (`ok` false with `error`); `trigger` `initial` is the initial set at the start. `exhausted` tells whether the balancer had nothing usable at that moment. `rules` counts the routing rules applied with the set; `routing_ignored` tells that the answer had routing while `apply.routing` is off. When the answer names leases: `leases` counts them, `renewed` the ones it gave a later end that has not passed, ended ones too, `expired` the leases that ended after it, where one that had ended and got a later end that passed as well gives no second `provider_expired`; `skew_ms` is how far the clock they count from is ahead of the device, and `clock` which one that is: `server`, `date` (the `Date` of the answer plus `Age`), `saved` (the `serverTime` of a kept initial set plus its age) or `device`. `headers` names the headers of the answer; `headers_stale` tells that the host changed the headers while the request ran, and the answer did not set them, or that the host had set some names of the initial set before the start, which stay its own. `base_version` is the base config the answer named. |
-| `provider_expired` | `provider`, `outbound`, `active`, `renewal` | The lease of an outbound ended, or an answer brought it ended. `active` tells whether a balancer chose the outbound. `renewal` tells why no later end came: `refused` (the backend answered without one), `failed` (the last refresh that asked failed), `off` (`renewAt` is 0), `saved` (it ended in the initial set before the start) or `pending` (no refresh that asked about it has ended: no network, the limits, or the one that asks is still under way). |
+| `provider_expired` | `provider`, `outbound`, `active`, `renewal` | The lease of an outbound ended, or an answer brought it ended. `active` tells whether a balancer chose the outbound. `renewal` tells why no later end came: `refused` (the backend answered without one), `failed` (the last refresh that asked failed), `off` (`renewAt` is 0), `saved` (it ended in a set the host kept, before the start) or `pending` (no refresh that asked about it has ended: no network, the limits, or the one that asks is still under way). |
 | `provider_auth_failed` | `provider`, `trigger`, `status`, `via`, `code` | The backend refused the headers of a request with `status` 401 or 403 and the error `code` `unauthorized` or `forbidden`; every trigger but the host waits, see Token. |
 | `provider_headers` | `provider`, `by`, `names` | Headers of the requests changed: `by` an `answer`, the `initial` set or the `host`. `names` are the headers whose values changed; the values are never told. |
 | `provider_base_changed` | `provider`, `from`, `to` | An applied answer named the base config `to` while the core runs with `from`: the host is to fetch the config anew, see Base config. Once per value, until an answer names `from` again. |
@@ -716,11 +716,12 @@ A decision is a `switch` for any reason but `start`, `start_pinned`,
 `pinned_down` without `start_pinned` (the host that verifies the outbound
 of the start pin reports a failure itself), a `provider_apply` that was
 rejected or changed the set, `provider_restart_needed`, `provider_expired`,
-`provider_auth_failed` and `provider_base_changed`.
-The initial set is no decision, as a start switch is not, nor a lease that
-ended in it before the start, the usual morning after a device was off;
-otherwise every session would have one. A refused initial set is. Events
-the log dropped are no decision.
+`provider_auth_failed` and `provider_base_changed`. The initial set is no
+decision, as a start switch is not, nor a lease that ended in a set the
+host kept before the start, the usual morning after a device was off;
+otherwise every session would have one. A lease that came ended in the
+answer of a connect is. A refused initial set is. Events the log dropped
+are no decision.
 
 `TakeReport(final)` returns the report when one is due and starts a new
 window:

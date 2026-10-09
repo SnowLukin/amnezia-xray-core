@@ -190,6 +190,35 @@ func TestExpiredInitialRefreshesUnderTheStartPin(t *testing.T) {
 	}
 }
 
+// A lease that came ended in the answer of a connect did not end while the
+// device was off: it is no saved one. It is still asked about once, as no
+// refresh of this run has asked about it, and it is a decision.
+func TestEndedLeaseOfAFreshInitialIsNotSaved(t *testing.T) {
+	f, now := initialFixture(t, "")
+	wall := now.Round(0)
+	f.rt.cfg.initial = []byte(fmt.Sprintf(`{"outbounds": [{"tag": "x1", "protocol": "vless", "v": 1}],
+		"serverTime": %q, "expiresAt": {"x1": %q}}`, stamp(wall), stamp(wall.Add(-time.Minute))))
+	f.o.e.report.begin(now)
+	f.o.applyInitial()
+	var ended []string
+	for _, e := range f.events(t) {
+		if e.Type == "provider_expired" {
+			ended = append(ended, fmt.Sprint(e.Fields["outbound"], " ", e.Fields["renewal"]))
+		}
+	}
+	if fmt.Sprint(ended) != "[p-x1 pending]" {
+		t.Fatalf("provider_expired %v", ended)
+	}
+	f.o.mu.Lock()
+	defer f.o.mu.Unlock()
+	if jobs, _ := f.o.e.tickProviders(now); len(jobs) != 1 || jobs[0].trigger != triggerExpiry {
+		t.Fatalf("refreshes at the start %v", triggers(jobs))
+	}
+	if v := f.o.e.takeReport(true, now); v == nil || v.ProviderExpired != 1 {
+		t.Fatal("an ended lease of a fresh initial set is no decision")
+	}
+}
+
 // A refresh that brings the set of the initial one changes no outbound.
 func TestInitialThenSameVersionChangesNoHandler(t *testing.T) {
 	f, _ := initialFixture(t, `{"version": "v1", "outbounds": [{"tag": "x1", "protocol": "vless", "v": 1}]}`)

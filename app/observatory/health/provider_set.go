@@ -1040,6 +1040,7 @@ func leasesOf(a *providerAnswer, prefix string) leaseAnswer {
 		// clock of the backend when it arrived, plus the time since.
 		la.clock = "saved"
 		la.age = a.age
+		la.kept = true
 		base := a.serverTime
 		if base.IsZero() {
 			base = a.receivedAt

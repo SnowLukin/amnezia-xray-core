@@ -188,6 +188,9 @@ func (o *Observer) applyInitial() {
 				"ok": false, "error": cutText(err.Error(), maxFailureText)})
 			continue
 		}
+		o.mu.Lock()
+		o.e.baseFromInitial(rt.p, a)
+		o.mu.Unlock()
 		// The headers lie under those the host set before the start, name by
 		// name, which gen zero tells.
 		if _, err := o.applySet(rt, a, &refreshJob{p: rt.p, trigger: triggerInitial}); err != nil {

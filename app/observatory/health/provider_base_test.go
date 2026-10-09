@@ -213,6 +213,24 @@ func TestFreshInitialGivesTheBase(t *testing.T) {
 	}
 }
 
+// The answer of the connect names the config it came with even when its
+// outbounds do not build: the core runs on that config, and a later change
+// of the base is told against it.
+func TestFreshInitialThatDoesNotBuildGivesTheBase(t *testing.T) {
+	f, _ := baseFixture(t, "")
+	f.rt.cfg.initial = []byte(`{"version": "v1", "baseVersion": "b2", "outbounds": [{"tag": "x1", "protocol": "vless", "bad": true}]}`)
+	f.o.applyInitial()
+	if ev := f.lastApply(t); ev["ok"] != false || ev["trigger"] != "initial" {
+		t.Fatalf("apply %v", ev)
+	}
+	if st := f.providerStatus(); st.BaseVersion != "b2" || st.BaseChanged {
+		t.Fatalf("status base %q, changed %v", st.BaseVersion, st.BaseChanged)
+	}
+	if told, _ := f.applyBase(t, baseAnswer(t, "v1", "b3")); fmt.Sprint(told) != "[b2>b3]" {
+		t.Fatalf("told %v", told)
+	}
+}
+
 // A backend that names a new base with every answer keeps one value in the
 // core, not one per answer.
 func TestBaseKeepsOneValue(t *testing.T) {

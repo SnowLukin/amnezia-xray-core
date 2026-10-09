@@ -32,7 +32,7 @@ type lease struct {
 	// The last refresh that asked about it failed.
 	failed  bool
 	expired bool
-	// It came ended in the initial set: the device kept the set longer
+	// It came ended in a set the host kept: the device kept the set longer
 	// than the lease.
 	saved bool
 }
@@ -86,7 +86,9 @@ type leaseAnswer struct {
 	clock string
 	// The initial set of the config: a lease that ended there is asked
 	// about once, since no backend has answered about it in this run.
-	initial bool
+	// kept: the host kept it, so a lease that ended did so while the core
+	// was down, the usual morning after a device was off.
+	initial, kept bool
 	// How long the host kept the set: its leases were that much longer
 	// when the answer arrived, and their renewal counts from then.
 	age time.Duration
@@ -199,7 +201,7 @@ func (e *engine) acceptLeases(p *provider, tags []string, a leaseAnswer, now tim
 		case l.ttl > 0:
 			l.expired = false
 		case a.initial:
-			l.saved = true
+			l.saved = a.kept
 		default:
 			// The backend has just answered and gave no more: asking it
 			// again about this value would be a loop.
@@ -266,10 +268,10 @@ func (e *engine) expireLeases(p *provider, now time.Time) bool {
 	return true
 }
 
-// renewalOf tells why a lease ended without a renewal: it came ended in the
-// initial set, the backend answered without one, the last refresh that asked
-// failed, renewal is off, or no refresh that asked has ended, also when one
-// is under way: what it brings is not known yet.
+// renewalOf tells why a lease ended without a renewal: it came ended in a
+// set the host kept, the backend answered without one, the last refresh
+// that asked failed, renewal is off, or no refresh that asked has ended,
+// also when one is under way: what it brings is not known yet.
 func renewalOf(p *provider, l *lease) string {
 	switch {
 	case l.saved:

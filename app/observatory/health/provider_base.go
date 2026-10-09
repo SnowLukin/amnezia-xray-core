@@ -22,9 +22,6 @@ import "time"
 func (e *engine) takeBase(p *provider, a *providerAnswer, now time.Time) bool {
 	moved := a.baseVersion != p.answerBase
 	p.answerBase = a.baseVersion
-	if p.base == "" && a.initial && a.receivedAt.IsZero() {
-		p.base = a.baseVersion
-	}
 	switch {
 	case a.baseVersion == "" || p.base == "":
 	case a.baseVersion == p.base:
@@ -34,6 +31,17 @@ func (e *engine) takeBase(p *provider, a *providerAnswer, now time.Time) bool {
 		e.emit(now, "provider_base_changed", map[string]any{"provider": p.cfg.tag, "from": p.base, "to": a.baseVersion})
 	}
 	return moved
+}
+
+// baseFromInitial makes the base that of a fresh initial set when the
+// config names none. It goes as soon as the set is read, before it is
+// applied: one that does not build still came with the config and names
+// it, and without the base no later change would be told. A set the host
+// kept names an earlier config and is never the base.
+func (e *engine) baseFromInitial(p *provider, a *providerAnswer) {
+	if p.base == "" && a.receivedAt.IsZero() {
+		p.base = a.baseVersion
+	}
 }
 
 // baseFields tells in provider_apply the base config the answer named.
