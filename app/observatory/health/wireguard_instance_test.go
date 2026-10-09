@@ -44,6 +44,8 @@ func wireGuardKeys(t *testing.T) (priv, pub string) {
 type udpGate struct {
 	addr    string
 	blocked atomic.Bool
+	// Datagrams from the outbound, whatever became of them.
+	sent atomic.Int64
 }
 
 func startUDPGate(t *testing.T, server string) *udpGate {
@@ -73,6 +75,7 @@ func startUDPGate(t *testing.T, server string) *udpGate {
 				return
 			}
 			client.Store(from)
+			g.sent.Add(1)
 			if !g.blocked.Load() {
 				back.Write(b[:n])
 			}
@@ -274,7 +277,9 @@ func targetServer(t *testing.T) *httptest.Server {
 
 // A WireGuard outbound whose server stops answering is ruled out by the
 // connections users make, which it can no longer carry: each waits for
-// the tunnel in vain, a path failure that needs no probe.
+// the tunnel in vain, a path failure that needs no probe. Left by the
+// balancer, it releases its tunnel at once and sends the dead address
+// nothing more.
 func TestWireGuardOutboundFailsOverWhenItsServerStopsAnswering(t *testing.T) {
 	ts := targetServer(t)
 	f := startWireGuardFailover(t, ts, `{"dialTimeout": "1s", "firstByteTimeout": "2s", "sweepInterval": "50ms"}`)
@@ -316,6 +321,15 @@ func TestWireGuardOutboundFailsOverWhenItsServerStopsAnswering(t *testing.T) {
 		if e.Fields["outbound"] == "w1" {
 			t.Fatalf("strong evidence was probed: %v", e.Fields)
 		}
+	}
+	if slept := f.first(from, "outbound_sleep", about("w1")); slept.Fields["reason"] != "down" {
+		t.Fatalf("w1 slept with %v, want reason down", slept.Fields)
+	}
+	// Awake, its device would repeat a handshake every 5 s.
+	sent := f.w1.sent.Load()
+	time.Sleep(6 * time.Second)
+	if n := f.w1.sent.Load() - sent; n != 0 {
+		t.Fatalf("%d datagrams to the dead address after w1 slept", n)
 	}
 	// Under the race detector the tunnels are slow enough for the users to
 	// hold up the next connection.

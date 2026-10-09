@@ -505,6 +505,164 @@ func TestSleepsAtOnceUnderLowMemory(t *testing.T) {
 	}
 }
 
+// newDownFixture is a balancer on w1 that leaves it for the cheaper a1
+// without a probe: nothing returns to w1, and no probe holds it, afterwards.
+func newDownFixture(t *testing.T) *sleepFixture {
+	t.Helper()
+	f := newSleepFixture(t, nil, &SelectorConfig{Costs: costs("a", 1, "w", 3), SwitchWithoutProbe: true}, "a1", "w1")
+	f.engine(func(e *engine) { e.switchTo(e.selectors["auto"], "w1", "failover", t0) })
+	f.turn(t0)
+	return f
+}
+
+// failW1 finds w1 down at now, as strong evidence from its traffic does: the
+// balancer leaves it unless pinned to it.
+func (f *sleepFixture) failW1(now time.Time) {
+	f.now = now
+	f.engine(func(e *engine) { e.markDown(e.pathAt("w1", now), "traffic", now) })
+}
+
+func (f *sleepFixture) quarantineEnd() time.Time {
+	var end time.Time
+	f.engine(func(e *engine) { end = e.paths["w1"].quarantineUntil })
+	return end
+}
+
+// The balancer leaves an outbound found down, whose tunnel leads nowhere: it
+// sleeps at once rather than sleep.after later. The probe at the end of its
+// quarantine wakes it; one that fails puts it to sleep at once again, one
+// that passes leaves it the usual wait.
+func TestSleepsAtOnceWhenDown(t *testing.T) {
+	f := newDownFixture(t)
+	f.failW1(at(time.Minute))
+	f.turn(at(time.Minute))
+	evs := f.sleeps(t)
+	if n := f.proxies["w1"].asked(); n != 1 || len(evs) != 1 || !f.asleep(t, "w1") {
+		t.Fatalf("down and left: Sleep called %d times, events %+v", n, evs)
+	}
+	if fl := evs[0].Fields; fl["outbound"] != "w1" || fl["reason"] != "down" || fl["idle_ms"] != float64(0) {
+		t.Fatalf("event %v, want reason down at the switch off it", fl)
+	}
+
+	end := f.quarantineEnd()
+	f.use("w1", end)
+	f.failW1(end.Add(5 * time.Second))
+	f.turn(end.Add(5 * time.Second))
+	evs = f.sleeps(t)
+	if n := f.proxies["w1"].asked(); n != 2 || len(evs) != 1 || evs[0].Fields["reason"] != "down" {
+		t.Fatalf("after a failed probe: Sleep called %d times, events %+v", n, evs)
+	}
+
+	end = f.quarantineEnd()
+	f.use("w1", end)
+	f.engine(func(e *engine) { e.markUp(e.paths["w1"], "probe", end) })
+	f.turn(end.Add(defaultSleepAfter - time.Second))
+	if n := f.proxies["w1"].asked(); n != 2 {
+		t.Fatalf("out of quarantine, yet asked to sleep before sleep.after: %d calls", n)
+	}
+	f.turn(end.Add(defaultSleepAfter))
+	if evs := f.sleeps(t); f.proxies["w1"].asked() != 3 || len(evs) != 1 || evs[0].Fields["reason"] != "idle" {
+		t.Fatalf("after a probe that passed: asked %d times, events %+v", f.proxies["w1"].asked(), evs)
+	}
+}
+
+// The connections of the dead outbound keep it awake. The end of the last
+// one turns the loop, which puts it to sleep at once.
+func TestDownSleepsOnceItsConnectionsEnd(t *testing.T) {
+	f := newDownFixture(t)
+	f.now = at(time.Minute)
+	f.o.ProcessStarted("w1")
+	f.failW1(at(time.Minute))
+	f.turn(at(time.Minute))
+	f.turn(at(time.Minute + 2*time.Second))
+	if n := f.proxies["w1"].asked(); n != 0 {
+		t.Fatalf("asked to sleep %d times under a connection", n)
+	}
+	<-f.o.kick
+	f.now = at(time.Minute + 3*time.Second)
+	f.o.ProcessEnded("w1")
+	select {
+	case <-f.o.kick:
+	default:
+		t.Fatal("the last connection of the dead outbound ended without a kick")
+	}
+	f.turn(at(time.Minute + 3*time.Second))
+	if evs := f.sleeps(t); f.proxies["w1"].asked() != 1 || len(evs) != 1 || evs[0].Fields["reason"] != "down" {
+		t.Fatalf("after its last connection: asked %d times, events %+v", f.proxies["w1"].asked(), evs)
+	}
+}
+
+// A dead outbound that refuses to sleep is asked again within seconds,
+// doubling, not after sleep.after: what holds it ends soon.
+func TestDownSleepRetriesSoon(t *testing.T) {
+	f := newDownFixture(t)
+	f.proxies["w1"].setBusy(true)
+	now := at(time.Minute)
+	f.failW1(now)
+	for i, want := range []time.Duration{5 * time.Second, 10 * time.Second, 20 * time.Second} {
+		wake := f.turn(now)
+		if n := f.proxies["w1"].asked(); n != i+1 {
+			t.Fatalf("at %v: Sleep called %d times, want %d", now.Sub(t0), n, i+1)
+		}
+		if got := wake.Sub(now); got != want {
+			t.Fatalf("refusal %d: asked again in %v, want %v", i+1, got, want)
+		}
+		now = wake
+	}
+	f.proxies["w1"].setBusy(false)
+	f.turn(now)
+	if evs := f.sleeps(t); len(evs) != 1 || evs[0].Fields["reason"] != "down" || !f.asleep(t, "w1") {
+		t.Fatalf("once let go: events %+v", evs)
+	}
+	if d := downSleepRetry(1 << 30); d != maxSleepRetry {
+		t.Fatalf("after a billion refusals %v", d)
+	}
+}
+
+// Being down puts an outbound to sleep at once only once nothing holds it:
+// a pin keeps the balancer on it, a probe of it runs, and an outbound ruled
+// out while the network check fails may be back as soon as the network is,
+// so it waits sleep.after as usual.
+func TestDownSleepsOnlyOnceLetGo(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		hold func(t *testing.T, e *engine, now time.Time)
+		// When it sleeps, past the decision; zero for never.
+		after time.Duration
+	}{
+		{"pinned", func(t *testing.T, e *engine, now time.Time) {
+			if !e.pin("auto", "w1", now) {
+				t.Fatal("setup: pin refused")
+			}
+		}, 0},
+		{"running probe", func(t *testing.T, e *engine, now time.Time) {
+			e.running[1<<40] = &probeJob{id: 1 << 40, tag: "w1", reason: reasonHost}
+		}, 0},
+		{"network in doubt", func(t *testing.T, e *engine, now time.Time) {
+			e.doubt = true
+		}, defaultSleepAfter},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newDownFixture(t)
+			from := at(time.Minute)
+			f.engine(func(e *engine) { tc.hold(t, e, from) })
+			f.failW1(from)
+			f.turn(from)
+			f.turn(from.Add(time.Minute))
+			if n := f.proxies["w1"].asked(); n != 0 {
+				t.Fatalf("asked to sleep %d times while held", n)
+			}
+			if tc.after == 0 {
+				return
+			}
+			f.turn(from.Add(tc.after))
+			if evs := f.sleeps(t); len(evs) != 1 || evs[0].Fields["reason"] != "idle" {
+				t.Fatalf("events %+v, want one sleep after sleep.after", evs)
+			}
+		})
+	}
+}
+
 // A refusal is asked again after sleep.after, then twice as long each time,
 // up to 30 minutes; a use starts the count again.
 func TestBusySleepRetriesDoublingUpTo30m(t *testing.T) {

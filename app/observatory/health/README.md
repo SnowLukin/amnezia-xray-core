@@ -211,8 +211,9 @@ for `hostProbes` `perMinute` half of `schedule.perMinute`, `reuse` 5 min,
 - `report.interval`: a window with a decision is reported once it lasts
   this long, see Report. `"0s"` leaves only the report at the stop.
 - `sleep.after`: an outbound that can release what it holds while idle
-  does so this long after its last use while no balancer chooses it, see
-  Sleep. At least 10 s; `"0s"` turns sleep off.
+  does so this long after its last use while no balancer chooses it, and
+  at once while it is down, see Sleep. At least 10 s; `"0s"` turns sleep
+  off.
 - `hostProbes` limits the probes the host asks for, see Probes on request.
 
 ## Providers
@@ -583,8 +584,8 @@ with its tunnel, network stack and their goroutines, creates them with its
 first connection or probe and releases them when the observatory puts it to
 sleep; its next connection creates them again, at the cost of a handshake.
 The observatory decides when, since it knows what uses an outbound. An
-outbound sleeps `sleep.after` after its last use, and at once while memory
-is low, when all of this holds:
+outbound sleeps `sleep.after` after its last use, and at once while it rests
+in quarantine or memory is low, when all of this holds:
 
 - it was used since it last slept: an outbound never used is never asked;
 - no connection goes through it;
@@ -601,6 +602,17 @@ is low, when all of this holds:
 - it is not leaving its provider set, which the drain closes, nor having its
   handler replaced.
 
+An outbound found down sleeps at once because its tunnel leads nowhere.
+Kept up, a WireGuard device repeats its handshake to the dead address every
+5 s for 90 s, and starts over with every packet its stack still sends, such
+as the FIN that a connection which ended repeats for minutes: the battery
+pays for it, and the address shows, until `sleep.after`. Its connections
+that received nothing were ended when it went down, see How it decides;
+those that received something keep it awake until they end. The probe at
+the end of its quarantine wakes it, and one that fails puts it to sleep
+again at once. One ruled out while the network check was failing waits
+for `sleep.after` as usual: it comes back as soon as the network does.
+
 A use is a switch to or away from it, a probe, a connection the observatory
 follows, the start and the end of a provider request through it as a `via`,
 and the start and the end of every connection its handler gives it. A
@@ -612,15 +624,15 @@ outbound that can sleep tells the observatory of each connection, so such
 a use wakes it in Status too and it sleeps again after the last one. The outbound has the last word: it
 refuses while a connection uses it. A refused sleep, or one an open
 connection the observatory follows holds back, is asked for again after
-`sleep.after`, at least a minute, doubling with every refusal in a row up
-to 30 minutes. Whether an outbound can sleep at all is asked at its first
-use, and again only once a provider replaced its handler; one that cannot
-is never asked to sleep. A sleeping outbound shows `asleep` in Status, and
-every sleep writes `outbound_sleep`. Without user traffic the observatory
-still wakes for this, once per used outbound `sleep.after` after its last
-use and for the retries; once everything sleeps no timer is left. An
-outbound the observatory does not observe never sleeps, even when a
-provider request goes through it.
+`sleep.after`, at least a minute, or after 5 s for an outbound found down,
+doubling with every refusal in a row up to 30 minutes. Whether an outbound
+can sleep at all is asked at its first use, and again only once a provider
+replaced its handler; one that cannot is never asked to sleep. A sleeping
+outbound shows `asleep` in Status, and every sleep writes `outbound_sleep`.
+Without user traffic the observatory still wakes for this, once per used
+outbound `sleep.after` after its last use and for the retries; once
+everything sleeps no timer is left. An outbound the observatory does not
+observe never sleeps, even when a provider request goes through it.
 
 ## Memory
 
@@ -735,7 +747,7 @@ changed its settings). `kinds` counts failures by kind: `dial_failed`, `dial_tim
 | `provider_restart_needed` | `provider`, `version`, `sections` | Reserved for an answer with sections of the config the core reads only at the start. Protocol 1 refuses such an answer, see [PROVIDER.md](PROVIDER.md#answer), so this version never writes it. |
 | `provider_skip` | `provider`, `trigger`, `reason`, `wait_ms` | A trigger wants a refresh that cannot start yet. `reason`: `min_interval`, `backoff`, `retry_after`, `max_per_hour`, `idle`, `network_down`, `pinned` (the balancer of the provider is pinned), `memory`, `auth` (the backend refused the headers). Reported once per trigger and reason until a refresh starts. |
 | `provider_drained` | `provider`, `outbound`, `replaced` | An outbound that left the set, or the old handler of a replaced one, was closed: after `drain`, or at the release of a pin that held it past that, at once without connections, or early to keep at most `maxOutbounds` draining. |
-| `outbound_sleep` | `outbound`, `idle_ms`, `reason` | An outbound released what it held, see Sleep. `idle_ms` is the time since its last use; `reason` is `idle` (after `sleep.after`) or `memory` (sooner, while memory is low). |
+| `outbound_sleep` | `outbound`, `idle_ms`, `reason` | An outbound released what it held, see Sleep. `idle_ms` is the time since its last use; `reason` is `idle` (after `sleep.after`), `down` (sooner, while it rests in quarantine) or `memory` (sooner, while memory is low). |
 
 ## Report
 

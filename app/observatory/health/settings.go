@@ -71,6 +71,9 @@ const (
 	// such as one idle for long, and they end by themselves.
 	minSleepRetry = time.Minute
 	maxSleepRetry = 30 * time.Minute
+	// An outbound found down sleeps at once, and one that refused is asked
+	// again after minDownSleepRetry, doubling the same way.
+	minDownSleepRetry = 5 * time.Second
 
 	// The version of the provider protocol the core speaks.
 	providerProtocol = 1

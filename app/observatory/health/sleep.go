@@ -16,10 +16,10 @@ import (
 // it runs or is about to run, the requests of the host and of providers, and
 // the connections the handler gives the proxy (outbound.ProcessObserver). An
 // outbound none of them holds sleeps sleep.after after its last use, at once
-// while memory is low; a chosen one never does. The outbound has the last
-// word: the observer follows the connections through the tunnel only of
-// outbounds it judges, and forgets one idle for long, while Sleep refuses
-// whenever a connection uses the tunnel.
+// while it rests in quarantine or memory is low; a chosen one never does.
+// The outbound has the last word: the observer follows the connections
+// through the tunnel only of outbounds it judges, and forgets one idle for
+// long, while Sleep refuses whenever a connection uses the tunnel.
 
 type sleeperKind int8
 
@@ -37,7 +37,8 @@ type sleepJob struct {
 	// The uses of the path when the job was planned.
 	uses  uint64
 	sleep bool
-	// idle, or memory when memory is low and sleep.after has not passed.
+	// idle; before sleep.after has passed, down for an outbound found down
+	// or memory when memory is low.
 	reason string
 }
 
@@ -155,10 +156,22 @@ func (e *engine) planSleeps(now time.Time) time.Time {
 		}
 		reason := "idle"
 		due := maxTime(p.usedAt.Add(after), p.nextSleepTry)
-		if e.memoryLow && now.Before(due) {
-			// A refusal still waits for its retry: the connection that
-			// made it may go on for long.
-			due, reason = p.nextSleepTry, "memory"
+		if now.Before(due) {
+			// A refusal still waits for its retry: the connection that made
+			// it may go on for long.
+			switch {
+			case p.quarantined(now) && !p.provisional:
+				// Its server answers nothing. Kept up, the device would go
+				// on with handshakes to the dead address, which drain the
+				// battery and show the address: each packet the stack still
+				// sends, such as a FIN repeated by a connection that ended,
+				// starts them anew. The probe at the end of the quarantine
+				// wakes it. One ruled out while the network check failed may
+				// be back as soon as the network is.
+				due, reason = p.nextSleepTry, "down"
+			case e.memoryLow:
+				due, reason = p.nextSleepTry, "memory"
+			}
 		}
 		if now.Before(due) {
 			wake = soonestOf(wake, due)
@@ -256,7 +269,11 @@ func (e *engine) onSlept(batch []sleepJob, results []sleepResult, now time.Time)
 		case sleepBusy:
 			p.sleeper = sleeperYes
 			p.sleepTries++
-			p.nextSleepTry = now.Add(sleepRetry(e.s.sleepAfter, p.sleepTries))
+			retry := sleepRetry(e.s.sleepAfter, p.sleepTries)
+			if j.reason == "down" {
+				retry = downSleepRetry(p.sleepTries)
+			}
+			p.nextSleepTry = now.Add(retry)
 		case sleepDone:
 			p.sleeper = sleeperYes
 			p.awake, p.asleep = false, true
@@ -272,7 +289,20 @@ func (e *engine) onSlept(batch []sleepJob, results []sleepResult, now time.Time)
 // balancer left it there may be none, and the connections it carries end by
 // themselves. Asking every sleep.after for good would not do either.
 func sleepRetry(after time.Duration, tries int) time.Duration {
-	d := max(after, minSleepRetry)
+	return doubleRetry(max(after, minSleepRetry), tries)
+}
+
+// downSleepRetry is that wait for an outbound found down. What holds its
+// dead tunnel is a connection the observer has just ended or one that
+// waits for an answer in vain, which its application soon gives up.
+func downSleepRetry(tries int) time.Duration {
+	return doubleRetry(minDownSleepRetry, tries)
+}
+
+// doubleRetry doubles first with every refusal in a row after the first,
+// up to maxSleepRetry.
+func doubleRetry(first time.Duration, tries int) time.Duration {
+	d := first
 	for i := 1; i < tries && d < maxSleepRetry; i++ {
 		d *= 2
 	}
