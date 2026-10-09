@@ -19,11 +19,11 @@ import (
 // stay ended.
 //
 // The failover the down started goes on: a balancer that moved or still
-// moves away comes back by a return, after minHold and its upgrade probes,
-// so a path that fails for a second does not move new connections twice
-// within it. A balancer left with nothing takes the outbound back at once,
-// as after a recheck. The rescue changes no choice by itself, so it is no
-// decision of the report.
+// moves away comes back by a return, soon after minHold and through its
+// upgrade probes, so a path that fails for a second does not move new
+// connections twice within it. A balancer left with nothing takes the
+// outbound back at once, as after a recheck. The rescue changes no choice by
+// itself, so it is no decision of the report.
 //
 // Only a confirming probe that was running when the outbound went down
 // rescues it: one still waiting for its turn is dropped at the down, and
@@ -33,6 +33,13 @@ import (
 // another balancer does so as for any candidate, at level zero, and moves
 // only that balancer. Only the answer of a confirming probe was dropped
 // once the outbound was no longer suspect.
+
+// Returns to an outbound that came back after a failover from it spread
+// over this long after minHold, or over upgrade.interval when that is
+// shorter. One server that hiccups rescues itself on every device that saw
+// the hiccup at about the same moment; returns at minHold sharp would bring
+// their probes to it in one wave.
+const returnSpread = 5 * time.Minute
 
 // rescueMark is what a down did that the pass of a confirming probe running
 // at the time takes back.
@@ -125,9 +132,23 @@ func (e *engine) rescue(p *path, m *rescueMark, now time.Time) {
 		case s.exhausted:
 			e.switchTo(s, p.tag, "recovered", now)
 		case cur != "" && cur != p.tag && !s.cfg.isLazy(p.tag) && e.rankCost(s, p.tag) < e.rankCost(s, cur):
-			// It moved away already; it returns as soon as minHold allows. A
+			// It moved away already; it returns soon after minHold. A
 			// failover still under way returns from where it lands.
-			e.scheduleUpgrade(s, now, true)
+			e.scheduleReturn(s, now)
 		}
 	}
+}
+
+// scheduleReturn plans the return of s to a cheaper outbound that turned out
+// to work after the balancer failed over from it: once minHold ends, at a
+// random point within returnSpread when the upgrades of s have a random
+// phase, as a timed return would. The point is never before minHold.
+func (e *engine) scheduleReturn(s *selector, now time.Time) {
+	e.scheduleUpgrade(s, now, true)
+	u := s.cfg.upgrade
+	if s.upgradeAt.IsZero() || !u.randomPhase {
+		return
+	}
+	spread := min(u.interval, returnSpread)
+	s.upgradeAt = s.upgradeAt.Add(time.Duration(e.rnd.Float64() * float64(spread)))
 }

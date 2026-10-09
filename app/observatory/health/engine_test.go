@@ -20,10 +20,17 @@ type testEngine struct {
 
 func newTestEngine(t *testing.T, cfg *Config, sc *SelectorConfig, candidates ...string) *testEngine {
 	t.Helper()
+	return newSeededTestEngine(t, 1, cfg, sc, candidates...)
+}
+
+// newSeededTestEngine is newTestEngine whose random choices follow seed, as
+// those of another device would.
+func newSeededTestEngine(t *testing.T, seed int64, cfg *Config, sc *SelectorConfig, candidates ...string) *testEngine {
+	t.Helper()
 	if cfg == nil {
 		cfg = &Config{}
 	}
-	e := newEngine(newSettings(cfg), 1)
+	e := newEngine(newSettings(cfg), seed)
 	if sc == nil {
 		sc = &SelectorConfig{}
 	}

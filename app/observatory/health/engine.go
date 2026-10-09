@@ -1447,10 +1447,10 @@ func (e *engine) onProbeResult(j *probeJob, r probeResult, now time.Time) {
 				// The outbound came back since the decision, as after a
 				// rescue; a candidate that passed still moves the balancer,
 				// nothing more is probed, and the return to the outbound
-				// waits only for minHold.
+				// comes soon after minHold.
 				if tag := e.failoverChoice(s, e.ranked(s, now, func(t string) bool { return t == cur })); tag != "" {
 					e.switchTo(s, tag, "failover", now)
-					e.scheduleUpgrade(s, now, true)
+					e.scheduleReturn(s, now)
 				}
 			}
 		}

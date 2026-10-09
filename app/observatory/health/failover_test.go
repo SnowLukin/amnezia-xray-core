@@ -393,8 +393,8 @@ func brief(t *testing.T, te *testEngine) []string {
 // a1 out, and the probe passes 0.4 s after that. The down is undone: a1 is
 // up with reason rescued, out of quarantine at the level it had, and its
 // silent connections stay. The failover started by the down still moves
-// the balancer once its candidate passes, and the return to a1 waits only
-// for minHold.
+// the balancer once its candidate passes, and the return to a1 comes soon
+// after minHold.
 func TestConfirmingProbeThatPassesAfterTheDownRescuesThePath(t *testing.T) {
 	te := newTestEngine(t, connectivityConfig(), &SelectorConfig{Costs: costs("a", 1, "b", 3)}, "a1", "b1")
 	confirm := confirmRunning(t, te)
@@ -440,8 +440,9 @@ func TestConfirmingProbeThatPassesAfterTheDownRescuesThePath(t *testing.T) {
 			t.Fatalf("at %v connections of a1 were marked to end: %+v", now.Sub(t0), downs)
 		}
 	}
-	if hold := te.sel.cfg.minHold; !te.sel.upgradeAt.Equal(switched.Add(hold)) {
-		t.Fatalf("return at %v after the failover, want minHold %v", te.sel.upgradeAt.Sub(switched), hold)
+	hold, spread := te.sel.cfg.minHold, min(te.sel.cfg.upgrade.interval, returnSpread)
+	if wait := te.sel.upgradeAt.Sub(switched); wait < hold || wait > hold+spread {
+		t.Fatalf("return %v after the failover, want within %v after minHold %v", wait, spread, hold)
 	}
 }
 
@@ -532,8 +533,9 @@ func TestRescueRestoresTheQuarantineLevel(t *testing.T) {
 }
 
 // A balancer that moved away on the false down stays where it moved. It
-// returns as any return does: after minHold and the upgrade probes, without
-// the penalty the down gave the return it had just made to a1.
+// returns as any return does: after minHold, at once with a fixed phase,
+// and through the upgrade probes, without the penalty the down gave the
+// return it had just made to a1.
 func TestRescueLeavesTheBalancerWhereItMoved(t *testing.T) {
 	sc := upgradeConfig()
 	sc.SwitchWithoutProbe = true
@@ -654,4 +656,49 @@ func TestRescueAndWhatHoldsTheOutbound(t *testing.T) {
 				te.path("a1").status, te.sel.current(), te.sel.exhausted)
 		}
 	})
+}
+
+// Every device that saw one server hiccup rescues it at about the same
+// moment, so their returns to it spread after minHold by the random choices
+// of each, as timed returns do: when the balancer had moved before the
+// rescue and when its failover ends after it. None comes before minHold,
+// and with a fixed phase each comes at minHold.
+func TestReturnAfterARescueIsSpread(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		moved bool
+		fixed bool
+	}{
+		{name: "moved before the rescue", moved: true},
+		{name: "failover ended after it"},
+		{name: "fixed phase", moved: true, fixed: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			waits := map[time.Duration]bool{}
+			const seeds = 8
+			for seed := int64(1); seed <= seeds; seed++ {
+				sc := &SelectorConfig{Costs: costs("a", 1, "b", 3), SwitchWithoutProbe: tc.moved,
+					Upgrade: &UpgradeConfig{FixedPhase: tc.fixed}}
+				te := newSeededTestEngine(t, seed, nil, sc, "a1", "b1")
+				confirm := confirmRunning(t, te)
+				strongDown(t, te, at(3*time.Second))
+				te.onProbeResult(confirm, probeResult{ok: true}, at(3400*time.Millisecond))
+				if !tc.moved {
+					te.run(t, at(6*time.Second), nil)
+				}
+				if te.sel.current() != "b1" {
+					t.Fatalf("seed %d: setup: the balancer is on %q, want b1", seed, te.sel.current())
+				}
+				hold, spread := te.sel.cfg.minHold, min(te.sel.cfg.upgrade.interval, returnSpread)
+				wait := te.sel.upgradeAt.Sub(te.sel.activeSince)
+				if wait < hold || wait > hold+spread || tc.fixed && wait != hold {
+					t.Fatalf("seed %d: return %v after the move, want within %v after minHold %v", seed, wait, spread, hold)
+				}
+				waits[wait] = true
+			}
+			if want := map[bool]int{false: seeds, true: 1}[tc.fixed]; len(waits) != want {
+				t.Fatalf("returns of %d seeds at %d distinct times %v, want %d", seeds, len(waits), waits, want)
+			}
+		})
+	}
 }

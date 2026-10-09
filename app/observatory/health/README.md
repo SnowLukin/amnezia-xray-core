@@ -72,8 +72,8 @@ the config.
    before, the down raises no penalty of a return to it, and its connections
    that go silent are kept, see below; those ended at the decision stay
    ended. The failover goes on: a balancer that moved or still moves away
-   comes back by a return once `minHold` ends, and one left with nothing
-   takes the outbound back with `recovered`. A confirming probe that had not
+   comes back by a return soon after `minHold`, see below, and one left with
+   nothing takes the outbound back with `recovered`. A confirming probe that had not
    started yet is dropped at the down, and one that fails changes nothing.
    A probe for any other reason brings an outbound up when it passes,
    whenever it started.
@@ -89,10 +89,14 @@ the config.
    goes to `fallbackTag`; quarantined candidates are rechecked while users
    keep trying.
 5. **Return to cheaper.** Not before `minHold`, on `upgrade.interval` (with a
-   random phase per device), after a network change, or as soon as `minHold`
-   ends when the outbound it failed over from turned out to work, as after a
-   rescue. The cheaper candidate must pass `upgrade.successes` probes in a
-   row, `upgrade.spacing` apart. A return that fails within `penaltyWindow`
+   random phase per device), after a network change, or soon after `minHold`
+   when the outbound it failed over from turned out to work, as after a
+   rescue: at a random point within 5 minutes after `minHold`, or within
+   `upgrade.interval` when that is shorter, since one server that hiccups is
+   rescued on many devices at once and their returns must not probe it in
+   one wave; without `upgrade.randomPhase`, at `minHold`. The cheaper
+   candidate must pass `upgrade.successes` probes in a row,
+   `upgrade.spacing` apart. A return that fails within `penaltyWindow`
    multiplies the wait before the next one; a return that holds clears it.
 6. **Networks.** On `NetworkChanged(id)` results of the previous network are
    forgotten. If the network was seen before, the outbound that last worked
