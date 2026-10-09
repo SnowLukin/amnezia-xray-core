@@ -124,6 +124,20 @@ func (r *testRelay) pass() bool {
 // it has seen for a while.
 func (r *testRelay) freeze() { r.allow.Store(0) }
 
+// waitQuiet waits until the client has sent nothing for d.
+func (r *testRelay) waitQuiet(t testing.TB, d time.Duration) {
+	t.Helper()
+	n, held := r.sent.Load(), time.Now()
+	for deadline := held.Add(d + 15*time.Second); time.Since(held) < d; time.Sleep(20 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("the client keeps sending: %d datagrams", n)
+		}
+		if m := r.sent.Load(); m != n {
+			n, held = m, time.Now()
+		}
+	}
+}
+
 // testPassive judges with little traffic and much patience: under load, the
 // race detector slows the cryptography of the tunnel down to seconds a
 // handshake. A test shortens the timeout it is about. A path never turns
@@ -437,19 +451,54 @@ func (r *dialRecorder) Finished(error) {}
 // even while it still waits inside the tunnel. Its dial ends as one that
 // ended before the server answered, not as a server that never did.
 func TestAbortedDialAsksForNoHandshake(t *testing.T) {
+	priv, pub := testKeys(t)
+	addr := netip.MustParseAddr("10.9.0.2")
+	s := startTestServer(t, testParams, testPeer{pub, addr})
+	r := startTestRelay(t, s.endpoint)
+	conf := testClientConf(s, priv, addr, testParams)
+	conf.Peers[0].Endpoint = r.addr
+	c := newBareClient(t, conf, nil)
+	h, err := c.acquire(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.release()
+
+	// A handshake alone sets the session up: data the device received would
+	// have it send a keepalive 10 s later.
+	h.askHandshake()
+	waitFor(t, 15*time.Second, "a handshake", func() bool { return h.recv.Load() > 0 })
+	// Then the server stops answering. The device has nothing of its own to
+	// send, and once it has sent nothing for longer than it waits before it
+	// repeats a handshake, it sends the next one asked for at once.
+	r.freeze()
+	r.waitQuiet(t, device.RekeyTimeout+time.Second)
+
+	sent := r.sent.Load()
 	rec := &dialRecorder{dialed: make(chan error, 1)}
 	ctx, abort := context.WithCancel(context.Background())
-	td := &tunnelDial{h: &Handler{}, tracker: rec, ctx: ctx, settled: make(chan struct{})}
+	// The connection enters the tunnel, and the observer gives up on it
+	// before its first poll.
+	td := &tunnelDial{h: h, tracker: rec, ctx: ctx, settled: make(chan struct{})}
 	td.entered()
 	abort()
+	// A handshake asked for at any poll would go out at once, and again
+	// device.RekeyTimeout later.
+	time.Sleep(askHandshakeAfter + device.RekeyTimeout)
+	if n := r.sent.Load() - sent; n != 0 {
+		t.Fatalf("%d datagrams to the server after the abort", n)
+	}
 	select {
 	case err := <-rec.dialed:
 		if !goerrors.Is(err, context.Canceled) {
 			t.Fatalf("the dial ended with %v, want context.Canceled", err)
 		}
-	case <-time.After(askHandshakeAfter + time.Second):
-		t.Fatal("the dial still asks for handshakes after the abort")
+	case <-time.After(15 * time.Second):
+		t.Fatal("the dial still waits for the server after the abort")
 	}
+	// The wait would have seen a handshake: one asked for now goes out.
+	h.askHandshake()
+	waitFor(t, 15*time.Second, "the handshake asked for", func() bool { return r.sent.Load() > sent })
 }
 
 // A connection the observer gives up on while it resolves its destination
