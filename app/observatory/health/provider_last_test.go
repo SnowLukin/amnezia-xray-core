@@ -187,10 +187,27 @@ func TestProviderSetDoesNotWaitForAnApply(t *testing.T) {
 		done <- err
 	}()
 	<-build
-	start := time.Now()
-	doc, seq := f.providerSet(t, 0)
-	if took := time.Since(start); doc == nil || seq != 1 || took > 100*time.Millisecond {
-		t.Fatalf("set %v, seq %d after %v", doc != nil, seq, took)
+	// The apply holds until release: a call that waited for it would never
+	// return, which a deadline of seconds tells from a slow machine.
+	type set struct {
+		raw []byte
+		seq uint64
+		err error
+	}
+	got := make(chan set, 1)
+	go func() {
+		raw, seq, err := f.o.ProviderSet("fresh", 0)
+		got <- set{raw, seq, err}
+	}()
+	select {
+	case r := <-got:
+		if r.err != nil || r.raw == nil || r.seq != f.seq0+1 {
+			close(release)
+			t.Fatalf("set %v, seq %d, %v", r.raw != nil, r.seq-f.seq0, r.err)
+		}
+	case <-time.After(10 * time.Second):
+		close(release)
+		t.Fatal("ProviderSet waited for the apply under way")
 	}
 	close(release)
 	if err := <-done; err != nil {

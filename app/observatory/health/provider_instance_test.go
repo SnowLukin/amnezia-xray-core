@@ -443,6 +443,10 @@ func waitRefreshed(t *testing.T, obs *health.Observer) {
 // error body of the protocol. A bare status may come from a firewall or a
 // portal on one way, so the next via is tried.
 func TestBackendAnswerEndsTheAttempts(t *testing.T) {
+	// A backend whose clock is an hour behind the device asks for two
+	// minutes with a date: counted from the device, the date has passed and
+	// the answer would be a bare 503.
+	behind := time.Now().Add(-time.Hour).UTC()
 	for _, tc := range []struct {
 		name     string
 		srv      *replyServer
@@ -453,6 +457,9 @@ func TestBackendAnswerEndsTheAttempts(t *testing.T) {
 			// Two hours are cut to backoff.max.
 			map[string]any{"status": 503.0, "retry_after_ms": 1_800_000.0}},
 		{"503 without Retry-After", &replyServer{status: 503}, 2, map[string]any{"status": 503.0}},
+		{"503 with a Retry-After date", &replyServer{status: 503, header: map[string]string{
+			"Date": behind.Format(http.TimeFormat), "Retry-After": behind.Add(2 * time.Minute).Format(http.TimeFormat)}}, 1,
+			map[string]any{"status": 503.0, "retry_after_ms": 120_000.0}},
 		{"429 with an error body", &replyServer{status: 429, header: map[string]string{"Content-Type": "application/json"},
 			body: `{"protocol": 1, "error": "rate_limited", "message": "slow down"}`}, 1,
 			map[string]any{"status": 429.0, "code": "rate_limited"}},
