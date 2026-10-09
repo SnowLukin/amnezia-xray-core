@@ -36,6 +36,33 @@ func TestAnswerKeysOfProtocol1(t *testing.T) {
 	}
 }
 
+// An answer, and the initial set alike, takes no section of the config but
+// outbounds and routing. A section of the host never comes from a backend,
+// and one the core reads only at start would need a restart: no answer may
+// name such a section yet, so each refuses the answer and nothing asks for
+// a restart. The keys are those of the config file; version there is a
+// section, here the name of the set, which an object cannot be.
+func TestAnswerTakesNoSectionOfTheConfig(t *testing.T) {
+	sections := []string{"transport", "log", "dns", "inbounds", "policy", "api", "metrics", "stats", "reverse",
+		"fakeDns", "observatory", "burstObservatory", "geodata"}
+	for name, parse := range map[string]func([]byte) (*providerAnswer, error){"answer": parseAnswer, "initial": parseInitial} {
+		for _, key := range sections {
+			want := `invalid answer: unknown key "` + key + `"`
+			if _, err := parse([]byte(`{"outbounds": [{"tag": "x"}], "` + key + `": {}}`)); err == nil || err.Error() != want {
+				t.Errorf("%s with %s: %v, want %s", name, key, err, want)
+			}
+		}
+		for body, want := range map[string]string{
+			`{"outbounds": [{"tag": "x"}], "healthObservatory": {}}`:      "invalid answer: healthObservatory is not accepted in an answer",
+			`{"outbounds": [{"tag": "x"}], "version": {"min": "25.1.1"}}`: "invalid answer: version: ",
+		} {
+			if _, err := parse([]byte(body)); err == nil || !isAnswerError(err) || !strings.HasPrefix(err.Error(), want) {
+				t.Errorf("%s %s: %v, want %s", name, body, err, want)
+			}
+		}
+	}
+}
+
 // testRouting is a tiny stand-in for the routing section: rules go to the
 // outbound in "to" or the balancer in "via"; balancers choose by prefix.
 func testRouting(raw json.RawMessage) (*router.Config, error) {
