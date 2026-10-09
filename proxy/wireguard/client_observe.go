@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/hex"
 	goerrors "errors"
+	"fmt"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -100,9 +101,8 @@ func (h *Handler) askHandshake() bool {
 		h.recv.checked.CompareAndSwap(false, true) {
 		unfinished = withoutHandshake(dev)
 		if len(unfinished) > 0 {
-			errors.LogInfo(context.Background(), "the first handshake of the tunnel is unanswered after ",
-				time.Since(time.Unix(0, first)).Round(time.Millisecond), " with ", h.recv.Load(),
-				" datagrams received, repeating it")
+			errors.LogWarning(context.Background(), "the first handshake of the tunnel is unanswered ",
+				h.recv.since(first), ", repeating it")
 		}
 	}
 	for _, k := range handshakePeers(h.conf) {
@@ -116,6 +116,20 @@ func (h *Handler) askHandshake() bool {
 		}
 	}
 	return true
+}
+
+// reportUnfinished tells, as the Handler closes, that its device has never
+// completed a handshake. Whether the server sent it anything tells a
+// response the device dropped from one the network lost.
+func (h *Handler) reportUnfinished() {
+	h.mu.Lock()
+	dev := h.dev
+	h.mu.Unlock()
+	first := h.recv.firstSent.Load()
+	if dev == nil || first == 0 || len(withoutHandshake(dev)) == 0 {
+		return
+	}
+	errors.LogWarning(context.Background(), "the tunnel ends without a handshake ", h.recv.since(first))
 }
 
 // withoutHandshake returns the public keys, in hex, of the peers of dev that
@@ -144,13 +158,22 @@ func withoutHandshake(dev *device.Device) map[string]bool {
 
 // receivedCounter counts the datagrams a client receives from its server: a
 // connection tells from it whether the server answered, see tunnelDial. It
-// also notes when the device sent its first datagram, for askHandshake.
+// also counts those it sends, and notes when it sent the first one, for
+// askHandshake.
 type receivedCounter struct {
 	atomic.Uint64
+	sent atomic.Uint64
 	// In Unix nanoseconds, zero before.
 	firstSent atomic.Int64
 	// askHandshake has checked the first handshake.
 	checked atomic.Bool
+}
+
+// since describes the datagrams of the device since the first one it sent,
+// at first, for a log line.
+func (r *receivedCounter) since(first int64) string {
+	return fmt.Sprintf("%v after the first datagram: %d sent, %d received",
+		time.Since(time.Unix(0, first)).Round(time.Millisecond), r.sent.Load(), r.Load())
 }
 
 // wrap counts the datagrams the bind reads from its socket.
@@ -172,8 +195,8 @@ func (c *countedPacketConn) ReadFrom(p []byte) (int, net.Addr, error) {
 }
 
 func (c *countedPacketConn) WriteTo(p []byte, addr net.Addr) (int, error) {
-	if c.received.firstSent.Load() == 0 {
-		c.received.firstSent.CompareAndSwap(0, time.Now().UnixNano())
+	if c.received.sent.Add(1) == 1 {
+		c.received.firstSent.Store(time.Now().UnixNano())
 	}
 	return c.PacketConn.WriteTo(p, addr)
 }

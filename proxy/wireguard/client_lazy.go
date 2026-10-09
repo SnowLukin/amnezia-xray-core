@@ -154,6 +154,7 @@ func (c *lazyClient) Sleep() bool {
 
 func (c *lazyClient) closeLocked() {
 	if c.h != nil {
+		c.h.reportUnfinished()
 		// The device closes the stack as well.
 		c.h.Close()
 		c.h = nil
