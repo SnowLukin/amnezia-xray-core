@@ -408,14 +408,27 @@ func (o *Observer) watch(t *connTracker) {
 // outbound chosen now instead of waiting for their own timeout, and the
 // memory the stuck connections hold is freed. Connections that received
 // something keep going: an address that refuses new connections may still
-// serve old ones.
+// serve old ones. Unless the evidence was about the path itself: then it
+// notes what they have received (d.watch), and at the mark stallTimeout
+// later ends those that received nothing since (d.silent), see silence.go.
 func (o *Observer) closePending(d downMark) {
 	before := int64(d.at.Sub(o.base))
 	var aborts []func()
 	o.trackMu.Lock()
 	for t := range o.trackers {
-		if t.tag != d.tag || t.abort == nil || t.started > before ||
-			t.state.Load() == trackerFinished || t.firstRead.Load() != 0 || t.spliced.Load() {
+		if t.tag != d.tag || t.abort == nil || t.started > before || t.state.Load() == trackerFinished {
+			continue
+		}
+		switch {
+		case d.silent:
+			if !t.silentSince(before) {
+				continue
+			}
+		case d.pending && t.firstRead.Load() == 0 && !t.spliced.Load():
+		default:
+			if d.watch {
+				t.noteReceived(before)
+			}
 			continue
 		}
 		if t.mark(reportedAborted) {
@@ -429,8 +442,12 @@ func (o *Observer) closePending(d downMark) {
 	if len(aborts) == 0 {
 		return
 	}
+	f := map[string]any{"outbound": d.tag, "connections": len(aborts), "reason": d.reason}
+	if d.silent {
+		f["silent"] = true
+	}
 	o.mu.Lock()
-	o.e.emit(o.now(), "pending_closed", map[string]any{"outbound": d.tag, "connections": len(aborts), "reason": d.reason})
+	o.e.emit(o.now(), "pending_closed", f)
 	o.mu.Unlock()
 }
 
@@ -557,10 +574,13 @@ func (o *Observer) finished(t *connTracker) {
 		st.ttfb.add(time.Duration(ttfb))
 	}
 	// The loop plans the sleep of an outbound that has just woken; nothing
-	// else may wake it after the last connection ends.
+	// else may wake it after the last connection ends. The end of one the
+	// observer ended, of an outbound found down, may let that outbound sleep
+	// now: the use starts its retries afresh, and the loop asks at once
+	// rather than when a retry that had grown is due.
 	woke := o.e.used(t.tag, now)
 	o.mu.Unlock()
-	if woke {
+	if woke || t.has(reportedAborted) {
 		o.wake()
 	}
 }

@@ -291,7 +291,7 @@ func TestDownOutboundEndsConnectionsThatGotNothing(t *testing.T) {
 	clk.advance(time.Second)
 	dial("a1", "later")
 
-	o.closePending(downMark{tag: "a1", at: decided, reason: "traffic"})
+	o.closePending(downMark{tag: "a1", at: decided, reason: "traffic", pending: true})
 	want := map[string]bool{"dialing": true, "waiting": true}
 	for _, name := range []string{"dialing", "waiting", "answered", "other", "later"} {
 		if ended[name] != want[name] {

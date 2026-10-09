@@ -90,9 +90,11 @@ least `spacing` apart. They stay within `perMinute` in total and
 one server name never run at once: several near-simultaneous handshakes to
 one server name are a known censor signal. Without user traffic for
 `pauseWhenIdle` there are no probes and no timers, except the renewal and
-the end of a provider lease, see Providers, and putting an outbound to
-sleep after its last use, see Sleep. Closing the core ends the probes still
-running, and their outcome is not held against the outbound.
+the end of a provider lease, see Providers, putting an outbound to sleep
+after its last use, see Sleep, and the one look at the connections of an
+outbound found down `stallTimeout` after the decision, see below. Closing
+the core ends the probes still running, and their outcome is not held
+against the outbound.
 
 Existing connections stay where they are; only new connections move. The
 exception is an outbound found down: its connections that have received
@@ -101,8 +103,27 @@ decision and at the switch away from it. Applications see the failure at once
 and retry on the outbound chosen now instead of waiting for their own
 timeout, and the stuck connections stop holding memory. Connections that
 received something keep going, since an address that refuses new
-connections may still serve old ones. `keepPendingOnDown` turns this off. A
-decision made while the network check was failing ends nothing.
+connections may still serve old ones. `keepPendingOnDown` turns this off.
+
+When the failures that ruled the outbound out were about the path, which
+needs no probe, the path is dead for the other connections as well; with
+`confirm` `always`, the probe that confirms such failures changes nothing
+about that. `stallTimeout` after the decision, the connections from before
+it that have received nothing since, UDP flows too, are ended: they cannot
+progress, and long-lived ones such as DNS over HTTPS or push connections
+would keep a tunnel such as WireGuard awake, see Sleep, while their
+applications wait for a timeout of their own. A connection that received
+anything since the decision is kept, and so is everything when the outbound
+came back or a balancer chose it again before the look, or when the network
+failed or changed meanwhile. While a failover away from it still probes
+candidates, new connections still go to it, and the look waits for the
+switch. A decision on failures that may be about destinations, also once a
+probe confirmed them, or on a failed probe alone ends nothing more: the
+path may still serve the destinations it served. A spliced connection is
+judged by what its socket received; on a platform that does not tell, it
+is kept. `keepSilentOnDown` turns this off.
+
+A decision made while the network check was failing ends nothing.
 
 ## Config
 
@@ -114,7 +135,7 @@ decision made while the network check was failing ends nothing.
       "window": "60s", "dialTimeout": "6s", "firstByteTimeout": "5s", "stallTimeout": "8s",
       "failures": 3, "distinctTargets": 2, "successBytes": 24576, "sweepInterval": "500ms",
       "partialStallMaxAge": "30s", "ignorePartialStalls": false, "dialOnly": false,
-      "keepPendingOnDown": false
+      "keepPendingOnDown": false, "keepSilentOnDown": false
     },
     "probes": [
       { "selector": ["a", "b"], "destination": "https://example.com/bytes/32768", "method": "GET",
@@ -607,11 +628,12 @@ Kept up, a WireGuard device repeats its handshake to the dead address every
 5 s for 90 s, and starts over with every packet its stack still sends, such
 as the FIN that a connection which ended repeats for minutes: the battery
 pays for it, and the address shows, until `sleep.after`. Its connections
-that received nothing were ended when it went down, see How it decides;
-those that received something keep it awake until they end. The probe at
-the end of its quarantine wakes it, and one that fails puts it to sleep
-again at once. One ruled out while the network check was failing waits
-for `sleep.after` as usual: it comes back as soon as the network does.
+that received nothing were ended when it went down, and after path
+failures so are those that receive nothing for `stallTimeout` after that,
+see How it decides; those that still receive keep it awake until they end.
+The probe at the end of its quarantine wakes it, and one that fails puts it
+to sleep again at once. One ruled out while the network check was failing
+waits for `sleep.after` as usual: it comes back as soon as the network does.
 
 A use is a switch to or away from it, a probe, a connection the observatory
 follows, the start and the end of a provider request through it as a `via`,
@@ -625,10 +647,13 @@ a use wakes it in Status too and it sleeps again after the last one. The outboun
 refuses while a connection uses it. A refused sleep, or one an open
 connection the observatory follows holds back, is asked for again after
 `sleep.after`, at least a minute, or after 5 s for an outbound found down,
-doubling with every refusal in a row up to 30 minutes. Whether an outbound
-can sleep at all is asked at its first use, and again only once a provider
-replaced its handler; one that cannot is never asked to sleep. A sleeping
-outbound shows `asleep` in Status, and every sleep writes `outbound_sleep`.
+doubling with every refusal in a row up to 30 minutes. A use starts the
+count again, and the end of a connection the observatory ended has it ask
+at once: an outbound found down sleeps as soon as the connections ended for
+it are gone. Whether an outbound can sleep at all is asked at its first
+use, and again only once a provider replaced its handler; one that cannot
+is never asked to sleep. A sleeping outbound shows `asleep` in Status, and
+every sleep writes `outbound_sleep`.
 Without user traffic the observatory still wakes for this, once per used
 outbound `sleep.after` after its last use and for the retries; once
 everything sleeps no timer is left. An outbound the observatory does not
@@ -723,7 +748,7 @@ changed its settings). `kinds` counts failures by kind: `dial_failed`, `dial_tim
 | `probe_result` | `outbound`, `reason`, `balancer`, `ok`, `rtt_ms`, `bytes`, `error`, `stale`, `request` | A probe finished. `bytes` counts both directions above TLS. `stale` means it was made in the previous network and was ignored. |
 | `probe_request` | `request`, `balancer`, `outbounds`, `end`, `ms`, `probed`, `reused`, `ok`, `failed`, `down`, `skipped`, `expired`, `gone` | A request of the host that waited for a probe ended; one answered at once writes none. `end`: `done`, `timeout`, `network_change`, `gone`. The counts are by result; `probed` and `reused` count the answers of a probe and of a recent proof. |
 | `exhausted` | `balancer`, `from`, `candidates` | No usable candidate is left; traffic goes to `fallbackTag`. |
-| `pending_closed` | `outbound`, `connections`, `reason` | Connections of an outbound found down that had received nothing were ended. `reason` is the one the outbound went down for. |
+| `pending_closed` | `outbound`, `connections`, `reason`, `silent` | Connections of an outbound found down were ended: at the decision and at the switch away from it those that had received nothing, or, with `silent` true, `stallTimeout` after a decision on path failures those that received nothing since it, see How it decides. `reason` is the one the outbound went down for. |
 | `upgrade_start` | `balancer`, `from`, `to` | Probing a cheaper outbound to return to it. |
 | `upgrade_failed` | `balancer`, `outbound`, `successes` | The return was abandoned after a failed probe. |
 | `upgrade_delayed` | `balancer`, `outbound`, `delay_ms` | The return waits longer because the previous one failed. |
@@ -798,7 +823,7 @@ to this one. Reports of one run add up.
 | `switches`, `switch_reasons`, `switch_path` | `switch` events, their count by reason, and the latest 10 as `from>to:reason`. |
 | `exhausted`, `pinned_down` | Events of those types. |
 | `path_down`, `path_suspect` | `path_state` events with those states. |
-| `pending_closed` | Connections ended by `pending_closed` events. |
+| `pending_closed` | Connections of outbounds found down ended by `pending_closed` events: those that had received nothing and, with `silent`, those that went silent after the decision. |
 | `probes`, `probes_failed`, `probe_bytes` | `probe_result` events, the failed ones, and their `bytes`. |
 | `host_probe_requests`, `host_probes` | `probe_request` events, and `probe_result` events with reason `host`. |
 | `upgrade_attempts`, `upgrade_failures` | `upgrade_start` and `upgrade_failed` events. |

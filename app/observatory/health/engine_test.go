@@ -243,8 +243,10 @@ func TestWaitingConnectionsAreKeptWhenAskedOrWhenTheNetworkIsInDoubt(t *testing.
 	te := newTestEngine(t, cfg, &SelectorConfig{Costs: costs("a", 1, "b", 3)}, "a1", "b1")
 	te.failN(3, "a1", failDial, at(0))
 	te.run(t, at(time.Second), nil)
-	if downs := te.takeDowns(); len(downs) != 0 {
-		t.Fatalf("keepPendingOnDown still marked %+v", downs)
+	for _, d := range te.takeDowns() {
+		if d.pending {
+			t.Fatalf("keepPendingOnDown still marked %+v", d)
+		}
 	}
 	te = newTestEngine(t, nil, &SelectorConfig{Costs: costs("a", 1, "b", 3)}, "a1", "b1")
 	te.doubt = true

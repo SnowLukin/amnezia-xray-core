@@ -95,6 +95,10 @@ type path struct {
 	// until this time. The wait grows with every false alarm in a row.
 	cooldownUntil time.Time
 	falseAlarms   int
+	// The suspicion a confirming probe is about rests on evidence about the
+	// path itself, which confirm always probes as well: a probe that fails
+	// confirms strong evidence then, not weak.
+	strongSuspicion bool
 
 	quarantineLevel int
 	quarantineUntil time.Time

@@ -198,6 +198,27 @@ func (f *wireGuardFailover) get(target, path string, timeout time.Duration) erro
 	return err
 }
 
+// users has users connect through the balancer every 200 ms, to two
+// destinations, until the returned function is called.
+func (f *wireGuardFailover) users() (stop func()) {
+	done := make(chan struct{})
+	var users sync.WaitGroup
+	users.Go(func() {
+		for i := 0; ; i++ {
+			select {
+			case <-done:
+				return
+			case <-time.After(200 * time.Millisecond):
+			}
+			users.Go(func() { f.get("10.10.0."+strconv.Itoa(1+i%2), "/small", 5*time.Second) })
+		}
+	})
+	return sync.OnceFunc(func() {
+		close(done)
+		users.Wait()
+	})
+}
+
 // mark drains the events so far and returns where the next ones start.
 func (f *wireGuardFailover) mark() int {
 	w := f.events
@@ -291,22 +312,7 @@ func TestWireGuardOutboundFailsOverWhenItsServerStopsAnswering(t *testing.T) {
 	}
 	from := f.mark()
 	f.w1.blocked.Store(true)
-	stop := make(chan struct{})
-	var users sync.WaitGroup
-	users.Go(func() {
-		for i := 0; ; i++ {
-			select {
-			case <-stop:
-				return
-			case <-time.After(200 * time.Millisecond):
-			}
-			users.Go(func() { f.get("10.10.0."+strconv.Itoa(1+i%2), "/small", 5*time.Second) })
-		}
-	})
-	stopUsers := sync.OnceFunc(func() {
-		close(stop)
-		users.Wait()
-	})
+	stopUsers := f.users()
 	defer stopUsers()
 	suspect := f.first(from, "path_state", stateOf("w1", "suspect"))
 	if suspect.Fields["strong"] != true || !strings.Contains(fmt.Sprint(suspect.Fields["kinds"]), "dial_timeout") {
@@ -333,6 +339,86 @@ func TestWireGuardOutboundFailsOverWhenItsServerStopsAnswering(t *testing.T) {
 	}
 	// Under the race detector the tunnels are slow enough for the users to
 	// hold up the next connection.
+	stopUsers()
+	if err := f.get("10.10.0.1", "/small", 10*time.Second); err != nil {
+		t.Fatal("after the failover:", err)
+	}
+}
+
+// A connection opened through w1 before its server stopped answering, and
+// quiet since, as the push and DNS connections of a phone are, holds the
+// tunnel: awake, its device would repeat the handshake to the dead address
+// for as long as the connection lasts. stallTimeout after w1 is found down
+// on strong evidence, the observer ends it as silent; w1 then sleeps with
+// reason down and sends the dead address nothing more.
+func TestWireGuardOutboundSleepsOnceItsSilentConnectionsEnd(t *testing.T) {
+	const stall = 2 * time.Second
+	ts := targetServer(t)
+	f := startWireGuardFailover(t, ts, `{"dialTimeout": "1s", "firstByteTimeout": "2s", "stallTimeout": "2s",
+	  "sweepInterval": "50ms"}`)
+	if err := f.get("10.10.0.1", "/small", 10*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.active(t); got != "w1" {
+		t.Fatalf("the balancer chose %q, want w1", got)
+	}
+	// A keep-alive connection that got its answer and waits for the next
+	// request, which never comes.
+	held, err := core.Dial(context.Background(), f.inst, net.TCPDestination(net.ParseAddress("10.10.0.1"), 80))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer held.Close()
+	if _, err := fmt.Fprintf(held, "GET /small HTTP/1.1\r\nHost: target\r\n\r\n"); err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.ReadResponse(bufio.NewReader(held), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.Copy(io.Discard, resp.Body); err != nil {
+		t.Fatal(err)
+	}
+	ended := make(chan struct{})
+	go func() {
+		held.Read(make([]byte, 1))
+		close(ended)
+	}()
+
+	from := f.mark()
+	f.w1.blocked.Store(true)
+	stopUsers := f.users()
+	defer stopUsers()
+	down := f.first(from, "path_state", stateOf("w1", "down"))
+	if sw := f.first(from, "switch", nil); sw.Fields["from"] != "w1" || sw.Fields["to"] != "w2" {
+		t.Fatalf("switch %v, want failover from w1 to w2", sw.Fields)
+	}
+	closed := f.first(from, "pending_closed", func(e health.Event) bool {
+		return e.Fields["outbound"] == "w1" && e.Fields["silent"] == true
+	})
+	if after := time.Duration(closed.Time-down.Time) * time.Millisecond; closed.Fields["connections"] != float64(1) ||
+		after < stall-10*time.Millisecond || after > stall+2*time.Second {
+		t.Fatalf("silent close %v, %v after the decision; want the held connection, stallTimeout %v after", closed.Fields, after, stall)
+	}
+	select {
+	case <-ended:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the held connection is still open after the silent close")
+	}
+	slept := f.first(from, "outbound_sleep", about("w1"))
+	if slept.Fields["reason"] != "down" || slept.Time < closed.Time {
+		t.Fatalf("w1 slept with %v at %d, silent close at %d; want reason down after the close: the held "+
+			"connection keeps it awake until then", slept.Fields, slept.Time, closed.Time)
+	}
+	if after := time.Duration(slept.Time-closed.Time) * time.Millisecond; after > 2*time.Second {
+		t.Fatalf("w1 slept %v after the silent close, want at once", after)
+	}
+	// Awake, its device would repeat a handshake every 5 s.
+	sent := f.w1.sent.Load()
+	time.Sleep(6 * time.Second)
+	if n := f.w1.sent.Load() - sent; n != 0 {
+		t.Fatalf("%d datagrams to the dead address after w1 slept", n)
+	}
 	stopUsers()
 	if err := f.get("10.10.0.1", "/small", 10*time.Second); err != nil {
 		t.Fatal("after the failover:", err)

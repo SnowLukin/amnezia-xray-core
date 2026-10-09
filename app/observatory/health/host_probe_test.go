@@ -69,7 +69,7 @@ func hostConfig(hp *HostProbesConfig) *Config {
 func TestHostProbePlan(t *testing.T) {
 	sc := &SelectorConfig{Costs: costs("a", 1, "b", 3, "c", 5), Lazy: []string{"c"}}
 	te := newTestEngine(t, hostConfig(nil), sc, "a1", "a2", "b1", "b2", "c1")
-	te.markDown(te.path("a2"), "probe", at(0))
+	te.markDown(te.path("a2"), "probe", false, at(0))
 	te.onSuccess("b2", at(0))
 	r := te.ask(t, at(time.Second))
 	want := []string{"a1 pending/", "b2 ok/recent", "b1 pending/", "a2 down/quarantine"}

@@ -48,6 +48,7 @@ type HealthPassiveConfig struct {
 	StallMinWriteBytes   int64             `json:"stallMinWriteBytes"`
 	PartialStallMinBytes int64             `json:"partialStallMinBytes"`
 	KeepPendingOnDown    bool              `json:"keepPendingOnDown"`
+	KeepSilentOnDown     bool              `json:"keepSilentOnDown"`
 }
 
 type HealthProbeConfig struct {
@@ -425,6 +426,7 @@ func (c *HealthObservatoryConfig) Build() (proto.Message, error) {
 			StallMinWriteBytes:   p.StallMinWriteBytes,
 			PartialStallMinBytes: p.PartialStallMinBytes,
 			KeepPendingOnDown:    p.KeepPendingOnDown,
+			KeepSilentOnDown:     p.KeepSilentOnDown,
 		}
 	}
 	for _, p := range c.Probes {

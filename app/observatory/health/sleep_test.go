@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/xtls/xray-core/common/net"
 	"github.com/xtls/xray-core/core"
 	"github.com/xtls/xray-core/features/outbound"
 	"github.com/xtls/xray-core/proxy"
@@ -129,15 +130,19 @@ func (f *sleepFixture) add(tag string) {
 	f.m.handlers[tag] = h
 }
 
-// turn runs one turn of the observer loop at now, the batch of sleeps
-// included, and returns its wake. The end of a batch kicks the loop, which
-// turns again.
+// turn runs one turn of the observer loop at now, the connections it ends
+// and the batch of sleeps included, and returns its wake. The end of a
+// batch kicks the loop, which turns again.
 func (f *sleepFixture) turn(now time.Time) time.Time {
 	f.now = now
 	f.o.mu.Lock()
 	_, _, wake := f.o.e.step(now)
+	downs := f.o.e.takeDowns()
 	batch := f.o.e.takeSleeps()
 	f.o.mu.Unlock()
+	for _, d := range downs {
+		f.o.closePending(d)
+	}
 	if len(batch) == 0 {
 		return wake
 	}
@@ -519,7 +524,7 @@ func newDownFixture(t *testing.T) *sleepFixture {
 // balancer leaves it unless pinned to it.
 func (f *sleepFixture) failW1(now time.Time) {
 	f.now = now
-	f.engine(func(e *engine) { e.markDown(e.pathAt("w1", now), "traffic", now) })
+	f.engine(func(e *engine) { e.markDown(e.pathAt("w1", now), "traffic", true, now) })
 }
 
 func (f *sleepFixture) quarantineEnd() time.Time {
@@ -596,6 +601,9 @@ func TestDownSleepsOnceItsConnectionsEnd(t *testing.T) {
 // doubling, not after sleep.after: what holds it ends soon.
 func TestDownSleepRetriesSoon(t *testing.T) {
 	f := newDownFixture(t)
+	// The check for silent connections would wake the loop between the
+	// retries; nothing here has connections.
+	f.o.s.passive.keepSilent = true
 	f.proxies["w1"].setBusy(true)
 	now := at(time.Minute)
 	f.failW1(now)
@@ -616,6 +624,59 @@ func TestDownSleepRetriesSoon(t *testing.T) {
 	}
 	if d := downSleepRetry(1 << 30); d != maxSleepRetry {
 		t.Fatalf("after a billion refusals %v", d)
+	}
+}
+
+// A connection from before the decision that keeps a dead outbound awake
+// and falls silent is ended stallTimeout after it. Its end starts the
+// retries afresh and turns the loop, which puts the outbound to sleep at
+// once, not when a retry that had grown meanwhile is due.
+func TestSilentCloseLetsADownOutboundSleepAtOnce(t *testing.T) {
+	f := newDownFixture(t)
+	// The test sweeps nothing.
+	f.o.sweeping = true
+	from := at(time.Minute)
+	f.now = from.Add(-time.Second)
+	ended := false
+	tr := f.o.StartDial(context.Background(), "w1", net.Destination{}, func() { ended = true }).(*connTracker)
+	r, _ := tr.Dialed(nil, nil, nil, nil)
+	r.Add(100)
+	f.failW1(from)
+	now := from
+	for _, want := range []time.Duration{0, 5 * time.Second} {
+		now = from.Add(want)
+		f.turn(now)
+		if n := f.proxies["w1"].asked(); n != 0 {
+			t.Fatalf("Sleep called %d times under a connection the observer follows", n)
+		}
+	}
+	if ended || f.asleep(t, "w1") {
+		t.Fatalf("before stallTimeout: ended %v", ended)
+	}
+	drainKick(f.o)
+	now = from.Add(defaultStallTimeout)
+	f.turn(now)
+	if !ended {
+		t.Fatal("the silent connection was not ended stallTimeout after the decision")
+	}
+	f.now = now.Add(10 * time.Millisecond)
+	tr.Finished(context.Canceled)
+	select {
+	case <-f.o.kick:
+	default:
+		t.Fatal("the end of the connection the observer ended did not turn the loop")
+	}
+	f.turn(f.now)
+	evs := f.sleeps(t)
+	if len(evs) != 1 || evs[0].Fields["reason"] != "down" || !f.asleep(t, "w1") {
+		t.Fatalf("after the silent close: events %+v", evs)
+	}
+}
+
+func drainKick(o *Observer) {
+	select {
+	case <-o.kick:
+	default:
 	}
 }
 

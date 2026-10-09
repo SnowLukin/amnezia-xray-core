@@ -75,6 +75,11 @@ type connTracker struct {
 	kernelRx   atomic.Uint64
 	// The tracker has a deadline the sweep must check.
 	watched atomic.Bool
+	// What it had received when its outbound was found down on strong
+	// evidence at silentMark, see silence.go; zero silentMark when not
+	// noted. Guarded by the observer's trackMu.
+	silentMark int64
+	silentRead uint64
 
 	dialedConn net.Conn
 	read       stats.Counter

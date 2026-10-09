@@ -338,8 +338,13 @@ type PassiveConfig struct {
 	// anything yet are ended right away, so applications retry on the outbound
 	// chosen now instead of waiting for their own timeout. This keeps them.
 	KeepPendingOnDown bool `protobuf:"varint,14,opt,name=keep_pending_on_down,json=keepPendingOnDown,proto3" json:"keep_pending_on_down,omitempty"`
-	unknownFields     protoimpl.UnknownFields
-	sizeCache         protoimpl.SizeCache
+	// When an outbound is found down on evidence about the path itself, its
+	// connections that started before and then receive nothing for
+	// stall_timeout are ended too: they cannot progress on a dead path, and
+	// they keep its tunnel awake. This keeps them.
+	KeepSilentOnDown bool `protobuf:"varint,15,opt,name=keep_silent_on_down,json=keepSilentOnDown,proto3" json:"keep_silent_on_down,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *PassiveConfig) Reset() {
@@ -466,6 +471,13 @@ func (x *PassiveConfig) GetPartialStallMinBytes() int64 {
 func (x *PassiveConfig) GetKeepPendingOnDown() bool {
 	if x != nil {
 		return x.KeepPendingOnDown
+	}
+	return false
+}
+
+func (x *PassiveConfig) GetKeepSilentOnDown() bool {
+	if x != nil {
+		return x.KeepSilentOnDown
 	}
 	return false
 }
@@ -1990,7 +2002,7 @@ const file_app_observatory_health_config_proto_rawDesc = "" +
 	"\tproviders\x18\b \x03(\v20.xray.core.app.observatory.health.ProviderConfigR\tproviders\x12F\n" +
 	"\x06report\x18\t \x01(\v2..xray.core.app.observatory.health.ReportConfigR\x06report\x12C\n" +
 	"\x05sleep\x18\n" +
-	" \x01(\v2-.xray.core.app.observatory.health.SleepConfigR\x05sleep\"\xcf\x04\n" +
+	" \x01(\v2-.xray.core.app.observatory.health.SleepConfigR\x05sleep\"\xfe\x04\n" +
 	"\rPassiveConfig\x12\x16\n" +
 	"\x06window\x18\x01 \x01(\x03R\x06window\x12!\n" +
 	"\fdial_timeout\x18\x02 \x01(\x03R\vdialTimeout\x12,\n" +
@@ -2006,7 +2018,8 @@ const file_app_observatory_health_config_proto_rawDesc = "" +
 	"\x15ignore_partial_stalls\x18\v \x01(\bR\x13ignorePartialStalls\x121\n" +
 	"\x15stall_min_write_bytes\x18\f \x01(\x03R\x12stallMinWriteBytes\x125\n" +
 	"\x17partial_stall_min_bytes\x18\r \x01(\x03R\x14partialStallMinBytes\x12/\n" +
-	"\x14keep_pending_on_down\x18\x0e \x01(\bR\x11keepPendingOnDown\"\xeb\x01\n" +
+	"\x14keep_pending_on_down\x18\x0e \x01(\bR\x11keepPendingOnDown\x12-\n" +
+	"\x13keep_silent_on_down\x18\x0f \x01(\bR\x10keepSilentOnDown\"\xeb\x01\n" +
 	"\fProbeProfile\x12\x1a\n" +
 	"\bselector\x18\x01 \x03(\tR\bselector\x12 \n" +
 	"\vdestination\x18\x02 \x01(\tR\vdestination\x12\x16\n" +

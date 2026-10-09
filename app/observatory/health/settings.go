@@ -193,6 +193,7 @@ type passiveSettings struct {
 	stallMinWrite    int64
 	partialMinBytes  int64
 	keepPending      bool
+	keepSilent       bool
 }
 
 type probeSettings struct {
@@ -463,6 +464,7 @@ func newSettings(c *Config) *settings {
 		stallMinWrite:    size(p.GetStallMinWriteBytes(), defaultStallMinWrite),
 		partialMinBytes:  size(p.GetPartialStallMinBytes(), defaultPartialMinBytes),
 		keepPending:      p.GetKeepPendingOnDown(),
+		keepSilent:       p.GetKeepSilentOnDown(),
 	}
 	if p.GetIgnorePartialStalls() {
 		s.passive.partialStallAge = 0

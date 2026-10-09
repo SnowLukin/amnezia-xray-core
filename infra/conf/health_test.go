@@ -18,7 +18,7 @@ func TestHealthObservatoryConfig(t *testing.T) {
 		{
 			Input: `{
 				"subjectSelector": ["a", "b"],
-				"passive": {"dialTimeout": "6s", "failures": 3},
+				"passive": {"dialTimeout": "6s", "failures": 3, "keepPendingOnDown": true, "keepSilentOnDown": true},
 				"connectivity": {"outbound": "direct", "destination": "https://example.com/204",
 				                 "timeout": "4s", "maxPause": "90s",
 				                 "recheck": {"initial": "2s", "multiplier": 2, "max": "30s"}}
@@ -26,7 +26,8 @@ func TestHealthObservatoryConfig(t *testing.T) {
 			Parser: loadJSON(creator),
 			Output: &health.Config{
 				SubjectSelector: []string{"a", "b"},
-				Passive:         &health.PassiveConfig{DialTimeout: int64(6 * time.Second), Failures: 3},
+				Passive: &health.PassiveConfig{DialTimeout: int64(6 * time.Second), Failures: 3,
+					KeepPendingOnDown: true, KeepSilentOnDown: true},
 				Connectivity: &health.ConnectivityConfig{
 					Outbound:    "direct",
 					Destination: "https://example.com/204",
