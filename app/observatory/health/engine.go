@@ -148,6 +148,9 @@ type engine struct {
 	// providers' part of its turn.
 	leaseEnds uint64
 	providers []*provider
+	// A pin ended or moved since the loop last looked: a drain whose time
+	// ran out under it may end now.
+	unpinned bool
 
 	lastGC time.Time
 	// The host reported that memory is low: work that only improves the
@@ -1809,6 +1812,7 @@ func (e *engine) pin(selectorTag, tag string, now time.Time) bool {
 	if s == nil || !s.hasCandidate(tag) {
 		return false
 	}
+	e.unpinned = e.unpinned || (s.pinned != "" && s.pinned != tag)
 	s.pinned = tag
 	s.startPin = false
 	s.pinnedUntil = time.Time{}
@@ -1832,6 +1836,24 @@ func (e *engine) pin(selectorTag, tag string, now time.Time) bool {
 	return true
 }
 
+// pinnedTo tells whether a balancer is pinned to tag.
+func (e *engine) pinnedTo(tag string) bool {
+	for _, s := range e.selectors {
+		if s.pinned == tag {
+			return true
+		}
+	}
+	return false
+}
+
+// takeUnpinned tells the loop that a pin ended or moved since it last
+// asked.
+func (e *engine) takeUnpinned() bool {
+	was := e.unpinned
+	e.unpinned = false
+	return was
+}
+
 func (e *engine) returningTo(tag string) bool {
 	for _, s := range e.selectors {
 		if s.upgradeTarget == tag {
@@ -1853,6 +1875,7 @@ func (e *engine) releaseBy(selectorTag, by string, now time.Time) bool {
 	e.emit(now, "release", map[string]any{"balancer": selectorTag, "outbound": s.pinned, "by": by})
 	s.pinned = ""
 	s.pinnedUntil = time.Time{}
+	e.unpinned = true
 	recheck := s.recheckOnRelease
 	s.recheckOnRelease = false
 	cur := s.current()
@@ -1927,10 +1950,11 @@ func (e *engine) forget(tag string) {
 // keepSelectors forgets balancers that the routing no longer has, with what
 // they remembered per network.
 func (e *engine) keepSelectors(keep map[string]bool) {
-	for tag := range e.selectors {
+	for tag, s := range e.selectors {
 		if keep[tag] {
 			continue
 		}
+		e.unpinned = e.unpinned || s.pinned != ""
 		delete(e.selectors, tag)
 		delete(e.costs, tag)
 		for id, m := range e.networks {

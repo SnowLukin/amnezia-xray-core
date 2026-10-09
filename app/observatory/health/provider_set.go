@@ -58,6 +58,9 @@ type drainingOutbound struct {
 	// Connections through the tag that started later went to the handler
 	// that replaced this one.
 	since int64
+	// Its time ran out while a balancer was pinned to it: it ends once no
+	// balancer is.
+	overdue bool
 }
 
 // providerAnswer is a parsed provider response in protocol 1:
@@ -1232,18 +1235,26 @@ func (o *Observer) startDrain(rt *providerRuntime, tag string, h outbound.Handle
 // The caller holds applyMu.
 func (o *Observer) settleDrains(rt *providerRuntime) {
 	open := o.oldestConnections()
-	var idle []*drainingOutbound
+	var idle, overdue []*drainingOutbound
+	pinned := map[*drainingOutbound]bool{}
 	o.mu.Lock()
 	for _, d := range rt.draining {
+		pinned[d] = d.registered && o.e.pinnedTo(d.tag)
 		started, ok := open[d.tag]
 		// Connections through a replaced tag that started later went to the
 		// new handler.
 		busy := ok && (d.registered || started <= d.since)
-		if !busy && !(d.registered && o.e.active(d.tag)) {
+		switch {
+		case d.overdue && !pinned[d]:
+			overdue = append(overdue, d)
+		case !busy && !(d.registered && o.e.active(d.tag)):
 			idle = append(idle, d)
 		}
 	}
 	o.mu.Unlock()
+	for _, d := range overdue {
+		o.endDrain(rt, d)
+	}
 	for _, d := range idle {
 		if s := sleeperOf(d.handler); s != nil && !s.Sleep() {
 			continue
@@ -1252,8 +1263,15 @@ func (o *Observer) settleDrains(rt *providerRuntime) {
 	}
 	if over := len(rt.draining) - rt.cfg.maxOutbounds; over > 0 {
 		oldest := slices.SortedFunc(maps.Values(rt.draining), func(a, b *drainingOutbound) int { return cmp.Compare(a.seq, b.seq) })
-		for _, d := range oldest[:over] {
+		for _, d := range oldest {
+			if over == 0 {
+				break
+			}
+			if pinned[d] {
+				continue
+			}
 			o.endDrain(rt, d)
+			over--
 		}
 	}
 }
@@ -1290,11 +1308,50 @@ func (o *Observer) finishDrain(rt *providerRuntime, d *drainingOutbound) {
 	if o.applyClosed {
 		return
 	}
+	o.mu.Lock()
+	pinned := d.registered && o.e.pinnedTo(d.tag)
+	o.mu.Unlock()
+	if pinned {
+		// A pinned balancer stays on its outbound whatever happens to it.
+		// Closed under the pin, the outbound would leave it a tag without
+		// a handler: every connection refused, and no pinned_down to tell.
+		// The drain ends once the pin does.
+		d.overdue = true
+		return
+	}
 	o.endDrain(rt, d)
 	// The balancers that offered the outbound left it, which may fail them
 	// over and queue probes; the loop runs those now, not at whatever wakes
 	// it next.
 	o.wake()
+}
+
+// endOverdueDrains ends the drains whose time ran out under a pin that is
+// over now. The loop calls it once a pin ended or moved.
+func (o *Observer) endOverdueDrains() {
+	o.applyMu.Lock()
+	defer o.applyMu.Unlock()
+	if o.applyClosed {
+		return
+	}
+	var ended []*drainingOutbound
+	var of []*providerRuntime
+	o.mu.Lock()
+	for _, rt := range o.providers {
+		for _, d := range rt.draining {
+			if d.overdue && !o.e.pinnedTo(d.tag) {
+				ended = append(ended, d)
+				of = append(of, rt)
+			}
+		}
+	}
+	o.mu.Unlock()
+	for i, d := range ended {
+		o.endDrain(of[i], d)
+	}
+	if len(ended) > 0 {
+		o.wake()
+	}
 }
 
 // endDrain removes and closes a draining outbound. The caller holds applyMu.

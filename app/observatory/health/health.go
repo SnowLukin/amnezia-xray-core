@@ -271,6 +271,7 @@ func (o *Observer) loop(done chan struct{}) {
 		jobs, refreshes, wake := o.e.step(now)
 		downs := o.e.takeDowns()
 		sleeps := o.e.takeSleeps()
+		unpinned := o.e.takeUnpinned()
 		o.mu.Unlock()
 		// Ending a connection reports back to the observer, so it happens
 		// outside the lock.
@@ -279,6 +280,9 @@ func (o *Observer) loop(done chan struct{}) {
 		}
 		if len(sleeps) > 0 {
 			go o.sleepOutbounds(sleeps)
+		}
+		if unpinned {
+			go o.endOverdueDrains()
 		}
 		for _, j := range jobs {
 			go o.runProbe(j)

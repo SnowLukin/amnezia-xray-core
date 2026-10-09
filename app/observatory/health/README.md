@@ -325,22 +325,24 @@ matches that prefix, and the observatory observes such outbounds without
 listing them in `subjectSelector`. The provider owns every outbound whose
 tag starts with the prefix, also ones from the config; such an outbound
 should not be the first one, which the core takes as the default. A host
-that starts the core with the set it saved last time passes it as
-`initial` instead. All outbounds are
-validated and built before anything changes; a broken answer or a set that
-does not build changes nothing. Outbounds whose settings did not change are
-not touched and keep their connections. An outbound whose settings changed
-is replaced under the same tag. An outbound that left the set is no longer
-a candidate, keeps its connections for `drain` and is then removed and
-closed, and what the observatory knew about it and its traffic counters are
-forgotten; if the balancer uses it, the balancer moves to another candidate
-the usual way and stays where it is while there is nothing else. The old
+that starts the core with the set it saved last time passes it as `initial`
+instead. All outbounds are validated and built before anything changes; a
+broken answer or a set that does not build changes nothing. Outbounds whose
+settings did not change are not touched and keep their connections. An
+outbound whose settings changed is replaced under the same tag. An outbound
+that left the set is no longer a candidate, keeps its connections for
+`drain` and is then removed and closed, and what the observatory knew about
+it and its traffic counters are forgotten; if the balancer uses it, the
+balancer moves to another candidate the usual way and stays where it is
+while there is nothing else. A pinned balancer stays on it, so it stays
+too: its drain does not end while a balancer is pinned to it, and one whose
+time ran out ends at the release, which moves the balancer off it. The old
 handler of a replaced outbound drains the same way. A drain ends at once
 when the outbound has no open connections and no balancer chooses it. An
-outbound that can sleep is asked as well, since the observatory may not
-see its connections, see Sleep: while one goes on it refuses, and the drain
+outbound that can sleep is asked as well, since the observatory may not see
+its connections, see Sleep: while one goes on it refuses, and the drain
 runs its time. At most `maxOutbounds` outbounds drain at a time: beyond
-that the oldest drains end early.
+that the oldest drains end early, but for pinned ones.
 
 **Leases.** `expiresAt` tells by tag when the backend stops serving an
 outbound, in RFC 3339 with a zone, and `serverTime` is the clock of the
@@ -701,7 +703,7 @@ changed its settings). `kinds` counts failures by kind: `dial_failed`, `dial_tim
 | `provider_base_changed` | `provider`, `from`, `to` | An applied answer named the base config `to` while the core runs with `from`: the host is to fetch the config anew, see Base config. Once per value, until an answer names `from` again. |
 | `provider_restart_needed` | `provider`, `version`, `sections` | Kept for sections of the config the core reads only at start. Protocol 1 refuses an answer with such a section, so this version does not write it. |
 | `provider_skip` | `provider`, `trigger`, `reason`, `wait_ms` | A trigger wants a refresh that cannot start yet. `reason`: `min_interval`, `backoff`, `retry_after`, `max_per_hour`, `idle`, `network_down`, `pinned` (the balancer of the provider is pinned), `memory`, `auth` (the backend refused the headers). Reported once per trigger and reason until a refresh starts. |
-| `provider_drained` | `provider`, `outbound`, `replaced` | An outbound that left the set, or the old handler of a replaced one, was closed: after `drain`, at once without connections, or early to keep at most `maxOutbounds` draining. |
+| `provider_drained` | `provider`, `outbound`, `replaced` | An outbound that left the set, or the old handler of a replaced one, was closed: after `drain`, or at the release of a pin that held it past that, at once without connections, or early to keep at most `maxOutbounds` draining. |
 | `outbound_sleep` | `outbound`, `idle_ms`, `reason` | An outbound released what it held, see Sleep. `idle_ms` is the time since its last use; `reason` is `idle` (after `sleep.after`) or `memory` (sooner, while memory is low). |
 
 ## Report

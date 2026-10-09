@@ -833,3 +833,46 @@ func TestDrainEndedByItsTimerWakesTheLoop(t *testing.T) {
 		t.Fatal("the end of the drain left the loop asleep")
 	}
 }
+
+// A balancer pinned to an outbound that left its set stays on it, so the
+// outbound stays too: its drain runs out under the pin without closing it,
+// and ends at the release, which moves the balancer off it.
+func TestPinnedOutboundOutlivesItsDrain(t *testing.T) {
+	f := newApplyFixture(t, 30*time.Millisecond)
+	if _, err := f.apply(t, answer(t, fakeOutbound{Tag: "x1", V: 1}, fakeOutbound{Tag: "x2", V: 1})); err != nil {
+		t.Fatal(err)
+	}
+	f.follow("p-x1", "p-x2")
+	if !f.o.Pin("auto", "p-x1", "") {
+		t.Fatal("setup: pin refused")
+	}
+	x1 := f.m.GetHandler("p-x1").(*fakeHandler)
+	if err := f.o.Start(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.apply(t, answer(t, fakeOutbound{Tag: "x2", V: 1})); err != nil {
+		t.Fatal(err)
+	}
+	overdue := func() bool {
+		f.o.applyMu.Lock()
+		defer f.o.applyMu.Unlock()
+		for _, d := range f.rt.draining {
+			if d.overdue {
+				return true
+			}
+		}
+		return false
+	}
+	drainUntil(overdue)
+	s := f.o.e.selectors["auto"]
+	if !overdue() || x1.closes() != 0 || f.m.GetHandler("p-x1") != x1 || s.current() != "p-x1" {
+		t.Fatalf("under the pin: drain ran out %v, closed %d, manager %s, on %s", overdue(), x1.closes(), f.m.tags(), s.current())
+	}
+	if !f.o.Release("auto", "") {
+		t.Fatal("release refused")
+	}
+	drainUntil(func() bool { return x1.closes() > 0 })
+	if x1.closes() != 1 || f.m.tags() != "p-x2" || s.current() != "p-x2" {
+		t.Fatalf("after the release: closed %d, manager %s, on %s", x1.closes(), f.m.tags(), s.current())
+	}
+}
