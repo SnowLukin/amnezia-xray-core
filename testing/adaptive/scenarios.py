@@ -1170,23 +1170,25 @@ def probe_limits(stand, xray, work, name):
     cfg = bench.client_config(members, {"r": 1, "t": 2, "w": 3})
     ports = ",".join(str(address_port(k, i)) for _, k, i in members)
     m = Marks()
-    mid = {}
-
-    def look():
-        mid["status"] = c.status()
-
     with bench.Client(xray, cfg, work, name) as c:
         tr = bench.Traffic(rate=2, big=0.5)
-        run_timeline(tr, [(10, m.at("down", lambda: bench.chaos(ports, "refuse"))), (120, look)], 130)
+        run_timeline(tr, [(10, m.at("down", lambda: bench.chaos(ports, "refuse")))], 130)
+        # The core names the server of an outbound once a probe of it waits for the budget
+        # or a failover weighs it. r1 failed by traffic, so it gets its name only with its
+        # recheck when its quarantine of 2 min +-30% ends, which may be while the client
+        # stops. So the names come from a status after the run, and only the probes that
+        # started before it count: a later one would show under its tag.
+        m["names"] = time.time()
+        names = server_names(c.status())
+    named = [e for e in c.events if e["ts"] / 1000 <= m["names"]]
     ex = [e for e in c.events if e["type"] == "exhausted" and e["ts"] / 1000 >= m["down"]]
     peak, gap, n = probe_checks(c.events, m["down"])
-    names = server_names(mid["status"])
-    probed = {e["fields"]["outbound"] for e in c.events if e["type"] == "probe_start"}
+    probed = {e["fields"]["outbound"] for e in named if e["type"] == "probe_start"}
     seen_names = sorted({names[o] for o in probed})
     return [check("probes", n, n >= 6, ">= 6"),
             at_once_check(peak),
             spacing_check(gap, need=True),
-            per_name_check(c.events, names, m["down"]),
+            per_name_check(named, names, m["down"]),
             check("server names of the probed paths", seen_names,
                   seen_names == ["example.com", "std.example.com", "ws.example.com"], "example.com, std., ws."),
             check("exhausted at the end", len(ex), len(ex) == 1, "== 1"),
