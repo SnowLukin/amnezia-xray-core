@@ -116,6 +116,17 @@ type provider struct {
 	// named no lease.
 	skew  time.Duration
 	clock string
+
+	// Headers an answer or the host put over those of the config, by
+	// canonical name. Their generation grows with every change, so that an
+	// answer or a refusal a request with older headers brought is told
+	// apart.
+	rotated    map[string]string
+	headersGen uint64
+	// The backend refused the headers: every trigger but the host waits
+	// until authRetryAt, or until the headers change when it is zero.
+	authFailed  bool
+	authRetryAt time.Time
 }
 
 func newProvider(cfg *providerSettings) *provider {
@@ -134,6 +145,9 @@ type refreshJob struct {
 	request *providerRequest
 	// Leases the refresh asks about, whatever its trigger.
 	asked []askedLease
+	// The headers every via sends, and their generation.
+	headers    map[string]string
+	headersGen uint64
 }
 
 type refreshOutcome struct {
@@ -148,6 +162,10 @@ type refreshOutcome struct {
 	// failure or the reason the answer was refused.
 	status int
 	class  string
+	// The code of an error body of the protocol, and the via entry that
+	// brought it.
+	code string
+	via  string
 }
 
 func (e *engine) provider(tag string) *provider {
@@ -193,8 +211,13 @@ func (e *engine) tickProviders(now time.Time) ([]*refreshJob, time.Time) {
 			if !want[t] {
 				continue
 			}
-			if why := e.heldBack(t, expiry, idle); why != "" {
-				e.skipRefresh(p, t, why, 0, now)
+			if why := e.heldBack(p, t, expiry, idle, now); why != "" {
+				var wait time.Duration
+				if why == "auth" && !p.authRetryAt.IsZero() {
+					wait = p.authRetryAt.Sub(now)
+					soonest(p.authRetryAt)
+				}
+				e.skipRefresh(p, t, why, wait, now)
 				continue
 			}
 			trigger, ok = t, true
@@ -215,7 +238,7 @@ func (e *engine) tickProviders(now time.Time) ([]*refreshJob, time.Time) {
 
 // heldBack returns why a trigger that wants a refresh waits whatever the
 // limits allow, or "" when it does not.
-func (e *engine) heldBack(t refreshTrigger, expiry expiryWant, idle bool) string {
+func (e *engine) heldBack(p *provider, t refreshTrigger, expiry expiryWant, idle bool, now time.Time) string {
 	switch {
 	case t == triggerHost:
 		// The host is always answered.
@@ -234,6 +257,11 @@ func (e *engine) heldBack(t refreshTrigger, expiry expiryWant, idle bool) string
 		// only the host, a balancer with nothing left and a lease that
 		// ended wait for one.
 		return "memory"
+	case p.authHeld(now):
+		// The same headers would be refused again. Last, so that a
+		// trigger that waits for traffic anyway sets no wake for the end
+		// of the pause.
+		return "auth"
 	}
 	return ""
 }
@@ -405,7 +433,13 @@ func (e *engine) beginRefresh(p *provider, t refreshTrigger, now time.Time) *ref
 	p.retrying = false
 	clear(p.skipped)
 	p.refreshSeq++
-	j := &refreshJob{p: p, trigger: t, retry: p.failures, refresh: p.refreshSeq, asked: p.askLeases(now)}
+	j := &refreshJob{p: p, trigger: t, retry: p.failures, refresh: p.refreshSeq, asked: p.askLeases(now),
+		headers: p.requestHeaders(), headersGen: p.headersGen}
+	if p.authFailed {
+		// One refresh with refused headers per pause: a failure on the way
+		// does not let the triggers try them again at once.
+		e.holdAuth(p, now)
+	}
 	if p.cfg.method == http.MethodPost {
 		j.request = e.providerRequest(p, j, now)
 	}
@@ -433,6 +467,7 @@ func (e *engine) onRefreshDone(j *refreshJob, r refreshOutcome, now time.Time) {
 		p.setAt = now
 		// Host requests made while the refresh ran are answered by it.
 		p.host = false
+		p.authFailed, p.authRetryAt = false, time.Time{}
 		p.lastError = ""
 		p.lastFailedAt, p.lastStatus, p.lastClass = time.Time{}, 0, ""
 		if !p.aboveSince.IsZero() {
@@ -449,12 +484,24 @@ func (e *engine) onRefreshDone(j *refreshJob, r refreshOutcome, now time.Time) {
 	} else {
 		p.lastError = r.err
 		p.lastFailedAt, p.lastStatus, p.lastClass = now, r.status, r.class
-		switch j.trigger {
-		case triggerHost, triggerNetwork:
+		if j.trigger == triggerMinHealthy {
+			p.minHealthyArmed = true
+		}
+		if r.authRefused() {
+			if j.headersGen != p.headersGen {
+				// The host replaced the refused headers while the request
+				// ran: the new ones go as soon as the limits allow.
+				p.retrying, p.retry = true, j.trigger
+				return
+			}
+			e.holdAuth(p, now)
+			e.emit(now, "provider_auth_failed", map[string]any{"provider": p.cfg.tag, "trigger": j.trigger.String(),
+				"status": r.status, "via": r.via, "code": r.code})
+			return
+		}
+		if j.trigger == triggerHost || j.trigger == triggerNetwork {
 			p.retrying = true
 			p.retry = j.trigger
-		case triggerMinHealthy:
-			p.minHealthyArmed = true
 		}
 		if r.retryAfter > 0 {
 			// A pause the backend chose is no failure. The spread only adds,

@@ -1708,7 +1708,10 @@ type ProviderLimits struct {
 	// Refreshes started within an hour. Negative removes the limit.
 	MaxPerHour int32 `protobuf:"varint,3,opt,name=max_per_hour,json=maxPerHour,proto3" json:"max_per_hour,omitempty"`
 	// Pause after failed refreshes.
-	Backoff       *Backoff `protobuf:"bytes,4,opt,name=backoff,proto3" json:"backoff,omitempty"`
+	Backoff *Backoff `protobuf:"bytes,4,opt,name=backoff,proto3" json:"backoff,omitempty"`
+	// Pause of every trigger but the host after the backend refused the
+	// headers of the provider, 1 h by default. Negative waits for new headers.
+	AuthRetry     int64 `protobuf:"varint,5,opt,name=auth_retry,json=authRetry,proto3" json:"auth_retry,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1771,6 +1774,13 @@ func (x *ProviderLimits) GetBackoff() *Backoff {
 	return nil
 }
 
+func (x *ProviderLimits) GetAuthRetry() int64 {
+	if x != nil {
+		return x.AuthRetry
+	}
+	return 0
+}
+
 type ProviderApply struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Balancer whose candidates the set feeds. Its selector has to match
@@ -1789,7 +1799,12 @@ type ProviderApply struct {
 	Protocols []string `protobuf:"bytes,5,rep,name=protocols,proto3" json:"protocols,omitempty"`
 	// Applies the routing rules, balancers and domain strategy of an answer
 	// without a restart. Off, the routing of an answer is ignored.
-	Routing       bool `protobuf:"varint,6,opt,name=routing,proto3" json:"routing,omitempty"`
+	Routing bool `protobuf:"varint,6,opt,name=routing,proto3" json:"routing,omitempty"`
+	// Header names an answer may set over those of the config, to rotate the
+	// token of the provider. Empty allows Authorization.
+	Headers []string `protobuf:"bytes,7,rep,name=headers,proto3" json:"headers,omitempty"`
+	// An answer may set no header; one that has headers is refused.
+	FixedHeaders  bool `protobuf:"varint,8,opt,name=fixed_headers,json=fixedHeaders,proto3" json:"fixed_headers,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1862,6 +1877,20 @@ func (x *ProviderApply) GetProtocols() []string {
 func (x *ProviderApply) GetRouting() bool {
 	if x != nil {
 		return x.Routing
+	}
+	return false
+}
+
+func (x *ProviderApply) GetHeaders() []string {
+	if x != nil {
+		return x.Headers
+	}
+	return nil
+}
+
+func (x *ProviderApply) GetFixedHeaders() bool {
+	if x != nil {
+		return x.FixedHeaders
 	}
 	return false
 }
@@ -2009,13 +2038,15 @@ const file_app_observatory_health_config_proto_rawDesc = "" +
 	"\x06jitter\x18\x03 \x01(\x01R\x06jitter\"7\n" +
 	"\vCostTrigger\x12\x12\n" +
 	"\x04cost\x18\x01 \x01(\x02R\x04cost\x12\x14\n" +
-	"\x05after\x18\x02 \x01(\x03R\x05after\"\xd0\x01\n" +
+	"\x05after\x18\x02 \x01(\x03R\x05after\"\xef\x01\n" +
 	"\x0eProviderLimits\x12!\n" +
 	"\fmin_interval\x18\x01 \x01(\x03R\vminInterval\x124\n" +
 	"\x16exhausted_min_interval\x18\x02 \x01(\x03R\x14exhaustedMinInterval\x12 \n" +
 	"\fmax_per_hour\x18\x03 \x01(\x05R\n" +
 	"maxPerHour\x12C\n" +
-	"\abackoff\x18\x04 \x01(\v2).xray.core.app.observatory.health.BackoffR\abackoff\"\xbd\x01\n" +
+	"\abackoff\x18\x04 \x01(\v2).xray.core.app.observatory.health.BackoffR\abackoff\x12\x1d\n" +
+	"\n" +
+	"auth_retry\x18\x05 \x01(\x03R\tauthRetry\"\xfc\x01\n" +
 	"\rProviderApply\x12\x1a\n" +
 	"\bbalancer\x18\x01 \x01(\tR\bbalancer\x12\x1d\n" +
 	"\n" +
@@ -2023,7 +2054,9 @@ const file_app_observatory_health_config_proto_rawDesc = "" +
 	"\x05drain\x18\x03 \x01(\x03R\x05drain\x12#\n" +
 	"\rmax_outbounds\x18\x04 \x01(\x05R\fmaxOutbounds\x12\x1c\n" +
 	"\tprotocols\x18\x05 \x03(\tR\tprotocols\x12\x18\n" +
-	"\arouting\x18\x06 \x01(\bR\arouting*.\n" +
+	"\arouting\x18\x06 \x01(\bR\arouting\x12\x18\n" +
+	"\aheaders\x18\a \x03(\tR\aheaders\x12#\n" +
+	"\rfixed_headers\x18\b \x01(\bR\ffixedHeaders*.\n" +
 	"\vConfirmMode\x12\b\n" +
 	"\x04AUTO\x10\x00\x12\n" +
 	"\n" +

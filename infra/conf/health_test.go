@@ -203,6 +203,29 @@ func TestHealthProviderExpiry(t *testing.T) {
 	}
 }
 
+// apply.headers names what an answer may set: missing keeps the default,
+// an explicit [] allows nothing. limits.authRetry "0s" waits for new
+// headers, which the observatory reads from a negative value.
+func TestHealthProviderHeadersAndAuthRetry(t *testing.T) {
+	for _, tc := range []struct{ apply, limits, want string }{
+		{``, ``, "[] false 0"},
+		{`, "headers": []`, `, "limits": {"authRetry": "0s"}`, "[] true -1"},
+		{`, "headers": ["Authorization", "x-api-key"]`, `, "limits": {"authRetry": "2h"}`,
+			fmt.Sprint("[Authorization x-api-key] false ", int64(2*time.Hour))},
+	} {
+		cfg, err := buildHealth(t, `{"subjectSelector": ["a"], "providers": [{"tag": "a", "url": "https://x.test/"`+tc.limits+`,
+		  "apply": {"balancer": "auto", "tagPrefix": "p-"`+tc.apply+`}}]}`)
+		if err != nil {
+			t.Errorf("%s %s: %v", tc.apply, tc.limits, err)
+			continue
+		}
+		p := cfg.Providers[0]
+		if got := fmt.Sprint(p.Apply.Headers, " ", p.Apply.FixedHeaders, " ", p.GetLimits().GetAuthRetry()); got != tc.want {
+			t.Errorf("%s %s: %s, want %s", tc.apply, tc.limits, got, tc.want)
+		}
+	}
+}
+
 func TestHealthProvidersReject(t *testing.T) {
 	cases := map[string]string{
 		"no apply":         `{"tag": "a", "url": "https://x.test/"}`,
@@ -227,6 +250,16 @@ func TestHealthProvidersReject(t *testing.T) {
 		            "triggers": {"expiry": {"urgentAt": 0.4}}}`,
 		"wide renewal spread": `{"tag": "a", "url": "https://x.test/", "apply": {"balancer": "auto", "tagPrefix": "p-"},
 		            "triggers": {"expiry": {"jitter": 0.6}}}`,
+		"rotated host header": `{"tag": "a", "url": "https://x.test/", "apply": {"balancer": "auto", "tagPrefix": "p-",
+		            "headers": ["Authorization", "Host"]}}`,
+		"rotated proxy header": `{"tag": "a", "url": "https://x.test/", "apply": {"balancer": "auto", "tagPrefix": "p-",
+		            "headers": ["proxy-authorization"]}}`,
+		"rotated header not a token": `{"tag": "a", "url": "https://x.test/", "apply": {"balancer": "auto", "tagPrefix": "p-",
+		            "headers": ["X Key"]}}`,
+		"short auth retry": `{"tag": "a", "url": "https://x.test/", "apply": {"balancer": "auto", "tagPrefix": "p-"},
+		            "limits": {"authRetry": "1m"}}`,
+		"long auth retry": `{"tag": "a", "url": "https://x.test/", "apply": {"balancer": "auto", "tagPrefix": "p-"},
+		            "limits": {"authRetry": "25h"}}`,
 	}
 	for name, providers := range cases {
 		if _, err := buildHealth(t, `{"subjectSelector": ["a"], "providers": [`+providers+`]}`); err == nil {

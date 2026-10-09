@@ -1,6 +1,8 @@
 package health
 
 import (
+	"maps"
+	"slices"
 	"sort"
 	"time"
 )
@@ -68,6 +70,12 @@ type providerStatusView struct {
 	Expired   int    `json:"expired,omitempty"`
 	SkewMs    int64  `json:"skew_ms,omitempty"`
 	Clock     string `json:"clock,omitempty"`
+	// Names of the headers an answer or the host set, never their values;
+	// whether the backend refused the headers, and how long the pause after
+	// that lasts, none when it waits for new headers.
+	Headers       []string `json:"headers,omitempty"`
+	AuthFailed    bool     `json:"auth_failed,omitempty"`
+	AuthRetryInMs *int64   `json:"auth_retry_in_ms,omitempty"`
 }
 
 type statusView struct {
@@ -219,6 +227,14 @@ func (e *engine) status(now time.Time) statusView {
 			}
 		}
 		pv.SkewMs, pv.Clock = p.skew.Milliseconds(), p.clock
+		if len(p.rotated) > 0 {
+			pv.Headers = slices.Sorted(maps.Keys(p.rotated))
+		}
+		pv.AuthFailed = p.authFailed
+		if p.authFailed && !p.authRetryAt.IsZero() {
+			in := p.authRetryAt.Sub(now).Milliseconds()
+			pv.AuthRetryInMs = &in
+		}
 		v.Providers = append(v.Providers, pv)
 	}
 	for _, r := range e.requests {

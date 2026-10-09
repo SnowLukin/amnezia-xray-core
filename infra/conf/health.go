@@ -4,6 +4,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"time"
 
 	"google.golang.org/protobuf/proto"
 
@@ -166,6 +167,8 @@ type HealthProviderLimitsConfig struct {
 	ExhaustedMinInterval *duration.Duration   `json:"exhaustedMinInterval"`
 	MaxPerHour           *int32               `json:"maxPerHour"`
 	Backoff              *HealthBackoffConfig `json:"backoff"`
+	// AuthRetry: "0s" waits for new headers after the backend refused them.
+	AuthRetry *duration.Duration `json:"authRetry"`
 }
 
 type HealthProviderApplyConfig struct {
@@ -175,6 +178,8 @@ type HealthProviderApplyConfig struct {
 	MaxOutbounds int32             `json:"maxOutbounds"`
 	Protocols    StringList        `json:"protocols"`
 	Routing      bool              `json:"routing"`
+	// Headers: an explicit [] lets no answer set a header.
+	Headers *StringList `json:"headers"`
 }
 
 type HealthProviderConfig struct {
@@ -248,6 +253,13 @@ func (c *HealthProviderConfig) build() (*health.ProviderConfig, error) {
 			return nil, errors.New("healthObservatory: ", where, ": empty tag in via")
 		}
 	}
+	if a.Headers != nil {
+		for _, name := range *a.Headers {
+			if err := health.CheckHeaderName(name); err != nil {
+				return nil, errors.New("healthObservatory: ", where, ": apply.headers: ", err.Error())
+			}
+		}
+	}
 	out := &health.ProviderConfig{
 		Tag:      c.Tag,
 		Url:      c.URL,
@@ -264,6 +276,10 @@ func (c *HealthProviderConfig) build() (*health.ProviderConfig, error) {
 			Protocols:    a.Protocols,
 			Routing:      a.Routing,
 		},
+	}
+	if a.Headers != nil {
+		out.Apply.Headers = *a.Headers
+		out.Apply.FixedHeaders = len(*a.Headers) == 0
 	}
 	if t := c.Triggers; t != nil {
 		out.Triggers = &health.ProviderTriggers{
@@ -316,6 +332,12 @@ func (c *HealthProviderConfig) build() (*health.ProviderConfig, error) {
 			ExhaustedMinInterval: optionalDuration(l.ExhaustedMinInterval),
 			MaxPerHour:           optionalCount(l.MaxPerHour),
 			Backoff:              backoff,
+			AuthRetry:            optionalDuration(l.AuthRetry),
+		}
+		// Shorter, a refused token loads the backend for little; longer, a
+		// mistake of the backend keeps the fleet without fresh sets.
+		if r := l.AuthRetry; r != nil && *r != 0 && (*r < duration.Duration(5*time.Minute) || *r > duration.Duration(24*time.Hour)) {
+			return nil, errors.New("healthObservatory: ", where, ": limits.authRetry must be 0s or in [5m, 24h]")
 		}
 	}
 	return out, nil

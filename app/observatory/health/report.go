@@ -52,6 +52,7 @@ type reportCounts struct {
 	ProviderRestartNeeded int64            `json:"provider_restart_needed"`
 	ProviderExpired       int64            `json:"provider_expired"`
 	ProviderRenewals      int64            `json:"provider_renewals"`
+	ProviderAuthFailed    int64            `json:"provider_auth_failed"`
 	Pins                  int64            `json:"pins"`
 	Releases              int64            `json:"releases"`
 	MemoryLow             int64            `json:"memory_low"`
@@ -208,6 +209,10 @@ func (r *report) count(typ string, f map[string]any) {
 	case "provider_expired":
 		// The balancer leaves the outbound or keeps it as the last resort.
 		c.ProviderExpired++
+		r.decide()
+	case "provider_auth_failed":
+		// The provider stops refreshing until the host brings new headers.
+		c.ProviderAuthFailed++
 		r.decide()
 	case "pin":
 		c.Pins++

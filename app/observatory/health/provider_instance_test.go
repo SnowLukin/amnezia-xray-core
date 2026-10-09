@@ -686,3 +686,155 @@ func TestLeaseCountsFromDatePlusAgeOfACachedAnswer(t *testing.T) {
 		t.Fatalf("status %+v, %v", st, err)
 	}
 }
+
+// A 401 or 403 without an error body may come from a portal or a firewall
+// on one way: the next via is tried, and on every via it is a failure like
+// any other. Only the backend refusing the headers in the protocol pauses
+// the provider, at once and without the other via.
+func TestOne401Or403WithoutBodyIsNoAuthFailure(t *testing.T) {
+	refusal := func(code string) string {
+		return `{"protocol": 1, "error": "` + code + `", "message": "token refused"}`
+	}
+	var once sync.Mutex
+	firstSeen := false
+	for _, tc := range []struct {
+		name     string
+		handler  http.Handler
+		requests int
+		applied  bool
+		code     string
+	}{
+		{"401 on one via", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			once.Lock()
+			first := !firstSeen
+			firstSeen = true
+			once.Unlock()
+			if first {
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			_, _ = w.Write([]byte(`{"outbounds": [{"tag": "x1", "protocol": "freedom"}]}`))
+		}), 2, true, ""},
+		{"403 on every via", &replyServer{status: 403}, 2, false, ""},
+		{"401 unauthorized", &replyServer{status: 401, body: refusal("unauthorized")}, 1, false, "unauthorized"},
+		{"403 forbidden", &replyServer{status: 403, body: refusal("forbidden")}, 1, false, "forbidden"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var mu sync.Mutex
+			n := 0
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				mu.Lock()
+				n++
+				mu.Unlock()
+				tc.handler.ServeHTTP(w, r)
+			}))
+			defer ts.Close()
+			obs := twoViaCore(t, ts.URL+"/set")
+			w := &eventWaiter{t: t, o: obs}
+			obs.RequestRefresh("fresh")
+			waitRefreshed(t, obs)
+			w.until("provider_fetch", nil)
+			mu.Lock()
+			requests := n
+			mu.Unlock()
+			applies, refused := w.since(0, "provider_apply"), w.since(0, "provider_auth_failed")
+			if requests != tc.requests || (len(applies) == 1) != tc.applied {
+				t.Fatalf("%d requests, applies %+v; want %d, applied %v", requests, applies, tc.requests, tc.applied)
+			}
+			var st struct {
+				Providers []struct {
+					Failures   int  `json:"failures"`
+					AuthFailed bool `json:"auth_failed"`
+				} `json:"providers"`
+			}
+			if err := json.Unmarshal(obs.Status(), &st); err != nil {
+				t.Fatal(err)
+			}
+			if tc.code == "" {
+				if len(refused) != 0 || st.Providers[0].AuthFailed || st.Providers[0].Failures != map[bool]int{true: 0, false: 1}[tc.applied] {
+					t.Fatalf("auth failures %+v, status %+v", refused, st)
+				}
+				return
+			}
+			if len(refused) != 1 || refused[0].Fields["code"] != tc.code || refused[0].Fields["via"] != "direct" ||
+				refused[0].Fields["trigger"] != "host" || !st.Providers[0].AuthFailed || st.Providers[0].Failures != 0 {
+				t.Fatalf("auth failures %+v, status %+v", refused, st)
+			}
+		})
+	}
+}
+
+// The token goes through every layer: the config, the host, an answer. A
+// refused one pauses the provider until the host brings a new one, and no
+// value ever shows in events, Status, the report or the request body.
+func TestTokenNeverInEventsStatusReportOrBody(t *testing.T) {
+	var mu sync.Mutex
+	var auths []string
+	var bodies [][]byte
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sent, _ := io.ReadAll(r.Body)
+		auth := r.Header.Get("Authorization")
+		mu.Lock()
+		auths = append(auths, auth)
+		bodies = append(bodies, sent)
+		mu.Unlock()
+		switch auth {
+		case "Bearer host-secret":
+			_, _ = w.Write([]byte(`{"protocol": 1, "outbounds": [{"tag": "x1", "protocol": "freedom"}],
+			  "headers": {"authorization": "Bearer answer-secret"}}`))
+		case "Bearer answer-secret":
+			_, _ = w.Write([]byte(`{"protocol": 1, "outbounds": [{"tag": "x1", "protocol": "freedom"}]}`))
+		default:
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"protocol": 1, "error": "unauthorized", "message": "Bearer config-secret is dead"}`))
+		}
+	}))
+	defer ts.Close()
+	obs := twoViaCore(t, ts.URL+"/set", `, "headers": {"Authorization": "Bearer config-secret"},
+	  "limits": {"exhaustedMinInterval": "10ms", "backoff": {"initial": "1h"}}`)
+	w := &eventWaiter{t: t, o: obs}
+	obs.RequestRefresh("fresh")
+	w.until("provider_auth_failed", nil)
+	if err := obs.SetProviderHeaders("fresh", map[string]string{"Authorization": "Bearer host-secret"}); err != nil {
+		t.Fatal(err)
+	}
+	obs.RequestRefresh("fresh")
+	w.until("provider_apply", func(e health.Event) bool { return e.Fields["ok"] == true })
+	obs.RequestRefresh("fresh")
+	w.until("provider_apply", func(e health.Event) bool { return e.Fields["changed"] == false })
+	mu.Lock()
+	sent := fmt.Sprint(auths)
+	mu.Unlock()
+	if sent != "[Bearer config-secret Bearer host-secret Bearer answer-secret]" {
+		t.Fatalf("requests sent %s", sent)
+	}
+	var by []string
+	for _, e := range w.since(0, "provider_headers") {
+		by = append(by, fmt.Sprint(e.Fields["by"], e.Fields["names"]))
+	}
+	if fmt.Sprint(by) != "[host[Authorization] answer[Authorization]]" {
+		t.Fatalf("provider_headers %v", by)
+	}
+	status, report := obs.Status(), obs.Report()
+	var st struct {
+		Providers []struct {
+			Headers    []string `json:"headers"`
+			AuthFailed bool     `json:"auth_failed"`
+		} `json:"providers"`
+	}
+	var rep struct {
+		AuthFailed int `json:"provider_auth_failed"`
+	}
+	if json.Unmarshal(status, &st) != nil || fmt.Sprint(st.Providers[0].Headers) != "[Authorization]" || st.Providers[0].AuthFailed ||
+		json.Unmarshal(report, &rep) != nil || rep.AuthFailed != 1 {
+		t.Fatalf("status %s, report %s", status, report)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	seen := fmt.Sprint(w.all) + string(status) + string(report) + string(bytes.Join(bodies, nil))
+	for _, secret := range []string{"config-secret", "host-secret", "answer-secret", "is dead"} {
+		if strings.Contains(seen, secret) {
+			t.Errorf("%q shows outside the requests", secret)
+		}
+	}
+}

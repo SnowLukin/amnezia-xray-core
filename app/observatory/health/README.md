@@ -207,9 +207,10 @@ triggers are judged on what the observatory knows about the balancer.
       },
       "limits": {
         "minInterval": "5m", "exhaustedMinInterval": "30s", "maxPerHour": 6,
-        "backoff": { "initial": "30s", "multiplier": 2, "max": "30m", "jitter": 0.3 }
+        "backoff": { "initial": "30s", "multiplier": 2, "max": "30m", "jitter": 0.3 }, "authRetry": "1h"
       },
-      "apply": { "balancer": "auto", "tagPrefix": "p-", "drain": "5m", "maxOutbounds": 64, "routing": false }
+      "apply": { "balancer": "auto", "tagPrefix": "p-", "drain": "5m", "maxOutbounds": 64, "routing": false,
+                 "headers": ["Authorization"] }
     }]
   }
 }
@@ -224,7 +225,8 @@ required. A trigger or a limit set to an explicit zero (`"0s"`, `0`) is off.
 answers with 405 or 403. A POST of `url` with `headers` carries the state of
 the core as JSON, see below; a GET has no body. Credentials belong in a header,
 the URL must not carry them. The URL must be `https`; `allowPlainHttp: true`
-permits `http`, and the headers then cross the network unencrypted. The request goes through the `via` entries in
+permits `http`, and the headers then cross the network unencrypted, a token
+an answer or the host set as well. The request goes through the `via` entries in
 order until one brings a well-formed answer: an outbound tag, or the tag of a
 `leastCost` balancer, which means its current choice. An exhausted balancer,
 an outbound in quarantine and a tag with no outbound are skipped. Without `via` the request is
@@ -247,7 +249,8 @@ client comes back sooner than asked and clients told the same pause come
 back apart. Such a pause is no failure, and the backoff does not grow. An
 error body and `Retry-After` end the attempts, as the backend itself
 answered. A bare status may come from a firewall, a portal or a proxy on
-one way, and the next entry is tried.
+one way, and the next entry is tried; a bare 401 or 403 too, which such a
+box sends often, see Token.
 
 The body of a POST tells the backend why it is asked and what broke, so that
 it can answer with the right outbounds at once:
@@ -329,6 +332,7 @@ body.
   "expiresAt": { "x1": "2026-10-09T12:00:00Z" },
   "serverTime": "2026-10-08T12:00:00Z",
   "nextRefreshIn": "90m",
+  "headers": { "Authorization": "Bearer <new token>" },
   "version": "2026-10-08.3"
 }
 ```
@@ -350,9 +354,9 @@ balancer for them.
 `nextRefreshIn` (a duration or seconds) replaces `interval` until the next
 refresh. `version` (or `hash`) names the set; without it the set is named by
 a hash of `outbounds`, `costs` and `routing`, so an answer that differs only
-in `protocol`, `nextRefreshIn`, `expiresAt` or `serverTime` is the same set.
-A set with the same name as the applied one changes no outbound; its leases
-still apply.
+in `protocol`, `nextRefreshIn`, `expiresAt`, `serverTime` or `headers` is the
+same set. A set with the same name as the applied one changes no outbound;
+its leases and headers still apply.
 
 `routing` takes `rules`, `balancers` and `domainStrategy` in the format of
 the config file and replaces all rules and balancers at once, and the domain
@@ -421,6 +425,37 @@ failures of old connections are ignored while no balancer chooses it: a
 revoked outbound is no block. One a balancer still uses is judged as usual.
 `minHealthy` counts it as gone. A network change keeps the leases.
 
+**Token.** `headers` of an answer replace headers of the request, to rotate
+the token of the provider. Only names in `apply.headers` may come, in any
+case: `authorization` replaces the `Authorization` of the config rather than
+going beside it. `[]` lets no answer set a header, and an answer with
+`headers` is then refused. At most 8 headers, each value non-empty, without
+line breaks or other control characters and at most 4 KiB; names of the
+transport such as `Host`, `Content-Type`, `Connection` or `Proxy-*` never.
+The host sets headers the same way with `SetProviderHeaders`, any names but
+those of the transport; an empty value removes what the host or an answer
+set, and the config applies again. What came later wins, and the host wins
+over an answer to a request that was sent before the host changed the
+headers: `provider_apply` tells that with `headers_stale`. Only an applied
+answer changes a header, so a refused or a lost answer leaves the token in
+use; a backend keeps the previous token valid until a request brings the new
+one, and some time after that, in case the process dies before the host
+keeps it. Values show nowhere but in the request: not in events, Status,
+the report, logs or errors, only the names.
+
+The backend refuses the headers with a 401 or a 403 and an error body with
+the code `unauthorized` or `forbidden`. Every trigger but a host request
+then waits for `authRetry`, spread by `backoff.jitter`, or until the headers
+change; after the pause one refresh tries them again, and again once per
+pause until one gets through. The refusal grows no backoff, and the leases
+it asked about are asked about again after the pause. `"0s"` waits for new
+headers without a pause. `authRetry` is at least 5 minutes and at most 24
+hours. A 401 or a 403 without such a body is a failure like any other, and
+the next `via` is tried: portals and firewalls on mobile networks and in
+hotels answer so often. A refusal of a request that was sent before the host
+changed the headers is no refusal of the new ones: the refresh is tried
+again with them as soon as the limits allow.
+
 **Triggers.** Any trigger may start a refresh:
 
 | Trigger | Fires |
@@ -435,9 +470,10 @@ revoked outbound is no block. One a balancer still uses is judged as usual.
 | `nextRefreshIn` | The time the last answer asked for. |
 | host | `RequestRefresh`, see below. |
 
-Every trigger but a host request waits while the network is down, and while
-there is no user traffic, except the first request for a lease: an outbound
-would end under a sleeping device. A refresh asks about the leases due by
+Every trigger but a host request waits while the network is down, while
+the backend refuses the headers (see Token), and while there is no user
+traffic, except the first request for a lease: an outbound would end under
+a sleeping device. A refresh asks about the leases due by
 then, to be renewed or ended, whatever its trigger; when it fails, they are
 asked about again after the backoff, and then only with user traffic, so a
 dead backend does not wake the device.
@@ -560,6 +596,7 @@ when the core runs through a library that keeps the instance to itself:
 | `Pin(balancer, outbound, run)` / `pin` | Keep the balancer on an outbound. |
 | `Release(balancer, run)` / `release` | Let the balancer choose again. |
 | `RequestRefresh(provider)` / `refresh [provider]` | Fetch the set of a provider, or of every provider when empty, as soon as the limits allow. False when there is no such provider. |
+| `SetProviderHeaders(provider, headers)` | Put headers over those of the config for the requests of a provider, see Token; an empty value removes one. Ends the pause after refused headers, not a pause the backend asked for nor the backoff, and starts no refresh. An error names the header, never its value: no such provider, a name that is not a token or belongs to the transport, a bad value, more than 8 headers. |
 | `RequestProbe(request)` / `probe <balancer> [outbound...]` | Probe outbounds of a balancer now, see Probes on request. Returns the ticket at once or an error: no such balancer, no candidates yet, not a candidate, too many outbounds. The command waits for the result up to its timeout (`-t`) and prints it; over gRPC `wait_ms` does the same. |
 | `ProbeResult(id)` | One request as in Status and whether it ended; nil when it is no longer kept. |
 | `Status()` / `status` | Current state as JSON, see below. |
@@ -602,10 +639,12 @@ changed its settings). `kinds` counts failures by kind: `dial_failed`, `dial_tim
 | `network_change` | `network`, `known`, `generation` | The host reported a network change. |
 | `memory_low` | `on` | The host reported that memory is low (`on` true) or no longer. |
 | `provider_fetch` | `provider`, `trigger`, `retry`, `attempt`, `via`, `outbound`, `method`, `refresh`, `ok`, `status`, `ms`, `bytes`, `code`, `retry_after_ms`, `error` | One request of a refresh through one `via` entry; `outbound` is what the entry resolved to, `refresh` the number of the refresh as the body tells it, `bytes` the size of the answer. `code` is the code of an error body of the protocol, `retry_after_ms` the pause `Retry-After` asked for, after the ceiling and before the spread. A skipped entry has `ok` false and only `error`: `balancer exhausted`, `outbound down` or `no such outbound`. `error` never holds the URL. `trigger`: `host`, `exhausted`, `expiry`, `min_healthy`, `cost_above`, `network_change`, `next_refresh`, `max_age`, `interval`; `retry` counts failed refreshes before this one. An answer that breaks the protocol has `ok` true: the backend answered, and the refusal is the `provider_apply`'s. |
-| `provider_apply` | `provider`, `trigger`, `ok`, `changed`, `added`, `replaced`, `removed`, `unchanged`, `version`, `exhausted`, `rules`, `routing_error`, `routing_ignored`, `leases`, `renewed`, `expired`, `skew_ms`, `clock`, `error` | The answer was applied (`changed`), was the applied set already, or was rejected (`ok` false with `error`). `exhausted` tells whether the balancer had nothing usable at that moment. `rules` counts the routing rules applied with the set; `routing_ignored` tells that the answer had routing while `apply.routing` is off. When the answer names leases: `leases` counts them, `renewed` the ones it gave a later end that has not passed, ended ones too, `expired` the leases that ended after it, where one that had ended and got a later end that passed as well gives no second `provider_expired`; `skew_ms` is how far the clock they count from is ahead of the device, and `clock` which one that is: `server`, `date` (the `Date` of the answer plus `Age`) or `device`. |
+| `provider_apply` | `provider`, `trigger`, `ok`, `changed`, `added`, `replaced`, `removed`, `unchanged`, `version`, `exhausted`, `rules`, `routing_error`, `routing_ignored`, `leases`, `renewed`, `expired`, `skew_ms`, `clock`, `headers`, `headers_stale`, `error` | The answer was applied (`changed`), was the applied set already, or was rejected (`ok` false with `error`). `exhausted` tells whether the balancer had nothing usable at that moment. `rules` counts the routing rules applied with the set; `routing_ignored` tells that the answer had routing while `apply.routing` is off. When the answer names leases: `leases` counts them, `renewed` the ones it gave a later end that has not passed, ended ones too, `expired` the leases that ended after it, where one that had ended and got a later end that passed as well gives no second `provider_expired`; `skew_ms` is how far the clock they count from is ahead of the device, and `clock` which one that is: `server`, `date` (the `Date` of the answer plus `Age`) or `device`. `headers` names the headers of the answer; `headers_stale` tells that the host changed the headers while the request ran, and the answer did not set them. |
 | `provider_expired` | `provider`, `outbound`, `active`, `renewal` | The lease of an outbound ended, or an answer brought it ended. `active` tells whether a balancer chose the outbound. `renewal` tells why no later end came: `refused` (the backend answered without one), `failed` (the last refresh that asked failed), `off` (`renewAt` is 0) or `pending` (no refresh that asked about it has ended: no network, the limits, or the one that asks is still under way). |
+| `provider_auth_failed` | `provider`, `trigger`, `status`, `via`, `code` | The backend refused the headers of a request with `status` 401 or 403 and the error `code` `unauthorized` or `forbidden`; every trigger but the host waits, see Token. |
+| `provider_headers` | `provider`, `by`, `names` | Headers of the requests changed: `by` an `answer` or the `host`. `names` are the headers whose values changed; the values are never told. |
 | `provider_restart_needed` | `provider`, `version`, `sections` | Kept for sections of the config the core reads only at start. Protocol 1 refuses an answer with such a section, so this version does not write it. |
-| `provider_skip` | `provider`, `trigger`, `reason`, `wait_ms` | A trigger wants a refresh that cannot start yet. `reason`: `min_interval`, `backoff`, `retry_after`, `max_per_hour`, `idle`, `network_down`, `memory`. Reported once per trigger and reason until a refresh starts. |
+| `provider_skip` | `provider`, `trigger`, `reason`, `wait_ms` | A trigger wants a refresh that cannot start yet. `reason`: `min_interval`, `backoff`, `retry_after`, `max_per_hour`, `idle`, `network_down`, `memory`, `auth` (the backend refused the headers). Reported once per trigger and reason until a refresh starts. |
 | `provider_drained` | `provider`, `outbound`, `replaced` | An outbound that left the set, or the old handler of a replaced one, was closed: after `drain`, at once without connections, or early to keep at most `maxOutbounds` draining. |
 
 ## Report
@@ -618,8 +657,8 @@ changes nothing in the report.
 A decision is a `switch` for any reason but `start`, `start_pinned` and
 `start_remembered`, `exhausted`, `upgrade_failed`, `pinned_down`, a
 `provider_apply` that was rejected or changed the set,
-`provider_restart_needed` and `provider_expired`. Events the log dropped are
-no decision.
+`provider_restart_needed`, `provider_expired` and `provider_auth_failed`.
+Events the log dropped are no decision.
 
 `TakeReport(final)` returns the report when one is due and starts a new
 window:
@@ -661,6 +700,7 @@ to this one. Reports of one run add up.
 | `provider_applied`, `provider_rejected`, `provider_restart_needed` | `provider_apply` events that changed the set, the rejected ones, and `provider_restart_needed` events. |
 | `provider_expired` | `provider_expired` events: leases that ended. |
 | `provider_renewals` | `provider_apply` events with `ok` and `renewed` above zero: answers that renewed leases. A renewal keeps what the balancer has and is no decision. |
+| `provider_auth_failed` | `provider_auth_failed` events: the backend refused the headers. |
 | `pins`, `releases` | `pin` and `release` events. |
 | `memory_low` | `memory_low` events with `on`. |
 | `active`, `balancer_exhausted`, `network_up`, `connectivity` | At the time of the report: the chosen outbound by balancer, whether a balancer is exhausted, and the network as in Status. |
@@ -680,7 +720,11 @@ of the set, its size, outbounds still draining, refreshes and failures, the
 age of the set, the next timed refresh, the backoff, what is left of a pause
 a busy backend asked for (`retry_after_ms`), the next renewal of a lease
 (`renew_in_ms`, below zero while it waits for a limit), the leases that
-ended (`expired`), and the `skew_ms` and `clock` of the last answer as in
-`provider_apply`, none when it named no lease; the probe requests of the host (`probe_requests`), each with `id`,
+ended (`expired`), the `skew_ms` and `clock` of the last answer as in
+`provider_apply`, none when it named no lease, the names of the headers an
+answer or the host set (`headers`), and whether the backend refused the
+headers (`auth_failed`) with what is left of the pause (`auth_retry_in_ms`,
+below zero once a refresh may try them again, none while it waits for new
+headers); the probe requests of the host (`probe_requests`), each with `id`,
 `balancer`, `age_ms`, `done`, `end` and the result per outbound, see Probes
 on request.

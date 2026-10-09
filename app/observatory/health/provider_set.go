@@ -63,7 +63,8 @@ type drainingOutbound struct {
 // providerAnswer is a parsed provider response in protocol 1:
 //
 //	{"protocol": 1, "outbounds": [...], "costs": {"tag": 1}, "nextRefreshIn": "2h", "version": "...",
-//	 "expiresAt": {"tag": "2026-10-09T12:00:00Z"}, "serverTime": "2026-10-08T12:00:00Z"}
+//	 "expiresAt": {"tag": "2026-10-09T12:00:00Z"}, "serverTime": "2026-10-08T12:00:00Z",
+//	 "headers": {"Authorization": "Bearer ..."}}
 type providerAnswer struct {
 	// The outbounds as sent, handed to the config loader in one piece.
 	outbounds     json.RawMessage
@@ -83,6 +84,9 @@ type providerAnswer struct {
 	// the monotonic reading; zero for an answer that came another way.
 	date     time.Time
 	received time.Time
+	// Headers to put over those of the config, by canonical name; nil
+	// without the key.
+	headers map[string]string
 }
 
 type outboundHead struct {
@@ -98,7 +102,7 @@ type outboundHead struct {
 var (
 	setKeys  = map[string]bool{"outbounds": true, "costs": true, "routing": true}
 	metaKeys = map[string]bool{"protocol": true, "version": true, "hash": true, "nextRefreshIn": true,
-		"expiresAt": true, "serverTime": true}
+		"expiresAt": true, "serverTime": true, "headers": true}
 )
 
 // answerError is an answer that is a JSON object but breaks protocol 1. The
@@ -193,6 +197,13 @@ func parseAnswer(body []byte) (*providerAnswer, error) {
 			return nil, answerErrorf("serverTime: %s is not a time in RFC 3339 with a zone", cut(string(raw)))
 		}
 		a.serverTime = t
+	}
+	if raw := sections["headers"]; !isNull(raw) {
+		h, err := parseHeaders(raw)
+		if err != nil {
+			return nil, err
+		}
+		a.headers = h
 	}
 	for _, key := range []string{"version", "hash"} {
 		if v := sections[key]; a.version == "" && !isNull(v) {
@@ -461,6 +472,8 @@ func (o *Observer) runRefresh(j *refreshJob) {
 		r.err = err.Error()
 		r.retryAfter = res.retryAfter
 		r.status = res.status
+		r.code = res.code
+		r.via = res.via
 		// A refused answer is told by its reason, a failed request by class.
 		r.class = cmp.Or(res.class, r.err)
 	} else if changed, err := o.applySet(rt, res.answer, j); err != nil {
@@ -488,6 +501,8 @@ type fetchResult struct {
 	retryAfter time.Duration
 	// The code of a protocol error body.
 	code string
+	// The via entry of the attempt.
+	via string
 	// The Date of the answer; zero without one.
 	date time.Time
 	// The backend itself answered, in the protocol or by asking to wait.
@@ -534,7 +549,8 @@ func (o *Observer) fetchSet(rt *providerRuntime, j *refreshJob, body []byte) (fe
 		}
 		asked = true
 		start := time.Now()
-		r, err := o.fetchOnce(rt.cfg, tag, body)
+		r, err := o.fetchOnce(rt.cfg, j.headers, tag, body)
+		r.via = v
 		// An answer against the protocol still came from the backend: the
 		// request did its job and the refusal is the apply's, so the report
 		// counts it once, as rejected.
@@ -572,7 +588,7 @@ func (o *Observer) fetchSet(rt *providerRuntime, j *refreshJob, body []byte) (fe
 	return last, lastErr
 }
 
-func (o *Observer) fetchOnce(cfg *providerSettings, tag string, body []byte) (fetchResult, error) {
+func (o *Observer) fetchOnce(cfg *providerSettings, headers map[string]string, tag string, body []byte) (fetchResult, error) {
 	r := fetchResult{class: "network"}
 	// Counted like a probe, so the request is not taken for user traffic.
 	var wire atomic.Int64
@@ -606,7 +622,7 @@ func (o *Observer) fetchOnce(cfg *providerSettings, tag string, body []byte) (fe
 	if err != nil {
 		return r, err
 	}
-	for k, v := range cfg.headers {
+	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
 	if req.Header.Get("Accept") == "" {
@@ -668,6 +684,9 @@ func (o *Observer) fetchOnce(cfg *providerSettings, tag string, body []byte) (fe
 		return r, fmt.Errorf("answer larger than %d bytes", cfg.maxBytes)
 	}
 	r.answer, err = parseAnswer(answer)
+	if err == nil {
+		err = checkRotation(r.answer, cfg)
+	}
 	switch {
 	case isAnswerError(err):
 		r.backend = true
@@ -772,10 +791,12 @@ func (o *Observer) applySet(rt *providerRuntime, a *providerAnswer, j *refreshJo
 		if moved {
 			o.e.refreshCandidates(now)
 		}
+		names, stale := o.e.takeAnswerHeaders(rt.p, a.headers, j.headersGen, now)
 		fields["ok"] = true
 		fields["changed"] = false
 		fields["unchanged"] = len(a.heads)
 		leaseFields(fields, leases, rt.p)
+		headerFields(fields, names, stale)
 		o.e.emit(now, "provider_apply", fields)
 		o.mu.Unlock()
 		return false, nil
@@ -925,6 +946,7 @@ func (o *Observer) applySet(rt *providerRuntime, a *providerAnswer, j *refreshJo
 	}, now)
 	rt.p.version = a.version
 	rt.p.draining = len(rt.draining)
+	names, stale := o.e.takeAnswerHeaders(rt.p, a.headers, j.headersGen, now)
 	fields["ok"] = true
 	fields["changed"] = true
 	fields["added"] = len(added)
@@ -933,6 +955,7 @@ func (o *Observer) applySet(rt *providerRuntime, a *providerAnswer, j *refreshJo
 	fields["unchanged"] = len(unchanged)
 	fields["exhausted"] = exhausted
 	leaseFields(fields, leases, rt.p)
+	headerFields(fields, names, stale)
 	o.e.emit(now, "provider_apply", fields)
 	o.mu.Unlock()
 	o.settleDrains(rt)

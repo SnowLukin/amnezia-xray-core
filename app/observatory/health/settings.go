@@ -2,6 +2,7 @@ package health
 
 import (
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -71,6 +72,10 @@ const (
 	// A lease of an outbound counts at most this long: a far end or a clock
 	// gone wild does not keep an outbound for good.
 	maxLease = 30 * 24 * time.Hour
+	// Headers an answer or the host put over those of the config: at most
+	// this many, each value at most this long.
+	maxRotatedHeaders = 8
+	maxHeaderValue    = 4096
 
 	defaultProviderTimeout      = 10 * time.Second
 	defaultRefreshInterval      = 2 * time.Hour
@@ -84,6 +89,10 @@ const (
 	defaultRefreshesPerHour     = 6
 	defaultDrain                = 5 * time.Minute
 	defaultMaxOutbounds         = 64
+	// After the backend refused the headers, one refresh an hour tries
+	// them again: a fleet refused by a mistake of the backend heals by
+	// itself, and a dead token costs little.
+	defaultAuthRetry = time.Hour
 	// A lease is renewed at this share of it, spread by renewJitter, and
 	// the renewal is urgent from urgentAt on. Clients that got their leases
 	// at once renew them apart: 24 h leases spread over about 2.4 hours.
@@ -114,6 +123,7 @@ const (
 
 var (
 	defaultProviderProtocols = []string{"vless", "vmess", "trojan", "shadowsocks", "wireguard", "hysteria", "socks", "http"}
+	defaultRotatedHeaders    = []string{"Authorization"}
 	// A censor that froze a server keeps it frozen for about two minutes and
 	// longer if it sees new handshakes, so a failed outbound rests at least
 	// that long.
@@ -257,6 +267,9 @@ type providerSettings struct {
 	exhaustedMinInterval time.Duration
 	maxPerHour           int
 	backoff              backoff
+	// How long every trigger but the host waits after the backend refused
+	// the headers; zero waits until they change.
+	authRetry time.Duration
 
 	balancer     string
 	prefix       string
@@ -264,6 +277,8 @@ type providerSettings struct {
 	maxOutbounds int
 	protocols    []string
 	routing      bool
+	// Canonical header names an answer may set; none turns that off.
+	rotate []string
 }
 
 // optional maps a config value where zero means the default and a negative
@@ -307,6 +322,7 @@ func newProviderSettings(c *ProviderConfig) *providerSettings {
 		exhaustedMinInterval: optional(l.GetExhaustedMinInterval(), defaultExhaustedMinInterval),
 		maxPerHour:           optionalNum(l.GetMaxPerHour(), defaultRefreshesPerHour),
 		backoff:              toBackoff(l.GetBackoff(), defaultRefreshRetry),
+		authRetry:            optional(l.GetAuthRetry(), defaultAuthRetry),
 
 		balancer:     a.GetBalancer(),
 		prefix:       a.GetTagPrefix(),
@@ -317,6 +333,15 @@ func newProviderSettings(c *ProviderConfig) *providerSettings {
 	}
 	if strings.EqualFold(c.GetMethod(), http.MethodGet) {
 		p.method = http.MethodGet
+	}
+	if !a.GetFixedHeaders() {
+		// A name the request may not take from outside is never rotated,
+		// even when a config built without the JSON loader lists it.
+		for _, name := range stringsOr(a.GetHeaders(), defaultRotatedHeaders) {
+			if canon := http.CanonicalHeaderKey(name); CheckHeaderName(name) == nil && !slices.Contains(p.rotate, canon) {
+				p.rotate = append(p.rotate, canon)
+			}
+		}
 	}
 	if t.GetJitter() >= 0 {
 		p.jitter = jitter(t.GetJitter(), defaultRefreshJitter)

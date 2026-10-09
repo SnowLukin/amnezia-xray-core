@@ -112,6 +112,9 @@ func foldReport(t *testing.T, raw []byte) (reportCounts, bool) {
 		case "provider_expired":
 			c.ProviderExpired++
 			decided = true
+		case "provider_auth_failed":
+			c.ProviderAuthFailed++
+			decided = true
 		case "pin":
 			c.Pins++
 		case "release":
@@ -181,6 +184,8 @@ func TestReportAddsUpTheEvents(t *testing.T) {
 	te.emit(now, "provider_apply", map[string]any{"provider": "p", "trigger": "host", "ok": true, "changed": true})
 	te.emit(now, "provider_restart_needed", map[string]any{"provider": "p", "version": "1", "sections": []string{"dns"}})
 	te.emit(now, "provider_expired", map[string]any{"provider": "p", "outbound": "p-x1", "active": true, "renewal": "failed"})
+	te.emit(now, "provider_auth_failed", map[string]any{"provider": "p", "trigger": "host", "status": 401, "via": "direct",
+		"code": "unauthorized"})
 
 	raw, dropped := te.events.drain()
 	if dropped != 0 {
@@ -257,6 +262,8 @@ func TestReportDecisions(t *testing.T) {
 		{"provider applied", []emitted{{"provider_apply", map[string]any{"ok": true, "changed": true}}}, true},
 		{"restart needed", []emitted{{"provider_restart_needed", map[string]any{"provider": "p"}}}, true},
 		{"lease ended", []emitted{{"provider_expired", map[string]any{"provider": "p", "renewal": "refused"}}}, true},
+		{"headers refused", []emitted{{"provider_auth_failed", map[string]any{"provider": "p", "status": 401}}}, true},
+		{"headers changed", []emitted{{"provider_headers", map[string]any{"provider": "p", "by": "host"}}}, false},
 	} {
 		te := newReportEngine(t, nil, nil, "a1", "b1")
 		for _, ev := range tc.events {
