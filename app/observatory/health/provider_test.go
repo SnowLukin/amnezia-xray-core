@@ -566,6 +566,47 @@ func TestNetworkTriggerInANetworkSeenUnderAPin(t *testing.T) {
 	}
 }
 
+// Pinned on its cheapest outbound, which fails under the pin, the balancer
+// moves to a dearer one at the release, and the network trigger judges that
+// move: the cheaper outbound does not work in this network. A failover that
+// probes first decides only once its probe answers, after the turn of the
+// release, and the trigger waits for it.
+func TestNetworkTriggerAfterAPinOnTheCheapestThatFailed(t *testing.T) {
+	for _, probe := range []bool{false, true} {
+		t.Run(fmt.Sprintf("switch after probe %v", probe), func(t *testing.T) {
+			te := newProviderEngine(t, quietProvider(func(p *ProviderConfig) {
+				p.Triggers.OnNetworkChange = RefreshOnNetwork_REFRESH_UNKNOWN_NOT_CHEAPEST
+				p.Triggers.NetworkSettle = int64(30 * time.Second)
+			}), &SelectorConfig{Costs: costs("a", 1, "b", 3), OnNetworkChange: NetworkChangeMode_FORGET,
+				SwitchWithoutProbe: !probe}, "a1", "b1")
+			te.pin("auto", "a1", at(time.Minute))
+			back := at(10 * time.Minute)
+			te.onNetworkChange("cafe", back)
+			te.failN(3, "a1", failDialTimeout, back.Add(5*time.Second))
+			if te.path("a1").status != statusDown || te.sel.current() != "a1" {
+				t.Fatalf("setup: a1 %v, on %s", te.path("a1").status, te.sel.current())
+			}
+			var got []string
+			for now := back; now.Before(back.Add(3 * time.Minute)); now = now.Add(5 * time.Second) {
+				if now.Equal(back.Add(time.Minute)) {
+					te.release("auto", now)
+				}
+				// A turn of the loop: probes start, the providers are judged,
+				// and the probes answer after it.
+				te.traffic(now)
+				jobs, refreshes, _ := te.step(now)
+				got = append(got, triggers(refreshes)...)
+				for _, j := range jobs {
+					te.onProbeResult(j, probeResult{ok: true, rtt: 50 * time.Millisecond}, now)
+				}
+			}
+			if te.sel.current() != "b1" || fmt.Sprint(got) != "[network_change]" {
+				t.Fatalf("on %s, refreshes %v; want b1 and a network refresh", te.sel.current(), got)
+			}
+		})
+	}
+}
+
 func TestHostRequestIgnoresIdleButNotLimits(t *testing.T) {
 	te := newProviderEngine(t, quietProvider(nil), nil, "a1")
 	if te.requestRefresh("other") {

@@ -352,15 +352,21 @@ func (e *engine) wantedRefresh(p *provider, now time.Time) ([triggerCount]bool, 
 		}
 	}
 	if p.networkPending {
-		if due := p.networkAt.Add(p.cfg.networkSettle); now.Before(due) {
+		switch due := p.networkAt.Add(p.cfg.networkSettle); {
+		case now.Before(due):
 			soonest(due)
-		} else if p.cfg.onNetwork != RefreshOnNetwork_REFRESH_UNKNOWN_NOT_CHEAPEST || (s != nil && (s.pinned != "" || e.notCheapest(s))) {
+		case p.cfg.onNetwork != RefreshOnNetwork_REFRESH_UNKNOWN_NOT_CHEAPEST || (s != nil && (s.pinned != "" || e.notCheapest(s))):
 			// A pinned balancer keeps the outbound of the host, which tells
 			// nothing about the cheaper ones: the trigger waits for the
 			// release like every other and is judged after it, the same
 			// whether the pin ends before the network settled or after.
 			want[triggerNetwork] = true
-		} else {
+		case s != nil && len(s.failoverProbing) > 0:
+			// A failover under way decides where the balancer goes, as the
+			// release of a pin on an outbound that failed under it starts
+			// one: the trigger is judged once its probes answered, which
+			// kicks the loop.
+		default:
 			p.networkPending = false
 		}
 	}
