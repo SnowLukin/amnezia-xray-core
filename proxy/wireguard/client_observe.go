@@ -123,7 +123,7 @@ type tunnelDial struct {
 	// Ends with the user connection, also when the observer aborts it.
 	ctx context.Context
 
-	// h.received when the connection entered the tunnel, and when: a
+	// h.recv when the connection entered the tunnel, and when: a
 	// datagram that arrives later is an answer for it.
 	mark  uint64
 	since time.Time
@@ -196,7 +196,7 @@ func (t *tunnelDial) entered() {
 	if t == nil {
 		return
 	}
-	t.mark = t.h.received.Load()
+	t.mark = t.h.recv.Load()
 	t.since = time.Now()
 	t.mu.Lock()
 	if !t.dialed {
@@ -228,7 +228,7 @@ func (t *tunnelDial) poll() {
 // answeredNow ends the dial when the server has answered since the
 // connection entered the tunnel.
 func (t *tunnelDial) answeredNow() bool {
-	if t.h.received.Load() == t.mark {
+	if t.h.recv.Load() == t.mark {
 		return false
 	}
 	t.answer(nil)

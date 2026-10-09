@@ -44,9 +44,7 @@ type Handler struct {
 	tnet *Net
 	dev  *device.Device
 	mu   sync.Mutex
-
-	// received counts what the server sends, see client_observe.go.
-	received receivedCounter
+	recv receivedCounter // what the server sends, see client_observe.go
 }
 
 func NewClient(ctx context.Context, conf *DeviceConfig) (proxy.Outbound, error) {
@@ -306,7 +304,7 @@ func (h *Handler) init(ctx context.Context) error {
 				WriteCounter: h.uplinkCounter,
 			}
 		}
-		pktConn = h.received.wrap(pktConn)
+		pktConn = h.recv.wrap(pktConn)
 		return pktConn, nil
 	}
 	bind := &bind{}
