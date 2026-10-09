@@ -434,6 +434,8 @@ type selector struct {
 	started     bool
 	activeSince time.Time
 	pinned      string
+	// The pin is startPinned, not one of the host.
+	startPin bool
 	// The start pin releases itself at this time; zero waits for the host.
 	pinnedUntil time.Time
 	exhausted   bool
@@ -591,6 +593,7 @@ func (e *engine) updateCandidates(s *selector, candidates []string, now time.Tim
 func (e *engine) start(s *selector, now time.Time) {
 	if s.cfg.startPinned != "" && s.hasCandidate(s.cfg.startPinned) {
 		s.pinned = s.cfg.startPinned
+		s.startPin = true
 		if s.cfg.startPinnedFor > 0 {
 			s.pinnedUntil = now.Add(s.cfg.startPinnedFor)
 		}
@@ -668,7 +671,11 @@ func (e *engine) exhaust(s *selector, now time.Time) {
 
 func (e *engine) failover(s *selector, now time.Time) {
 	if s.pinned != "" {
-		e.emit(now, "pinned_down", map[string]any{"balancer": s.tag, "outbound": s.pinned})
+		f := map[string]any{"balancer": s.tag, "outbound": s.pinned}
+		if s.startPin {
+			f["start_pinned"] = true
+		}
+		e.emit(now, "pinned_down", f)
 		return
 	}
 	if s.failoverTried == nil {
@@ -1677,6 +1684,7 @@ func (e *engine) pin(selectorTag, tag string, now time.Time) bool {
 		return false
 	}
 	s.pinned = tag
+	s.startPin = false
 	s.pinnedUntil = time.Time{}
 	// A return or a failover under way would move the balancer off the pin
 	// once its probe answers.

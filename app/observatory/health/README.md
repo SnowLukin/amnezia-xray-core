@@ -449,7 +449,7 @@ changed its settings). `kinds` counts failures by kind: `dial_failed`, `dial_tim
 | `upgrade_penalty` | `balancer`, `outbound`, `multiplier` | A return failed within `penaltyWindow`. |
 | `pin`, `release` | `balancer`, `outbound`; for `release` also `by`: `host` or `timer` | The host pinned or released a balancer, or the start pin ran out. |
 | `stale_request` | `request`, `balancer`, `run` | A pin or release meant for another run of the core was ignored. |
-| `pinned_down` | `balancer`, `outbound` | The pinned outbound failed; the balancer stays on it. |
+| `pinned_down` | `balancer`, `outbound`, `start_pinned` | The pinned outbound failed; the balancer stays on it. `start_pinned` is `true` when the pin is `startPinned` rather than one of the host. |
 | `connectivity` | `ok`, `rtt_ms`, `error` | Result of a network check. |
 | `network_down` | `error` | The network check failed; decisions paused. `error` is `host` when the host reported the loss. |
 | `network_up` | `by` | Decisions resumed: `connectivity` (a check passed), `traffic` or `probe` (an outbound worked). |
@@ -471,9 +471,11 @@ counted as it is written: a full log, or a host that never drains it,
 changes nothing in the report.
 
 A decision is a `switch` for any reason but `start`, `start_pinned` and
-`start_remembered`, `exhausted`, `upgrade_failed`, `pinned_down`, a
-`provider_apply` that was rejected or changed the set, and
-`provider_restart_needed`. Events the log dropped are no decision.
+`start_remembered`, `exhausted`, `upgrade_failed`, `pinned_down` without
+`start_pinned` (the host that verifies the outbound of the start pin
+reports a failure itself), a `provider_apply` that was rejected or changed
+the set, and `provider_restart_needed`. Events the log dropped are no
+decision.
 
 `TakeReport(final)` returns the report when one is due and starts a new
 window:
