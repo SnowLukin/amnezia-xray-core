@@ -127,7 +127,7 @@ Fields with zero or empty values are left out, except those marked always.
 | `run` | Always. Names the run of the core, hashed for this provider: the first 16 hex digits of SHA-256 of the URL, a zero byte and the run. Stable within a run; two backends cannot match theirs. |
 | `refresh` | Always. Grows with every refresh of the run and is the same in every attempt of one refresh: `run` and `refresh` together tell a request sent again through another `via` from a new one. |
 | `trigger` | Always. Why the core asks, see [When the core asks](#when-the-core-asks). |
-| `retry` | Always. Refreshes that failed in a row before this one. |
+| `retry` | Always. The level of the backoff this refresh waited for: refreshes in a row since the last success that failed, brought an answer the core refused, or, for an exhausted balancer, brought the same set again. A pause the backend asked for with `Retry-After` and refused headers leave it as it is; any other applied answer sets it back to 0. |
 | `lastFailure` | Only when the previous refresh failed: `status`, the HTTP status or 0; `agoMs`, how long ago; `error`, the reason the core refused a well-formed answer (at most 200 bytes, see [Answer](#answer)) or the class of the failure: `timeout`, `network`, `status`, `too_large` or `broken_json`. It is what the last `via` that was asked met. |
 | `version` | The set the core applies now, as the answer named it; none before the first set. |
 | `baseVersion` | The base config the core runs with, see [Base config](#base-config); none without one. |
@@ -143,7 +143,7 @@ Per outbound:
 | --- | --- |
 | `tag` | Always. |
 | `state` | Always. `up`, `suspect`, `down`, or `unknown` for an outbound the core knows nothing about yet. |
-| `reason`, `stateMs` | What set the state (`traffic`, `probe`, `upgrade_probe`, `host_probe`, `network_change`, `network_down`, `network_up` or `replaced`) and how long ago. |
+| `reason`, `stateMs` | What set the state (`traffic`, `probe`, `upgrade_probe`, `host_probe`, `network_change`, `network_down`, `network_up`, `replaced`, or `chosen` for an outbound a balancer chose again after its rest, judged afresh) and how long ago. |
 | `seenMs` | How long the core has kept the counters of the outbound. |
 | `quarantineLevel`, `quarantineMs` | While the outbound rests after a failure: the level of its rest, which grows with every failure in a row, and how much longer it lasts. |
 | `failures` | Failures of user connections by kind over the life of the outbound: `dial_failed`, `dial_timeout`, `server_unverified` (REALITY did not verify the server), `no_response`, `closed`, `stall`, `partial_stall`. |
