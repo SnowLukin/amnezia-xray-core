@@ -984,7 +984,7 @@ def fold_report(events):
             decided = decided or reason not in START_REASONS
         elif t in ("exhausted", "pinned_down"):
             c[t] += 1
-            decided = True
+            decided = decided or not f.get("start_pinned")
         elif t == "path_state" and f.get("state") in ("down", "suspect"):
             c["path_" + f["state"]] += 1
         elif t == "pending_closed":

@@ -1313,6 +1313,254 @@ def pinned_start(stand, xray, work, name):
     return checks
 
 
+# The hybrid with Conquest: variants of one connection, the one Conquest verifies pinned from
+# the first connection, and the timer of production, the verification timeout plus 10 s.
+HYBRID_PIN_FOR = 30
+# The probe timeout of the bench config: a failover after the release takes one probe.
+PROBE_TIMEOUT = 6
+
+
+def hybrid_config():
+    return bench.client_config(THREE, THREE_COSTS,
+                               strategy={"startPinned": "a1", "startPinnedFor": f"{HYBRID_PIN_FOR}s"})
+
+
+def first_event(events, typ, since=0, **fields):
+    return next((e for e in events if e["type"] == typ and e["ts"] / 1000 >= since
+                 and all(e["fields"].get(k) == v for k, v in fields.items())), None)
+
+
+def held_on_dead_pin(c, cs, start, release):
+    """a1 is dead and pinned from start to release: nothing switches, every user connection
+    goes to a1, the host sees pinned_down, and the other addresses get nothing but probes."""
+    inside = [e for e in c.events if start <= e["ts"] / 1000 < release]
+    switched = [e for e in inside if e["type"] == "switch" and e["fields"].get("reason") != "start_pinned"]
+    pinned_down = [e for e in inside if e["type"] == "pinned_down"]
+    others = cs.between([A1, B0], start, release)
+    others_probes = [e for e in inside if e["type"] == "probe_start" and e["fields"]["outbound"] in ("a2", "b1")]
+    checks = [
+        check("switches under the pin", [f"{e['fields']['to']} ({e['fields']['reason']})" for e in switched],
+              not switched, "none"),
+        check("pinned_down under the pin", len(pinned_down), len(pinned_down) >= 1, ">= 1"),
+        check("connections to a2 and b1 under the pin vs their probes", f"{others}/{len(others_probes)}",
+              others == len(others_probes), "equal (0 expected)"),
+    ]
+    routed = c.routed(start, release)
+    if routed is not None:
+        checks.append(check("user connections under the pin by outbound", routed,
+                            set(routed) == {"a1"} and routed["a1"] >= 10, "a1 only, >= 10"))
+    return checks
+
+
+def failover_after_release(c, tr, release):
+    """After the release of a dead pinned a1 the balancer moves to a2 after one round of failover
+    probes, a2 first and b1 beside it when two probes run at once, and nothing is rechecked: the
+    network did not change under the pin."""
+    after = [e for e in c.events if e["ts"] / 1000 >= release]
+    sw = next((e for e in after if e["type"] == "switch"), None)
+    took = sw and round(sw["ts"] / 1000 - release, 2)
+    before = [f"{e['fields']['outbound']} {e['fields']['reason']}" for e in after
+              if e["type"] == "probe_start" and (sw is None or e["ts"] <= sw["ts"])]
+    rechecks = [e for e in after if e["type"] == "probe_start" and e["fields"].get("reason") == "network_change"]
+    rec, _ = bench.recovery(tr.records, release)
+    return [
+        check("first switch after the release, s", sw and f"{sw['fields']['to']} ({sw['fields']['reason']}) {took}",
+              bool(sw) and sw["fields"]["to"] == "a2" and sw["fields"]["reason"] == "failover"
+              and took <= PROBE_TIMEOUT, f"a2 (failover) <= {PROBE_TIMEOUT}"),
+        check("probes before that switch", before,
+              before[:1] == ["a2 failover"] and len(before) <= bench.CONCURRENT
+              and all(p.endswith(" failover") for p in before),
+              f"a2 failover first, <= {bench.CONCURRENT} failover"),
+        check("rechecks without a network change under the pin", len(rechecks), not rechecks, "== 0"),
+        check("recovery after the release, s", rec and round(rec, 1), rec is not None and rec <= 10, "<= 10"),
+    ]
+
+
+@scenario()
+def hybrid_pin_release(stand, xray, work, name):
+    """Hybrid with Conquest, the host releases the pin: a1 is dead while Conquest verifies it.
+    Traffic stays on a1 and nothing switches; a release meant for another run of the core is
+    ignored and the pin stands; the release of this run moves the balancer to a2 after one probe."""
+    m = Marks()
+    seen = {}
+    with bench.Client(xray, hybrid_config(), work, name) as c, bench.ConnSampler() as cs:
+        tr = bench.Traffic(rate=2, big=0.5)
+        m["start"] = time.time()
+        tr.start()
+        time.sleep(2)
+        bench.chaos(A0, "blackhole")
+        wait_for(lambda: bench.events_of(c.events, "pinned_down", m["start"]), 15)
+        run = c.status()["run"]
+        other_run = run[:-1] + ("1" if run[-1] == "0" else "0")
+        m["stale"] = time.time()
+        seen["stale"] = c.api("release", "auto", other_run)
+        time.sleep(1.5)
+        seen["after_stale"] = c.status()["balancers"][0]
+        m["release"] = time.time()
+        seen["release"] = c.api("release", "auto", run)
+        wait_for(lambda: bench.switches(c.events, m["release"]), 10)
+        time.sleep(8)
+        tr.stop()
+    stale = first_event(c.events, "stale_request", m["stale"], request="release", run=other_run)
+    early = [e for e in c.events if e["type"] == "release" and e["ts"] / 1000 < m["release"]]
+    released = first_event(c.events, "release", m["release"])
+    pinned = seen["after_stale"]
+    t_pin = first_event(c.events, "switch", reason="start_pinned")
+    return held_on_dead_pin(c, cs, m["start"], m["release"]) + [
+        check("release for another run", f"{seen['stale']}, stale_request {bool(stale)}",
+              seen["stale"] == {"ok": False} and bool(stale), "ok false, stale_request"),
+        check("after it: pinned and on a1", f"pinned {pinned.get('pinned')!r}, active {pinned['active']!r}",
+              pinned.get("pinned") == "a1" and pinned["active"] == "a1" and not early, "a1, a1, no release"),
+        check("release of this run, s after the pin", released and t_pin
+              and f"{released['fields'].get('by')} {round(released['ts'] / 1000 - t_pin['ts'] / 1000, 1)}",
+              seen["release"] == {"ok": True} and bool(released) and released["fields"].get("by") == "host"
+              and bool(t_pin) and released["ts"] - t_pin["ts"] < HYBRID_PIN_FOR * 1000, f"host, < {HYBRID_PIN_FOR}"),
+    ] + failover_after_release(c, tr, m["release"]) + [leak_check(c)]
+
+
+@scenario()
+def hybrid_pin_timer(stand, xray, work, name):
+    """Hybrid with Conquest, nobody releases the pin: a1 is dead and traffic stays on it until
+    startPinnedFor after the first connection; then the balancer moves to a2 after one probe."""
+    m = Marks()
+    with bench.Client(xray, hybrid_config(), work, name) as c, bench.ConnSampler() as cs:
+        tr = bench.Traffic(rate=2, big=0.5)
+        m["start"] = time.time()
+        tr.start()
+        time.sleep(2)
+        bench.chaos(A0, "blackhole")
+        released = wait_for(lambda: bench.events_of(c.events, "release", m["start"]), HYBRID_PIN_FOR + 15)
+        if released:
+            m["release"] = released[0]["ts"] / 1000
+            wait_for(lambda: bench.switches(c.events, m["release"]), 10)
+        time.sleep(8)
+        tr.stop()
+    if "release" not in m:
+        return [check("release by the timer", None, False, f"{HYBRID_PIN_FOR} s after the pin")]
+    t_pin = first_event(c.events, "switch", reason="start_pinned")
+    released = first_event(c.events, "release", m["start"])
+    late = t_pin and m["release"] - t_pin["ts"] / 1000 - HYBRID_PIN_FOR
+    return held_on_dead_pin(c, cs, m["start"], m["release"]) + [
+        check("release by the timer, s after the pin", t_pin and f"{released['fields'].get('by')} "
+              f"{round(m['release'] - t_pin['ts'] / 1000, 2)}",
+              bool(t_pin) and released["fields"].get("by") == "timer" and -0.1 <= late <= 1.5,
+              f"timer, {HYBRID_PIN_FOR} .. {HYBRID_PIN_FOR} + 1.5"),
+    ] + failover_after_release(c, tr, m["release"]) + [leak_check(c)]
+
+
+@scenario()
+def hybrid_pin_stop(stand, xray, work, name):
+    """The core stops under the pin after pinned_down, as when Conquest gives up on a dead a1.
+    Under the start pin that failure is no decision, so the stop leaves no final report: the host
+    reports its failed check itself. The same stop under a pin of the host sends one."""
+    clients = {}
+    pinned = None
+    for label, cfg in (("start", hybrid_config()), ("host", bench.client_config(THREE, THREE_COSTS))):
+        with bench.Client(xray, cfg, work, f"{name}-{label}") as c:
+            tr = bench.Traffic(rate=2, big=0.5)
+            start = time.time()
+            tr.start()
+            time.sleep(1)
+            if label == "host":
+                pinned = c.api("pin", "auto", "a1", c.status()["run"])
+            bench.chaos(A0, "blackhole")
+            wait_for(lambda: bench.events_of(c.events, "pinned_down", start), 15)
+            tr.stop()
+        bench.chaos(A0, "pass")
+        clients[label] = c
+    checks = [check("pin of the host", pinned, pinned == {"ok": True}, "ok")]
+    for label, c in clients.items():
+        downs = bench.events_of(c.events, "pinned_down")
+        marks = sorted({e["fields"].get("start_pinned") is True for e in downs})
+        sw = [f"{e['fields']['to']} ({e['fields']['reason']})" for e in bench.switches(c.events)]
+        released = bench.events_of(c.events, "release")
+        final = c.final_report
+        checks += [
+            check(f"pinned_down, start_pinned ({label})", f"{len(downs)} {marks}",
+                  bool(downs) and marks == [label == "start"], f">= 1, {label == 'start'}"),
+            check(f"switches and releases before the stop ({label})", sw + [len(released)],
+                  len(sw) == 1 and sw[0].startswith("a1 (start") and not released, "the start only"),
+        ]
+        if label == "start":
+            checks.append(check("final report (start)", final and f"{final['report_reason']} "
+                                f"pinned_down {final['pinned_down']}", final is None, "none"))
+        else:
+            checks.append(check("final report (host)", final and f"{final['report_reason']} "
+                                f"pinned_down {final['pinned_down']}",
+                                bool(final) and final["report_reason"] == "stop" and final["pinned_down"] >= 1,
+                                "stop, pinned_down >= 1"))
+        checks.append(leak_check(c))
+    return checks
+
+
+@scenario()
+def hybrid_pin_network(stand, xray, work, name):
+    """The network changes under the pin while a1 works, and nothing is probed until the pin is
+    released. Traffic pauses over the change under the start pin, so the release by the timer
+    probes a1 once in the new network, as after a change without the pin. Under the pin of the
+    host traffic shows a1 working in the new network, so the release by the host probes nothing.
+    The balancer stays on a1."""
+    m = Marks()
+    seen = {}
+    with bench.Client(xray, hybrid_config(), work, name) as c:
+        tr = bench.Traffic(rate=2, big=0.5)
+        m["start"] = time.time()
+        tr.start()
+        time.sleep(5)
+        tr.paused.set()
+        time.sleep(1)
+        m["net1"] = time.time()
+        c.network("cafe")
+        released = wait_for(lambda: bench.events_of(c.events, "release", m["start"]), HYBRID_PIN_FOR + 15)
+        if released:
+            m["timer"] = released[0]["ts"] / 1000
+        time.sleep(3)
+        tr.paused.clear()
+        time.sleep(2)
+        run = c.status()["run"]
+        m["pin"] = time.time()
+        seen["pin"] = c.api("pin", "auto", "a1", run)
+        time.sleep(2)
+        m["net2"] = time.time()
+        c.network("home")
+        time.sleep(4)
+        m["release"] = time.time()
+        seen["release"] = c.api("release", "auto", run)
+        time.sleep(6)
+        tr.stop()
+    if "timer" not in m:
+        return [check("release by the timer", None, False, f"{HYBRID_PIN_FOR} s after the pin")]
+    checks = []
+    for label, net, release in (("timer", m["net1"], m["timer"]), ("host", m["net2"], m["release"])):
+        held = [e for e in bench.probes(c.events, net) if e["ts"] / 1000 < release]
+        checks.append(check(f"probes under the pin after the change ({label})", len(held), not held, "== 0"))
+    after = bench.probes(c.events, m["timer"], m["pin"])
+    first = after[0] if after else None
+    took = first and round(first["ts"] / 1000 - m["timer"], 2)
+    result = first and first_event(c.events, "probe_result", first["ts"] / 1000, outbound="a1",
+                                   reason="network_change")
+    seen_up = first_event(c.events, "path_state", m["net2"], outbound="a1", state="up", reason="traffic")
+    up_in = seen_up and round(seen_up["ts"] / 1000 - m["net2"], 1)
+    after_host = [f"{e['fields']['outbound']} {e['fields']['reason']}" for e in bench.probes(c.events, m["release"])]
+    sw = [f"{e['fields']['to']} ({e['fields']['reason']})" for e in bench.switches(c.events)]
+    return checks + [
+        check("probes after the release by timer, s",
+              [f"{e['fields']['outbound']} {e['fields']['reason']}" for e in after] + [took],
+              len(after) == 1 and first["fields"]["outbound"] == "a1"
+              and first["fields"]["reason"] == "network_change" and took <= 3,
+              "one: a1 network_change <= 3 (a spacing)"),
+        check("its result (timer)", result and result["fields"].get("ok"),
+              bool(result) and result["fields"].get("ok") is True, "ok"),
+        check("a1 up by traffic under the pin of the host, s after the change", up_in,
+              bool(seen_up) and seen_up["ts"] / 1000 < m["release"], "before the release"),
+        check("probes after the release by host", after_host, not after_host, "none"),
+        check("pin and release of the host", f"{seen['pin']}, {seen['release']}",
+              seen["pin"] == seen["release"] == {"ok": True}, "ok, ok"),
+        check("switches", sw, sw == ["a1 (start_pinned)"], "a1 (start_pinned) only"),
+        leak_check(c),
+    ]
+
+
 # ---- 8. probes the host asks for ------------------------------------------------
 
 HOST_PROBES_PER_MINUTE = 4

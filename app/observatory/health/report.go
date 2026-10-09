@@ -172,7 +172,11 @@ func (r *report) count(typ string, f map[string]any) {
 		r.decide()
 	case "pinned_down":
 		c.PinnedDown++
-		r.decide()
+		// A start pin holds while the host verifies the connection, and the
+		// host reports a failed verification itself.
+		if f["start_pinned"] != true {
+			r.decide()
+		}
 	case "network_change":
 		c.NetworkChanges++
 		if f["known"] == true {

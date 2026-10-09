@@ -167,7 +167,9 @@ for `hostProbes` `perMinute` half of `schedule.perMinute`, `reuse` 5 min,
   suspicion, `never` trusts the evidence.
 - `onNetworkChange` of the strategy: `recheck` forgets and probes the chosen
   outbound once (or the one remembered for the network), `forget` only
-  forgets, `ignore` keeps everything.
+  forgets, `ignore` keeps everything. A pinned balancer is rechecked once
+  its pin is released, if the network changed meanwhile; its outbound is
+  not probed when traffic or a probe has already judged it there.
 - `upgrade.interval` cannot be zero; a very long interval such as `8760h`
   leaves only returns after network changes.
 - `startPinned` keeps the balancer on one outbound until the host releases
@@ -610,7 +612,7 @@ changed its settings). `kinds` counts failures by kind: `dial_failed`, `dial_tim
 | `upgrade_penalty` | `balancer`, `outbound`, `multiplier` | A return failed within `penaltyWindow`. |
 | `pin`, `release` | `balancer`, `outbound`; for `release` also `by`: `host` or `timer` | The host pinned or released a balancer, or the start pin ran out. |
 | `stale_request` | `request`, `balancer`, `run` | A pin or release meant for another run of the core was ignored. |
-| `pinned_down` | `balancer`, `outbound` | The pinned outbound failed; the balancer stays on it. |
+| `pinned_down` | `balancer`, `outbound`, `start_pinned` | The pinned outbound failed; the balancer stays on it. `start_pinned` is `true` when the pin is `startPinned` rather than one of the host. |
 | `connectivity` | `ok`, `rtt_ms`, `error` | Result of a network check. |
 | `network_down` | `error` | The network check failed; decisions paused. `error` is `host` when the host reported the loss. |
 | `network_up` | `by` | Decisions resumed: `connectivity` (a check passed), `traffic` or `probe` (an outbound worked). |
@@ -637,9 +639,10 @@ changes nothing in the report.
 
 A decision is a `switch` for any reason but `start`, `start_pinned`,
 `start_remembered` and `start_with`, `exhausted`, `upgrade_failed`,
-`pinned_down`, a `provider_apply` that was rejected or changed the set,
-`provider_restart_needed`, `provider_expired`, `provider_auth_failed` and
-`provider_base_changed`.
+`pinned_down` without `start_pinned` (the host that verifies the outbound
+of the start pin reports a failure itself), a `provider_apply` that was
+rejected or changed the set, `provider_restart_needed`, `provider_expired`,
+`provider_auth_failed` and `provider_base_changed`.
 The initial set is no decision, as a start switch is not, nor a lease that
 ended in it before the start, the usual morning after a device was off;
 otherwise every session would have one. A refused initial set is. Events

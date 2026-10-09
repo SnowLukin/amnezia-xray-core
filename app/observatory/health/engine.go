@@ -111,6 +111,8 @@ type engine struct {
 	networkID  string
 	networks   map[string]map[string]string
 	netOrder   []string
+	// The network was remembered when the host reported it.
+	networkKnown bool
 
 	lastDemand atomic.Int64
 
@@ -482,9 +484,13 @@ type selector struct {
 	started     bool
 	activeSince time.Time
 	pinned      string
+	// The pin is startPinned, not one of the host.
+	startPin bool
 	// The start pin releases itself at this time; zero waits for the host.
 	pinnedUntil time.Time
 	exhausted   bool
+	// The network changed while pinned; the release rechecks the choice.
+	recheckOnRelease bool
 
 	// Candidates of the failover under way: every one tried, and the ones
 	// whose probe has not answered yet.
@@ -642,6 +648,7 @@ func (e *engine) updateCandidates(s *selector, candidates []string, now time.Tim
 func (e *engine) start(s *selector, now time.Time) {
 	if s.cfg.startPinned != "" && s.hasCandidate(s.cfg.startPinned) {
 		s.pinned = s.cfg.startPinned
+		s.startPin = true
 		if s.cfg.startPinnedFor > 0 {
 			s.pinnedUntil = now.Add(s.cfg.startPinnedFor)
 		}
@@ -720,7 +727,11 @@ func (e *engine) exhaust(s *selector, now time.Time) {
 
 func (e *engine) failover(s *selector, now time.Time) {
 	if s.pinned != "" {
-		e.emit(now, "pinned_down", map[string]any{"balancer": s.tag, "outbound": s.pinned})
+		f := map[string]any{"balancer": s.tag, "outbound": s.pinned}
+		if s.startPin {
+			f["start_pinned"] = true
+		}
+		e.emit(now, "pinned_down", f)
 		return
 	}
 	if s.failoverTried == nil {
@@ -1644,6 +1655,7 @@ func (e *engine) onNetworkChange(id string, now time.Time) {
 	}
 	e.providersOnNetworkChange(known, now)
 	e.networkID = id
+	e.networkKnown = known
 	e.endPause(now)
 	e.doubt = false
 	e.checkFails = 0
@@ -1684,25 +1696,36 @@ func (e *engine) onNetworkChange(id string, now time.Time) {
 			s.penalty = map[string]float64{}
 			s.returnedTo = ""
 		}
-		if s.cfg.onNetworkChange != NetworkChangeMode_RECHECK || s.pinned != "" {
+		if s.cfg.onNetworkChange != NetworkChangeMode_RECHECK {
 			continue
 		}
-		if s.exhausted {
-			if r := e.ranked(s, now, nil); len(r) > 0 {
-				e.switchTo(s, r[0], "network_change", now)
-			}
+		if s.pinned != "" {
+			s.recheckOnRelease = true
 			continue
 		}
-		if tag := e.rememberedFor(s); tag != "" && tag != s.current() && s.hasCandidate(tag) && !e.expired[tag] {
-			e.enqueue(tag, reasonRemembered, s.tag, now)
-			continue
-		}
-		if cur := s.current(); cur != "" {
-			e.enqueue(cur, reasonNetwork, s.tag, now)
-		}
-		u := s.cfg.upgrade
-		e.scheduleUpgrade(s, now, u.onNetworkChange && (!u.unknownNetworksOnly || !known))
+		e.recheckChoice(s, known, now)
 	}
+}
+
+// recheckChoice probes the choice of the balancer in a new network, or the
+// outbound that last worked in it.
+func (e *engine) recheckChoice(s *selector, known bool, now time.Time) {
+	if s.exhausted {
+		if r := e.ranked(s, now, nil); len(r) > 0 {
+			e.switchTo(s, r[0], "network_change", now)
+		}
+		return
+	}
+	if tag := e.rememberedFor(s); tag != "" && tag != s.current() && s.hasCandidate(tag) && !e.expired[tag] {
+		e.enqueue(tag, reasonRemembered, s.tag, now)
+		return
+	}
+	// Under a pin, traffic or a probe may have judged it in this network already.
+	if cur := s.current(); cur != "" && e.path(cur).status == statusUnknown {
+		e.enqueue(cur, reasonNetwork, s.tag, now)
+	}
+	u := s.cfg.upgrade
+	e.scheduleUpgrade(s, now, u.onNetworkChange && (!u.unknownNetworksOnly || !known))
 }
 
 func (e *engine) onNetworkLost(now time.Time) {
@@ -1736,7 +1759,9 @@ func (e *engine) remember(tag string) {
 		return
 	}
 	for _, s := range e.selectors {
-		if s.current() != tag {
+		// The host chose a pinned outbound; it tells nothing about which one
+		// the balancer should go back to in this network.
+		if s.current() != tag || s.pinned != "" {
 			continue
 		}
 		m := e.networks[e.networkID]
@@ -1766,6 +1791,7 @@ func (e *engine) pin(selectorTag, tag string, now time.Time) bool {
 		return false
 	}
 	s.pinned = tag
+	s.startPin = false
 	s.pinnedUntil = time.Time{}
 	// A return or a failover under way would move the balancer off the pin
 	// once its probe answers.
@@ -1808,6 +1834,8 @@ func (e *engine) releaseBy(selectorTag, by string, now time.Time) bool {
 	e.emit(now, "release", map[string]any{"balancer": selectorTag, "outbound": s.pinned, "by": by})
 	s.pinned = ""
 	s.pinnedUntil = time.Time{}
+	recheck := s.recheckOnRelease
+	s.recheckOnRelease = false
 	cur := s.current()
 	switch {
 	case cur == "":
@@ -1821,6 +1849,9 @@ func (e *engine) releaseBy(selectorTag, by string, now time.Time) bool {
 		return true
 	}
 	e.scheduleUpgrade(s, now, false)
+	if recheck {
+		e.recheckChoice(s, e.networkKnown, now)
+	}
 	return true
 }
 

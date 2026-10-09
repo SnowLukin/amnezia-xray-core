@@ -76,7 +76,7 @@ func foldReport(t *testing.T, raw []byte) (reportCounts, bool) {
 			decided = true
 		case "pinned_down":
 			c.PinnedDown++
-			decided = true
+			decided = decided || f["start_pinned"] != true
 		case "network_change":
 			c.NetworkChanges++
 			if f["known"] == true {
@@ -173,6 +173,7 @@ func TestReportAddsUpTheEvents(t *testing.T) {
 	now := at(17 * time.Minute)
 	te.emit(now, "pending_closed", map[string]any{"outbound": "a1", "connections": 3, "reason": "traffic"})
 	te.emit(now, "pinned_down", map[string]any{"balancer": "auto", "outbound": "a1"})
+	te.emit(now, "pinned_down", map[string]any{"balancer": "auto", "outbound": "a1", "start_pinned": true})
 	te.emit(now, "exhausted", map[string]any{"balancer": "auto", "from": "a1", "candidates": 2})
 	te.emit(now, "provider_fetch", map[string]any{"provider": "p", "trigger": "host", "retry": 0, "attempt": 1,
 		"via": "", "outbound": "", "ok": true, "status": 200, "ms": int64(40), "bytes": 900})
@@ -269,6 +270,9 @@ func TestReportDecisions(t *testing.T) {
 		{"exhausted", []emitted{{"exhausted", map[string]any{"balancer": "auto"}}}, true},
 		{"failed return", []emitted{{"upgrade_failed", map[string]any{"balancer": "auto"}}}, true},
 		{"pinned down", []emitted{{"pinned_down", map[string]any{"balancer": "auto"}}}, true},
+		{"pinned down under the start pin", []emitted{
+			{"pinned_down", map[string]any{"balancer": "auto", "start_pinned": true}},
+		}, false},
 		{"provider rejected", []emitted{{"provider_apply", map[string]any{"ok": false, "error": "x"}}}, true},
 		{"provider applied", []emitted{{"provider_apply", map[string]any{"ok": true, "changed": true}}}, true},
 		{"restart needed", []emitted{{"provider_restart_needed", map[string]any{"provider": "p"}}}, true},
@@ -284,6 +288,38 @@ func TestReportDecisions(t *testing.T) {
 		if got := te.takeReport(true, at(time.Minute)) != nil; got != tc.decision {
 			t.Errorf("%s: final report %v, want %v", tc.name, got, tc.decision)
 		}
+	}
+}
+
+// A run that stops while the outbound of the start pin is down sends no
+// report: the host verifying that outbound reports the failure itself. The
+// same stop under a pin of the host does.
+func TestPinnedDownUnderTheStartPinIsNoDecision(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		start  string
+		host   bool
+		report bool
+	}{
+		{"start pin", "a1", false, false},
+		{"pin of the host", "", true, true},
+		{"pin of the host over the start pin", "a1", true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sc := &SelectorConfig{Costs: costs("a", 1, "b", 3), StartPinned: tc.start, StartPinnedFor: int64(30 * time.Second)}
+			te := newReportEngine(t, nil, sc, "a1", "b1")
+			if tc.host {
+				te.pin("auto", "a1", at(time.Second))
+			}
+			te.failN(3, "a1", failDial, at(2*time.Second))
+			te.run(t, at(3*time.Second), map[string]bool{"a1": false})
+			if n := countEvents(te.eventTypes(), "pinned_down"); n == 0 || te.sel.current() != "a1" {
+				t.Fatalf("setup: %d pinned_down, on %q", n, te.sel.current())
+			}
+			if got := te.takeReport(true, at(10*time.Second)) != nil; got != tc.report {
+				t.Fatalf("final report %v, want %v", got, tc.report)
+			}
+		})
 	}
 }
 
