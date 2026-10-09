@@ -1112,7 +1112,7 @@ START_REASONS = ("start", "start_pinned", "start_remembered", "start_with")
 def fold_report(events):
     """Adds up events the way the report of the core counts them. Returns the
     counters and whether there was a decision."""
-    keys = ["events", "switches", "exhausted", "path_down", "path_suspect", "pending_closed", "probes",
+    keys = ["events", "switches", "exhausted", "path_down", "path_suspect", "path_rescued", "pending_closed", "probes",
             "probes_failed", "probe_bytes", "host_probe_requests", "host_probes", "upgrade_attempts",
             "upgrade_failures", "pinned_down",
             "network_changes", "network_known", "network_down", "provider_fetches", "provider_fetch_failures",
@@ -1136,6 +1136,8 @@ def fold_report(events):
             decided = decided or not f.get("start_pinned")
         elif t == "path_state" and f.get("state") in ("down", "suspect"):
             c["path_" + f["state"]] += 1
+        elif t == "path_state" and f.get("reason") == "rescued":
+            c["path_rescued"] += 1
         elif t == "pending_closed":
             c["pending_closed"] += f.get("connections", 0)
         elif t == "probe_result":

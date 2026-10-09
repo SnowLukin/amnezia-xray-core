@@ -430,6 +430,9 @@ func (e *engine) markDown(p *path, reason string, strong bool, now time.Time) {
 		}
 		return
 	}
+	// A confirming probe that runs now may yet prove the path works and
+	// undo this down, see rescue.go.
+	p.rescue = e.rescueMarkFor(p.tag, p.quarantineLevel)
 	rest := e.jitter(e.s.schedule.quarantine.delay(p.quarantineLevel), e.s.schedule.quarantine.jitter)
 	// While the check keeps failing the network may be what failed, so the
 	// rest does not lengthen the next one.
@@ -445,6 +448,7 @@ func (e *engine) markDown(p *path, reason string, strong bool, now time.Time) {
 	e.noteDown(p, strong, now)
 	for _, s := range e.sortedSelectors() {
 		if s.returnedTo == p.tag && now.Sub(s.returnedAt) < s.cfg.upgrade.penaltyWindow {
+			p.rescue.notePenalty(s, p.tag)
 			base := maxDuration(s.cfg.upgrade.interval, s.cfg.minHold)
 			s.penalty[p.tag] = minFloat(s.penaltyFor(p.tag)*s.cfg.upgrade.penaltyMultiplier,
 				float64(s.cfg.upgrade.maxPenalty)/float64(base))
@@ -1349,6 +1353,7 @@ func (e *engine) maybeUpgrade(s *selector, now time.Time) time.Time {
 
 func (e *engine) onProbeResult(j *probeJob, r probeResult, now time.Time) {
 	delete(e.running, j.id)
+	rescue := e.takeRescue(j)
 	if j.reason != reasonConnectivity {
 		// The probe may have woken a sleeping tunnel; it sleeps from here.
 		e.used(j.tag, now)
@@ -1402,6 +1407,11 @@ func (e *engine) onProbeResult(j *probeJob, r probeResult, now time.Time) {
 	switch j.reason {
 	case reasonConfirm:
 		if p.status != statusSuspect {
+			// Strong evidence ruled the outbound out while the probe ran.
+			// A pass is newer proof than that evidence: the down was false.
+			if r.ok && rescue != nil && p.status == statusDown {
+				e.rescue(p, rescue, now)
+			}
 			return
 		}
 		if r.ok {
@@ -1434,10 +1444,13 @@ func (e *engine) onProbeResult(j *probeJob, r probeResult, now time.Time) {
 			case e.leaving(cur):
 				e.leaveOutbound(s, now)
 			case s.pinned == "":
-				// The outbound works again; a candidate that passed still moves
-				// the balancer, nothing more is probed.
+				// The outbound came back since the decision, as after a
+				// rescue; a candidate that passed still moves the balancer,
+				// nothing more is probed, and the return to the outbound
+				// waits only for minHold.
 				if tag := e.failoverChoice(s, e.ranked(s, now, func(t string) bool { return t == cur })); tag != "" {
 					e.switchTo(s, tag, "failover", now)
+					e.scheduleUpgrade(s, now, true)
 				}
 			}
 		}

@@ -104,6 +104,9 @@ type path struct {
 	quarantineUntil time.Time
 	// Ruled out while the connectivity check was failing.
 	provisional bool
+	// The outbound went down while a confirming probe of it ran: what a
+	// pass of that probe takes back, see rescue.go.
+	rescue *rescueMark
 
 	probing bool
 	// When the last probe started, and when the last one finished: lastRTT,

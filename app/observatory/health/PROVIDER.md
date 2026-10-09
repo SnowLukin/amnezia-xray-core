@@ -143,7 +143,7 @@ Per outbound:
 | --- | --- |
 | `tag` | Always. |
 | `state` | Always. `up`, `suspect`, `down`, or `unknown` for an outbound the core knows nothing about yet. |
-| `reason`, `stateMs` | What set the state (`traffic`, `probe`, `upgrade_probe`, `host_probe`, `network_change`, `network_down`, `network_up`, `replaced`, or `chosen` for an outbound a balancer chose again after its rest, judged afresh) and how long ago. |
+| `reason`, `stateMs` | What set the state (`traffic`, `probe`, `upgrade_probe`, `host_probe`, `network_change`, `network_down`, `network_up`, `replaced`, `rescued` for an outbound whose down a probe that was already running proved false, or `chosen` for an outbound a balancer chose again after its rest, judged afresh) and how long ago. |
 | `seenMs` | How long the core has kept the counters of the outbound. |
 | `quarantineLevel`, `quarantineMs` | While the outbound rests after a failure: the level of its rest, which grows with every failure in a row, and how much longer it lasts. |
 | `failures` | Failures of user connections by kind over the life of the outbound: `dial_failed`, `dial_timeout`, `server_unverified` (REALITY did not verify the server), `no_response`, `closed`, `stall`, `partial_stall`. |

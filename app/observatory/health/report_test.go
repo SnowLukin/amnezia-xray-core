@@ -55,6 +55,10 @@ func foldReport(t *testing.T, raw []byte) (reportCounts, bool) {
 				c.PathDown++
 			case "suspect":
 				c.PathSuspect++
+			case "up":
+				if f["reason"] == "rescued" {
+					c.PathRescued++
+				}
 			}
 		case "pending_closed":
 			c.PendingClosed += num(f["connections"])
@@ -194,6 +198,7 @@ func TestReportAddsUpTheEvents(t *testing.T) {
 		"code": "unauthorized"})
 	te.emit(now, "provider_base_changed", map[string]any{"provider": "p", "from": "b1", "to": "b2"})
 	te.emit(now, "outbound_sleep", map[string]any{"outbound": "b1", "idle_ms": int64(300_000), "reason": "idle"})
+	te.emit(now, "path_state", map[string]any{"outbound": "a1", "state": "up", "reason": "rescued"})
 
 	raw, dropped := te.events.drain()
 	if dropped != 0 {
@@ -284,6 +289,7 @@ func TestReportDecisions(t *testing.T) {
 		{"base changed", []emitted{{"provider_base_changed", map[string]any{"provider": "p", "from": "b1", "to": "b2"}}}, true},
 		{"headers changed", []emitted{{"provider_headers", map[string]any{"provider": "p", "by": "host"}}}, false},
 		{"outbound asleep", []emitted{{"outbound_sleep", map[string]any{"outbound": "b1", "reason": "idle"}}}, false},
+		{"down undone", []emitted{{"path_state", map[string]any{"outbound": "a1", "state": "up", "reason": "rescued"}}}, false},
 	} {
 		te := newReportEngine(t, nil, nil, "a1", "b1")
 		for _, ev := range tc.events {

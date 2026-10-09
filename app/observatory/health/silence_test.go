@@ -203,10 +203,11 @@ func TestSilentConnectionsEndStallTimeoutAfterADown(t *testing.T) {
 }
 
 // Nothing is ended for silence when it proves nothing about the path or
-// nobody asked for it: the outbound came back or a balancer chose it again
-// before the check, the evidence was about destinations (also when a probe
-// confirmed it), the decision was provisional, the network failed meanwhile,
-// or keepSilentOnDown.
+// nobody asked for it: the outbound came back, also when the probe that was
+// confirming a suspicion of it when it went down passed, or a balancer chose
+// it again before the check, the evidence was about destinations (also when
+// a probe confirmed it), the decision was provisional, the network failed
+// meanwhile, or keepSilentOnDown.
 func TestSilenceKeepsConnectionsWhenItProvesNothing(t *testing.T) {
 	confirmAlways := &SelectorConfig{Costs: costs("a", 1, "b", 3), SwitchWithoutProbe: true, Confirm: ConfirmMode_ALWAYS}
 	confirmNever := &SelectorConfig{Costs: costs("a", 1, "b", 3), SwitchWithoutProbe: true, Confirm: ConfirmMode_NEVER}
@@ -222,6 +223,8 @@ func TestSilenceKeepsConnectionsWhenItProvesNothing(t *testing.T) {
 			f.answer(jobs[0], false)
 		}
 	}
+	// The probe confirming weak evidence when strong evidence came.
+	var confirming *probeJob
 	for _, tc := range []struct {
 		name    string
 		passive *PassiveConfig
@@ -235,6 +238,15 @@ func TestSilenceKeepsConnectionsWhenItProvesNothing(t *testing.T) {
 		{name: "back up", decide: strong, between: func(f *silenceFixture) {
 			f.engine(func(e *engine) { e.markUp(e.path("a1"), "probe", f.clk.now()) })
 		}},
+		{name: "rescued", decide: func(f *silenceFixture) {
+			f.failWeak("a1")
+			jobs, _ := f.turn()
+			if len(jobs) != 1 || jobs[0].reason != reasonConfirm {
+				f.t.Fatalf("probes %+v, want one that confirms", jobs)
+			}
+			confirming = jobs[0]
+			f.failStrong("a1")
+		}, between: func(f *silenceFixture) { f.answer(confirming, true) }},
 		{name: "chosen again", decide: strong, between: func(f *silenceFixture) {
 			f.engine(func(e *engine) {
 				if !e.pin("auto", "a1", f.clk.now()) {

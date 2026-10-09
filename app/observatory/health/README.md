@@ -63,6 +63,20 @@ the config.
    row. A user connection that receives `successBytes` through the outbound
    while the suspicion waits for its probe clears it the same way, and the
    probe is not sent.
+
+   Strong evidence does not wait for a probe that confirms weak evidence:
+   failures about the path that come while it runs rule the outbound out at
+   once. When that probe then passes, the failures were a hiccup shorter
+   than the probe, and the probe rescues the outbound: it is up again with
+   reason `rescued`, out of quarantine at the quarantine level it had
+   before, the down raises no penalty of a return to it, and its connections
+   that go silent are kept, see below; those ended at the decision stay
+   ended. The failover goes on: a balancer that moved or still moves away
+   comes back by a return once `minHold` ends, and one left with nothing
+   takes the outbound back with `recovered`. A confirming probe that had not
+   started yet is dropped at the down, and one that fails changes nothing.
+   A probe for any other reason brings an outbound up when it passes,
+   whenever it started.
 4. **Failover.** The chosen outbound goes down and rests in quarantine with a
    growing, jittered backoff. The balancer moves new connections to the
    cheapest usable candidate, after probing it if `switchAfterProbe`. Up to
@@ -75,10 +89,11 @@ the config.
    goes to `fallbackTag`; quarantined candidates are rechecked while users
    keep trying.
 5. **Return to cheaper.** Not before `minHold`, on `upgrade.interval` (with a
-   random phase per device) or after a network change. The cheaper candidate
-   must pass `upgrade.successes` probes in a row, `upgrade.spacing` apart. A
-   return that fails within `penaltyWindow` multiplies the wait before the
-   next one; a return that holds clears it.
+   random phase per device), after a network change, or as soon as `minHold`
+   ends when the outbound it failed over from turned out to work, as after a
+   rescue. The cheaper candidate must pass `upgrade.successes` probes in a
+   row, `upgrade.spacing` apart. A return that fails within `penaltyWindow`
+   multiplies the wait before the next one; a return that holds clears it.
 6. **Networks.** On `NetworkChanged(id)` results of the previous network are
    forgotten. If the network was seen before, the outbound that last worked
    there is tried first, with one probe and no round over all candidates.
@@ -114,14 +129,14 @@ progress, and long-lived ones such as DNS over HTTPS or push connections
 would keep a tunnel such as WireGuard awake, see Sleep, while their
 applications wait for a timeout of their own. A connection that received
 anything since the decision is kept, and so is everything when the outbound
-came back or a balancer chose it again before the look, or when the network
-failed or changed meanwhile. While a failover away from it still probes
-candidates, new connections still go to it, and the look waits for the
-switch. A decision on failures that may be about destinations, also once a
-probe confirmed them, or on a failed probe alone ends nothing more: the
-path may still serve the destinations it served. A spliced connection is
-judged by what its socket received; on a platform that does not tell, it
-is kept. `keepSilentOnDown` turns this off.
+came back, also by a rescue, or a balancer chose it again before the look,
+or when the network failed or changed meanwhile. While a failover away from
+it still probes candidates, new connections still go to it, and the look
+waits for the switch. A decision on failures that may be about
+destinations, also once a probe confirmed them, or on a failed probe alone
+ends nothing more: the path may still serve the destinations it served. A
+spliced connection is judged by what its socket received; on a platform
+that does not tell, it is kept. `keepSilentOnDown` turns this off.
 
 A decision made while the network check was failing ends nothing.
 
@@ -747,7 +762,7 @@ Every event is `{"seq": n, "ts": unix_ms, "type": "...", "fields": {...}}`.
 | --- | --- | --- |
 | `switch` | `balancer`, `from`, `to`, `reason`, `held_ms`, `cost` | New connections go to another outbound. `reason`: `start`, `start_pinned`, `start_remembered`, `start_with`, `failover`, `upgrade`, `recovered`, `remembered`, `network_change`, `network_up` (the network check passed again and brought back outbounds ruled out while it failed, to a balancer that had nothing usable), `candidates_changed`, `pin`, `retired` (the previous one left its provider set), `expired` (the lease of the previous one ended; one that failed as well is left with `failover`). `held_ms` is the time on the previous one. |
 | `path_state` | `outbound`, `state`, `reason`; for `suspect` also `failures`, `targets`, `kinds`, `strong`; for `down` also `quarantine_ms`, `quarantine_level` and `provisional` when it was ruled out while the network check was failing | An outbound became `up`, `suspect`, `down` or `unknown`. `reason`: `traffic`, `probe`, `upgrade_probe`, `host_probe`, `network_change`, `network_down`, `network_up`, `replaced` (a provider
-changed its settings). `kinds` counts failures by kind: `dial_failed`, `dial_timeout`, `server_unverified`, `no_response`, `closed`, `stall`, `partial_stall`. For an outbound with a tunnel, `dial_failed` and `dial_timeout` tell that the tunnel could not be set up or that its server did not answer a connection, see How it decides. |
+changed its settings), `rescued` (a probe that was confirming a suspicion when strong evidence ruled the outbound out passed, see How it decides). `kinds` counts failures by kind: `dial_failed`, `dial_timeout`, `server_unverified`, `no_response`, `closed`, `stall`, `partial_stall`. For an outbound with a tunnel, `dial_failed` and `dial_timeout` tell that the tunnel could not be set up or that its server did not answer a connection, see How it decides. |
 | `probe_start` | `outbound`, `reason`, `balancer`, `running`, `request` | A probe started. `reason`: `confirm`, `failover`, `network_change`, `remembered`, `recheck`, `upgrade`, `host`. `running` counts the outbound probes running now, this one included. `request` is the id of the request a `host` probe is for. |
 | `probe_result` | `outbound`, `reason`, `balancer`, `ok`, `rtt_ms`, `bytes`, `error`, `stale`, `request` | A probe finished. `bytes` counts both directions above TLS. `stale` means it was made in the previous network and was ignored. |
 | `probe_request` | `request`, `balancer`, `outbounds`, `end`, `ms`, `probed`, `reused`, `ok`, `failed`, `down`, `skipped`, `expired`, `gone` | A request of the host that waited for a probe ended; one answered at once writes none. `end`: `done`, `timeout`, `network_change`, `gone`. The counts are by result; `probed` and `reused` count the answers of a probe and of a recent proof. |
@@ -827,6 +842,7 @@ to this one. Reports of one run add up.
 | `switches`, `switch_reasons`, `switch_path` | `switch` events, their count by reason, and the latest 10 as `from>to:reason`. |
 | `exhausted`, `pinned_down` | Events of those types. |
 | `path_down`, `path_suspect` | `path_state` events with those states. |
+| `path_rescued` | `path_state` events with reason `rescued`: downs a confirming probe proved false. A rescue changes no choice by itself and is no decision; a balancer it brings back switches with `recovered`. |
 | `pending_closed` | Connections of outbounds found down ended by `pending_closed` events: those that had received nothing and, with `silent`, those that went silent after the decision. |
 | `probes`, `probes_failed`, `probe_bytes` | `probe_result` events, the failed ones, and their `bytes`. |
 | `host_probe_requests`, `host_probes` | `probe_request` events, and `probe_result` events with reason `host`. |

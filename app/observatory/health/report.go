@@ -34,6 +34,7 @@ type reportCounts struct {
 	Exhausted             int64            `json:"exhausted"`
 	PathDown              int64            `json:"path_down"`
 	PathSuspect           int64            `json:"path_suspect"`
+	PathRescued           int64            `json:"path_rescued"`
 	PendingClosed         int64            `json:"pending_closed"`
 	Probes                int64            `json:"probes"`
 	ProbesFailed          int64            `json:"probes_failed"`
@@ -152,6 +153,12 @@ func (r *report) count(typ string, f map[string]any) {
 			c.PathDown++
 		case "suspect":
 			c.PathSuspect++
+		case "up":
+			// A down undone changes no choice by itself: a balancer it
+			// brings back tells so with its own switch.
+			if f["reason"] == "rescued" {
+				c.PathRescued++
+			}
 		}
 	case "pending_closed":
 		c.PendingClosed += number(f["connections"])
