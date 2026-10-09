@@ -8,6 +8,7 @@ import (
 	"net/netip"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"syscall"
 
 	"github.com/amnezia-vpn/amneziawg-go/v3/conn"
@@ -20,6 +21,9 @@ type bind struct {
 	listenFunc  func() (net.PacketConn, error)
 	downFunc    func() error
 	reserved    []byte
+	// received, when set, counts the datagrams that arrive: a client tells
+	// from it whether its server answered, see tunnelDial.
+	received *atomic.Uint64
 
 	net.PacketConn
 	closeCh chan struct{}
@@ -75,6 +79,9 @@ func (b *bind) Open(port uint16) (fns []conn.ReceiveFunc, actualPort uint16, err
 				}
 				sizes[0] = n
 				eps[0] = &conn.StdNetEndpoint{AddrPort: addr.(*net.UDPAddr).AddrPort()}
+				if b.received != nil {
+					b.received.Add(1)
+				}
 				return 1, nil
 			}
 		},
