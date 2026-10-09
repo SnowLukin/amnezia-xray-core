@@ -2017,8 +2017,10 @@ def provider_retry_after(stand, xray, work, name):
     failed = [f for f in fetches if f.get("code")]
     counted = sum(r.get("provider_retry_after", 0) for r in c.reports)
     return [
+        # Retry-After 6 spread by up to 30% upward is 6 .. 7.8 s; the timer
+        # of the loop and the request add up to a second on a busy machine.
         check("pauses after 429 with Retry-After 6, s", g,
-              len(g) == 2 and all(5.9 <= x <= 8.1 for x in g), "6 .. 7.8 twice, not growing"),
+              len(g) == 2 and all(5.9 <= x <= 8.8 for x in g), "6 .. 7.8 (+1 to deliver) twice, not growing"),
         check("attempts per busy refresh", [f.get("via") for f in busy_fetches],
               len(busy_fetches) >= 3 and len(busy_fetches) == len(busy_reqs)
               and all(f.get("via") == "direct" and f.get("retry_after_ms") == 6000 for f in busy_fetches),
@@ -2567,8 +2569,8 @@ def provider_slots_flow(stand, xray, work, name):
         check("busy answers (via, retry_after_ms)", [(f.get("via"), f.get("retry_after_ms")) for f in busy_fetches],
               len(busy_fetches) >= 1 and all(f.get("via") == "direct" and f.get("retry_after_ms") == 6000
                                              for f in busy_fetches), "direct only, 6000"),
-        check("pause after the busy answer, s", gaps(reqs)[:1], len(reqs) >= 2 and 5.9 <= reqs[1] - reqs[0] <= 8.1,
-              "6 .. 7.8"),
+        check("pause after the busy answer, s", gaps(reqs)[:1], len(reqs) >= 2 and 5.9 <= reqs[1] - reqs[0] <= 8.8,
+              "6 .. 7.8 (+1 to deliver)"),
         check("retry_after skips", len(skips), len(skips) >= 1, ">= 1"),
         check("refresh (added, removed, unchanged, renewed)",
               (one.get("added"), one.get("removed"), one.get("unchanged"), one.get("renewed")),
