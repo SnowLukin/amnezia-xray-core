@@ -311,7 +311,8 @@ class Stand:
         open(self.provider_bodies_log, "w").close()
         provider_mode("ok")
 
-    def answer(self, members, costs=None, version=None, next_refresh=None, expires=None, server_time=None):
+    def answer(self, members, costs=None, version=None, next_refresh=None, expires=None, server_time=None,
+               base_version=None):
         """Sets what the provider serves: members as (tag, kind, address index).
         expires (by tag) and server_time take "@+Ns", the time of each
         request plus N seconds."""
@@ -326,6 +327,8 @@ class Stand:
             body["expiresAt"] = expires
         if server_time:
             body["serverTime"] = server_time
+        if base_version:
+            body["baseVersion"] = base_version
         with open(self.provider_answer, "w") as f:
             json.dump(body, f)
 

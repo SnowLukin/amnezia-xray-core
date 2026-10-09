@@ -2176,3 +2176,45 @@ def provider_saved_set(stand, xray, work, name):
         check("refused tokens", len(refused), not refused, "== 0"),
         check("user requests failed", failed, failed == 0, "== 0"),
     ]
+
+
+@scenario()
+def provider_base_changed(stand, xray, work, name):
+    """The backend serves another base config than the one the core started
+    with: the host is told once per value, and again after an answer named
+    the base of the core, while every set applies and every request tells
+    the base of the core."""
+    prov = bench.provider_config(["direct"], limits={"exhaustedMinInterval": "1s"}) | {"baseVersion": "b1"}
+    cfg = bench.client_config(BANNED[:1], {"a": 1, "p-": 1}, providers=[prov])
+    served = ["b2", "b2", "b1", "b2"]
+    m = Marks()
+
+    def serve(base):
+        def go():
+            stand.answer(FRESH, version="v1", base_version=base)
+            refresh(c)
+        return go
+
+    with bench.Client(xray, cfg, work, name) as c:
+        tr = bench.Traffic(rate=1, big=0)
+        run_timeline(tr, [(2 + 3 * i, m.at(f"answer{i}", serve(b))) for i, b in enumerate(served)], 15)
+        st = c.status()["providers"][0]
+    told = [(e["fields"]["from"], e["fields"]["to"]) for e in bench.events_of(c.events, "provider_base_changed")]
+    applies = [e["fields"] for e in bench.events_of(c.events, "provider_apply", m["answer0"])]
+    bodies = [b["body"] for b in stand.provider_bodies(m["answer0"]) if isinstance(b.get("body"), dict)]
+    counted = sum(r.get("provider_base_changed", 0) for r in c.reports)
+    failed = sum(1 for r in tr.records if not r[1])
+    return [
+        check("base changes told (from, to)", told, told == [("b1", "b2"), ("b1", "b2")], "[(b1, b2)] twice"),
+        check("answers applied (ok, base_version)", [(f.get("ok"), f.get("base_version")) for f in applies],
+              [(f.get("ok"), f.get("base_version")) for f in applies] == [(True, b) for b in served],
+              "every one, " + ", ".join(served)),
+        check("base in the requests", [b.get("baseVersion") for b in bodies],
+              len(bodies) == len(served) and all(b.get("baseVersion") == "b1" for b in bodies), "b1 each"),
+        check("status (base, answer base, changed)",
+              (st.get("base_version"), st.get("answer_base_version"), st.get("base_changed")),
+              (st.get("base_version"), st.get("answer_base_version"), st.get("base_changed")) == ("b1", "b2", True),
+              "(b1, b2, True)"),
+        check("report provider_base_changed", counted, counted == 2, "== 2"),
+        check("user requests failed", failed, failed == 0, "== 0"),
+    ]
