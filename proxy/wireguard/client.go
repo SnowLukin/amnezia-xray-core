@@ -156,7 +156,7 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
 	td.entered()
 	var addr netip.Addr
 	if ob.Target.Address.Family().IsDomain() {
-		ip, err := h.resolveRemote(ob.Target.Address.String())
+		ip, err := h.resolveRemote(ctx, ob.Target.Address.String())
 		if err != nil {
 			td.failedInside()
 			return errors.New("failed to resolve domain").Base(err)
@@ -219,9 +219,11 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
 		}
 		defer conn.Close()
 		c := &udpConnClient{
-			PacketConn:  conn.(*internet.PacketConnWrapper).PacketConn,
-			resolveFunc: h.resolveRemote,
-			dest:        gonet.UDPAddrFromAddrPort(addrPort),
+			PacketConn: conn.(*internet.PacketConnWrapper).PacketConn,
+			resolveFunc: func(host string) (net.IP, error) {
+				return h.resolveRemote(ctx, host)
+			},
+			dest: gonet.UDPAddrFromAddrPort(addrPort),
 		}
 		c.PacketConn = td.openedPacket(c.PacketConn)
 		reader = c
@@ -363,9 +365,12 @@ func (h *Handler) resolveLocal(host string) (net.IP, error) {
 	})
 }
 
-func (h *Handler) resolveRemote(host string) (net.IP, error) {
+// resolveRemote resolves host inside the tunnel for a connection. The lookup
+// ends with ctx: one for a connection the observer gave up on would keep the
+// tunnel busy and send queries to a server that may be gone.
+func (h *Handler) resolveRemote(ctx context.Context, host string) (net.IP, error) {
 	return resolveDomain(host, h.conf.DomainStrategy, func(host string) ([]net.IP, error) {
-		addrs, err := h.tnet.LookupHost(host)
+		addrs, err := h.tnet.LookupContextHost(ctx, host)
 		if err != nil {
 			return nil, err
 		}

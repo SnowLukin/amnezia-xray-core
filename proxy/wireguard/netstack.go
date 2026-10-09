@@ -425,6 +425,11 @@ func (tnet *Net) exchange(ctx context.Context, server netip.Addr, q dnsmessage.Q
 	}
 
 	for _, useUDP := range []bool{true, false} {
+		// A lookup that was given up sends nothing more: the callers try
+		// every server twice, and each query goes into the tunnel.
+		if ctx.Err() != nil {
+			return dnsmessage.Parser{}, dnsmessage.Header{}, errCanceled
+		}
 		ctx, cancel := context.WithDeadline(ctx, time.Now().Add(timeout))
 		defer cancel()
 
@@ -445,6 +450,9 @@ func (tnet *Net) exchange(ctx context.Context, server netip.Addr, q dnsmessage.Q
 				return dnsmessage.Parser{}, dnsmessage.Header{}, err
 			}
 		}
+		// The deadline ends the wait for the answer, which a canceled ctx
+		// does not: end it then as well.
+		stop := context.AfterFunc(ctx, func() { c.SetDeadline(time.Now()) })
 		var p dnsmessage.Parser
 		var h dnsmessage.Header
 		if useUDP {
@@ -452,6 +460,7 @@ func (tnet *Net) exchange(ctx context.Context, server netip.Addr, q dnsmessage.Q
 		} else {
 			p, h, err = dnsStreamRoundTrip(c, id, q, tcpReq)
 		}
+		stop()
 		c.Close()
 		if err != nil {
 			if err == context.Canceled {

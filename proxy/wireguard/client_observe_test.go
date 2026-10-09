@@ -23,6 +23,7 @@ import (
 	"github.com/xtls/xray-core/common/net"
 	"github.com/xtls/xray-core/common/serial"
 	"github.com/xtls/xray-core/core"
+	"github.com/xtls/xray-core/features/stats"
 )
 
 // testRelay stands between a client and its server, as the network does,
@@ -37,7 +38,9 @@ type testRelay struct {
 	drop atomic.Int64
 	// Datagrams still let through, either way; below zero, all of them.
 	allow atomic.Int64
-	wg    sync.WaitGroup
+	// Datagrams from the client, whatever became of them.
+	sent atomic.Int64
+	wg   sync.WaitGroup
 }
 
 func startTestRelay(t testing.TB, server string) *testRelay {
@@ -66,6 +69,7 @@ func startTestRelay(t testing.TB, server string) *testRelay {
 				return
 			}
 			r.client.Store(from)
+			r.sent.Add(1)
 			if r.pass() {
 				back.Write(b[:n])
 			}
@@ -412,5 +416,88 @@ func TestObservedTunnelWakeLosesItsHandshake(t *testing.T) {
 	}
 	if !h.Sleep() {
 		t.Fatal("an idle outbound refused to sleep")
+	}
+}
+
+// dialRecorder is the tracker of one tunnel dial; it hands over what the
+// dial ended with.
+type dialRecorder struct {
+	dialed chan error
+}
+
+func (r *dialRecorder) Dialed(_ stdnet.Conn, err error, _, _ stats.Counter) (stats.Counter, stats.Counter) {
+	r.dialed <- err
+	return nil, nil
+}
+
+func (r *dialRecorder) Finished(error) {}
+
+// A connection the observer gave up on asks the server for no more
+// handshakes, each of which would start the retries of the device anew,
+// even while it still waits inside the tunnel. Its dial ends as one that
+// ended before the server answered, not as a server that never did.
+func TestAbortedDialAsksForNoHandshake(t *testing.T) {
+	rec := &dialRecorder{dialed: make(chan error, 1)}
+	ctx, abort := context.WithCancel(context.Background())
+	td := &tunnelDial{h: &Handler{}, tracker: rec, ctx: ctx, settled: make(chan struct{})}
+	td.entered()
+	abort()
+	select {
+	case err := <-rec.dialed:
+		if !goerrors.Is(err, context.Canceled) {
+			t.Fatalf("the dial ended with %v, want context.Canceled", err)
+		}
+	case <-time.After(askHandshakeAfter + time.Second):
+		t.Fatal("the dial still asks for handshakes after the abort")
+	}
+}
+
+// A connection the observer gives up on while it resolves its destination
+// inside a dead tunnel ends at once: its lookup sends the server no more
+// queries, and nothing holds the outbound back from sleeping, which ends
+// what its device would still send.
+func TestAbortedLookupLeavesTheDeadTunnel(t *testing.T) {
+	priv, pub := testKeys(t)
+	addr := netip.MustParseAddr("10.9.0.2")
+	s := startTestServer(t, testParams, testPeer{pub, addr})
+	r := startTestRelay(t, s.endpoint)
+	inst, _ := newObservedInstance(t, testPassive())
+	conf := testClientConf(s, priv, addr, testParams)
+	conf.Peers[0].Endpoint = r.addr
+	oh, h := addTestClientConf(t, inst, "wg", conf)
+	// A UDP echo sets the session up and leaves nothing to close: a TCP
+	// connection whose closing exchange the freeze cuts would retransmit
+	// its FIN for minutes.
+	u := dial(oh, udpTo(testServerAddr, 7))
+	if err := u.echo([]byte("ping"), 15*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if err := u.close(); err != nil {
+		t.Fatal(err)
+	}
+
+	r.freeze()
+	before := r.sent.Load()
+	// The name resolves inside the tunnel, whose session still has its
+	// keys: each DNS query goes to the server as a datagram.
+	c := dial(oh, net.TCPDestination(net.DomainAddress("dead.test"), 80))
+	waitFor(t, 5*time.Second, "a DNS query", func() bool { return r.sent.Load() > before })
+	sent := r.sent.Load()
+	start := time.Now()
+	c.cancel()
+	if err := c.wait(); err != nil {
+		t.Fatal(err)
+	}
+	if took := time.Since(start); took > time.Second {
+		t.Fatalf("the connection ended %v after the abort", took)
+	}
+	// A lookup asks the next DNS server once the previous one has not
+	// answered for 5 s.
+	time.Sleep(6 * time.Second)
+	if n := r.sent.Load() - sent; n != 0 {
+		t.Fatalf("%d datagrams to the server after the abort", n)
+	}
+	if !h.Sleep() {
+		t.Fatal("the outbound refused to sleep once its only connection ended")
 	}
 }

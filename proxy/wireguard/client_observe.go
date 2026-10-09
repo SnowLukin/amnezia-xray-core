@@ -209,6 +209,13 @@ func (t *tunnelDial) poll() {
 	if t.answeredNow() {
 		return
 	}
+	if t.ctx.Err() != nil {
+		// The connection ended, or the observer gave up on it and the
+		// tunnel. Each handshake asked for starts the retries of the device
+		// anew, which would go on for 90 s to a server that may be gone.
+		t.settle(context.Canceled)
+		return
+	}
 	if time.Since(t.since) >= answerWait {
 		t.settle(errNoAnswer)
 		return
