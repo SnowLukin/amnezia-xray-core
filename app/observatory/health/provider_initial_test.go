@@ -155,6 +155,40 @@ func TestExpiredInitialRefreshesOnce(t *testing.T) {
 	}
 }
 
+// A host that verifies the outbound of a start pin starts the core with the
+// kept set, whose leases ended overnight: the one request about them goes
+// under the pin, or the core would run on ended leases on every start. A
+// retry waits for the release.
+func TestExpiredInitialRefreshesUnderTheStartPin(t *testing.T) {
+	f, now := initialFixture(t, "")
+	wall := now.Round(0)
+	f.rt.cfg.initial = []byte(fmt.Sprintf(`{"outbounds": [{"tag": "x1", "protocol": "vless", "v": 1}],
+		"serverTime": %q, "receivedAt": %q, "expiresAt": {"x1": %q}}`,
+		stamp(wall.Add(-10*time.Hour)), stamp(wall.Add(-10*time.Hour)), stamp(wall.Add(-2*time.Hour))))
+	f.o.applyInitial()
+	f.o.mu.Lock()
+	defer f.o.mu.Unlock()
+	e := f.o.e
+	// The first connection through the balancer starts it on the pin.
+	delete(e.selectors, "auto")
+	s := e.addSelector("auto", newSelectorSettings(&SelectorConfig{Costs: costs("p-", 1), StartPinned: "p-x1"}))
+	e.updateCandidates(s, []string{"p-x1"}, now)
+	if s.pinned != "p-x1" {
+		t.Fatalf("setup: pinned %q", s.pinned)
+	}
+	jobs, _ := e.tickProviders(now)
+	if len(jobs) != 1 || jobs[0].trigger != triggerExpiry || len(jobs[0].asked) != 1 {
+		t.Fatalf("refreshes at the start %v", triggers(jobs))
+	}
+	e.onRefreshDone(jobs[0], refreshOutcome{err: "timeout", class: "timeout"}, now)
+	for later := now.Add(time.Minute); later.Before(now.Add(time.Hour)); later = later.Add(time.Minute) {
+		e.noteDemand(later)
+		if jobs, _ := e.tickProviders(later); len(jobs) != 0 {
+			t.Fatalf("at %v under the pin: refreshes %v", later.Sub(now), triggers(jobs))
+		}
+	}
+}
+
 // A refresh that brings the set of the initial one changes no outbound.
 func TestInitialThenSameVersionChangesNoHandler(t *testing.T) {
 	f, _ := initialFixture(t, `{"version": "v1", "outbounds": [{"tag": "x1", "protocol": "vless", "v": 1}]}`)

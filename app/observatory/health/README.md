@@ -179,7 +179,8 @@ for `hostProbes` `perMinute` half of `schedule.perMinute`, `reuse` 5 min,
   `startPinnedFor` releases it by itself after that long: a host that
   verifies within a known time and stops the core when the check fails
   then needs no release call. While a balancer is pinned, the triggers of
-  its provider wait, but for a host request, see Providers.
+  its provider wait, but for a host request and the first request about a
+  lease that is urgent or ended, see Providers.
 - `startWith` starts the balancer on one outbound instead of the cheapest,
   without a pin, when it is a usable candidate whose lease did not end: the
   host passes the outbound that worked last time, so a restart needs no
@@ -412,17 +413,18 @@ earlier stay on the outbounds of the config. A set the host kept counts as
 old as it is: its leases count from its `serverTime` plus the time since
 `receivedAt`, by the clock `saved`, and `maxAge` and `nextRefreshIn` from
 when it arrived; a lease that ended meanwhile ends at the start with
-renewal `saved`, and one urgent refresh asks about it. A fresh one counts
-from its `serverTime`, as an answer that just arrived. Its headers lie over
-those of the config and under those the host set, also before the start.
-An initial set that is not an object, is larger than `maxBytes`, breaks the
-protocol or does not build is reported in `provider_apply` with trigger
-`initial` and `ok` false, and the core starts on the outbounds of the
-config: a bad saved set never keeps the core from starting. Once applied,
-the set lives on only as the last applied answer of `ProviderSet`. A host
-passes the answer of a connect when it has one, and the kept set only
-without it: the headers of a kept set would lie over a fresh token in the
-config, which then needs `SetProviderHeaders` after the start.
+renewal `saved`, and one urgent refresh asks about it, also under a start
+pin. A fresh one counts from its `serverTime`, as an answer that just
+arrived. Its headers lie over those of the config and under those the host
+set, also before the start. An initial set that is not an object, is larger
+than `maxBytes`, breaks the protocol or does not build is reported in
+`provider_apply` with trigger `initial` and `ok` false, and the core starts
+on the outbounds of the config: a bad saved set never keeps the core from
+starting. Once applied, the set lives on only as the last applied answer of
+`ProviderSet`. A host passes the answer of a connect when it has one, and
+the kept set only without it: the headers of a kept set would lie over a
+fresh token in the config, which then needs `SetProviderHeaders` after the
+start.
 
 **Base config.** A backend that generates the config of the core names it
 with `baseVersion`, at most 256 bytes; without one there, the `baseVersion`
@@ -455,18 +457,22 @@ answers name.
 | `nextRefreshIn` | The time the last answer asked for. |
 | host | `RequestRefresh`, see below. |
 
-Every trigger but a host request waits while the network is down, while
-the balancer of the provider is pinned, by the host or by `startPinned`,
-while the backend refuses the headers (see Token), and while there is no
-user traffic, except the first request for a lease: an outbound would end
-under a sleeping device. The host decides about a pinned outbound; one that
+Every trigger but a host request waits while the network is down, while the
+balancer of the provider is pinned, by the host or by `startPinned`, while
+the backend refuses the headers (see Token), and while there is no user
+traffic, except the first request for a lease: an outbound would end under
+a sleeping device. The host decides about a pinned outbound; one that
 verifies the outbound of a start pin stops the core when the check fails,
 and a refresh then would only load the backend, once for every attempt of a
 host that starts the core again. The triggers go on at the release, by the
-host or by the timer of the start pin. A refresh asks about the leases due by
-then, to be renewed or ended, whatever its trigger; when it fails, they are
-asked about again after the backoff, and then only with user traffic, so a
-dead backend does not wake the device.
+host or by the timer of the start pin. The first request about a lease that
+reached `urgentAt` or ended goes under the pin all the same, once per value
+of the lease: a long pin of the host would let the lease of the pinned
+outbound end, and a kept set whose leases ended would never get live ones
+under a start pin. Its retry waits for the release. A refresh asks about
+the leases due by then, to be renewed or ended, whatever its trigger; when
+it fails, they are asked about again after the backoff, and then only with
+user traffic, so a dead backend does not wake the device.
 
 **Limits.** Two refreshes start at least `minInterval` apart, or
 `exhaustedMinInterval` for an exhausted balancer, an urgent renewal or a

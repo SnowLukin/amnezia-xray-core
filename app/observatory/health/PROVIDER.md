@@ -54,11 +54,17 @@ an exhausted balancer, an urgent renewal and the host; at most 6 start
 within an hour; after a failure the next waits for a backoff that starts at
 30 seconds and doubles up to 30 minutes, spread by 30%. Without user
 traffic only the host and the first renewal of a lease ask. While the
-network is down only the host asks. While memory is low only the host, an
-exhausted balancer and an urgent renewal ask, through the first usable
-`via` only. These limits live in the memory of the core: a host that
-restarts the core in a loop resets them, so a backend must limit requests
-by token on its side as well.
+network is down only the host asks. While the balancer of the provider is
+pinned, by the host or by the start pin of the config, only the host and
+the first request about a lease that reached its urgent point or ended ask,
+once per value of the lease: a host that verifies the pinned outbound stops
+the core when the check fails, and a refresh would only load the backend,
+but a lease must not end under a long pin. A retry of that request waits
+for the release. While memory is low only the host, an exhausted balancer
+and an urgent renewal ask, through the first usable `via` only. These
+limits live in the memory of the core: a host that restarts the core in a
+loop resets them, so a backend must limit requests by token on its side as
+well.
 
 ## Request
 
@@ -346,9 +352,9 @@ replaced by the time its leases count from and `receivedAt` added, the
 clock of the device when it arrived, and starts the next core with it when
 there is no fresh answer of a connect. The leases of a kept set count from
 its `serverTime` plus the time since `receivedAt`, and a lease that ended
-meanwhile is asked about once at the start. So after a restart the backend
-sees the token it rotated last, the `version` of the kept set and, after a
-long pause, an `expiry` request.
+meanwhile is asked about once at the start, also under a start pin. So
+after a restart the backend sees the token it rotated last, the `version`
+of the kept set and, after a long pause, an `expiry` request.
 
 ## What a backend must do
 

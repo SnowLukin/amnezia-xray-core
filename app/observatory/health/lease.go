@@ -315,9 +315,11 @@ func (e *engine) tickLeases(p *provider, now time.Time, idle bool) time.Time {
 // reached its renewal point, and no refresh that got an answer asked about
 // that value. urgent: one ended or reached its urgent point. fresh: some of
 // them has not failed a refresh yet; the first request for a lease value
-// does not wait for user traffic, a retry does.
+// does not wait for user traffic, a retry does. firstUrgent: one of them is
+// urgent and has not failed a refresh yet; that first request does not wait
+// for a pin either.
 type expiryWant struct {
-	want, urgent, fresh bool
+	want, urgent, fresh, firstUrgent bool
 }
 
 func (p *provider) expiryWant(now time.Time) expiryWant {
@@ -333,6 +335,7 @@ func (p *provider) expiryWant(now time.Time) expiryWant {
 		w.want = true
 		w.urgent = w.urgent || urgent
 		w.fresh = w.fresh || !l.failed
+		w.firstUrgent = w.firstUrgent || (urgent && !l.failed)
 	}
 	return w
 }

@@ -214,8 +214,10 @@ func TestRefreshWaitsForThePinButNotTheHost(t *testing.T) {
 }
 
 // A lease due for renewal waits for the release as well, although it does
-// not wait for traffic.
-func TestRenewalWaitsForThePin(t *testing.T) {
+// not wait for traffic, until the renewal is urgent: from then on one
+// request asks about the value under the pin. A retry after it failed waits
+// for the release, also once the lease ended.
+func TestRenewalWaitsForThePinUntilUrgent(t *testing.T) {
 	te := leaseEngine(t, renewing(func(x *ExpiryTrigger) { x.Jitter = -1 }),
 		&SelectorConfig{Costs: costs("p-", 1)}, "p-x1", "p-x2")
 	te.lease(t0, map[string]time.Duration{"p-x1": time.Minute}, "p-x1", "p-x2")
@@ -227,9 +229,49 @@ func TestRenewalWaitsForThePin(t *testing.T) {
 		skips[0].Fields["trigger"] != "expiry" {
 		t.Fatalf("want one pinned skip of the renewal, got %+v", skips)
 	}
-	te.release("auto", at(41*time.Second))
-	if jobs, _ := te.tickProviders(at(41 * time.Second)); len(jobs) != 1 || jobs[0].trigger != triggerExpiry {
-		t.Fatalf("after the release: refreshes %v, want the renewal", triggers(jobs))
+	// urgentAt of a minute.
+	jobs, _ := te.tickProviders(at(48 * time.Second))
+	if len(jobs) != 1 || jobs[0].trigger != triggerExpiry || len(jobs[0].asked) != 1 {
+		t.Fatalf("urgent under the pin: refreshes %v, want the renewal", triggers(jobs))
+	}
+	te.onRefreshDone(jobs[0], refreshOutcome{err: "timeout", class: "timeout"}, at(49*time.Second))
+	// The backoff ends within a minute; the lease ends at one.
+	for now := at(50 * time.Second); now.Before(at(10 * time.Minute)); now = now.Add(5 * time.Second) {
+		if jobs, _ := te.refreshAt(now); len(jobs) != 0 {
+			t.Fatalf("at %v a retry under the pin: refreshes %v", now.Sub(t0), triggers(jobs))
+		}
+	}
+	te.release("auto", at(10*time.Minute))
+	if jobs, _ := te.refreshAt(at(10 * time.Minute)); len(jobs) != 1 || jobs[0].trigger != triggerExpiry {
+		t.Fatalf("after the release: refreshes %v, want the retry", triggers(jobs))
+	}
+}
+
+// A long pin of the host does not let the lease of the pinned outbound end:
+// the urgent renewal goes, and the answer renews the lease.
+func TestLongPinKeepsTheLeaseOfThePinnedOutbound(t *testing.T) {
+	te := leaseEngine(t, renewing(func(x *ExpiryTrigger) { x.Jitter = -1 }),
+		&SelectorConfig{Costs: costs("p-", 1)}, "p-x1", "p-x2")
+	te.lease(t0, map[string]time.Duration{"p-x1": time.Hour, "p-x2": time.Hour}, "p-x1", "p-x2")
+	te.pin("auto", "p-x1", at(time.Second))
+	var started []time.Duration
+	for now := at(time.Minute); now.Before(at(3 * time.Hour)); now = now.Add(time.Minute) {
+		jobs, _ := te.refreshAt(now)
+		for _, j := range jobs {
+			if j.trigger != triggerExpiry {
+				t.Fatalf("at %v: refresh %s", now.Sub(t0), j.trigger)
+			}
+			started = append(started, now.Sub(t0))
+			// The backend renews both leases for another hour.
+			te.sameSet(now, map[string]time.Time{"p-x1": now.Add(time.Hour), "p-x2": now.Add(time.Hour)})
+			te.onRefreshDone(j, refreshOutcome{ok: true}, now)
+		}
+	}
+	if fmt.Sprint(started) != "[48m0s 1h36m0s 2h24m0s]" {
+		t.Fatalf("renewals under the pin at %v, want at urgentAt of every value", started)
+	}
+	if ended := te.eventsOf(t, "provider_expired"); len(ended) != 0 || te.sel.current() != "p-x1" {
+		t.Fatalf("leases ended under the pin: %+v, on %s", ended, te.sel.current())
 	}
 }
 
