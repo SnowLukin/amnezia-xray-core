@@ -2644,3 +2644,199 @@ def provider_slots_last_resort(stand, xray, work, name):
         check("still on it, expired (active, expired)", (active, path.get("expired")),
               active == "p-s2" and path.get("expired") is True, "(p-s2, True)"),
     ]
+
+
+# ---- AmneziaWG: sleep and wake ------------------------------------------------
+#
+# No failover scenario here: passive detection for AmneziaWG comes elsewhere.
+# Nor one for low memory: SetMemoryLow has no API call or command, only the Go
+# call a host makes.
+
+AWG_SLEEP = 10  # sleep.after: its minimum
+AWG_MEMBERS = [("v1", "reality", 0), ("w1", "awg", 0)]
+
+
+def awg_config():
+    """v1 is cheaper; w1 is the AmneziaWG outbound, with a keepalive of 2-3 s. The balancer
+    starts pinned to w1, so traffic goes through it first; once the host releases the pin, it
+    returns to v1 after one probe a few seconds later."""
+    return bench.client_config(
+        AWG_MEMBERS, {"v": 1, "w": 3},
+        health={"sleep": {"after": f"{AWG_SLEEP}s"},
+                # A probe the host asks for must reach w1, not be answered by its last success.
+                "schedule": {"hostProbes": {"reuse": "1s"}}},
+        strategy={"startPinned": "w1", "minHold": "1s",
+                  "upgrade": {"interval": "3s", "randomPhase": False, "successes": 1, "spacing": "1s"}})
+
+
+def path_status(c, tag):
+    return next((p for p in c.status()["paths"] if p["outbound"] == tag), {})
+
+
+def w1_sleeps(c, since):
+    return [e for e in bench.events_of(c.events, "outbound_sleep", since) if e["fields"].get("outbound") == "w1"]
+
+
+def awg_to_sleep(c, tr, m):
+    """Traffic through w1 under the start pin, then the release: the balancer returns to v1
+    and w1 idles until it sleeps. Marks start, release, away (the switch off w1) and asleep;
+    returns those two events, None for one that did not come."""
+    m["start"] = time.time()
+    tr.start()
+    time.sleep(8)
+    m["release"] = time.time()
+    c.api("release", "auto")
+    away = wait_for(lambda: [e for e in bench.switches(c.events, m["release"]) if e["fields"]["from"] == "w1"], 15)
+    if away:
+        m["away"] = away[0]["ts"] / 1000
+    slept = wait_for(lambda: w1_sleeps(c, m["release"]), AWG_SLEEP + 20)
+    if slept:
+        m["asleep"] = slept[0]["ts"] / 1000
+    return away and away[0], slept and slept[0]
+
+
+def requests_ok(tr, since, until):
+    rs = [r for r in tr.records if since <= r[0] < until]
+    return sum(1 for r in rs if r[1]), len(rs)
+
+
+def awg_away_checks(c, tr, m, away):
+    """Traffic went through w1 under the pin, and the release moved the balancer to v1."""
+    ok, n = requests_ok(tr, m["start"], m["release"])
+    checks = [check("requests answered under the pin to w1", f"{ok}/{n}", n >= 10 and ok == n, "all, >= 10")]
+    routed = c.routed(m["start"], m["release"])
+    if routed is not None:
+        checks.append(check("user connections under the pin by outbound", routed,
+                            set(routed) == {"w1"} and routed["w1"] >= 10, "w1 only, >= 10"))
+    took = away and round(away["ts"] / 1000 - m["release"], 1)
+    checks.append(check("switch off w1 after the release, s",
+                        away and f"{away['fields']['to']} ({away['fields']['reason']}) {took}",
+                        bool(away) and away["fields"]["to"] == "v1" and away["fields"]["reason"] == "upgrade"
+                        and took <= 10, "v1 (upgrade) <= 10"))
+    return checks
+
+
+@scenario()
+def awg_sleep(stand, xray, work, name):
+    """Traffic goes through the AmneziaWG outbound w1 under a start pin; the host releases it
+    and the balancer returns to the cheaper v1. Unchosen and idle, w1 sleeps sleep.after
+    later: outbound_sleep, asleep in Status, and its keepalives stop at the UDP proxy."""
+    m = Marks()
+    with bench.Client(xray, awg_config(), work, name) as c, bench.ConnSampler() as cs:
+        tr = bench.Traffic(rate=2, big=0.5, timeout=5)
+        away, slept = awg_to_sleep(c, tr, m)
+        status = path_status(c, "w1") if slept else {}
+        # Room for three keepalives, had they gone on.
+        time.sleep(10)
+        m["end"] = time.time()
+        tr.stop()
+    tr.save(os.path.join(work, f"{name}-traffic.json"))
+    checks = awg_away_checks(c, tr, m, away)
+    f = slept["fields"] if slept else {}
+    idle = f.get("idle_ms")
+    checks.append(check("outbound_sleep of w1: reason, idle ms", slept and f"{f.get('reason')} {idle}",
+                        bool(slept) and f.get("reason") == "idle"
+                        and AWG_SLEEP * 1000 <= idle <= (AWG_SLEEP + 3) * 1000,
+                        f"idle, {AWG_SLEEP * 1000} .. {(AWG_SLEEP + 3) * 1000}"))
+    if away and slept:
+        gap = round(m["asleep"] - m["away"], 1)
+        checks.append(check("sleep after the switch off w1, s", gap, AWG_SLEEP <= gap <= AWG_SLEEP + 5,
+                            f"{AWG_SLEEP} .. {AWG_SLEEP + 5}"))
+        # Past the switch the connections through w1 are over: what the proxy sees is keepalives.
+        kept = cs.packets(bench.AWG_ADDRESS, m["away"] + 2, m["asleep"] - 0.5)
+        checks.append(check("keepalives of the idle w1 before it slept, datagrams up/down", kept,
+                            kept[0] is not None and kept[0] >= 2, "up >= 2"))
+        after = cs.packets(bench.AWG_ADDRESS, m["asleep"] + 1.5, m["end"])
+        checks.append(check(f"datagrams at the proxy in {round(m['end'] - m['asleep'] - 1.5, 1)} s after the "
+                            "sleep, up/down", after, after == (0, 0), "(0, 0)"))
+        routed = c.routed(m["away"] + 3)
+        if routed is not None:
+            checks.append(check("user connections to w1 after the switch off it", routed.get("w1", 0),
+                                routed.get("w1", 0) == 0, "== 0"))
+    checks.append(check("Status of w1 after the sleep", f"asleep={status.get('asleep')}",
+                        status.get("asleep") is True, "asleep=True"))
+    ok, n = requests_ok(tr, m["start"], m["end"])
+    checks.append(check("requests answered", f"{ok}/{n}", ok == n, "all"))
+    checks.append(leak_check(c))
+    return checks
+
+
+@scenario()
+def awg_wake(stand, xray, work, name):
+    """w1 sleeps as in awg_sleep. A probe the host asks for wakes it: the probe passes through
+    a new tunnel, and w1 sleeps again sleep.after later. Then the host pins the balancer to the
+    sleeping w1. The first thing through the new tunnel is one UDP datagram, which nothing
+    retries: it must come back. User traffic then flows through w1."""
+    m = Marks()
+    seen = {}
+    with bench.Client(xray, awg_config(), work, name) as c, bench.ConnSampler() as cs:
+        tr = bench.Traffic(rate=2, big=0.5, timeout=5)
+        away, slept = awg_to_sleep(c, tr, m)
+        again = None
+        if slept:
+            m["probe"] = time.time()
+            seen["probe"] = c.api("-t", "15", "probe", "auto", "w1", timeout=20)
+            m["probed"] = time.time()
+            seen["after_probe"] = path_status(c, "w1")
+            again = wait_for(lambda: w1_sleeps(c, m["probed"]), AWG_SLEEP + 20)
+        if again:
+            m["asleep2"] = again[0]["ts"] / 1000
+            seen["before_pin"] = path_status(c, "w1")
+            # Requests wait, so that the datagram is the first thing through the tunnel.
+            tr.paused.set()
+            time.sleep(1)
+            m["pin"] = time.time()
+            seen["pin"] = c.api("pin", "auto", "w1")
+            seen["udp"] = bench.udp_echo(bench.TUNNEL_TARGET, bench.UDP_ECHO_PORT, os.urandom(32))
+            m["echoed"] = time.time()
+            seen["after_pin"] = path_status(c, "w1")
+            tr.paused.clear()
+            m["resume"] = time.time()
+            time.sleep(8)
+        m["end"] = time.time()
+        tr.stop()
+    tr.save(os.path.join(work, f"{name}-traffic.json"))
+    checks = awg_away_checks(c, tr, m, away)
+    checks.append(check("w1 asleep before the probe", bool(slept), bool(slept), "True"))
+    if not slept:
+        return checks + [leak_check(c)]
+
+    request = seen["probe"].get("request") or {}
+    got = {o["outbound"]: f"{o['result']}/{o.get('source', '')}" for o in request.get("outbounds", [])}
+    checks.append(check("probe of the host for w1", f"{got.get('w1')} after {round(m['probed'] - m['probe'], 1)} s",
+                        request.get("done") is True and got.get("w1") == "ok/probe", "ok/probe"))
+    sockets = cs.between(bench.AWG_ADDRESS, m["probe"] - 0.5, m["probed"] + 0.5)
+    up, down = cs.packets(bench.AWG_ADDRESS, m["probe"] - 0.5, m["probed"] + 0.5)
+    checks.append(check("the probe at the proxy: new sockets, datagrams up/down", (sockets, up, down),
+                        sockets == 1 and up > 0 and down > 0, "1 new, both ways"))
+    checks.append(check("Status of w1 after the probe", f"asleep={seen['after_probe'].get('asleep')}",
+                        not seen["after_probe"].get("asleep"), "awake"))
+    f = again[0]["fields"] if again else {}
+    checks.append(check("outbound_sleep of w1 again after the probe: reason, idle ms",
+                        again and f"{f.get('reason')} {f.get('idle_ms')}",
+                        bool(again) and f.get("reason") == "idle" and f.get("idle_ms", 0) >= AWG_SLEEP * 1000,
+                        f"idle, >= {AWG_SLEEP * 1000}"))
+    if not again:
+        return checks + [leak_check(c)]
+
+    checks.append(check("pin to the sleeping w1", f"{seen['pin']}, asleep={seen['before_pin'].get('asleep')}",
+                        seen["pin"] == {"ok": True} and seen["before_pin"].get("asleep") is True,
+                        "ok, asleep=True"))
+    early = [e for e in c.events if m["pin"] <= e["ts"] / 1000 <= m["echoed"] and e["type"] == "probe_start"
+             and e["fields"].get("outbound") == "w1"]
+    checks.append(check("probes of w1 before the datagram", len(early), not early, "== 0"))
+    took = seen["udp"]
+    checks.append(check("the one datagram through the woken w1 came back, s", took and round(took, 3),
+                        took is not None, "back, no retry"))
+    sockets = cs.between(bench.AWG_ADDRESS, m["pin"] - 0.5, m["echoed"] + 0.5)
+    checks.append(check("new sockets at the proxy for the wake", sockets, sockets == 1, "== 1"))
+    checks.append(check("Status of w1 after the datagram", f"asleep={seen['after_pin'].get('asleep')}",
+                        not seen["after_pin"].get("asleep"), "awake"))
+    ok, n = requests_ok(tr, m["resume"], m["end"])
+    checks.append(check("requests answered after the pin", f"{ok}/{n}", n >= 10 and ok == n, "all, >= 10"))
+    routed = c.routed(m["resume"])
+    if routed is not None:
+        checks.append(check("user connections after the pin by outbound", routed,
+                            set(routed) == {"w1"} and routed["w1"] >= 10, "w1 only, >= 10"))
+    checks.append(leak_check(c))
+    return checks

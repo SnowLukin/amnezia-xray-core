@@ -1,8 +1,9 @@
 """Stands in for the internet behind the bench servers.
 
-    target.py <port> <log> [<tls port> <cert> <key>]
+    target.py <port> <log> [<tls port> <cert> <key> [<udp port>]]
 
 The same answers come over plain HTTP and, on the TLS port, over TLS 1.3.
+The UDP port echoes every datagram, for traffic that nothing retries.
 
 GET /204             empty answer
 GET /bytes/N         N bytes
@@ -11,6 +12,7 @@ GET /slow/N/S        N bytes spread over S seconds
 Every request is logged as "host path" lines to the file given as argv[2],
 so the bench can count probes separately from user traffic.
 """
+import socket
 import ssl
 import sys
 import threading
@@ -78,6 +80,14 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
 
 
+def udp_echo(port):
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.bind(("127.0.0.1", port))
+    while True:
+        data, addr = s.recvfrom(65536)
+        s.sendto(data, addr)
+
+
 class TLSServer(ThreadingHTTPServer):
     """Handshakes in the request thread, so a frozen client does not stall
     the accept loop."""
@@ -103,6 +113,8 @@ def main():
         ctx.load_cert_chain(sys.argv[4], sys.argv[5])
         tls = TLSServer(("127.0.0.1", int(sys.argv[3])), Handler, ctx)
         threading.Thread(target=tls.serve_forever, daemon=True).start()
+    if len(sys.argv) > 6:
+        threading.Thread(target=udp_echo, args=(int(sys.argv[6]),), daemon=True).start()
     ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
 
 
