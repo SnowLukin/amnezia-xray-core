@@ -15,7 +15,7 @@ Environment:
                       127.0.0.1 locally, 10.0.2.2 from an emulator, the LAN
                       address for a phone.
   BENCH_LISTEN        where the chaos proxy, which stands in for every server
-                      address including the AmneziaWG one, listens: 127.0.0.1
+                      address including the AmneziaWG ones, listens: 127.0.0.1
                       by default, 0.0.0.0 for a phone on the LAN.
   BENCH_TLS=1         user traffic is TLS 1.3 to the target. Only then does
                       XTLS Vision switch to direct copy, which splices on Linux.
@@ -78,7 +78,7 @@ def address_port(kind, index):
 
 
 def all_address_ports():
-    return [address_port(k, i) for k in TRANSPORTS for i in range(ADDRESSES)] + [CONNECTIVITY_PORT, AWG_ADDRESS]
+    return [address_port(k, i) for k in TRANSPORTS for i in range(ADDRESSES)] + [CONNECTIVITY_PORT] + AWG_ADDRESSES
 
 
 # The connectivity check of the client goes through this chaos port to the
@@ -86,21 +86,27 @@ def all_address_ports():
 CONNECTIVITY_PORT = 21099 + OFFSET
 
 # The AmneziaWG server, an Xray process of its own, listens on AWG_PORT and is
-# reached through the UDP chaos port AWG_ADDRESS. The target echoes datagrams on
-# UDP_ECHO_PORT. Each of them ends in digits no other port here ends in, so
-# benches whose offsets differ by thousands never take the same port.
+# reached through the UDP chaos ports AWG_ADDRESSES, one for each of its peers,
+# so that each looks like a server of its own and fails alone. The target
+# echoes datagrams on UDP_ECHO_PORT. Each of them ends in digits no other port
+# here ends in, so benches whose offsets differ by thousands never take the
+# same port.
 AWG_PORT = 20061 + OFFSET
-AWG_ADDRESS = 21071 + OFFSET
+AWG_ADDRESSES = [21071 + OFFSET, 21081 + OFFSET]
+AWG_ADDRESS = AWG_ADDRESSES[0]
 UDP_ECHO_PORT = 18997 + OFFSET
-UDP_PORTS = [AWG_PORT, AWG_ADDRESS, UDP_ECHO_PORT]
+UDP_PORTS = [AWG_PORT, UDP_ECHO_PORT] + AWG_ADDRESSES
 
 AWG_SERVER_PRIVATE = "KLWsMvV9jay7/DbNtHYRzqpRtSSp55JUhzHLmO4rWnI="
 AWG_SERVER_PUBLIC = "FaIcjcrbDGj21AiVKy630Bv7q+gLHOV9JGe6abLPL2U="
-AWG_CLIENT_PRIVATE = "0BgPQbtCBDnYWtZTdx/L7GYuS79kaV+RcO5TUJR8LVM="
-AWG_CLIENT_PUBLIC = "Qu7uu5ddbF+kuPr6h4Ur0/uMh6GIicWxq5D+nizJjCU="
+# The peers of the server, one per address: private key, public key, address
+# in the tunnel.
+AWG_CLIENTS = [("0BgPQbtCBDnYWtZTdx/L7GYuS79kaV+RcO5TUJR8LVM=", "Qu7uu5ddbF+kuPr6h4Ur0/uMh6GIicWxq5D+nizJjCU=",
+                "10.66.0.2"),
+               ("yBtgVsRKgu9IxQUjrGwPjIfDf/FG51UfKVbljgKefGo=", "OpsK7Ldg4OhDl/0crBYlKS8tpnM7/LUqRp4MuTMZ/H8=",
+                "10.66.0.3")]
 AWG_HEADER_KEY = "CKsSn78skewyso2x1VqceKtV9MBdqz8IJ/SkUfCrWkE="
 AWG_SERVER_ADDRESS = "10.66.0.1"
-AWG_CLIENT_ADDRESS = "10.66.0.2"
 # Both sides: junk, paddings, header ranges, header protection and trailers,
 # all away from their defaults.
 AWG_PARAMS = {"jc": 4, "jmin": 40, "jmax": 70, "s1": 20, "s2": 78, "s3": 15, "s4": 25,
@@ -179,8 +185,8 @@ def awg_server_config():
         "dns": {"hosts": hosts, "queryStrategy": "UseIPv4"},
         "inbounds": [{"tag": "awg", "listen": "127.0.0.1", "port": AWG_PORT, "protocol": "wireguard",
                       "settings": {"secretKey": AWG_SERVER_PRIVATE, "address": [AWG_SERVER_ADDRESS], "mtu": 1420,
-                                   "peers": [{"publicKey": AWG_CLIENT_PUBLIC,
-                                              "allowedIPs": [f"{AWG_CLIENT_ADDRESS}/32"]}],
+                                   "peers": [{"publicKey": public, "allowedIPs": [f"{address}/32"]}
+                                             for _, public, address in AWG_CLIENTS],
                                    "awg": AWG_PARAMS}}],
         "outbounds": [
             {"tag": "local", "protocol": "freedom",
@@ -193,26 +199,27 @@ def awg_server_config():
     }
 
 
-def awg_member(tag):
-    """A client outbound to the AmneziaWG server through its chaos address.
-    keepAlive is a range, which the device picks every interval from;
-    contentPaddingAddition pads what the client sends, which only the client
-    needs to know."""
+def awg_member(tag, index=0):
+    """A client outbound to the AmneziaWG server as its peer number index,
+    through the chaos address of that peer. keepAlive is a range, which the
+    device picks every interval from; contentPaddingAddition pads what the
+    client sends, which only the client needs to know."""
+    private, _, address = AWG_CLIENTS[index]
     return {"tag": tag, "protocol": "wireguard", "settings": {
-        "secretKey": AWG_CLIENT_PRIVATE, "address": [f"{AWG_CLIENT_ADDRESS}/32"], "mtu": 1420, "noKernelTun": True,
-        "peers": [{"publicKey": AWG_SERVER_PUBLIC, "endpoint": f"{HOST}:{AWG_ADDRESS}", "keepAlive": "2-3"}],
+        "secretKey": private, "address": [f"{address}/32"], "mtu": 1420, "noKernelTun": True,
+        "peers": [{"publicKey": AWG_SERVER_PUBLIC, "endpoint": f"{HOST}:{AWG_ADDRESSES[index]}", "keepAlive": "2-3"}],
         "awg": AWG_PARAMS | {"contentPaddingAddition": "8-32"}}}
 
 
 def member(tag, kind, index=0, pin=None):
     """A client outbound: transport kind through address number index; kind
-    awg is the AmneziaWG server, which has one address.
+    awg is the AmneziaWG server, with one address for each of its peers.
 
     Transports use different server names, as different variants do in
     production; the probe budget per server name depends on it.
     """
     if kind == "awg":
-        return awg_member(tag)
+        return awg_member(tag, index)
     tls = {"serverName": SERVER_NAMES[kind], "pinnedPeerCertSha256": pin}
     streams = {
         "tcp_tls": {"network": "tcp", "security": "tls", "tlsSettings": tls},
@@ -352,7 +359,7 @@ class Stand:
                                                stderr=subprocess.STDOUT))
         specs = [f"{address_port(k, i)}:{server_port(k)}" for k in TRANSPORTS for i in range(ADDRESSES)]
         specs.append(f"{CONNECTIVITY_PORT}:{TARGET_PORT}")
-        specs.append(f"udp:{AWG_ADDRESS}:{AWG_PORT}")
+        specs += [f"udp:{p}:{AWG_PORT}" for p in AWG_ADDRESSES]
         self.procs.append(subprocess.Popen(["python3", os.path.join(HERE, "chaos.py"), str(CHAOS_CONTROL)] + specs,
                                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
         self.answer([("n1", "reality", 2)])
