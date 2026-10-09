@@ -4,6 +4,9 @@ one server address.
 Run:      chaos.py <control_port> <listen:upstream>... [udp:<listen:upstream>]...
 Control:  GET http://127.0.0.1:<control_port>/set?port=21001,21002&mode=blackhole
           GET http://127.0.0.1:<control_port>/set   (status only)
+Listen:   the server addresses listen on BENCH_LISTEN (127.0.0.1 by default);
+          0.0.0.0 lets a phone on the LAN reach them. The control port stays
+          on loopback.
 
 Modes:
   pass            forward everything
@@ -39,6 +42,7 @@ import asyncio
 import socket
 import struct
 import sys
+import os
 import time
 from urllib.parse import parse_qs, urlparse
 
@@ -240,13 +244,18 @@ class UdpListener(asyncio.DatagramProtocol):
         pass
 
 
+# Where the server addresses listen. A client on another device, such as a
+# phone on the LAN, needs 0.0.0.0; the upstreams and the control stay local.
+LISTEN_HOST = os.environ.get("BENCH_LISTEN", "127.0.0.1")
+
+
 async def listen_udp(lp):
-    await asyncio.get_running_loop().create_datagram_endpoint(lambda: UdpListener(lp), local_addr=("127.0.0.1", lp))
+    await asyncio.get_running_loop().create_datagram_endpoint(lambda: UdpListener(lp), local_addr=(LISTEN_HOST, lp))
 
 
 async def listen(lp):
     up = LISTEN[lp]
-    SERVERS[lp] = await asyncio.start_server(lambda r, w, lp=lp, up=up: handle(lp, up, r, w), "127.0.0.1", lp)
+    SERVERS[lp] = await asyncio.start_server(lambda r, w, lp=lp, up=up: handle(lp, up, r, w), LISTEN_HOST, lp)
 
 
 async def follow_mode(port):

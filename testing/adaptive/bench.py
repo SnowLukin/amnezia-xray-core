@@ -12,7 +12,11 @@ Environment:
                       GOOS=android GOARCH=arm64 CGO_ENABLED=0 go build
                       -ldflags=-checklinkname=0 ./main
   BENCH_HOST          the address the client reaches this machine at:
-                      127.0.0.1 locally, 10.0.2.2 from an emulator.
+                      127.0.0.1 locally, 10.0.2.2 from an emulator, the LAN
+                      address for a phone.
+  BENCH_LISTEN        where the chaos proxy, which stands in for every server
+                      address including the AmneziaWG one, listens: 127.0.0.1
+                      by default, 0.0.0.0 for a phone on the LAN.
   BENCH_TLS=1         user traffic is TLS 1.3 to the target. Only then does
                       XTLS Vision switch to direct copy, which splices on Linux.
   BENCH_LOGLEVEL      log level of the client, debug to see splices.
