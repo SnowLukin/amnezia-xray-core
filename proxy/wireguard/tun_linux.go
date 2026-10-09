@@ -9,7 +9,10 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"strconv"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 
 	"golang.org/x/sys/unix"
@@ -23,7 +26,71 @@ import (
 var (
 	tableIndex int = 10230
 	mu         sync.Mutex
+
+	// createMu serializes interface creation and guards keptNames. Clients
+	// create the interface on first use, so two of them may do it at once and
+	// would pick the same free name.
+	createMu sync.Mutex
+	// keptNames are the interface names of client outbounds. An outbound
+	// keeps its name while it sleeps, when its interface does not exist, so
+	// that no other outbound takes it meanwhile.
+	keptNames = map[string]struct{}{}
 )
+
+// newInterfaceNameLocked keeps and returns a name that is neither present nor
+// kept, after the last wgN present. createMu must be held.
+func newInterfaceNameLocked() string {
+	i, _ := strconv.Atoi(strings.TrimPrefix(CalculateInterfaceName("wg"), "wg"))
+	for ; ; i++ {
+		name := "wg" + strconv.Itoa(i)
+		if _, kept := keptNames[name]; !kept && !interfaceExists(name) {
+			keptNames[name] = struct{}{}
+			return name
+		}
+	}
+}
+
+func interfaceExists(name string) bool {
+	_, err := net.InterfaceByName(name)
+	return err == nil
+}
+
+// releaseKernelTunName gives up a name that createKernelTun returned.
+func releaseKernelTunName(name string) {
+	createMu.Lock()
+	defer createMu.Unlock()
+	delete(keptNames, name)
+}
+
+// openKernelTun is tun.CreateTUN, which leaks the descriptor of /dev/net/tun
+// when the name belongs to another interface.
+func openKernelTun(name string, mtu int) (tun.Device, error) {
+	fd, err := unix.Open("/dev/net/tun", unix.O_RDWR|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, err
+	}
+	ifr, err := unix.NewIfreq(name)
+	if err == nil {
+		// As in tun.CreateTUN: with IFF_VNET_HDR, the device learns that the
+		// interface is up from a null write.
+		ifr.SetUint16(unix.IFF_TUN | unix.IFF_NO_PI | unix.IFF_VNET_HDR)
+		err = unix.IoctlIfreq(fd, unix.TUNSETIFF, ifr)
+	}
+	if err == nil {
+		err = unix.SetNonblock(fd, true)
+	}
+	if err != nil {
+		unix.Close(fd)
+		return nil, fmt.Errorf("failed to create TUN %s: %w", name, err)
+	}
+	file := os.NewFile(uintptr(fd), "/dev/net/tun")
+	t, err := tun.CreateTUNFromFile(file, mtu)
+	if err != nil {
+		file.Close()
+		return nil, err
+	}
+	return t, nil
+}
 
 func allocateIPv6TableIndex() int {
 	mu.Lock()
@@ -46,9 +113,17 @@ type kernelTun struct {
 	linkAddrs []netlink.Addr
 	routes    []*netlink.Route
 	rules     []*netlink.Rule
+	closed    atomic.Bool
 }
 
-func createKernelTun(localAddresses, dnsServers []netip.Addr, mtu int) (tdev tun.Device, tnet *Net, err error) {
+// createKernelTun creates an interface named name. With no name, or when an
+// interface of the host has taken it, it picks a new one. It returns the name,
+// also on failure; the name stays kept until releaseKernelTunName, and the
+// caller passes it again next time.
+func createKernelTun(name string, localAddresses, dnsServers []netip.Addr, mtu int) (tdev tun.Device, tnet *Net, _ string, err error) {
+	createMu.Lock()
+	defer createMu.Unlock()
+
 	var v4, v6 *netip.Addr
 	for _, prefixes := range localAddresses {
 		if v4 == nil && prefixes.Is4() {
@@ -75,23 +150,35 @@ func createKernelTun(localAddresses, dnsServers []netip.Addr, mtu int) (tdev tun
 	// system configs.
 	if v4 != nil {
 		if err = writeSysctlZero("/proc/sys/net/ipv4/conf/all/rp_filter"); err != nil {
-			return nil, nil, fmt.Errorf("failed to disable ipv4 rp_filter for all: %w", err)
+			return nil, nil, name, fmt.Errorf("failed to disable ipv4 rp_filter for all: %w", err)
 		}
 	}
 	if v6 != nil {
 		if err = writeSysctlZero("/proc/sys/net/ipv6/conf/all/disable_ipv6"); err != nil {
-			return nil, nil, fmt.Errorf("failed to enable ipv6: %w", err)
+			return nil, nil, name, fmt.Errorf("failed to enable ipv6: %w", err)
 		}
 		if err = writeSysctlZero("/proc/sys/net/ipv6/conf/all/rp_filter"); err != nil {
-			return nil, nil, fmt.Errorf("failed to disable ipv6 rp_filter for all: %w", err)
+			return nil, nil, name, fmt.Errorf("failed to disable ipv6 rp_filter for all: %w", err)
 		}
 	}
 
-	n := CalculateInterfaceName("wg")
-	wgt, err := tun.CreateTUN(n, mtu)
-	if err != nil {
-		return nil, nil, err
+	var wgt tun.Device
+	for attempt := 1; ; attempt++ {
+		if name == "" || interfaceExists(name) {
+			delete(keptNames, name)
+			name = newInterfaceNameLocked()
+		}
+		wgt, err = openKernelTun(name, mtu)
+		if err == nil {
+			break
+		}
+		// Another program may create the interface after the check.
+		taken := goerrors.Is(err, unix.EBUSY) || goerrors.Is(err, unix.EINVAL) || goerrors.Is(err, unix.EEXIST)
+		if !taken || attempt == 3 {
+			return nil, nil, name, err
+		}
 	}
+	n := name
 	defer func() {
 		if err != nil {
 			_ = wgt.Close()
@@ -102,12 +189,12 @@ func createKernelTun(localAddresses, dnsServers []netip.Addr, mtu int) (tdev tun
 	// the operation require root privilege on container require '--privileged' flag.
 	if v4 != nil {
 		if err = writeSysctlZero("/proc/sys/net/ipv4/conf/" + n + "/rp_filter"); err != nil {
-			return nil, nil, fmt.Errorf("failed to disable ipv4 rp_filter for tunnel: %w", err)
+			return nil, nil, name, fmt.Errorf("failed to disable ipv4 rp_filter for tunnel: %w", err)
 		}
 	}
 	if v6 != nil {
 		if err = writeSysctlZero("/proc/sys/net/ipv6/conf/" + n + "/rp_filter"); err != nil {
-			return nil, nil, fmt.Errorf("failed to disable ipv6 rp_filter for tunnel: %w", err)
+			return nil, nil, name, fmt.Errorf("failed to disable ipv6 rp_filter for tunnel: %w", err)
 		}
 	}
 
@@ -121,7 +208,7 @@ func createKernelTun(localAddresses, dnsServers []netip.Addr, mtu int) (tdev tun
 			}
 			ipv6TableIndex--
 			if ipv6TableIndex < 0 {
-				return nil, nil, fmt.Errorf("failed to find available ipv6 table index")
+				return nil, nil, name, fmt.Errorf("failed to find available ipv6 table index")
 			}
 		}
 	}
@@ -132,7 +219,7 @@ func createKernelTun(localAddresses, dnsServers []netip.Addr, mtu int) (tdev tun
 
 	t.handle, err = netlink.NewHandle()
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, name, err
 	}
 	defer func() {
 		if err != nil {
@@ -142,7 +229,7 @@ func createKernelTun(localAddresses, dnsServers []netip.Addr, mtu int) (tdev tun
 
 	l, err := netlink.LinkByName(n)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, name, err
 	}
 
 	if v4 != nil {
@@ -183,45 +270,44 @@ func createKernelTun(localAddresses, dnsServers []netip.Addr, mtu int) (tdev tun
 
 	for _, addr := range t.linkAddrs {
 		if err = t.handle.AddrAdd(l, &addr); err != nil {
-			return nil, nil, fmt.Errorf("failed to add address %s to %s: %w", addr, n, err)
+			return nil, nil, name, fmt.Errorf("failed to add address %s to %s: %w", addr, n, err)
 		}
 	}
 	if err = t.handle.LinkSetMTU(l, mtu); err != nil {
-		return nil, nil, err
+		return nil, nil, name, err
 	}
 	if err = t.handle.LinkSetUp(l); err != nil {
-		return nil, nil, err
+		return nil, nil, name, err
 	}
 
 	for _, route := range t.routes {
 		if err = t.handle.RouteAdd(route); err != nil {
-			return nil, nil, fmt.Errorf("failed to add route %s: %w", route, err)
+			return nil, nil, name, fmt.Errorf("failed to add route %s: %w", route, err)
 		}
 	}
 	for _, rule := range t.rules {
 		if err = t.handle.RuleAdd(rule); err != nil {
-			return nil, nil, fmt.Errorf("failed to add rule %s: %w", rule, err)
+			return nil, nil, name, fmt.Errorf("failed to add rule %s: %w", rule, err)
 		}
 	}
 
-	dialer := &net.Dialer{}
-	dialer.Control = func(network, address string, c syscall.RawConn) error {
-		return c.Control(func(fd uintptr) {
-			if err := syscall.BindToDevice(int(fd), n); err != nil {
-				errors.LogInfoInner(context.Background(), err, "failed to bind to device")
-			}
-		})
+	// Binding to the interface is all that keeps a socket in the tunnel; IPv4
+	// has no route to it. A socket that cannot be bound fails instead of
+	// leaving by the main table. It is bound by index: once the interface is
+	// gone, as when the outbound has slept, the socket cannot send, while its
+	// name may already belong to an interface created later.
+	index := l.Attrs().Index
+	control := func(network, address string, c syscall.RawConn) error {
+		var bindErr error
+		if err := c.Control(func(fd uintptr) {
+			bindErr = bindToInterface(int(fd), index, n)
+		}); err != nil {
+			return err
+		}
+		return bindErr
 	}
-	lc := &net.ListenConfig{}
-	lc.Control = func(network, address string, c syscall.RawConn) error {
-		return c.Control(func(fd uintptr) {
-			if err := syscall.BindToDevice(int(fd), n); err != nil {
-				errors.LogInfoInner(context.Background(), err, "failed to bind to device")
-			}
-		})
-	}
-	t.dialer = dialer
-	t.lc = lc
+	t.dialer = &net.Dialer{Control: control}
+	t.lc = &net.ListenConfig{Control: control}
 
 	tnet = &Net{
 		DialContextTCPAddrPort: t.DialContextTCPAddrPort,
@@ -231,10 +317,24 @@ func createKernelTun(localAddresses, dnsServers []netip.Addr, mtu int) (tdev tun
 		hasV6:                  v6 != nil,
 	}
 
-	return t, tnet, nil
+	return t, tnet, name, nil
+}
+
+// bindToInterface binds a socket to an interface by its index, or by its name
+// on kernels before 5.0, which lack SO_BINDTOIFINDEX.
+func bindToInterface(fd, index int, name string) error {
+	err := unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_BINDTOIFINDEX, index)
+	if err == unix.ENOPROTOOPT {
+		err = unix.BindToDevice(fd, name)
+	}
+	if err != nil {
+		return fmt.Errorf("failed to bind to %s: %w", name, err)
+	}
+	return nil
 }
 
 func (tun *kernelTun) Close() (err error) {
+	tun.closed.Store(true)
 	var errs []error
 	for _, rule := range tun.rules {
 		if err = tun.handle.RuleDel(rule); err != nil {
@@ -254,11 +354,19 @@ func (tun *kernelTun) Close() (err error) {
 	return goerrors.Join(errs...)
 }
 
+// A connection that ended may still use the stack of an outbound gone to
+// sleep, for instance to resolve a name; it gets net.ErrClosed.
 func (tun *kernelTun) DialContextTCPAddrPort(ctx context.Context, addr netip.AddrPort) (net.Conn, error) {
+	if tun.closed.Load() {
+		return nil, net.ErrClosed
+	}
 	return tun.dialer.DialContext(ctx, "tcp", addr.String())
 }
 
 func (tun *kernelTun) DialUDPAddrPort(laddr, raddr netip.AddrPort) (net.Conn, error) {
+	if tun.closed.Load() {
+		return nil, net.ErrClosed
+	}
 	conn, err := tun.lc.ListenPacket(context.Background(), "udp", ":0")
 	if err != nil {
 		return nil, err

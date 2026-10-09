@@ -16,6 +16,7 @@ import (
 	"net/netip"
 	"os"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -45,9 +46,15 @@ type netTun struct {
 	mtu            int
 	dnsServers     []netip.Addr
 	hasV4, hasV6   bool
+
+	// closed ends Read and WriteNotify. incomingPacket itself is never
+	// closed: the channel endpoint calls WriteNotify outside its lock, so a
+	// send can still be on its way when the stack closes.
+	closed    chan struct{}
+	closeOnce sync.Once
 }
 
-func CreateNetTUN(localAddresses, dnsServers []netip.Addr, mtu int, handleLocal bool) (tun.Device, *Net, *stack.Stack, error) {
+func CreateNetTUN(localAddresses, dnsServers []netip.Addr, mtu int, handleLocal bool) (_ tun.Device, _ *Net, _ *stack.Stack, err error) {
 	opts := stack.Options{
 		NetworkProtocols:   []stack.NetworkProtocolFactory{ipv4.NewProtocol, ipv6.NewProtocol},
 		TransportProtocols: []stack.TransportProtocolFactory{tcp.NewProtocol, udp.NewProtocol, icmp.NewProtocol6, icmp.NewProtocol4},
@@ -60,7 +67,16 @@ func CreateNetTUN(localAddresses, dnsServers []netip.Addr, mtu int, handleLocal 
 		incomingPacket: make(chan *buffer.View),
 		dnsServers:     dnsServers,
 		mtu:            mtu,
+		closed:         make(chan struct{}),
 	}
+	// Clients create the stack on first use and again on the next connection
+	// when that fails: a failed stack must not keep running.
+	defer func() {
+		if err != nil {
+			dev.stack.Destroy()
+			dev.ep.Close()
+		}
+	}()
 	sackEnabledOpt := tcpip.TCPSACKEnabled(true) // TCP SACK is disabled by default
 	tcpipErr := dev.stack.SetTransportProtocolOption(tcp.ProtocolNumber, &sackEnabledOpt)
 	if tcpipErr != nil {
@@ -124,8 +140,10 @@ func (tun *netTun) Events() <-chan tun.Event {
 }
 
 func (tun *netTun) Read(buf [][]byte, sizes []int, offset int) (int, error) {
-	view, ok := <-tun.incomingPacket
-	if !ok {
+	var view *buffer.View
+	select {
+	case view = <-tun.incomingPacket:
+	case <-tun.closed:
 		return 0, os.ErrClosed
 	}
 
@@ -166,23 +184,24 @@ func (tun *netTun) WriteNotify() {
 	view := pkt.ToView()
 	pkt.DecRef()
 
-	tun.incomingPacket <- view
+	select {
+	case tun.incomingPacket <- view:
+	case <-tun.closed:
+		view.Release()
+	}
 }
 
+// Close may be called more than once, and while the stack is still sending:
+// clients close their stack whenever they sleep.
 func (tun *netTun) Close() error {
-	tun.stack.RemoveNIC(1)
-	tun.stack.Close()
-	tun.ep.RemoveNotify(tun.notifyHandle)
-	tun.ep.Close()
-
-	if tun.events != nil {
+	tun.closeOnce.Do(func() {
+		close(tun.closed)
+		tun.stack.RemoveNIC(1)
+		tun.stack.Close()
+		tun.ep.RemoveNotify(tun.notifyHandle)
+		tun.ep.Close()
 		close(tun.events)
-	}
-
-	if tun.incomingPacket != nil {
-		close(tun.incomingPacket)
-	}
-
+	})
 	return nil
 }
 
