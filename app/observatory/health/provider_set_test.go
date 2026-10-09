@@ -294,7 +294,7 @@ func TestApplyBrokenSetChangesNothing(t *testing.T) {
 		"has no tag":    {{Tag: "x2", V: 1}, {V: 1}},
 		"duplicate tag": {{Tag: "x2", V: 1}, {Tag: "x2", V: 2}},
 		"build:":        {{Tag: "x2", V: 1}, {Tag: "unparsable"}},
-		"build p-x3":    {{Tag: "x2", V: 1}, {Tag: "x3", Bad: true}},
+		"build x3: ":    {{Tag: "x2", V: 1}, {Tag: "x3", Bad: true}},
 		"not allowed":   {{Tag: "x2", V: 1}, {Tag: "x3", Protocol: "freedom"}},
 		// The reason quotes the tag, as large as the answer allows.
 		"outbound " + strings.Repeat("x", 40): {{Tag: "x2", V: 1}, {Tag: strings.Repeat("x", 100_000), Protocol: "freedom"}},

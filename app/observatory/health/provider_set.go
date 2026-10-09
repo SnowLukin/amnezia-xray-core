@@ -1131,7 +1131,9 @@ func (o *Observer) buildSet(rt *providerRuntime, a *providerAnswer) ([]*outbound
 		h, err := o.newHandler(cfg)
 		if err != nil {
 			closeAll()
-			return nil, nil, fmt.Errorf("build %s: %w", cfg.Tag, err)
+			// By the tag the backend sent, as every other reason names
+			// an outbound of the answer: the backend knows no prefix.
+			return nil, nil, fmt.Errorf("build %s: %w", a.heads[i].Tag, err)
 		}
 		changes = append(changes, &outboundChange{tag: cfg.Tag, config: cfg, handler: h})
 	}
