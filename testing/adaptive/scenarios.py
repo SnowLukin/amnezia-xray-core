@@ -2126,3 +2126,53 @@ def provider_initial(stand, xray, work, name):
         check("final report of the quiet session", c.final_report, c.final_report is None and not c.reports, "null"),
         check("user requests failed", failed, failed == 0, "== 0"),
     ]
+
+
+@scenario()
+def provider_saved_set(stand, xray, work, name):
+    """The host keeps the set after the backend rotated the token and starts
+    the next core with it: that core runs on the set at once, and its first
+    request, from a trigger, carries the rotated token."""
+    stand.answer(FRESH, version="v1", expires={"x1": "@+600s", "x2": "@+600s"}, server_time="@+0s")
+    prov = bench.provider_config(["direct"])
+    cfg = bench.client_config(BANNED[:1], {"a": 5, "p-": 1}, providers=[prov])
+    bench.provider_mode("rotate:answer-t2")
+    m = Marks()
+    kept = {}
+    with bench.Client(xray, cfg, work, name + "-first") as c:
+        run_timeline(None, [(1, m.at("answer", lambda: refresh(c))),
+                            (3, lambda: kept.update(c.api("set", "fresh")))], 4)
+    saved = kept.get("set") or {}
+    # The backend accepts only the rotated token from now on.
+    bench.provider_mode("require:answer-t2")
+    prov2 = bench.provider_config(["direct"], triggers={"interval": "5s", "jitter": 0}) | {"initial": saved}
+    cfg2 = bench.client_config(BANNED[:1], {"a": 5, "p-": 1}, providers=[prov2])
+    launched = time.time()
+    with bench.Client(xray, cfg2, work, name + "-second") as c2:
+        start = time.time()
+        tr = bench.Traffic(rate=1, big=0)
+        run_timeline(tr, [], 8)
+    reqs = stand.provider_requests(launched)
+    applies = [e["fields"] for e in c2.events if e["type"] == "provider_apply"]
+    first_switch = next((e for e in c2.events if e["type"] == "switch"), None)
+    refused = [e for e in c2.events if e["type"] == "provider_auth_failed"]
+    failed = sum(1 for r in tr.records if not r[1])
+    return [
+        check("kept set (seq, version, token)",
+              (kept.get("seq"), saved.get("version"), (saved.get("headers") or {}).get("Authorization")),
+              kept.get("seq", 0) >= 1 and saved.get("version") == "v1"
+              and (saved.get("headers") or {}).get("Authorization") == "Bearer answer-t2"
+              and "receivedAt" in saved, "(>= 1, v1, Bearer answer-t2)"),
+        check("second core starts on the kept set (trigger, clock, version)",
+              applies and (applies[0].get("trigger"), applies[0].get("clock"), applies[0].get("version")),
+              bool(applies) and applies[0].get("trigger") == "initial" and applies[0].get("clock") == "saved"
+              and applies[0].get("version") == "v1", "(initial, saved, v1)"),
+        check("first switch", first_switch and f"{first_switch['fields']['to']} {first_switch['fields']['reason']}",
+              first_switch is not None and first_switch["fields"]["to"].startswith("p-"), "p-*"),
+        check("first request of the second core, s", reqs and round(reqs[0][0] - start, 1),
+              bool(reqs) and reqs[0][0] - start >= 3, ">= 3 (interval)"),
+        check("token of the first request", reqs and reqs[0][1], bool(reqs) and reqs[0][1] == "Bearer answer-t2",
+              "Bearer answer-t2"),
+        check("refused tokens", len(refused), not refused, "== 0"),
+        check("user requests failed", failed, failed == 0, "== 0"),
+    ]
