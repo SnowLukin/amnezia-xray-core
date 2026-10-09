@@ -220,6 +220,13 @@ def server_names(status):
     return {p["outbound"]: p.get("server_name") or p["outbound"] for p in status["paths"]}
 
 
+# Events carry the wall clock in whole milliseconds, while the core keeps its limits per
+# minute on the monotonic clock. A start the core let through 60 s after another may carry a
+# stamp some milliseconds earlier: spans of 59.993 s were seen. A window of the limits is
+# counted short by this much; a start one probe spacing early still counts.
+LIMIT_CLOCK_SLACK = 0.05
+
+
 def per_name_peak(events, names, since=0, window=60.0):
     """The most probe starts of one server name inside any 60 s, and that name."""
     by = {}
@@ -230,7 +237,7 @@ def per_name_peak(events, names, since=0, window=60.0):
     for name, ts in by.items():
         ts.sort()
         for i, t in enumerate(ts):
-            n = sum(1 for u in ts[i:] if u < t + window - 0.005)
+            n = sum(1 for u in ts[i:] if u < t + window - LIMIT_CLOCK_SLACK)
             if n > worst:
                 worst, who = n, name
     return worst, who
@@ -1572,7 +1579,8 @@ def host_starts_peak(events, since=0, window=60.0):
     """The most host probe starts inside any 60 s."""
     ts = sorted(e["ts"] / 1000 for e in events if e["type"] == "probe_start"
                 and e["fields"].get("reason") == "host" and e["ts"] / 1000 >= since)
-    return max((sum(1 for u in ts[i:] if u < t + window - 0.005) for i, t in enumerate(ts)), default=0), len(ts)
+    return max((sum(1 for u in ts[i:] if u < t + window - LIMIT_CLOCK_SLACK) for i, t in enumerate(ts)),
+               default=0), len(ts)
 
 
 @scenario()

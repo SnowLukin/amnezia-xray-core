@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"strconv"
+	"unicode/utf8"
 
 	healthService "github.com/xtls/xray-core/app/observatory/health/command"
 	"github.com/xtls/xray-core/main/commands/base"
@@ -221,6 +222,11 @@ func providerHeaders(in io.Reader) (map[string]string, error) {
 	}
 	if len(raw) > maxHeadersInput {
 		return nil, fmt.Errorf("stdin holds more than %d bytes", maxHeadersInput)
+	}
+	if !utf8.Valid(raw) {
+		// The decoder would put U+FFFD in place of such bytes, and the
+		// provider would send another token than the one given.
+		return nil, errors.New("stdin is not valid UTF-8")
 	}
 	var headers map[string]string
 	if json.Unmarshal(raw, &headers) != nil || headers == nil {

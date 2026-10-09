@@ -585,6 +585,40 @@ func TestObserverReport(t *testing.T) {
 	}
 }
 
+// readmeEventRow is the row of the events table of the README for typ.
+func readmeEventRow(t *testing.T, typ string) string {
+	t.Helper()
+	readme, err := os.ReadFile("README.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range strings.Split(string(readme), "\n") {
+		if strings.HasPrefix(line, "| `"+typ+"` |") {
+			return line
+		}
+	}
+	t.Fatalf("README has no row for %s", typ)
+	return ""
+}
+
+// A network change no balancer forgets on keeps the generation and tells
+// so, as the README describes.
+func TestIgnoredNetworkChangeDocumented(t *testing.T) {
+	te := newTestEngine(t, nil, &SelectorConfig{Costs: costs("a", 1, "b", 3), OnNetworkChange: NetworkChangeMode_IGNORE}, "a1", "b1")
+	gen := te.generation
+	te.onNetworkChange("x", at(time.Second))
+	ev := te.lastOf(t, "network_change")
+	if ev.Fields["ignored"] != true || te.generation != gen {
+		t.Fatalf("network_change %v at generation %d, want it ignored at %d", ev.Fields, te.generation, gen)
+	}
+	row := readmeEventRow(t, "network_change")
+	for k := range ev.Fields {
+		if !strings.Contains(row, "`"+k+"`") {
+			t.Errorf("README does not describe %q of network_change", k)
+		}
+	}
+}
+
 // Every key of the report is described in the README.
 func TestReportFieldsDocumented(t *testing.T) {
 	readme, err := os.ReadFile("README.md")

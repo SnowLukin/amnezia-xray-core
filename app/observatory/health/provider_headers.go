@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"golang.org/x/net/http/httpguts"
 )
@@ -38,7 +39,10 @@ func CheckHeaderName(name string) error {
 	return nil
 }
 
-// checkHeaderValue words what is wrong with a value by the name alone.
+// checkHeaderValue words what is wrong with a value by the name alone. A
+// value must be UTF-8, as gRPC requires of the host: ProviderSet hands the
+// headers out in JSON, which has no other way to carry them, and the next
+// start would send another token.
 func checkHeaderValue(name, value string) error {
 	switch {
 	case value == "":
@@ -47,15 +51,21 @@ func checkHeaderValue(name, value string) error {
 		return fmt.Errorf("header %s is longer than %d bytes", name, maxHeaderValue)
 	case !httpguts.ValidHeaderFieldValue(value):
 		return fmt.Errorf("header %s has a value that is not valid in HTTP", name)
+	case !utf8.ValidString(value):
+		return errNotUTF8(name)
 	}
 	return nil
+}
+
+func errNotUTF8(name string) error {
+	return fmt.Errorf("header %s has a value that is not valid UTF-8", name)
 }
 
 // parseHeaders reads the headers of an answer by canonical name. Values are
 // never quoted: the reason of a refusal goes into events and the next
 // request.
 func parseHeaders(raw []byte) (map[string]string, error) {
-	var sent map[string]string
+	var sent map[string]json.RawMessage
 	if json.Unmarshal(raw, &sent) != nil || sent == nil {
 		return nil, answerErrorf("headers must be an object of strings")
 	}
@@ -64,6 +74,10 @@ func parseHeaders(raw []byte) (map[string]string, error) {
 	}
 	out := make(map[string]string, len(sent))
 	for _, name := range slices.Sorted(maps.Keys(sent)) {
+		var v string
+		if json.Unmarshal(sent[name], &v) != nil {
+			return nil, answerErrorf("headers must be an object of strings")
+		}
 		if err := CheckHeaderName(name); err != nil {
 			return nil, answerErrorf("headers: %v", err)
 		}
@@ -71,10 +85,15 @@ func parseHeaders(raw []byte) (map[string]string, error) {
 		if _, twice := out[canon]; twice {
 			return nil, answerErrorf("headers: %s given twice", canon)
 		}
-		if err := checkHeaderValue(canon, sent[name]); err != nil {
+		if !utf8.Valid(sent[name]) {
+			// The decoder puts U+FFFD in place of such bytes: the value
+			// would not be the one the backend sent.
+			return nil, answerErrorf("headers: %v", errNotUTF8(canon))
+		}
+		if err := checkHeaderValue(canon, v); err != nil {
 			return nil, answerErrorf("headers: %v", err)
 		}
-		out[canon] = sent[name]
+		out[canon] = v
 	}
 	return out, nil
 }

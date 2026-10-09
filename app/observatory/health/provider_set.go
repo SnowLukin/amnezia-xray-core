@@ -1354,7 +1354,9 @@ func (o *Observer) endOverdueDrains() {
 	}
 }
 
-// endDrain removes and closes a draining outbound. The caller holds applyMu.
+// endDrain removes and closes a draining outbound. One that was registered
+// and is no longer, which only HandlerService.RemoveOutbound does, was closed
+// there and is not closed again. The caller holds applyMu.
 func (o *Observer) endDrain(rt *providerRuntime, d *drainingOutbound) {
 	if rt.draining[d.handler] != d {
 		return
@@ -1379,7 +1381,9 @@ func (o *Observer) endDrain(rt *providerRuntime, d *drainingOutbound) {
 	rt.p.draining = len(rt.draining)
 	o.e.emit(o.now(), "provider_drained", map[string]any{"provider": rt.cfg.tag, "outbound": d.tag, "replaced": !d.registered})
 	o.mu.Unlock()
-	common.Close(d.handler)
+	if registered || !d.registered {
+		common.Close(d.handler)
+	}
 }
 
 // closeProviders stops drains on shutdown. Registered outbounds are closed

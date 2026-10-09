@@ -381,16 +381,18 @@ the token of the provider. Only names in `apply.headers` may come, in any
 case: `authorization` replaces the `Authorization` of the config rather than
 going beside it. `[]` lets no answer set a header, and an answer with
 `headers` is then refused. At most 8 headers, each name at most 256 bytes,
-each value non-empty, without line breaks or other control characters and
-at most 4 KiB; names of the transport such as `Host`, `Content-Type`,
-`Connection` or `Proxy-*` never.
+each value non-empty, in UTF-8, without line breaks or other control
+characters and at most 4 KiB; names of the transport such as `Host`,
+`Content-Type`, `Connection` or `Proxy-*` never.
 The host sets headers the same way with `SetProviderHeaders`, any names but
 those of the transport; an empty value removes what the host or an answer
-set, and the config applies again. The headers an answer or the host set
-are at most 8 together, as the set the host keeps carries them: an answer
-or an initial set that would make more is refused, and a call of the host
-that adds past 8 fails, while one that replaces or removes headers never
-does. What came later wins, and the host wins
+set, and the config applies again. A value that is not UTF-8 fails in a
+direct call as over gRPC: `ProviderSet` carries the headers in JSON, which
+would put other bytes in its place for the next start. The headers an
+answer or the host set are at most 8 together, as the set the host keeps
+carries them: an answer or an initial set that would make more is refused,
+and a call of the host that adds past 8 fails, while one that replaces or
+removes headers never does. What came later wins, and the host wins
 over an answer to a request that was sent before the host changed the
 headers: `provider_apply` tells that with `headers_stale`. Only an applied
 answer changes a header, so a refused or a lost answer leaves the token in
@@ -701,7 +703,7 @@ changed its settings). `kinds` counts failures by kind: `dial_failed`, `dial_tim
 | `network_up` | `by` | Decisions resumed: `connectivity` (a check passed), `traffic` or `probe` (an outbound worked). |
 | `connectivity_doubt` | `failed_checks`, `paused_ms` | The check kept failing for `maxPause`; decisions resumed provisionally. |
 | `connectivity_ignored` | `failed_checks` | The check failed while an outbound worked; it is not used until the next network change. |
-| `network_change` | `network`, `known`, `generation` | The host reported a network change. |
+| `network_change` | `network`, `known`, `generation`, `ignored` | The host reported a network change. `ignored` when no balancer forgets on it, as each has `onNetworkChange` `ignore`: what was learned stays and `generation` does not grow. |
 | `memory_low` | `on` | The host reported that memory is low (`on` true) or no longer. |
 | `provider_fetch` | `provider`, `trigger`, `retry`, `attempt`, `via`, `outbound`, `method`, `refresh`, `ok`, `status`, `ms`, `bytes`, `code`, `retry_after_ms`, `error` | One request of a refresh through one `via` entry; `outbound` is what the entry resolved to, `refresh` the number of the refresh as the body tells it, `bytes` the size of the answer. `code` is the code of an error body of the protocol, `retry_after_ms` the pause `Retry-After` asked for, after the ceiling and before the spread. A skipped entry has `ok` false and only `error`: `balancer exhausted`, `outbound down` or `no such outbound`. `error` never holds the URL. `trigger`: `host`, `exhausted`, `expiry`, `min_healthy`, `cost_above`, `network_change`, `next_refresh`, `max_age`, `interval`; `retry` is the level of the backoff, as the body of the request tells it: refreshes in a row since the last success that failed, brought an answer the core refused, or brought an exhausted balancer the same set; a `Retry-After` pause and refused headers leave it as it is. An answer that breaks the protocol has `ok` true: the backend answered, and the refusal is the `provider_apply`'s. |
 | `provider_apply` | `provider`, `trigger`, `ok`, `changed`, `added`, `replaced`, `removed`, `unchanged`, `version`, `exhausted`, `rules`, `routing_error`, `routing_ignored`, `leases`, `renewed`, `expired`, `skew_ms`, `clock`, `headers`, `headers_stale`, `base_version`, `error` | The answer was applied (`changed`), was the applied set already, or was rejected (`ok` false with `error`); `trigger` `initial` is the initial set at the start. `exhausted` tells whether the balancer had nothing usable at that moment. `rules` counts the routing rules applied with the set; `routing_ignored` tells that the answer had routing while `apply.routing` is off. When the answer names leases: `leases` counts them, `renewed` the ones it gave a later end that has not passed, ended ones too, `expired` the leases that ended after it, where one that had ended and got a later end that passed as well gives no second `provider_expired`; `skew_ms` is how far the clock they count from is ahead of the device, and `clock` which one that is: `server`, `date` (the `Date` of the answer plus `Age`), `saved` (the `serverTime` of a kept initial set plus its age) or `device`. `headers` names the headers of the answer; `headers_stale` tells that the host changed the headers while the request ran, and the answer did not set them, or that the host had set some names of the initial set before the start, which stay its own. `base_version` is the base config the answer named. |
@@ -709,7 +711,7 @@ changed its settings). `kinds` counts failures by kind: `dial_failed`, `dial_tim
 | `provider_auth_failed` | `provider`, `trigger`, `status`, `via`, `code` | The backend refused the headers of a request with `status` 401 or 403 and the error `code` `unauthorized` or `forbidden`; every trigger but the host waits, see Token. |
 | `provider_headers` | `provider`, `by`, `names` | Headers of the requests changed: `by` an `answer`, the `initial` set or the `host`. `names` are the headers whose values changed; the values are never told. |
 | `provider_base_changed` | `provider`, `from`, `to` | An applied answer named the base config `to` while the core runs with `from`: the host is to fetch the config anew, see Base config. Once per value, until an answer names `from` again. |
-| `provider_restart_needed` | `provider`, `version`, `sections` | Kept for sections of the config the core reads only at start. Protocol 1 refuses an answer with such a section, so this version does not write it. |
+| `provider_restart_needed` | `provider`, `version`, `sections` | Reserved for an answer with sections of the config the core reads only at the start. Protocol 1 refuses such an answer, see [PROVIDER.md](PROVIDER.md#answer), so this version never writes it. |
 | `provider_skip` | `provider`, `trigger`, `reason`, `wait_ms` | A trigger wants a refresh that cannot start yet. `reason`: `min_interval`, `backoff`, `retry_after`, `max_per_hour`, `idle`, `network_down`, `pinned` (the balancer of the provider is pinned), `memory`, `auth` (the backend refused the headers). Reported once per trigger and reason until a refresh starts. |
 | `provider_drained` | `provider`, `outbound`, `replaced` | An outbound that left the set, or the old handler of a replaced one, was closed: after `drain`, or at the release of a pin that held it past that, at once without connections, or early to keep at most `maxOutbounds` draining. |
 | `outbound_sleep` | `outbound`, `idle_ms`, `reason` | An outbound released what it held, see Sleep. `idle_ms` is the time since its last use; `reason` is `idle` (after `sleep.after`) or `memory` (sooner, while memory is low). |
@@ -770,7 +772,7 @@ to this one. Reports of one run add up.
 | `network_changes`, `network_known`, `network_down` | `network_change` events, the ones with `known`, and `network_down` events. |
 | `provider_fetches`, `provider_fetch_failures`, `provider_triggers` | `provider_fetch` events, the ones without `ok`, and their count by `trigger`. |
 | `provider_retry_after` | `provider_fetch` events with `retry_after_ms`: a busy backend asked to wait. |
-| `provider_applied`, `provider_rejected`, `provider_restart_needed` | `provider_apply` events that changed the set, but for the initial set, the rejected ones, and `provider_restart_needed` events. |
+| `provider_applied`, `provider_rejected`, `provider_restart_needed` | `provider_apply` events that changed the set, but for the initial set, the rejected ones, and `provider_restart_needed` events, which this version never writes: always 0. |
 | `provider_expired` | `provider_expired` events: leases that ended. |
 | `provider_renewals` | `provider_apply` events with `ok` and `renewed` above zero, but for the initial set: answers that renewed leases. A renewal keeps what the balancer has and is no decision. |
 | `provider_auth_failed` | `provider_auth_failed` events: the backend refused the headers. |
