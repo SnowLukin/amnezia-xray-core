@@ -1360,7 +1360,11 @@ type ProviderConfig struct {
 	// An answer of the provider as JSON, applied when the core starts: the
 	// answer of a connect, or a set the host kept, which may add receivedAt.
 	// A broken one is reported and the core starts without it.
-	Initial       []byte `protobuf:"bytes,11,opt,name=initial,proto3" json:"initial,omitempty"`
+	Initial []byte `protobuf:"bytes,11,opt,name=initial,proto3" json:"initial,omitempty"`
+	// Names the config the core was started with, as the backend that
+	// generated it named it. An answer that names another one tells the host
+	// to fetch the config anew. Empty takes the one of a fresh initial.
+	BaseVersion   string `protobuf:"bytes,12,opt,name=base_version,json=baseVersion,proto3" json:"base_version,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1470,6 +1474,13 @@ func (x *ProviderConfig) GetInitial() []byte {
 		return x.Initial
 	}
 	return nil
+}
+
+func (x *ProviderConfig) GetBaseVersion() string {
+	if x != nil {
+		return x.BaseVersion
+	}
+	return ""
 }
 
 type ProviderTriggers struct {
@@ -2015,7 +2026,7 @@ const file_app_observatory_health_config_proto_rawDesc = "" +
 	"\vmax_penalty\x18\a \x01(\x03R\n" +
 	"maxPenalty\x123\n" +
 	"\x16skip_on_network_change\x18\b \x01(\bR\x13skipOnNetworkChange\x12!\n" +
-	"\fall_networks\x18\t \x01(\bR\vallNetworks\"\xa5\x04\n" +
+	"\fall_networks\x18\t \x01(\bR\vallNetworks\"\xc8\x04\n" +
 	"\x0eProviderConfig\x12\x10\n" +
 	"\x03tag\x18\x01 \x01(\tR\x03tag\x12\x10\n" +
 	"\x03url\x18\x02 \x01(\tR\x03url\x12W\n" +
@@ -2028,7 +2039,8 @@ const file_app_observatory_health_config_proto_rawDesc = "" +
 	"\x05apply\x18\t \x01(\v2/.xray.core.app.observatory.health.ProviderApplyR\x05apply\x12\x16\n" +
 	"\x06method\x18\n" +
 	" \x01(\tR\x06method\x12\x18\n" +
-	"\ainitial\x18\v \x01(\fR\ainitial\x1a:\n" +
+	"\ainitial\x18\v \x01(\fR\ainitial\x12!\n" +
+	"\fbase_version\x18\f \x01(\tR\vbaseVersion\x1a:\n" +
 	"\fHeadersEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xce\x03\n" +

@@ -201,10 +201,17 @@ type HealthProviderConfig struct {
 	// here: a bad saved set must not keep the core from starting, so the
 	// observatory checks the rest and starts without it.
 	Initial json.RawMessage `json:"initial"`
+	// BaseVersion names this config as the backend that generated it did.
+	BaseVersion string `json:"baseVersion"`
 }
 
-// maxInitial bounds the initial set, as the observatory bounds an answer.
-const maxInitial = 1 << 20
+const (
+	// maxInitial bounds the initial set, as the observatory bounds an answer.
+	maxInitial = 1 << 20
+	// maxBaseVersion bounds baseVersion, as the observatory bounds the one of
+	// an answer.
+	maxBaseVersion = 256
+)
 
 // optionalDuration maps a JSON duration where an explicit zero turns the
 // feature off to the protobuf convention: zero is the default, negative off.
@@ -253,6 +260,9 @@ func (c *HealthProviderConfig) build() (*health.ProviderConfig, error) {
 	if method != "" && method != "GET" && method != "POST" {
 		return nil, errors.New("healthObservatory: ", where, ": method must be GET or POST")
 	}
+	if len(c.BaseVersion) > maxBaseVersion {
+		return nil, errors.New("healthObservatory: ", where, ": baseVersion is longer than 256 bytes")
+	}
 	a := c.Apply
 	if a == nil || a.Balancer == "" || a.TagPrefix == "" {
 		return nil, errors.New("healthObservatory: ", where, ": apply needs balancer and tagPrefix")
@@ -270,13 +280,14 @@ func (c *HealthProviderConfig) build() (*health.ProviderConfig, error) {
 		}
 	}
 	out := &health.ProviderConfig{
-		Tag:      c.Tag,
-		Url:      c.URL,
-		Method:   method,
-		Headers:  c.Headers,
-		Via:      c.Via,
-		Timeout:  int64(c.Timeout),
-		MaxBytes: c.MaxBytes,
+		Tag:         c.Tag,
+		Url:         c.URL,
+		Method:      method,
+		Headers:     c.Headers,
+		Via:         c.Via,
+		Timeout:     int64(c.Timeout),
+		MaxBytes:    c.MaxBytes,
+		BaseVersion: c.BaseVersion,
 		Apply: &health.ProviderApply{
 			Balancer:     a.Balancer,
 			TagPrefix:    a.TagPrefix,

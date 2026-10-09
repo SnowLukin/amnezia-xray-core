@@ -138,10 +138,18 @@ type provider struct {
 	// not work, and without it a killed process loses a rotated token.
 	last lastAnswer
 	seq  uint64
+
+	// The base config the core started with, as the backend named it: that
+	// of the config or of a fresh initial set; empty when neither named one.
+	// The base the last applied answer named, and the one the host was told
+	// of last, until an answer names the base of the core again.
+	base         string
+	answerBase   string
+	baseReported string
 }
 
 func newProvider(cfg *providerSettings) *provider {
-	return &provider{cfg: cfg, minHealthyArmed: true, skipped: map[refreshTrigger]string{}}
+	return &provider{cfg: cfg, minHealthyArmed: true, skipped: map[refreshTrigger]string{}, base: cfg.baseVersion}
 }
 
 // refreshJob is one refresh: requests through the via outbounds in turn and

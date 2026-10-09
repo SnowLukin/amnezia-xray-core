@@ -255,6 +255,24 @@ func TestHealthProviderInitial(t *testing.T) {
 	}
 }
 
+func TestHealthProviderBaseVersion(t *testing.T) {
+	provider := func(base string) string {
+		return `{"subjectSelector": ["a"], "providers": [{"tag": "a", "url": "https://x.test/",
+		  "apply": {"balancer": "auto", "tagPrefix": "p-"}, "baseVersion": "` + base + `"}]}`
+	}
+	for _, base := range []string{"", "cfg-12", strings.Repeat("b", 256)} {
+		cfg, err := buildHealth(t, provider(base))
+		if err != nil {
+			t.Errorf("%.20s: %v", base, err)
+		} else if got := cfg.Providers[0].BaseVersion; got != base {
+			t.Errorf("%.20s: %.20s", base, got)
+		}
+	}
+	if _, err := buildHealth(t, provider(strings.Repeat("b", 257))); err == nil || !strings.Contains(err.Error(), "baseVersion") {
+		t.Errorf("257 bytes: %v, want a refusal", err)
+	}
+}
+
 func TestHealthProvidersReject(t *testing.T) {
 	cases := map[string]string{
 		"no apply":         `{"tag": "a", "url": "https://x.test/"}`,

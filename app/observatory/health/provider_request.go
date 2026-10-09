@@ -26,6 +26,7 @@ type providerRequest struct {
 	Retry       int               `json:"retry"`
 	LastFailure *requestFailure   `json:"lastFailure,omitempty"`
 	Version     string            `json:"version,omitempty"`
+	BaseVersion string            `json:"baseVersion,omitempty"`
 	ClientTime  time.Time         `json:"clientTime"`
 	Network     requestNetwork    `json:"network"`
 	MemoryLow   bool              `json:"memoryLow"`
@@ -89,18 +90,19 @@ type requestProbe struct {
 // providerRequest gathers the body of the refresh j of p that starts now.
 func (e *engine) providerRequest(p *provider, j *refreshJob, now time.Time) *providerRequest {
 	r := &providerRequest{
-		Protocol:   providerProtocol,
-		Provider:   p.cfg.tag,
-		Refresh:    j.refresh,
-		Trigger:    j.trigger.String(),
-		Retry:      j.retry,
-		Version:    p.version,
-		ClientTime: now.Round(0).UTC(),
-		Network:    requestNetwork{Known: e.networks[e.networkID] != nil, Up: !e.networkDown},
-		MemoryLow:  e.memoryLow,
-		Balancer:   requestBalancer{Tag: p.cfg.balancer},
-		Outbounds:  make([]requestOutbound, 0, len(p.tags)),
-		networkID:  e.networkID,
+		Protocol:    providerProtocol,
+		Provider:    p.cfg.tag,
+		Refresh:     j.refresh,
+		Trigger:     j.trigger.String(),
+		Retry:       j.retry,
+		Version:     p.version,
+		BaseVersion: p.base,
+		ClientTime:  now.Round(0).UTC(),
+		Network:     requestNetwork{Known: e.networks[e.networkID] != nil, Up: !e.networkDown},
+		MemoryLow:   e.memoryLow,
+		Balancer:    requestBalancer{Tag: p.cfg.balancer},
+		Outbounds:   make([]requestOutbound, 0, len(p.tags)),
+		networkID:   e.networkID,
 	}
 	if !p.lastFailedAt.IsZero() {
 		r.LastFailure = &requestFailure{Status: p.lastStatus, Error: cutText(p.lastClass, maxFailureText),

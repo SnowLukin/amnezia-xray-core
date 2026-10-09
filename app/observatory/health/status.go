@@ -78,6 +78,11 @@ type providerStatusView struct {
 	AuthRetryInMs *int64   `json:"auth_retry_in_ms,omitempty"`
 	// The number ProviderSet returns with the set.
 	AnswerSeq uint64 `json:"answer_seq,omitempty"`
+	// The base config the core started with, the one the last answer named,
+	// and whether the host was told of another base that no answer took back.
+	BaseVersion       string `json:"base_version,omitempty"`
+	AnswerBaseVersion string `json:"answer_base_version,omitempty"`
+	BaseChanged       bool   `json:"base_changed,omitempty"`
 }
 
 type statusView struct {
@@ -234,6 +239,7 @@ func (e *engine) status(now time.Time) statusView {
 		}
 		pv.AuthFailed = p.authFailed
 		pv.AnswerSeq = p.seq
+		pv.BaseVersion, pv.AnswerBaseVersion, pv.BaseChanged = p.base, p.answerBase, p.baseReported != ""
 		if p.authFailed && !p.authRetryAt.IsZero() {
 			in := p.authRetryAt.Sub(now).Milliseconds()
 			pv.AuthRetryInMs = &in

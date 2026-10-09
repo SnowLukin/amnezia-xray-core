@@ -30,9 +30,10 @@ func compactAnswer(body []byte) []byte {
 
 // keepAnswer keeps an applied answer, raw as compactAnswer gives it, for
 // ProviderSet. changed tells that what the host would keep differs from the
-// previous one: the set, the end of a lease or the headers. Only then does
-// the sequence number grow, so a host that asks with the number it has gets
-// nothing for an answer that only brought a fresher clock.
+// previous one: the set, the end of a lease, the headers or the base config
+// the answer names. Only then does the sequence number grow, so a host that
+// asks with the number it has gets nothing for an answer that only brought
+// a fresher clock.
 func (e *engine) keepAnswer(p *provider, a *providerAnswer, raw []byte, changed bool, now time.Time) {
 	last := lastAnswer{raw: raw}
 	if !a.receivedAt.IsZero() {
@@ -63,8 +64,8 @@ func (e *engine) keepAnswer(p *provider, a *providerAnswer, raw []byte, changed 
 // so the core starts with the set, the leases as they ran on and the token
 // last rotated. It returns nil when nothing was applied or nothing changed
 // since the sequence number after; the number grows when the set, the end
-// of a lease or the headers change. Asked with the number it returned, it
-// allocates nothing, so a host may ask often.
+// of a lease, the headers or the base the answer names change. Asked with
+// the number it returned, it allocates nothing, so a host may ask often.
 func (o *Observer) ProviderSet(provider string, after uint64) ([]byte, uint64, error) {
 	o.mu.Lock()
 	p := o.e.provider(provider)

@@ -4,6 +4,7 @@ import (
 	"context"
 	gonet "net"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 	"weak"
@@ -144,6 +145,7 @@ func TestConfigValuesHaveCeilings(t *testing.T) {
 			p.MaxBytes = 1 << 40
 			p.Apply.MaxOutbounds = 1 << 30
 			p.Apply.Drain = huge
+			p.BaseVersion = strings.Repeat("b", 1<<20)
 		})},
 	})
 	p := s.providers[0]
@@ -158,6 +160,7 @@ func TestConfigValuesHaveCeilings(t *testing.T) {
 		"answer bytes":         {p.maxBytes, maxAnswerBytes},
 		"outbounds":            {int64(p.maxOutbounds), maxProviderOutbounds},
 		"drain":                {int64(p.drain), int64(maxDrain)},
+		"base version":         {int64(len(p.baseVersion)), maxBaseVersion},
 		"host probes a minute": {int64(s.schedule.hostProbes.perMinute), defaultPerMinute / 2},
 		"host reuse":           {int64(s.schedule.hostProbes.reuse), int64(maxHostReuse)},
 		"host outbounds":       {int64(s.schedule.hostProbes.maxOutbounds), maxHostOutbounds},

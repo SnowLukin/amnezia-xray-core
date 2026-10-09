@@ -76,6 +76,8 @@ const (
 	// this many, each value at most this long.
 	maxRotatedHeaders = 8
 	maxHeaderValue    = 4096
+	// The name of a base config, in the config and in an answer.
+	maxBaseVersion = 256
 
 	defaultProviderTimeout      = 10 * time.Second
 	defaultRefreshInterval      = 2 * time.Hour
@@ -247,6 +249,9 @@ type providerSettings struct {
 	maxBytes int64
 	// An answer to apply at the start; dropped once applied.
 	initial []byte
+	// The base config the core started with as the backend named it; empty
+	// takes the one of a fresh initial.
+	baseVersion string
 
 	// Zero durations and counts below mean the trigger or limit is off.
 	interval       time.Duration
@@ -313,6 +318,8 @@ func newProviderSettings(c *ProviderConfig) *providerSettings {
 		timeout:  dur(c.GetTimeout(), defaultProviderTimeout),
 		maxBytes: min(size(c.GetMaxBytes(), int64(maxOutbounds)*answerBytesPerOutbound), maxAnswerBytes),
 		initial:  c.GetInitial(),
+		// The JSON loader refuses a longer one; an answer cannot name it.
+		baseVersion: cutText(c.GetBaseVersion(), maxBaseVersion),
 
 		interval:      optional(t.GetInterval(), defaultRefreshInterval),
 		minHealthy:    optionalNum(t.GetMinHealthy(), defaultMinHealthy),

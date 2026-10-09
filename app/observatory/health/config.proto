@@ -264,6 +264,10 @@ message ProviderConfig {
   // answer of a connect, or a set the host kept, which may add receivedAt.
   // A broken one is reported and the core starts without it.
   bytes initial = 11;
+  // Names the config the core was started with, as the backend that
+  // generated it named it. An answer that names another one tells the host
+  // to fetch the config anew. Empty takes the one of a fresh initial.
+  string base_version = 12;
 }
 
 message ProviderTriggers {

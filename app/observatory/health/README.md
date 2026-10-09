@@ -215,7 +215,7 @@ triggers are judged on what the observatory knows about the balancer.
       },
       "apply": { "balancer": "auto", "tagPrefix": "p-", "drain": "5m", "maxOutbounds": 64, "routing": false,
                  "headers": ["Authorization"] },
-      "initial": null
+      "baseVersion": "", "initial": null
     }]
   }
 }
@@ -223,7 +223,8 @@ triggers are judged on what the observatory knows about the balancer.
 
 The values above are the defaults, except `whenCostAbove`, which is off
 unless set, and `maxBytes`, which is 4 KiB per outbound of `maxOutbounds`.
-`initial` is an answer to start with, see Initial set. `tag`, `url`, `apply.balancer` and `apply.tagPrefix` are
+`initial` is an answer to start with, see Initial set, and `baseVersion` names
+the config, see Base config. `tag`, `url`, `apply.balancer` and `apply.tagPrefix` are
 required. A trigger or a limit set to an explicit zero (`"0s"`, `0`) is off.
 
 **Request.** A provider that serves a static file on a web server needs
@@ -266,7 +267,7 @@ it can answer with the right outbounds at once:
   "protocol": 1, "provider": "fresh", "run": "9f2c6a1e5b7d3c40", "refresh": 7,
   "trigger": "exhausted", "retry": 1,
   "lastFailure": { "status": 503, "error": "status", "agoMs": 61000 },
-  "version": "2026-10-08.3", "clientTime": "2026-10-08T12:00:03Z",
+  "version": "2026-10-08.3", "baseVersion": "cfg-12", "clientTime": "2026-10-08T12:00:03Z",
   "network": { "id": "5d0c1f2a9b3e4c71", "known": false, "up": true },
   "memoryLow": false,
   "balancer": { "tag": "auto", "current": "x2", "own": true, "cost": 3, "exhausted": false, "pinned": false,
@@ -297,8 +298,9 @@ it can answer with the right outbounds at once:
   refused (at most 200 bytes) or the class of the failure: `timeout`,
   `network`, `status`, `too_large` or `broken_json`. It is what the last
   `via` that was asked met; entries skipped after it do not hide it.
-- `version` is the set applied now; `clientTime` the clock of the device, so
-  the backend sees how far off it is.
+- `version` is the set applied now, `baseVersion` the config the core runs
+  with, see Base config; `clientTime` the clock of the device, so the
+  backend sees how far off it is.
 - `balancer` is the one the provider feeds. `current` and `own` tell whether
   it uses an outbound of this provider, without the prefix; the path of
   another provider or of the config is not named. `cost` is the cost of the
@@ -339,6 +341,7 @@ body.
   "serverTime": "2026-10-08T12:00:00Z",
   "nextRefreshIn": "90m",
   "headers": { "Authorization": "Bearer <new token>" },
+  "baseVersion": "cfg-12",
   "version": "2026-10-08.3"
 }
 ```
@@ -360,9 +363,9 @@ balancer for them.
 `nextRefreshIn` (a duration or seconds) replaces `interval` until the next
 refresh. `version` (or `hash`) names the set; without it the set is named by
 a hash of `outbounds`, `costs` and `routing`, so an answer that differs only
-in `protocol`, `nextRefreshIn`, `expiresAt`, `serverTime` or `headers` is the
-same set. A set with the same name as the applied one changes no outbound;
-its leases and headers still apply.
+in `protocol`, `nextRefreshIn`, `expiresAt`, `serverTime`, `headers` or
+`baseVersion` is the same set. A set with the same name as the applied one
+changes no outbound; its leases, headers and base still apply.
 
 `routing` takes `rules`, `balancers` and `domainStrategy` in the format of
 the config file and replaces all rules and balancers at once, and the domain
@@ -485,6 +488,23 @@ the set lives on only as the last applied answer of `ProviderSet`. A host
 passes the answer of a connect when it has one, and the kept set only
 without it: the headers of a kept set would lie over a fresh token in the
 config, which then needs `SetProviderHeaders` after the start.
+
+**Base config.** A backend that generates the config of the core names it
+with `baseVersion`, at most 256 bytes; without one there, the `baseVersion`
+of a fresh `initial`, the answer of the connect that brought the config,
+names it. A set the host kept named the config of an earlier run, so its
+`baseVersion` never becomes the base. Every request tells the base, and an
+answer may name the one the backend serves now: an applied answer that
+names another one, the same set and a kept initial set at the start as
+well, gives `provider_base_changed` once per value, so a host learns also
+of a change it put off. The host then fetches the config anew and restarts
+the core when that is cheap, after a random delay, as a fleet that restarts
+at once loads the backend like a storm. An answer that names the base of
+the core again ends the change, and a later one is told again; an answer
+without `baseVersion` changes nothing. The set applies whatever base it
+names: the backend answers with outbounds that work with the base of the
+request. Without a base nothing is told, and Status shows what the answers
+name.
 
 **Triggers.** Any trigger may start a refresh:
 
@@ -631,7 +651,7 @@ when the core runs through a library that keeps the instance to itself:
 | `Release(balancer, run)` / `release` | Let the balancer choose again. |
 | `RequestRefresh(provider)` / `refresh [provider]` | Fetch the set of a provider, or of every provider when empty, as soon as the limits allow. False when there is no such provider. |
 | `SetProviderHeaders(provider, headers)` / `headers <provider>` | Put headers over those of the config for the requests of a provider, see Token; an empty value removes one. The command reads them as a JSON object from stdin, never from the arguments, which the process list shows, and prints `{"ok":true}`. Ends the pause after refused headers, not a pause the backend asked for nor the backoff, and starts no refresh. An error names the header, never its value: no such provider, a name that is not a token or belongs to the transport, a bad value, more than 8 headers. |
-| `ProviderSet(provider, after)` / `set <provider> [after]` | The last set the provider applied as JSON valid as its `initial`, with `seq`, a number that grows when the set, the end of a lease or the headers an answer or the host set change. The answer keeps its keys, with those headers in place of its own (the headers of the config stay out), `serverTime` the time its leases count from and `receivedAt`. Nil (`null`) when nothing was applied or nothing changed since `after`; then the call allocates nothing, so a host may ask next to `TakeReport`. The host keeps the set in safe storage, as it holds the token and the keys of the outbounds, and passes it as `initial` when it starts the core without a fresh answer. Over gRPC it goes to any client of the API, as outbounds do through `HandlerService`, so the API listens only where the host reaches it. |
+| `ProviderSet(provider, after)` / `set <provider> [after]` | The last set the provider applied as JSON valid as its `initial`, with `seq`, a number that grows when the set, the end of a lease, the headers an answer or the host set or the base the answer names change. The answer keeps its keys, with those headers in place of its own (the headers of the config stay out), `serverTime` the time its leases count from and `receivedAt`. Nil (`null`) when nothing was applied or nothing changed since `after`; then the call allocates nothing, so a host may ask next to `TakeReport`. The host keeps the set in safe storage, as it holds the token and the keys of the outbounds, and passes it as `initial` when it starts the core without a fresh answer. Over gRPC it goes to any client of the API, as outbounds do through `HandlerService`, so the API listens only where the host reaches it. |
 | `RequestProbe(request)` / `probe <balancer> [outbound...]` | Probe outbounds of a balancer now, see Probes on request. Returns the ticket at once or an error: no such balancer, no candidates yet, not a candidate, too many outbounds. The command waits for the result up to its timeout (`-t`) and prints it; over gRPC `wait_ms` does the same. |
 | `ProbeResult(id)` | One request as in Status and whether it ended; nil when it is no longer kept. |
 | `Status()` / `status` | Current state as JSON, see below. |
@@ -674,10 +694,11 @@ changed its settings). `kinds` counts failures by kind: `dial_failed`, `dial_tim
 | `network_change` | `network`, `known`, `generation` | The host reported a network change. |
 | `memory_low` | `on` | The host reported that memory is low (`on` true) or no longer. |
 | `provider_fetch` | `provider`, `trigger`, `retry`, `attempt`, `via`, `outbound`, `method`, `refresh`, `ok`, `status`, `ms`, `bytes`, `code`, `retry_after_ms`, `error` | One request of a refresh through one `via` entry; `outbound` is what the entry resolved to, `refresh` the number of the refresh as the body tells it, `bytes` the size of the answer. `code` is the code of an error body of the protocol, `retry_after_ms` the pause `Retry-After` asked for, after the ceiling and before the spread. A skipped entry has `ok` false and only `error`: `balancer exhausted`, `outbound down` or `no such outbound`. `error` never holds the URL. `trigger`: `host`, `exhausted`, `expiry`, `min_healthy`, `cost_above`, `network_change`, `next_refresh`, `max_age`, `interval`; `retry` counts failed refreshes before this one. An answer that breaks the protocol has `ok` true: the backend answered, and the refusal is the `provider_apply`'s. |
-| `provider_apply` | `provider`, `trigger`, `ok`, `changed`, `added`, `replaced`, `removed`, `unchanged`, `version`, `exhausted`, `rules`, `routing_error`, `routing_ignored`, `leases`, `renewed`, `expired`, `skew_ms`, `clock`, `headers`, `headers_stale`, `error` | The answer was applied (`changed`), was the applied set already, or was rejected (`ok` false with `error`); `trigger` `initial` is the initial set at the start. `exhausted` tells whether the balancer had nothing usable at that moment. `rules` counts the routing rules applied with the set; `routing_ignored` tells that the answer had routing while `apply.routing` is off. When the answer names leases: `leases` counts them, `renewed` the ones it gave a later end that has not passed, ended ones too, `expired` the leases that ended after it, where one that had ended and got a later end that passed as well gives no second `provider_expired`; `skew_ms` is how far the clock they count from is ahead of the device, and `clock` which one that is: `server`, `date` (the `Date` of the answer plus `Age`), `saved` (the `serverTime` of a kept initial set plus its age) or `device`. `headers` names the headers of the answer; `headers_stale` tells that the host changed the headers while the request ran, and the answer did not set them. |
+| `provider_apply` | `provider`, `trigger`, `ok`, `changed`, `added`, `replaced`, `removed`, `unchanged`, `version`, `exhausted`, `rules`, `routing_error`, `routing_ignored`, `leases`, `renewed`, `expired`, `skew_ms`, `clock`, `headers`, `headers_stale`, `base_version`, `error` | The answer was applied (`changed`), was the applied set already, or was rejected (`ok` false with `error`); `trigger` `initial` is the initial set at the start. `exhausted` tells whether the balancer had nothing usable at that moment. `rules` counts the routing rules applied with the set; `routing_ignored` tells that the answer had routing while `apply.routing` is off. When the answer names leases: `leases` counts them, `renewed` the ones it gave a later end that has not passed, ended ones too, `expired` the leases that ended after it, where one that had ended and got a later end that passed as well gives no second `provider_expired`; `skew_ms` is how far the clock they count from is ahead of the device, and `clock` which one that is: `server`, `date` (the `Date` of the answer plus `Age`), `saved` (the `serverTime` of a kept initial set plus its age) or `device`. `headers` names the headers of the answer; `headers_stale` tells that the host changed the headers while the request ran, and the answer did not set them. `base_version` is the base config the answer named. |
 | `provider_expired` | `provider`, `outbound`, `active`, `renewal` | The lease of an outbound ended, or an answer brought it ended. `active` tells whether a balancer chose the outbound. `renewal` tells why no later end came: `refused` (the backend answered without one), `failed` (the last refresh that asked failed), `off` (`renewAt` is 0), `saved` (it ended in the initial set before the start) or `pending` (no refresh that asked about it has ended: no network, the limits, or the one that asks is still under way). |
 | `provider_auth_failed` | `provider`, `trigger`, `status`, `via`, `code` | The backend refused the headers of a request with `status` 401 or 403 and the error `code` `unauthorized` or `forbidden`; every trigger but the host waits, see Token. |
 | `provider_headers` | `provider`, `by`, `names` | Headers of the requests changed: `by` an `answer`, the `initial` set or the `host`. `names` are the headers whose values changed; the values are never told. |
+| `provider_base_changed` | `provider`, `from`, `to` | An applied answer named the base config `to` while the core runs with `from`: the host is to fetch the config anew, see Base config. Once per value, until an answer names `from` again. |
 | `provider_restart_needed` | `provider`, `version`, `sections` | Kept for sections of the config the core reads only at start. Protocol 1 refuses an answer with such a section, so this version does not write it. |
 | `provider_skip` | `provider`, `trigger`, `reason`, `wait_ms` | A trigger wants a refresh that cannot start yet. `reason`: `min_interval`, `backoff`, `retry_after`, `max_per_hour`, `idle`, `network_down`, `memory`, `auth` (the backend refused the headers). Reported once per trigger and reason until a refresh starts. |
 | `provider_drained` | `provider`, `outbound`, `replaced` | An outbound that left the set, or the old handler of a replaced one, was closed: after `drain`, at once without connections, or early to keep at most `maxOutbounds` draining. |
@@ -692,7 +713,8 @@ changes nothing in the report.
 A decision is a `switch` for any reason but `start`, `start_pinned`,
 `start_remembered` and `start_with`, `exhausted`, `upgrade_failed`,
 `pinned_down`, a `provider_apply` that was rejected or changed the set,
-`provider_restart_needed`, `provider_expired` and `provider_auth_failed`.
+`provider_restart_needed`, `provider_expired`, `provider_auth_failed` and
+`provider_base_changed`.
 The initial set is no decision, as a start switch is not, nor a lease that
 ended in it before the start, the usual morning after a device was off;
 otherwise every session would have one. A refused initial set is. Events
@@ -739,6 +761,7 @@ to this one. Reports of one run add up.
 | `provider_expired` | `provider_expired` events: leases that ended. |
 | `provider_renewals` | `provider_apply` events with `ok` and `renewed` above zero, but for the initial set: answers that renewed leases. A renewal keeps what the balancer has and is no decision. |
 | `provider_auth_failed` | `provider_auth_failed` events: the backend refused the headers. |
+| `provider_base_changed` | `provider_base_changed` events: the backend serves another base config. |
 | `pins`, `releases` | `pin` and `release` events. |
 | `memory_low` | `memory_low` events with `on`. |
 | `active`, `balancer_exhausted`, `network_up`, `connectivity` | At the time of the report: the chosen outbound by balancer, whether a balancer is exhausted, and the network as in Status. |
@@ -761,7 +784,9 @@ a busy backend asked for (`retry_after_ms`), the next renewal of a lease
 ended (`expired`), the `skew_ms` and `clock` of the last answer as in
 `provider_apply`, none when it named no lease, the names of the headers an
 answer or the host set (`headers`), the number of the set `ProviderSet`
-returns (`answer_seq`), and whether the backend refused the
+returns (`answer_seq`), the base config the core runs with (`base_version`),
+the one the last answer named (`answer_base_version`) and whether another
+base was told that no answer took back (`base_changed`), and whether the backend refused the
 headers (`auth_failed`) with what is left of the pause (`auth_retry_in_ms`,
 below zero once a refresh may try them again, none while it waits for new
 headers); the probe requests of the host (`probe_requests`), each with `id`,

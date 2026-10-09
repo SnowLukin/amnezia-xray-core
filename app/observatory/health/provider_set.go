@@ -64,7 +64,7 @@ type drainingOutbound struct {
 //
 //	{"protocol": 1, "outbounds": [...], "costs": {"tag": 1}, "nextRefreshIn": "2h", "version": "...",
 //	 "expiresAt": {"tag": "2026-10-09T12:00:00Z"}, "serverTime": "2026-10-08T12:00:00Z",
-//	 "headers": {"Authorization": "Bearer ..."}}
+//	 "headers": {"Authorization": "Bearer ..."}, "baseVersion": "..."}
 type providerAnswer struct {
 	// The outbounds as sent, handed to the config loader in one piece.
 	outbounds     json.RawMessage
@@ -87,6 +87,8 @@ type providerAnswer struct {
 	// Headers to put over those of the config, by canonical name; nil
 	// without the key.
 	headers map[string]string
+	// The base config the backend serves now; empty without the key.
+	baseVersion string
 	// The answer is the initial set of the config. A set the host saved
 	// has receivedAt, the wall clock it arrived by, and is age old.
 	initial    bool
@@ -110,7 +112,7 @@ type outboundHead struct {
 var (
 	setKeys  = map[string]bool{"outbounds": true, "costs": true, "routing": true}
 	metaKeys = map[string]bool{"protocol": true, "version": true, "hash": true, "nextRefreshIn": true,
-		"expiresAt": true, "serverTime": true, "headers": true}
+		"expiresAt": true, "serverTime": true, "headers": true, "baseVersion": true}
 )
 
 // answerError is an answer that is a JSON object but breaks protocol 1. The
@@ -230,6 +232,12 @@ func readAnswer(body []byte, initial bool) (*providerAnswer, error) {
 			return nil, err
 		}
 		a.headers = h
+	}
+	if raw := sections["baseVersion"]; !isNull(raw) {
+		// Only a name: the core compares it with its base, nothing more.
+		if json.Unmarshal(raw, &a.baseVersion) != nil || len(a.baseVersion) > maxBaseVersion {
+			return nil, answerErrorf("baseVersion must be a string of at most %d bytes", maxBaseVersion)
+		}
 	}
 	for _, key := range []string{"version", "hash"} {
 		if v := sections[key]; a.version == "" && !isNull(v) {
@@ -821,12 +829,14 @@ func (o *Observer) applySet(rt *providerRuntime, a *providerAnswer, j *refreshJo
 		}
 		gen := rt.p.headersGen
 		names, stale := o.e.takeAnswerHeaders(rt.p, a.headers, j.headersGen, headersBy(j), now)
-		o.e.keepAnswer(rt.p, a, kept, leases.ends || rt.p.headersGen != gen, now)
+		based := o.e.takeBase(rt.p, a, now)
+		o.e.keepAnswer(rt.p, a, kept, leases.ends || rt.p.headersGen != gen || based, now)
 		fields["ok"] = true
 		fields["changed"] = false
 		fields["unchanged"] = len(a.heads)
 		leaseFields(fields, leases, rt.p)
 		headerFields(fields, names, stale)
+		baseFields(fields, a)
 		o.e.emit(now, "provider_apply", fields)
 		o.mu.Unlock()
 		return false, nil
@@ -978,6 +988,7 @@ func (o *Observer) applySet(rt *providerRuntime, a *providerAnswer, j *refreshJo
 	rt.p.version = a.version
 	rt.p.draining = len(rt.draining)
 	names, stale := o.e.takeAnswerHeaders(rt.p, a.headers, j.headersGen, headersBy(j), now)
+	o.e.takeBase(rt.p, a, now)
 	o.e.keepAnswer(rt.p, a, kept, true, now)
 	fields["ok"] = true
 	fields["changed"] = true
@@ -988,6 +999,7 @@ func (o *Observer) applySet(rt *providerRuntime, a *providerAnswer, j *refreshJo
 	fields["exhausted"] = exhausted
 	leaseFields(fields, leases, rt.p)
 	headerFields(fields, names, stale)
+	baseFields(fields, a)
 	o.e.emit(now, "provider_apply", fields)
 	o.mu.Unlock()
 	o.settleDrains(rt)

@@ -56,6 +56,7 @@ type reportCounts struct {
 	ProviderExpired       int64            `json:"provider_expired"`
 	ProviderRenewals      int64            `json:"provider_renewals"`
 	ProviderAuthFailed    int64            `json:"provider_auth_failed"`
+	ProviderBaseChanged   int64            `json:"provider_base_changed"`
 	Pins                  int64            `json:"pins"`
 	Releases              int64            `json:"releases"`
 	MemoryLow             int64            `json:"memory_low"`
@@ -223,6 +224,10 @@ func (r *report) count(typ string, f map[string]any) {
 	case "provider_auth_failed":
 		// The provider stops refreshing until the host brings new headers.
 		c.ProviderAuthFailed++
+		r.decide()
+	case "provider_base_changed":
+		// The host is to fetch the config anew and restart the core.
+		c.ProviderBaseChanged++
 		r.decide()
 	case "pin":
 		c.Pins++

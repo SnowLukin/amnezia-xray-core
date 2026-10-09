@@ -128,9 +128,14 @@ type applyFixture struct {
 	created []*fakeHandler
 }
 
-func newApplyFixture(t *testing.T, drain time.Duration) *applyFixture {
+func newApplyFixture(t *testing.T, drain time.Duration, mods ...func(*ProviderConfig)) *applyFixture {
 	t.Helper()
-	pc := quietProvider(func(p *ProviderConfig) { p.Apply.Drain = int64(drain) })
+	pc := quietProvider(func(p *ProviderConfig) {
+		p.Apply.Drain = int64(drain)
+		for _, mod := range mods {
+			mod(p)
+		}
+	})
 	o := newObserver(context.Background(), &Config{Providers: []*ProviderConfig{pc}})
 	t.Cleanup(func() { o.Close() })
 	f := &applyFixture{o: o, rt: o.providers[0], m: newFakeManager()}
@@ -457,6 +462,7 @@ func TestParseAnswer(t *testing.T) {
 	}
 	// The error of the duration parser quotes the whole value.
 	longRefresh := `{"outbounds": [{"tag": "x"}], "nextRefreshIn": "` + strings.Repeat("soon", 50_000) + `"}`
+	longBase := `{"outbounds": [{"tag": "x"}], "baseVersion": "` + strings.Repeat("b", 257) + `"}`
 	for body, want := range map[string]string{
 		`{"outbounds": []}`:                                                     "no outbounds",
 		`{"protocol": 2, "outbounds": [{"tag": "x"}]}`:                          "protocol 2 is not supported",
@@ -467,11 +473,13 @@ func TestParseAnswer(t *testing.T) {
 		`{"outbounds": [{"tag": "x"}], "inbounds": []}`:                         `unknown key "inbounds"`,
 		`{"outbounds": [{"tag": "x"}], "healthObservatory": {}}`:                "healthObservatory is not accepted in an answer",
 		`{"outbounds": [{"tag": "x"}], "receivedAt": "2026-10-08T12:00:00Z"}`:   `unknown key "receivedAt"`,
+		`{"outbounds": [{"tag": "x"}], "baseVersion": 12}`:                      "baseVersion must be a string",
 		`{"outbounds": [{"tag": "x"}], "routing": {"rules": [], "foo": 1}}`:     `routing: unknown key "foo"`,
 		`{"outbounds": [{"tag": "x"}], "nextRefreshIn": "soon"}`:                "nextRefreshIn",
 		`{"outbounds": [{"tag": "x"}], "` + strings.Repeat("k", 1000) + `": 1}`: "...",
 		`{"outbounds": {"tag": "x"}}`:                                           "outbounds:",
 		longRefresh:                                                             "nextRefreshIn",
+		longBase:                                                                "baseVersion must be a string of at most 256 bytes",
 	} {
 		_, err := parseAnswer([]byte(body))
 		if err == nil || !isAnswerError(err) || !strings.Contains(err.Error(), want) || len(err.Error()) > maxFailureText {
@@ -485,7 +493,7 @@ func TestParseAnswer(t *testing.T) {
 func TestVersionIgnoresMetaKeys(t *testing.T) {
 	a1, _ := parseAnswer([]byte(`{"outbounds": [{"tag": "x"}], "costs": {"x": 2}}`))
 	a2, _ := parseAnswer([]byte(`{"protocol": 1, "outbounds": [{"tag": "x"}], "costs": {"x": 2}, "nextRefreshIn": "1h",
-		"serverTime": "2026-10-08T12:00:00Z", "expiresAt": {"x": "2026-10-09T12:00:00Z"}}`))
+		"serverTime": "2026-10-08T12:00:00Z", "expiresAt": {"x": "2026-10-09T12:00:00Z"}, "baseVersion": "cfg-12"}`))
 	a3, _ := parseAnswer([]byte(`{"outbounds": [{"tag": "x"}], "costs": {"x": 3}}`))
 	a4, _ := parseAnswer([]byte(`{"outbounds": [{"tag": "x"}], "costs": {"x": 2}, "routing": {"rules": []}}`))
 	if a1.version != a2.version || a1.version == a3.version || a1.version == a4.version {
