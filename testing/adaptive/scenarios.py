@@ -2218,3 +2218,177 @@ def provider_base_changed(stand, xray, work, name):
         check("report provider_base_changed", counted, counted == 2, "== 2"),
         check("user requests failed", failed, failed == 0, "== 0"),
     ]
+
+
+SLOTS = [("s1", "reality", 1), ("s2", "reality", 2), ("s3", "reality", 3)]
+
+
+def slot_set(slots, costs, lease, version):
+    """The answer of a connect with leases of lease seconds from now."""
+    now = time.time()
+    return {"protocol": 1, "version": version, "outbounds": [bench.member(t, k, i, bench.PIN) for t, k, i in slots],
+            "costs": costs, "expiresAt": {t: rfc3339(now + lease) for t, _, _ in slots}, "serverTime": rfc3339(now)}
+
+
+@scenario()
+def provider_slots_flow(stand, xray, work, name):
+    """Slots of a backend from start to restart. A connect brings a primary
+    slot and two reserves with leases. The primary is banned while the
+    backend is busy: the core moves to a reserve without it, asks with what
+    broke, waits as long as the backend asks, and takes the answer that
+    replaces the dead slot, renews the others and rotates the token. The next
+    core starts on the set the host kept: no early request, no refused token."""
+    initial = slot_set(SLOTS, {"s1": 1, "s2": 2, "s3": 3}, 300, "v1")
+    # minHealthy 4: a1 of the config and the three slots; the ban leaves three.
+    prov = bench.provider_config(["direct", "net"], triggers={"minHealthy": 4},
+                                 limits={"minInterval": "1s", "exhaustedMinInterval": "1s", "maxPerHour": 0}) | {
+        "initial": initial}
+    cfg = bench.client_config(BANNED[:1], {"a": 5, "p-": 1}, providers=[prov])
+    fresh = [("s4", "reality", 0), ("s2", "reality", 2), ("s3", "reality", 3)]
+    m = Marks()
+    kept = {}
+
+    def ban():
+        bench.chaos(str(address_port("reality", 1)), "blackhole")
+
+    def answer_after_busy():
+        # The backend is busy for the first request after the ban and serves
+        # the new set by the time the core asks again.
+        deadline = time.time() + 40
+        while not stand.provider_requests(m["ban"]) and time.time() < deadline:
+            time.sleep(0.1)
+        time.sleep(1)
+        stand.answer(fresh, costs={"s4": 1, "s2": 2, "s3": 3}, version="v2",
+                     expires={t: "@+600s" for t, _, _ in fresh}, server_time="@+0s")
+        m["ok"] = time.time()
+        bench.provider_mode("rotate:slot-t2")
+
+    bench.provider_mode("status:429:6")
+    with bench.Client(xray, cfg, work, name + "-first") as c:
+        tr = bench.Traffic(rate=2, big=0.5)
+        busy = threading.Thread(target=answer_after_busy, daemon=True)
+        run_timeline(tr, [(4, m.at("ban", ban)), (4.1, busy.start)], 40)
+        busy.join(timeout=5)
+        st = c.status()["providers"][0]
+        kept.update(c.api("set", "fresh"))
+    rec = bench.recovery(tr.records, m["ban"])[0]
+    left = [e for e in bench.switches(c.events, m["ban"]) if e["fields"]["from"] == "p-s1"]
+    t_left = left[0]["ts"] / 1000 if left else None
+    applied = [e for e in bench.events_of(c.events, "provider_apply", m["ban"]) if e["fields"].get("ok")]
+    t_applied = applied[0]["ts"] / 1000 if applied else None
+    one = applied[0]["fields"] if applied else {}
+    bodies = [b for b in stand.provider_bodies(m["ban"]) if isinstance(b.get("body"), dict)]
+    first = bodies[0]["body"] if bodies else {}
+    outs = {o.get("tag"): o for o in first.get("outbounds", [])}
+    s1 = outs.get("s1", {})
+    fetches = [e["fields"] for e in bench.events_of(c.events, "provider_fetch", m["ban"])]
+    busy_fetches = [f for f in fetches if f.get("status") == 429]
+    reqs = [t for t, _, _ in stand.provider_requests(m["ban"])]
+    skips = [e for e in bench.events_of(c.events, "provider_skip", m["ban"]) if e["fields"]["reason"] == "retry_after"]
+    ended = bench.events_of(c.events, "provider_expired")
+
+    saved = kept.get("set") or {}
+    bench.provider_mode("require:slot-t2")
+    prov2 = bench.provider_config(["direct"], triggers={"interval": "5s", "jitter": 0}) | {"initial": saved}
+    cfg2 = bench.client_config(BANNED[:1], {"a": 5, "p-": 1}, providers=[prov2])
+    launched = time.time()
+    with bench.Client(xray, cfg2, work, name + "-second") as c2:
+        start = time.time()
+        tr2 = bench.Traffic(rate=1, big=0)
+        run_timeline(tr2, [], 8)
+    reqs2 = stand.provider_requests(launched)
+    applies2 = [e["fields"] for e in c2.events if e["type"] == "provider_apply"]
+    switch2 = next((e for e in c2.events if e["type"] == "switch"), None)
+    refused2 = [e for e in c2.events if e["type"] == "provider_auth_failed"]
+    failed2 = sum(1 for r in tr2.records if not r[1])
+    return [
+        check("primary left for a reserve (to, reason)", left and (left[0]["fields"]["to"], left[0]["fields"]["reason"]),
+              bool(left) and left[0]["fields"]["to"] == "p-s2" and left[0]["fields"]["reason"] == "failover",
+              "(p-s2, failover)"),
+        check("failover before the backend answered, s", t_left and t_applied and round(t_applied - t_left, 1),
+              t_left is not None and (t_applied is None or t_left < t_applied), "switch first"),
+        check("connectivity back after the ban, s", rec and round(rec, 1), rec is not None and rec <= 30, "<= 30"),
+        check("first request (trigger, s1 state, failures)",
+              (first.get("trigger"), s1.get("state"), sorted(s1.get("failures", {})) or (s1.get("probe") or {})),
+              first.get("trigger") == "min_healthy" and s1.get("state") in ("suspect", "down")
+              and ("dial_timeout" in s1.get("failures", {}) or (s1.get("probe") or {}).get("ok") is False),
+              "min_healthy, s1 failed"),
+        check("leases in the request", sorted(t for t, o in outs.items() if (o.get("expiresInMs") or 0) > 0),
+              sorted(t for t, o in outs.items() if (o.get("expiresInMs") or 0) > 0) == ["s1", "s2", "s3"],
+              "s1, s2, s3"),
+        check("busy answers (via, retry_after_ms)", [(f.get("via"), f.get("retry_after_ms")) for f in busy_fetches],
+              len(busy_fetches) >= 1 and all(f.get("via") == "direct" and f.get("retry_after_ms") == 6000
+                                             for f in busy_fetches), "direct only, 6000"),
+        check("pause after the busy answer, s", gaps(reqs)[:1], len(reqs) >= 2 and 5.9 <= reqs[1] - reqs[0] <= 8.1,
+              "6 .. 7.8"),
+        check("retry_after skips", len(skips), len(skips) >= 1, ">= 1"),
+        check("refresh (added, removed, unchanged, renewed)",
+              (one.get("added"), one.get("removed"), one.get("unchanged"), one.get("renewed")),
+              (one.get("added"), one.get("removed"), one.get("unchanged"), one.get("renewed")) == (1, 1, 2, 2),
+              "(1, 1, 2, 2)"),
+        check("token rotated (headers of the answer)", one.get("headers"), one.get("headers") == ["Authorization"],
+              "[Authorization]"),
+        check("set after it (version, members)", (st.get("version"), st.get("members")),
+              (st.get("version"), st.get("members")) == ("v2", 3), "(v2, 3)"),
+        check("leases ended", len(ended), not ended, "== 0"),
+        check("next core starts on the kept set (trigger, clock, version)",
+              applies2 and (applies2[0].get("trigger"), applies2[0].get("clock"), applies2[0].get("version")),
+              bool(applies2) and applies2[0].get("trigger") == "initial" and applies2[0].get("clock") == "saved"
+              and applies2[0].get("version") == "v2", "(initial, saved, v2)"),
+        check("its first switch", switch2 and switch2["fields"]["to"],
+              switch2 is not None and switch2["fields"]["to"] == "p-s4", "p-s4"),
+        check("its first request, s", reqs2 and round(reqs2[0][0] - start, 1),
+              bool(reqs2) and reqs2[0][0] - start >= 3, ">= 3 (interval)"),
+        check("its token", reqs2 and reqs2[0][1], bool(reqs2) and reqs2[0][1] == "Bearer slot-t2", "Bearer slot-t2"),
+        check("refused tokens", len(refused2), not refused2, "== 0"),
+        check("its user requests failed", failed2, failed2 == 0, "== 0"),
+    ]
+
+
+@scenario()
+def provider_slots_last_resort(stand, xray, work, name):
+    """The lease of a reserve slot ends while the backend is down. The slot
+    gets no probe and no traffic while anything else works; once the primary
+    and the outbound of the config are banned, the balancer fails over to it
+    as the last resort instead of going to the fallback."""
+    slots = SLOTS[:2]
+    initial = slot_set(slots, {"s1": 1, "s2": 2}, 300, "v1")
+    initial["expiresAt"]["s2"] = rfc3339(time.time() + 12)
+    prov = bench.provider_config(["direct"], limits={"minInterval": "1s", "exhaustedMinInterval": "1s",
+                                                     "maxPerHour": 0, "backoff": {"initial": "2s", "max": "4s"}})
+    prov["initial"] = initial
+    cfg = bench.client_config(BANNED[:1], {"a": 5, "p-": 1}, providers=[prov])
+    banned = ",".join(str(address_port(k, i)) for k, i in [("reality", 0), ("reality", 1)])
+    m = Marks()
+    bench.provider_mode("status:500")
+    with bench.Client(xray, cfg, work, name) as c:
+        start = time.time()
+        tr = bench.Traffic(rate=2, big=0.5)
+        run_timeline(tr, [(20, m.at("ban", lambda: bench.chaos(banned, "blackhole")))], 55)
+        st = c.status()
+    ended = [e for e in bench.events_of(c.events, "provider_expired") if e["fields"]["outbound"] == "p-s2"]
+    t_end = ended[0]["ts"] / 1000 if ended else None
+    early = [e for e in bench.probes(c.events, 0, m["ban"]) if e["fields"]["outbound"] == "p-s2"]
+    moved = [e for e in bench.switches(c.events, m["ban"]) if e["fields"]["from"] == "p-s1"]
+    t_moved = moved[0]["ts"] / 1000 if moved else None
+    tried = [e["fields"]["outbound"] for e in bench.probes(c.events, m["ban"], t_moved)] if t_moved else []
+    exhausted = bench.events_of(c.events, "exhausted", m["ban"])
+    after = [r for r in tr.records if t_moved and r[0] >= t_moved + 2]
+    failed = sum(1 for r in after if not r[1])
+    active = (st.get("balancers") or [{}])[0].get("active")
+    path = next((p for p in st.get("paths", []) if p.get("outbound") == "p-s2"), {})
+    return [
+        check("lease of the reserve ended, s", t_end and round(t_end - start, 1),
+              t_end is not None and t_end < m["ban"] and ended[0]["fields"]["active"] is False
+              and ended[0]["fields"]["renewal"] in ("failed", "pending"), "before the ban, not active"),
+        check("probes of the expired reserve before the ban", len(early), not early, "== 0"),
+        check("failover to the expired reserve (to, reason)", moved and (moved[0]["fields"]["to"], moved[0]["fields"]["reason"]),
+              bool(moved) and moved[0]["fields"]["to"] == "p-s2" and moved[0]["fields"]["reason"] == "failover",
+              "(p-s2, failover)"),
+        check("probed before it", tried, bool(tried) and tried[-1] == "p-s2" and "a1" in tried, "a1 first, p-s2 last"),
+        check("exhausted", len(exhausted), not exhausted, "== 0"),
+        check("user requests on it", len(after), len(after) >= 20, ">= 20"),
+        check("of them failed", failed, failed == 0, "== 0"),
+        check("still on it, expired (active, expired)", (active, path.get("expired")),
+              active == "p-s2" and path.get("expired") is True, "(p-s2, True)"),
+    ]
