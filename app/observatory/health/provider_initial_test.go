@@ -212,7 +212,8 @@ func TestInitialThenSameVersionChangesNoHandler(t *testing.T) {
 
 // The headers of the initial set lie over those of the config, also names
 // that apply.headers does not list: the host saved them and may have set
-// them itself. Headers the host set before the start lie over them.
+// them itself. Headers the host set before the start lie over them, name by
+// name.
 func TestInitialHeadersOverrideConfig(t *testing.T) {
 	initial := `{"outbounds": [{"tag": "x1", "protocol": "vless", "v": 1}],
 		"headers": {"authorization": "Bearer saved", "X-Session": "s1"}}`
@@ -242,8 +243,28 @@ func TestInitialHeadersOverrideConfig(t *testing.T) {
 	}
 	f.o.mu.Lock()
 	defer f.o.mu.Unlock()
-	if got := f.rt.p.requestHeaders()["Authorization"]; got != "Bearer host" {
-		t.Fatalf("the request sends %q, want the header of the host", got)
+	if got := fmt.Sprint(f.rt.p.requestHeaders()); got != "map[Authorization:Bearer host X-Session:s1]" {
+		t.Fatalf("the request sends %s, want the Authorization of the host and the session of the set", got)
+	}
+}
+
+// A header of another name that the host set before the start, such as one
+// that names the device, leaves the token of the initial set in place.
+func TestHostHeaderBeforeTheStartKeepsTheInitialToken(t *testing.T) {
+	f, _ := initialFixture(t, `{"outbounds": [{"tag": "x1", "protocol": "vless", "v": 1}],
+		"headers": {"Authorization": "Bearer saved"}}`)
+	f.rt.cfg.headers = map[string]string{"Authorization": "Bearer config"}
+	if err := f.o.SetProviderHeaders("fresh", map[string]string{"X-Device": "d1"}); err != nil {
+		t.Fatal(err)
+	}
+	f.o.applyInitial()
+	if ev := f.lastApply(t); ev["ok"] != true || ev["headers_stale"] != nil || fmt.Sprint(ev["headers"]) != "[Authorization]" {
+		t.Fatalf("apply %v", ev)
+	}
+	f.o.mu.Lock()
+	defer f.o.mu.Unlock()
+	if got := fmt.Sprint(f.rt.p.requestHeaders()); got != "map[Authorization:Bearer saved X-Device:d1]" {
+		t.Fatalf("the request sends %s", got)
 	}
 }
 

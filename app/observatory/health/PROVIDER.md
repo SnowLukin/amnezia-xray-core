@@ -76,8 +76,10 @@ well.
   body.
 - `Accept: application/json`, unless the config sets another.
 - The headers of the config, over them those of the initial set, and over
-  both the headers an answer or the host set since, see [Token](#token).
-  Credentials travel in headers, never in the URL.
+  both the headers an answer or the host set since, see [Token](#token). A
+  header the host set before the start lies over the one of the same name
+  in the initial set; the other headers of the set apply. Credentials
+  travel in headers, never in the URL.
 - `https`; plain `http` only where the client allows it explicitly.
 - Each attempt has its own timeout, 10 seconds by default. Redirects are
   not followed: a 3xx is a failure of that attempt.

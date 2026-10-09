@@ -137,20 +137,32 @@ func (e *engine) rotate(p *provider, headers map[string]string, by string, now t
 }
 
 // takeAnswerHeaders puts the headers of an applied answer over the rotated
-// ones, unless the host changed them while the request ran: the host wins.
-// The initial set lies under the host the same way, as gen zero: headers
-// the host set before the start stay. It returns the names the answer
-// carried and whether they lost.
+// ones, unless the host changed them while the request ran: the host wins,
+// and the answer sets none. The initial set comes as gen zero and lies
+// under the host per name instead: before the start nothing but the host
+// sets a header, so a name it set stays the host's, and the other names of
+// the set apply, an Authorization under a device header of the host for
+// one. It returns the names the answer carried and whether any lost.
 func (e *engine) takeAnswerHeaders(p *provider, headers map[string]string, gen uint64, by string, now time.Time) ([]string, bool) {
 	if len(headers) == 0 {
 		return nil, false
 	}
 	names := slices.Sorted(maps.Keys(headers))
-	if gen != p.headersGen {
+	if gen == p.headersGen {
+		e.rotate(p, headers, by, now)
+		return names, false
+	}
+	if by != "initial" {
 		return names, true
 	}
-	e.rotate(p, headers, by, now)
-	return names, false
+	take := make(map[string]string, len(headers))
+	for name, v := range headers {
+		if _, host := p.rotated[name]; !host {
+			take[name] = v
+		}
+	}
+	e.rotate(p, take, by, now)
+	return names, len(take) < len(headers)
 }
 
 // headersBy names what set the headers of an applied answer.
