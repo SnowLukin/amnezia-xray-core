@@ -49,6 +49,8 @@ const (
 	sleepCannot
 	// The proxy can sleep; the job did not ask it to.
 	sleepCan
+	// The proxy can sleep, but something took it after the decision.
+	sleepHeld
 	// It refused, or the observer follows a connection through it.
 	sleepBusy
 	// It released what it held.
@@ -246,6 +248,10 @@ func (e *engine) onSlept(batch []sleepJob, results []sleepResult, now time.Time)
 			p.sleeper = sleeperNo
 		case sleepCan:
 			p.sleeper = sleeperYes
+		case sleepHeld:
+			// No refusal: planSleeps takes it up again once let go, as
+			// when it finds it held.
+			p.sleeper = sleeperYes
 		case sleepBusy:
 			p.sleeper = sleeperYes
 			p.sleepTries++
@@ -313,10 +319,25 @@ func (o *Observer) sleepOutbound(j sleepJob, open map[string]int64) sleepResult 
 	if _, ok := open[j.tag]; ok {
 		return sleepBusy
 	}
+	if !o.mayStillSleep(j) {
+		return sleepHeld
+	}
 	if s.Sleep() {
 		return sleepDone
 	}
 	return sleepBusy
+}
+
+// mayStillSleep checks again, right before the call, what planSleeps
+// decided under the lock: a balancer may have chosen the outbound since, or
+// a probe or a request taken it, and its tunnel would then cost the next
+// connection a handshake. The lock is not held across Sleep, which may take
+// long; a use that comes during the call is set aside by onSlept.
+func (o *Observer) mayStillSleep(j sleepJob) bool {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	e := o.e
+	return e.paths[j.tag] == j.p && j.p.uses == j.uses && !e.keptAwake(j.tag, e.idle(o.now()))
 }
 
 // sleeperOf returns what puts the outbound of a handler to sleep, or nil when

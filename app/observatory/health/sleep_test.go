@@ -571,6 +571,63 @@ func TestUseAfterTheDecisionKeepsItAwake(t *testing.T) {
 	}
 }
 
+// hookedManager runs before ahead of every lookup of a handler: the
+// observer looks a handler up right before it asks it to sleep.
+type hookedManager struct {
+	*fakeManager
+	before func(tag string)
+}
+
+func (m *hookedManager) GetHandler(tag string) outbound.Handler {
+	m.before(tag)
+	return m.fakeManager.GetHandler(tag)
+}
+
+// What takes an outbound between the decision to put it to sleep and the
+// call keeps its tunnel: a balancer that chose it meanwhile would pay a
+// handshake for its first connection. Sleep is not called and no refusal is
+// counted: once let go, the outbound sleeps as usual.
+func TestTakenAfterTheDecisionIsNotPutToSleep(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		take, release func(e *engine, s *selector, now time.Time)
+	}{
+		{"chosen", func(e *engine, s *selector, now time.Time) {
+			e.switchTo(s, "w1", "failover", now)
+		}, func(e *engine, s *selector, now time.Time) {
+			e.switchTo(s, "a1", "upgrade", now)
+		}},
+		{"queued probe", func(e *engine, s *selector, now time.Time) {
+			e.enqueue("w1", reasonRecheck, "auto", now.Add(time.Hour))
+		}, func(e *engine, s *selector, now time.Time) {
+			e.dropQueued("w1", reasonRecheck)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newSleepFixture(t, nil, nil, "a1", "w1")
+			f.use("w1", at(time.Second))
+			now := at(time.Second + defaultSleepAfter)
+			var once sync.Once
+			f.o.ohm = &hookedManager{fakeManager: f.m, before: func(tag string) {
+				if tag == "w1" {
+					once.Do(func() { f.engine(func(e *engine) { tc.take(e, e.selectors["auto"], now) }) })
+				}
+			}}
+			f.turn(now)
+			if n := f.proxies["w1"].asked(); n != 0 || len(f.sleeps(t)) != 0 || f.asleep(t, "w1") {
+				t.Fatalf("asked to sleep %d times although taken after the decision", n)
+			}
+			later := now.Add(time.Minute)
+			f.engine(func(e *engine) { tc.release(e, e.selectors["auto"], later) })
+			f.turn(later)
+			f.turn(later.Add(defaultSleepAfter))
+			if n := f.proxies["w1"].asked(); n != 1 || len(f.sleeps(t)) != 1 {
+				t.Fatalf("asked to sleep %d times once let go, want once", n)
+			}
+		})
+	}
+}
+
 // Sleep may take long or call back into the observer: it runs without the
 // observer lock.
 func TestSleepRunsOutsideTheLock(t *testing.T) {
