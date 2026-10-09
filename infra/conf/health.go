@@ -201,21 +201,18 @@ type HealthProviderConfig struct {
 	Triggers       *HealthProviderTriggersConfig `json:"triggers"`
 	Limits         *HealthProviderLimitsConfig   `json:"limits"`
 	Apply          *HealthProviderApplyConfig    `json:"apply"`
-	// Initial is an answer applied at the start. Only its form is checked
-	// here: a bad saved set must not keep the core from starting, so the
-	// observatory checks the rest and starts without it.
+	// Initial is an answer applied at the start. It is passed on as it is:
+	// a bad saved set must not keep the core from starting, so the
+	// observatory checks all of it, its form and size too, reports a set it
+	// refuses and starts without it.
 	Initial json.RawMessage `json:"initial"`
 	// BaseVersion names this config as the backend that generated it did.
 	BaseVersion string `json:"baseVersion"`
 }
 
-const (
-	// maxInitial bounds the initial set, as the observatory bounds an answer.
-	maxInitial = 1 << 20
-	// maxBaseVersion bounds baseVersion, as the observatory bounds the one of
-	// an answer.
-	maxBaseVersion = 256
-)
+// maxBaseVersion bounds baseVersion, as the observatory bounds the one of
+// an answer.
+const maxBaseVersion = 256
 
 // optionalDuration maps a JSON duration where an explicit zero turns the
 // feature off to the protobuf convention: zero is the default, negative off.
@@ -306,12 +303,6 @@ func (c *HealthProviderConfig) build() (*health.ProviderConfig, error) {
 		out.Apply.FixedHeaders = len(*a.Headers) == 0
 	}
 	if raw := bytes.TrimSpace(c.Initial); len(raw) > 0 && !bytes.Equal(raw, []byte("null")) {
-		if raw[0] != '{' {
-			return nil, errors.New("healthObservatory: ", where, ": initial must be an object or null")
-		}
-		if len(raw) > maxInitial {
-			return nil, errors.New("healthObservatory: ", where, ": initial is larger than 1 MiB")
-		}
 		out.Initial = raw
 	}
 	if t := c.Triggers; t != nil {

@@ -839,6 +839,21 @@ func TestTokenNeverInEventsStatusReportOrBody(t *testing.T) {
 	}
 }
 
+// A config whose initial set is no object, or larger than the provider
+// takes, still starts the core: the observatory refuses the set, reports
+// it and goes on with the outbounds of the config.
+func TestBadInitialInTheConfigStartsTheCore(t *testing.T) {
+	for _, initial := range []string{`[]`, `"{}"`, `{"outbounds": [{"tag": "x1", "protocol": "freedom", "pad": "` +
+		strings.Repeat("x", 2<<20) + `"}]}`} {
+		obs := twoViaCore(t, "https://unused.test/set", `, "initial": `+initial)
+		w := &eventWaiter{t: t, o: obs}
+		ev := w.until("provider_apply", nil)
+		if ev.Fields["trigger"] != "initial" || ev.Fields["ok"] != false {
+			t.Fatalf("%.20s: apply %v", initial, ev.Fields)
+		}
+	}
+}
+
 // The initial set applies as the core starts, before the first connection
 // and without a request: the connect already brought it. Its outbounds are
 // registered, though not as the default one, which stays the first

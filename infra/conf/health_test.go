@@ -252,8 +252,8 @@ func TestHealthProviderHeadersAndAuthRetry(t *testing.T) {
 	}
 }
 
-// initial is only checked for its form: a bad saved set must not keep the
-// core from starting, so the observatory checks the rest and reports it.
+// initial is passed on as it is: a bad saved set must not keep the core
+// from starting, so the observatory checks all of it and reports it.
 func TestHealthProviderInitial(t *testing.T) {
 	provider := func(initial string) string {
 		return `{"subjectSelector": ["a"], "providers": [{"tag": "a", "url": "https://x.test/",
@@ -265,18 +265,16 @@ func TestHealthProviderInitial(t *testing.T) {
 		`, "initial": {}`:         "{}",
 		`, "initial": {"x": [1]}`: `{"x": [1]}`,
 		`, "initial": {"outbounds": [{"tag": "x1", "protocol": "nosuch"}], "dns": {}}`: `{"outbounds": [{"tag": "x1", "protocol": "nosuch"}], "dns": {}}`,
+		`, "initial": []`:   `[]`,
+		`, "initial": "{}"`: `"{}"`,
+		`, "initial": 1`:    `1`,
+		`, "initial": {"v": "` + strings.Repeat("x", 1<<20) + `"}`: `{"v": "` + strings.Repeat("x", 1<<20) + `"}`,
 	} {
 		cfg, err := buildHealth(t, provider(initial))
 		if err != nil {
-			t.Errorf("%s: %v", initial, err)
+			t.Errorf("%.40s: %v", initial, err)
 		} else if got := string(cfg.Providers[0].Initial); got != want {
-			t.Errorf("%s: %q, want %q", initial, got, want)
-		}
-	}
-	for _, initial := range []string{`, "initial": []`, `, "initial": "{}"`, `, "initial": 1`,
-		`, "initial": {"v": "` + strings.Repeat("x", 1<<20) + `"}`} {
-		if _, err := buildHealth(t, provider(initial)); err == nil || !strings.Contains(err.Error(), "initial") {
-			t.Errorf("%.40s: %v, want a refusal", initial, err)
+			t.Errorf("%.40s: %.40q, want %.40q", initial, got, want)
 		}
 	}
 }
