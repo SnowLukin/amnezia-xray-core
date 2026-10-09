@@ -51,6 +51,63 @@ type netTun struct {
 	closed chan struct{}
 }
 
+// The TCP buffers of a gVisor stack are heap of the process, where those of
+// a kernel socket are not: every connection through a WireGuard outbound
+// counts against the 50 MB at which iOS ends a network extension. gVisor
+// starts each connection with 1 MiB to receive and 1 MiB to send, where
+// Linux starts with 128 KiB and 16 KiB. 250 connections that got data their
+// app had not read yet held 265 MiB on those defaults, against 7 MiB through
+// freedom, and 42 MiB with these.
+//
+// Auto-tuning grows the buffers of a connection that moves data, the receive
+// buffer with what the app reads each round trip and the send buffer with
+// the congestion window; a connection that stalls keeps what it has. So the
+// starting sizes bound the many connections that carry little, and the
+// maximum, gVisor's 4 MiB, bounds throughput: at 2 MiB, 64 MiB over a 50 ms
+// round trip came about 40% slower. Starting at 128 KiB cost under 3% from
+// 0 to 100 ms; starting at 64 KiB cost about 20% on 4 MiB over 50 ms.
+//
+// The inbound creates its stack here too and gets the same: its forwarder
+// gives each connection a receive buffer of its own, and the send buffer
+// grows as before.
+const (
+	tcpReceiveBufferDefault = 128 << 10
+	tcpSendBufferDefault    = 64 << 10
+	tcpBufferMax            = tcp.MaxBufferSize
+
+	// tcpCloseTimeout ends TIME_WAIT and FIN_WAIT_2, where gVisor keeps the
+	// whole endpoint, about 7 KiB, for a minute: an app that churns through
+	// connections keeps a minute of them. Past it, a late FIN of the peer
+	// gets a reset instead of an ACK, which ends a connection that had
+	// delivered everything anyway. Local ports are drawn at random, so a new
+	// connection on the same 4-tuple that could take an old segment is
+	// unlikely, and the tunnel does not hold segments for seconds.
+	tcpCloseTimeout = 5 * time.Second
+)
+
+// boundTCPMemory sets the TCP options of s that bound what each connection
+// holds; see tcpReceiveBufferDefault.
+func boundTCPMemory(s *stack.Stack) error {
+	moderate := tcpip.TCPModerateReceiveBufferOption(true)
+	timeWait := tcpip.TCPTimeWaitTimeoutOption(tcpCloseTimeout)
+	linger := tcpip.TCPLingerTimeoutOption(tcpCloseTimeout)
+	opts := []tcpip.SettableTransportProtocolOption{
+		&tcpip.TCPReceiveBufferSizeRangeOption{Min: tcp.MinBufferSize, Default: tcpReceiveBufferDefault, Max: tcpBufferMax},
+		&tcpip.TCPSendBufferSizeRangeOption{Min: tcp.MinBufferSize, Default: tcpSendBufferDefault, Max: tcpBufferMax},
+		// The small starting buffers rely on auto-tuning, which gVisor
+		// enables by default; say so in case that changes.
+		&moderate,
+		&timeWait,
+		&linger,
+	}
+	for _, o := range opts {
+		if err := s.SetTransportProtocolOption(tcp.ProtocolNumber, o); err != nil {
+			return fmt.Errorf("could not set %T: %v", o, err)
+		}
+	}
+	return nil
+}
+
 func CreateNetTUN(localAddresses, dnsServers []netip.Addr, mtu int, handleLocal bool) (tun.Device, *Net, *stack.Stack, error) {
 	opts := stack.Options{
 		NetworkProtocols:   []stack.NetworkProtocolFactory{ipv4.NewProtocol, ipv6.NewProtocol},
@@ -70,6 +127,9 @@ func CreateNetTUN(localAddresses, dnsServers []netip.Addr, mtu int, handleLocal 
 	tcpipErr := dev.stack.SetTransportProtocolOption(tcp.ProtocolNumber, &sackEnabledOpt)
 	if tcpipErr != nil {
 		return nil, nil, nil, fmt.Errorf("could not enable TCP SACK: %v", tcpipErr)
+	}
+	if err := boundTCPMemory(dev.stack); err != nil {
+		return nil, nil, nil, err
 	}
 	dev.notifyHandle = dev.ep.AddNotify(dev)
 	tcpipErr = dev.stack.CreateNIC(1, dev.ep)
