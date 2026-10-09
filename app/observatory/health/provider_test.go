@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"slices"
 	"testing"
 	"time"
 )
@@ -455,6 +456,69 @@ func TestNetworkChangeTriggerModes(t *testing.T) {
 			jobs, _ := te.refreshAt(at(90 * time.Second))
 			if got := len(jobs) == 1 && jobs[0].trigger == triggerNetwork; got != c.want {
 				t.Fatalf("refresh after settle: %v, want %v", triggers(jobs), c.want)
+			}
+		})
+	}
+}
+
+// A network seen only under a pin stays unknown, as the host chose the
+// outbound there, so coming back to it wants a refresh unless the balancer
+// sits on its cheapest outbound. Under the pin the trigger waits like any
+// other and is judged after the release, whether the pin ends before the
+// network settled or after: the outbound chosen then decides, not which of
+// the two came first.
+func TestNetworkTriggerInANetworkSeenUnderAPin(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		learned bool
+		release time.Duration
+		want    bool
+		held    int
+	}{
+		{"network learned before the pin", true, time.Minute, false, 0},
+		{"released before the network settled", false, 10 * time.Second, true, 0},
+		{"released after the network settled", false, time.Minute, true, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			te := newProviderEngine(t, quietProvider(func(p *ProviderConfig) {
+				p.Triggers.OnNetworkChange = RefreshOnNetwork_REFRESH_UNKNOWN_NOT_CHEAPEST
+				p.Triggers.NetworkSettle = int64(30 * time.Second)
+			}), &SelectorConfig{Costs: costs("a", 1, "b", 3), OnNetworkChange: NetworkChangeMode_FORGET}, "a1", "b1")
+			te.onNetworkChange("home", at(time.Minute))
+			if tc.learned {
+				te.onSuccess("a1", at(time.Minute+time.Second))
+			}
+			te.pin("auto", "b1", at(2*time.Minute))
+			te.onSuccess("b1", at(2*time.Minute+time.Second))
+			te.onNetworkChange("cafe", at(5*time.Minute))
+			back := at(10 * time.Minute)
+			te.onNetworkChange("home", back)
+			if te.networkKnown != tc.learned {
+				t.Fatalf("home known %v, want %v", te.networkKnown, tc.learned)
+			}
+			var got []string
+			for now := back; now.Before(back.Add(3 * time.Minute)); now = now.Add(5 * time.Second) {
+				if now.Equal(back.Add(tc.release)) {
+					te.release("auto", now)
+				}
+				jobs, _ := te.refreshAt(now)
+				got = append(got, triggers(jobs)...)
+			}
+			if want := slices.Contains(got, "network_change"); want != tc.want || len(got) > 1 {
+				t.Fatalf("refreshes %v, want a network refresh %v", got, tc.want)
+			}
+			held := 0
+			for _, e := range te.eventsOf(t, "provider_skip") {
+				if e.Fields["trigger"] != "network_change" {
+					continue
+				}
+				if e.Fields["reason"] != "pinned" {
+					t.Fatalf("skip %v", e.Fields)
+				}
+				held++
+			}
+			if held != tc.held {
+				t.Fatalf("%d skips of the network trigger for the pin, want %d", held, tc.held)
 			}
 		})
 	}

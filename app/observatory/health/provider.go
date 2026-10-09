@@ -349,7 +349,11 @@ func (e *engine) wantedRefresh(p *provider, now time.Time) ([triggerCount]bool, 
 	if p.networkPending {
 		if due := p.networkAt.Add(p.cfg.networkSettle); now.Before(due) {
 			soonest(due)
-		} else if p.cfg.onNetwork != RefreshOnNetwork_REFRESH_UNKNOWN_NOT_CHEAPEST || (s != nil && e.notCheapest(s)) {
+		} else if p.cfg.onNetwork != RefreshOnNetwork_REFRESH_UNKNOWN_NOT_CHEAPEST || (s != nil && (s.pinned != "" || e.notCheapest(s))) {
+			// A pinned balancer keeps the outbound of the host, which tells
+			// nothing about the cheaper ones: the trigger waits for the
+			// release like every other and is judged after it, the same
+			// whether the pin ends before the network settled or after.
 			want[triggerNetwork] = true
 		} else {
 			p.networkPending = false
@@ -392,10 +396,11 @@ func (e *engine) healthy(s *selector) int {
 
 // notCheapest reports whether the balancer keeps an outbound while a
 // cheaper candidate exists, which after a network change means the cheaper
-// ones do not work there.
+// ones do not work there. Under a pin it means nothing; the caller waits for
+// the release.
 func (e *engine) notCheapest(s *selector) bool {
 	cur := s.current()
-	if cur == "" || s.pinned != "" {
+	if cur == "" {
 		return false
 	}
 	c := e.rankCost(s, cur)
