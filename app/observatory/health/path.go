@@ -131,6 +131,9 @@ type path struct {
 	// Refusals in a row, and when to ask again after the last one.
 	sleepTries   int
 	nextSleepTry time.Time
+	// Connections its proxy processes now, as its handler tells: it does
+	// not sleep under one.
+	processes int
 }
 
 type pathStats struct {

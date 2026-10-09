@@ -368,6 +368,66 @@ func TestSleepsUnderAProbeThatWaits(t *testing.T) {
 	}
 }
 
+// A connection the observer sees no dial of may wake an outbound that can
+// sleep: a rule straight at its tag, a fallbackTag or a dialerProxy chain.
+// Its handler tells of every connection: the outbound is awake in Status
+// again, does not sleep while one runs, and sleeps sleep.after after the
+// last one ended, which kicks the loop to plan it.
+func TestProcessWakesAndHoldsASleepingOutbound(t *testing.T) {
+	f := newSleepFixture(t, nil, nil, "a1", "w1")
+	f.use("w1", at(time.Second))
+	f.turn(at(time.Second + defaultSleepAfter))
+	if !f.asleep(t, "w1") || f.proxies["w1"].asked() != 1 {
+		t.Fatal("setup: w1 does not sleep")
+	}
+	kicked := func() bool {
+		select {
+		case <-f.o.kick:
+			return true
+		default:
+			return false
+		}
+	}
+	kicked()
+	f.now = at(time.Hour)
+	f.o.ProcessStarted("w1")
+	f.o.ProcessStarted("w1")
+	if f.asleep(t, "w1") || !kicked() {
+		t.Fatal("a connection through w1 left it asleep, or the loop unkicked")
+	}
+	f.turn(at(time.Hour))
+	f.turn(at(time.Hour + defaultSleepAfter))
+	f.now = at(2 * time.Hour)
+	f.o.ProcessEnded("w1")
+	if kicked() {
+		t.Fatal("kicked while a connection still runs")
+	}
+	f.turn(at(3 * time.Hour))
+	if n := f.proxies["w1"].asked(); n != 1 {
+		t.Fatalf("asked to sleep %d times while a connection runs", n)
+	}
+	f.now = at(3 * time.Hour)
+	f.o.ProcessEnded("w1")
+	if !kicked() {
+		t.Fatal("the last connection ended without a kick")
+	}
+	if wake := f.turn(at(3 * time.Hour)); !wake.Equal(at(3*time.Hour + defaultSleepAfter)) {
+		t.Fatalf("wake at %v, want sleep.after past the last connection", wake.Sub(t0))
+	}
+	f.turn(at(3*time.Hour + defaultSleepAfter))
+	if n := f.proxies["w1"].asked(); n != 2 || !f.asleep(t, "w1") {
+		t.Fatalf("after the last connection: asked %d times, asleep %v", n, f.asleep(t, "w1"))
+	}
+	// An end the observer cannot match counts for nothing.
+	f.o.ProcessEnded("w1")
+	f.o.ProcessEnded("w9")
+	f.engine(func(e *engine) {
+		if p := e.paths["w1"]; p == nil || p.processes != 0 || p.awake {
+			t.Fatalf("w1 after unmatched ends: %+v", p)
+		}
+	})
+}
+
 func TestNeverSleepsRetiringReplacedOrConnectivity(t *testing.T) {
 	for _, tc := range []struct {
 		name string

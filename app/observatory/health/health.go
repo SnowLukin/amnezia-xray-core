@@ -565,6 +565,32 @@ func (o *Observer) finished(t *connTracker) {
 	}
 }
 
+// ---- outbound.ProcessObserver -----------------------------------------------
+
+var _ outbound.ProcessObserver = (*Observer)(nil)
+
+// ProcessStarted implements outbound.ProcessObserver: the proxy of an
+// outbound that can sleep processes a connection, which may have woken it
+// whatever routed it there.
+func (o *Observer) ProcessStarted(tag string) {
+	o.mu.Lock()
+	woke := o.e.processStarted(tag, o.now())
+	o.mu.Unlock()
+	if woke {
+		o.wake()
+	}
+}
+
+// ProcessEnded implements outbound.ProcessObserver.
+func (o *Observer) ProcessEnded(tag string) {
+	o.mu.Lock()
+	last := o.e.processEnded(tag, o.now())
+	o.mu.Unlock()
+	if last {
+		o.wake()
+	}
+}
+
 // ---- extension.Observatory --------------------------------------------------
 
 // GetObservation implements extension.Observatory.

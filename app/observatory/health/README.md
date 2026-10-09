@@ -564,6 +564,7 @@ outbound sleeps `sleep.after` after its last use, and at once while memory
 is low, when all of this holds:
 
 - it was used since it last slept: an outbound never used is never asked;
+- no connection goes through it;
 - no balancer chooses it, pinned or not: a chosen outbound never sleeps,
   however long it idles;
 - it is not the target of a return, but while memory is low, and no
@@ -578,20 +579,25 @@ is low, when all of this holds:
   handler replaced.
 
 A use is a switch to or away from it, a probe, a connection the observatory
-follows, and the start and the end of a provider request through it as a
-`via`. The outbound has the last word: it refuses while a connection uses
-it, and WireGuard dials past the handler, so the observatory sees none of
-its connections. A refused sleep, or one an open connection the observatory
-follows holds back, is asked for again after `sleep.after`, at least a
-minute, doubling with every refusal in a row up to 30 minutes. Whether an
-outbound can sleep at all is asked at its first use, and again only once a
-provider replaced its handler; one that cannot is never asked to sleep. A
-sleeping outbound shows `asleep` in Status, and every sleep writes
-`outbound_sleep`. Without user traffic the observatory still wakes for
-this, once per used outbound `sleep.after` after its last use and for the
-retries; once everything sleeps no timer is left. An outbound the
-observatory does not observe never sleeps, even when a provider request
-goes through it.
+follows, the start and the end of a provider request through it as a `via`,
+and the start and the end of every connection its handler gives it.
+WireGuard dials past the handler, so the observatory sees none of its
+dials, and a connection that reaches it other than by a balancer, a rule
+straight at its tag, a `fallbackTag` or a `dialerProxy` chain, creates its
+tunnel again all the same: the handler of an outbound that can sleep tells
+the observatory of each connection, so such a use wakes it in Status too
+and it sleeps again after the last one. The outbound has the last word: it
+refuses while a connection uses it. A refused sleep, or one an open
+connection the observatory follows holds back, is asked for again after
+`sleep.after`, at least a minute, doubling with every refusal in a row up
+to 30 minutes. Whether an outbound can sleep at all is asked at its first
+use, and again only once a provider replaced its handler; one that cannot
+is never asked to sleep. A sleeping outbound shows `asleep` in Status, and
+every sleep writes `outbound_sleep`. Without user traffic the observatory
+still wakes for this, once per used outbound `sleep.after` after its last
+use and for the retries; once everything sleeps no timer is left. An
+outbound the observatory does not observe never sleeps, even when a
+provider request goes through it.
 
 ## Memory
 

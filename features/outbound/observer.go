@@ -35,3 +35,21 @@ type DialTracker interface {
 	// with the error processing ended with, if any.
 	Finished(err error)
 }
+
+// ProcessObserver is implemented by a ConnectionObserver that also wants to
+// know when a handler whose proxy can sleep (see Sleeper) processes a
+// connection. Such a proxy, WireGuard for one, creates what it holds again
+// for its next connection and dials past the handler, so StartDial never
+// tells the observer that a connection routed to the outbound by any other
+// way than the observer itself, such as a rule straight at its tag, woke it.
+//
+// Implementations must not block: the calls happen on the goroutine of the
+// connection.
+type ProcessObserver interface {
+	// ProcessStarted is called before the proxy of the handler with the tag
+	// processes a connection.
+	ProcessStarted(tag string)
+	// ProcessEnded is called once the proxy stopped processing it, once
+	// for every ProcessStarted.
+	ProcessEnded(tag string)
+}

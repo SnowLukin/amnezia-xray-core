@@ -18,10 +18,15 @@ import (
 // keeps following upstream without conflicts.
 
 // process runs the proxy. With an observer, the proxy dials through
-// observedDialer, which reports every dial of this connection.
+// observedDialer, which reports every dial of this connection, and a proxy
+// that can sleep reports the connection itself, which may wake it.
 func (h *Handler) process(ctx context.Context, link *transport.Link) error {
 	if h.observer == nil {
 		return h.proxy.Process(ctx, link, h)
+	}
+	if po := h.processObserver(); po != nil {
+		po.ProcessStarted(h.tag)
+		defer po.ProcessEnded(h.tag)
 	}
 	// Proxies end processing when their context is canceled, during the dial
 	// and while copying, and close what they dialed: this lets the observer
@@ -33,6 +38,17 @@ func (h *Handler) process(ctx context.Context, link *transport.Link) error {
 	defer func() { d.finish(err) }()
 	err = h.proxy.Process(ctx, link, d)
 	return err
+}
+
+// processObserver returns the observer to tell of every connection the
+// proxy processes, or nil. Only a proxy that can sleep needs it: it may
+// wake for a connection whose dials pass the handler by.
+func (h *Handler) processObserver() outbound.ProcessObserver {
+	if _, ok := h.proxy.(outbound.Sleeper); !ok {
+		return nil
+	}
+	po, _ := h.observer.(outbound.ProcessObserver)
+	return po
 }
 
 // observed makes mux workers dial through the observer as well.

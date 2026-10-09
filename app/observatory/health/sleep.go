@@ -13,11 +13,12 @@ import (
 // goroutines while idle, and can release them and create them again with
 // its next connection (outbound.Sleeper). The observer decides when, since
 // it knows what uses an outbound: the choice of every balancer, the probes
-// it runs or is about to run, the requests of the host and of providers. An
+// it runs or is about to run, the requests of the host and of providers, and
+// the connections the handler gives the proxy (outbound.ProcessObserver). An
 // outbound none of them holds sleeps sleep.after after its last use, at once
 // while memory is low; a chosen one never does. The outbound has the last
 // word: WireGuard dials past the handler, so the observer sees none of its
-// connections, and Sleep refuses while one uses it.
+// dials, and Sleep refuses while a connection uses it.
 
 type sleeperKind int8
 
@@ -77,6 +78,34 @@ func (e *engine) used(tag string, now time.Time) bool {
 	p.uses++
 	p.sleepTries, p.nextSleepTry = 0, time.Time{}
 	return woke && e.s.sleepAfter > 0 && p.sleeper != sleeperNo
+}
+
+// processStarted counts a connection the proxy of an outbound that can
+// sleep processes, as its handler tells. It is a use whatever routed it
+// there: a rule straight at the tag, a fallbackTag or a dialerProxy chain
+// wake the proxy as well, and the observer would see none of them, since
+// such a proxy dials past the handler. It reports whether the loop has a
+// sleep to plan.
+func (e *engine) processStarted(tag string, now time.Time) bool {
+	woke := e.used(tag, now)
+	if p := e.paths[tag]; p != nil {
+		p.processes++
+	}
+	return woke
+}
+
+// processEnded counts the end of a connection processStarted counted, a
+// use as well. It reports whether that was the last one: the loop then
+// plans the sleep, which nothing else would.
+func (e *engine) processEnded(tag string, now time.Time) bool {
+	p := e.paths[tag]
+	if p == nil || p.processes == 0 {
+		// Forgotten meanwhile, with its handler.
+		return false
+	}
+	p.processes--
+	e.used(tag, now)
+	return p.processes == 0 && e.s.sleepAfter > 0
 }
 
 // fetchingVia counts the provider requests under way through an outbound:
@@ -142,9 +171,13 @@ func (e *engine) planSleeps(now time.Time) time.Time {
 // a return while memory is low: the probe wakes the outbound when it
 // starts, and until then the tunnel would idle in memory for nothing.
 func (e *engine) keptAwake(tag string, idle bool) bool {
-	// A drain closes an outbound that left its set, a provider is swapping
-	// the handler, a provider request goes through it, a request of the
-	// host waits for an answer about it, also while its probe waits.
+	// A connection goes through it, a drain closes an outbound that left
+	// its set, a provider is swapping the handler, a provider request goes
+	// through it, a request of the host waits for an answer about it, also
+	// while its probe waits.
+	if p := e.paths[tag]; p != nil && p.processes > 0 {
+		return true
+	}
 	if e.retiring[tag] || e.replacing[tag] || e.fetchVia[tag] > 0 || e.waitedFor(tag) {
 		return true
 	}
