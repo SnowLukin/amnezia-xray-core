@@ -381,16 +381,18 @@ the token of the provider. Only names in `apply.headers` may come, in any
 case: `authorization` replaces the `Authorization` of the config rather than
 going beside it. `[]` lets no answer set a header, and an answer with
 `headers` is then refused. At most 8 headers, each name at most 256 bytes,
-each value non-empty, without line breaks or other control characters and
-at most 4 KiB; names of the transport such as `Host`, `Content-Type`,
-`Connection` or `Proxy-*` never.
+each value non-empty, in UTF-8, without line breaks or other control
+characters and at most 4 KiB; names of the transport such as `Host`,
+`Content-Type`, `Connection` or `Proxy-*` never.
 The host sets headers the same way with `SetProviderHeaders`, any names but
 those of the transport; an empty value removes what the host or an answer
-set, and the config applies again. The headers an answer or the host set
-are at most 8 together, as the set the host keeps carries them: an answer
-or an initial set that would make more is refused, and a call of the host
-that adds past 8 fails, while one that replaces or removes headers never
-does. What came later wins, and the host wins
+set, and the config applies again. A value that is not UTF-8 fails in a
+direct call as over gRPC: `ProviderSet` carries the headers in JSON, which
+would put other bytes in its place for the next start. The headers an
+answer or the host set are at most 8 together, as the set the host keeps
+carries them: an answer or an initial set that would make more is refused,
+and a call of the host that adds past 8 fails, while one that replaces or
+removes headers never does. What came later wins, and the host wins
 over an answer to a request that was sent before the host changed the
 headers: `provider_apply` tells that with `headers_stale`. Only an applied
 answer changes a header, so a refused or a lost answer leaves the token in
