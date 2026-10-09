@@ -93,6 +93,29 @@ func checkRotation(a *providerAnswer, cfg *providerSettings) error {
 	return nil
 }
 
+// checkHeaderRoom refuses an answer whose headers would take the headers
+// an answer or the host set past maxRotatedHeaders. The bound holds for
+// all of them together: ProviderSet hands them out as the headers of the
+// set, which the next start refuses beyond it, and the host could no
+// longer set a header next to them. An answer the host overtook, whose
+// headers do not apply, is not judged by them; the initial set lies under
+// the host name by name, so the names the host set count once.
+func (e *engine) checkHeaderRoom(p *provider, a *providerAnswer, gen uint64) error {
+	if len(a.headers) == 0 || (gen != p.headersGen && !a.initial) {
+		return nil
+	}
+	n := len(p.rotated)
+	for name := range a.headers {
+		if _, had := p.rotated[name]; !had {
+			n++
+		}
+	}
+	if n > maxRotatedHeaders {
+		return answerErrorf("headers: %d with those set before, at most %d", n, maxRotatedHeaders)
+	}
+	return nil
+}
+
 // requestHeaders are the headers a refresh sends: those of the config, and
 // over them the ones an answer or the host set, by canonical name, so that
 // a rotated authorization replaces the Authorization of the config.
@@ -161,6 +184,11 @@ func (e *engine) takeAnswerHeaders(p *provider, headers map[string]string, gen u
 			take[name] = v
 		}
 	}
+	if len(p.rotated)+len(take) > maxRotatedHeaders {
+		// The host added headers since checkHeaderRoom, as the core
+		// started: they win, and the bound holds.
+		return names, true
+	}
 	e.rotate(p, take, by, now)
 	return names, len(take) < len(headers)
 }
@@ -200,7 +228,9 @@ func (e *engine) setProviderHeaders(tag string, headers map[string]string, now t
 			n++
 		}
 	}
-	if n > maxRotatedHeaders {
+	// Only a call that adds past the bound fails: one that replaces or
+	// removes headers always goes through, whatever came before it.
+	if n > maxRotatedHeaders && n > len(p.rotated) {
 		return fmt.Errorf("more than %d headers", maxRotatedHeaders)
 	}
 	if e.rotate(p, headers, "host", now) {

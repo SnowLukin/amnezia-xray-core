@@ -380,7 +380,11 @@ line breaks or other control characters and at most 4 KiB; names of the
 transport such as `Host`, `Content-Type`, `Connection` or `Proxy-*` never.
 The host sets headers the same way with `SetProviderHeaders`, any names but
 those of the transport; an empty value removes what the host or an answer
-set, and the config applies again. What came later wins, and the host wins
+set, and the config applies again. The headers an answer or the host set
+are at most 8 together, as the set the host keeps carries them: an answer
+or an initial set that would make more is refused, and a call of the host
+that adds past 8 fails, while one that replaces or removes headers never
+does. What came later wins, and the host wins
 over an answer to a request that was sent before the host changed the
 headers: `provider_apply` tells that with `headers_stale`. Only an applied
 answer changes a header, so a refused or a lost answer leaves the token in
@@ -637,7 +641,7 @@ when the core runs through a library that keeps the instance to itself:
 | `Pin(balancer, outbound, run)` / `pin` | Keep the balancer on an outbound. |
 | `Release(balancer, run)` / `release` | Let the balancer choose again. |
 | `RequestRefresh(provider)` / `refresh [provider]` | Fetch the set of a provider, or of every provider when empty, as soon as the limits allow. False when there is no such provider. |
-| `SetProviderHeaders(provider, headers)` / `headers <provider>` | Put headers over those of the config for the requests of a provider, see Token; an empty value removes one. The command reads them as a JSON object from stdin, never from the arguments, which the process list shows, and prints `{"ok":true}`. Ends the pause after refused headers, not a pause the backend asked for nor the backoff, and starts no refresh. An error names the header, never its value: no such provider, a name that is not a token or belongs to the transport, a bad value, more than 8 headers. |
+| `SetProviderHeaders(provider, headers)` / `headers <provider>` | Put headers over those of the config for the requests of a provider, see Token; an empty value removes one. The command reads them as a JSON object from stdin, never from the arguments, which the process list shows, and prints `{"ok":true}`. Ends the pause after refused headers, not a pause the backend asked for nor the backoff, and starts no refresh. An error names the header, never its value: no such provider, a name that is not a token or belongs to the transport, a bad value, more than 8 headers in the call or in all. |
 | `ProviderSet(provider, after)` / `set <provider> [after]` | The last set the provider applied as JSON valid as its `initial`, with `seq`, a number that grows when the set, the end of a lease, the headers an answer or the host set or the base the answer names change. The answer keeps its keys, with those headers in place of its own (the headers of the config stay out), `serverTime` the time its leases count from and `receivedAt`. Nil (`null`) when nothing was applied or nothing changed since `after`; then the call allocates nothing, so a host may ask next to `TakeReport`. The host keeps the set in safe storage, as it holds the token and the keys of the outbounds, and passes it as `initial` when it starts the core without a fresh answer. Over gRPC it goes to any client of the API, as outbounds do through `HandlerService`, so the API listens only where the host reaches it. |
 | `RequestProbe(request)` / `probe <balancer> [outbound...]` | Probe outbounds of a balancer now, see Probes on request. Returns the ticket at once or an error: no such balancer, no candidates yet, not a candidate, too many outbounds. The command waits for the result up to its timeout (`-t`) and prints it; over gRPC `wait_ms` does the same. |
 | `ProbeResult(id)` | One request as in Status and whether it ended; nil when it is no longer kept. |

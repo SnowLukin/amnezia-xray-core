@@ -81,6 +81,101 @@ func TestAnswerRotatesOnlyAllowedHeaders(t *testing.T) {
 	}
 }
 
+// The headers an answer or the host set are at most eight together, as the
+// set the host keeps carries them: an answer that would rotate more is
+// refused whole and changes nothing, so ProviderSet stays a valid initial
+// set and the host can still replace a header.
+func TestRotatedHeadersBoundedTogether(t *testing.T) {
+	f := newApplyFixture(t, time.Minute, func(p *ProviderConfig) { p.Apply.Headers = []string{"Authorization", "X-Extra"} })
+	host := map[string]string{}
+	for i := range maxRotatedHeaders - 1 {
+		host[fmt.Sprintf("X-H%d", i)] = "v"
+	}
+	if err := f.o.SetProviderHeaders("fresh", host); err != nil {
+		t.Fatal(err)
+	}
+	job := func() *refreshJob {
+		f.o.mu.Lock()
+		defer f.o.mu.Unlock()
+		return &refreshJob{p: f.rt.p, trigger: triggerHost, headersGen: f.rt.p.headersGen}
+	}
+	two := answer(t, fakeOutbound{Tag: "x1", V: 1})
+	two.headers = map[string]string{"Authorization": "Bearer t1", "X-Extra": "e"}
+	if _, err := f.o.applySet(f.rt, two, job()); err == nil ||
+		err.Error() != "invalid answer: headers: 9 with those set before, at most 8" {
+		t.Fatalf("a ninth header: %v", err)
+	}
+	if f.m.tags() != "" {
+		t.Fatalf("the refused answer added %s", f.m.tags())
+	}
+	one := answer(t, fakeOutbound{Tag: "x1", V: 1})
+	one.headers = map[string]string{"Authorization": "Bearer t1"}
+	if _, err := f.o.applySet(f.rt, one, job()); err != nil {
+		t.Fatal(err)
+	}
+	raw, _, err := f.o.ProviderSet("fresh", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := parseInitial(raw); err != nil {
+		t.Fatalf("the kept set is no valid initial: %v", err)
+	}
+	// The same set again, with a header that would make nine.
+	if _, err := f.o.applySet(f.rt, two, job()); err == nil {
+		t.Fatal("the same set with a ninth header applied")
+	}
+	if err := f.o.SetProviderHeaders("fresh", map[string]string{"Authorization": "Bearer host"}); err != nil {
+		t.Fatalf("replacing the eighth: %v", err)
+	}
+	if err := f.o.SetProviderHeaders("fresh", map[string]string{"X-Device": "d1"}); err == nil {
+		t.Fatal("the host added a ninth")
+	}
+}
+
+// A host that set headers before the start leaves the initial set room
+// for eight in all: a set that would bring more is refused, and the core
+// starts on the outbounds of the config.
+func TestInitialHeadersBoundedWithThoseOfTheHost(t *testing.T) {
+	f, _ := initialFixture(t, `{"outbounds": [{"tag": "x1", "protocol": "vless", "v": 1}],
+		"headers": {"Authorization": "Bearer saved", "X-Session": "s1", "X-H0": "saved"}}`)
+	host := map[string]string{}
+	for i := range maxRotatedHeaders - 1 {
+		host[fmt.Sprintf("X-H%d", i)] = "v"
+	}
+	if err := f.o.SetProviderHeaders("fresh", host); err != nil {
+		t.Fatal(err)
+	}
+	f.o.applyInitial()
+	if ev := f.lastApply(t); ev["ok"] != false || !strings.Contains(fmt.Sprint(ev["error"]), "headers: 9 with those set before") {
+		t.Fatalf("apply %v", ev)
+	}
+	f.o.mu.Lock()
+	defer f.o.mu.Unlock()
+	if n := len(f.rt.p.rotated); n != maxRotatedHeaders-1 || f.m.tags() != "" {
+		t.Fatalf("%d headers, outbounds %s", n, f.m.tags())
+	}
+}
+
+// Only a call that adds past eight fails: one that replaces a header goes
+// through, also when more than eight came from before.
+func TestHostReplacesAHeaderPastTheBound(t *testing.T) {
+	te := newProviderEngine(t, quietProvider(nil), nil, "a1")
+	p := te.prov()
+	p.rotated = map[string]string{}
+	for i := range maxRotatedHeaders + 1 {
+		p.rotated[fmt.Sprintf("X-H%d", i)] = "v"
+	}
+	if err := te.setProviderHeaders("fresh", map[string]string{"X-H0": "w"}, t0); err != nil {
+		t.Fatalf("replacing one of nine: %v", err)
+	}
+	if err := te.setProviderHeaders("fresh", map[string]string{"X-H0": "", "X-New": "n"}, t0); err != nil {
+		t.Fatalf("one for another: %v", err)
+	}
+	if err := te.setProviderHeaders("fresh", map[string]string{"X-More": "m"}, t0); err == nil {
+		t.Fatal("a tenth header")
+	}
+}
+
 // Only an applied answer rotates the token: a refused one keeps the token
 // in use, which the backend still honors.
 func TestRejectedAnswerKeepsTheToken(t *testing.T) {

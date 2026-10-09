@@ -830,6 +830,12 @@ func (o *Observer) applySet(rt *providerRuntime, a *providerAnswer, j *refreshJo
 	if o.applyClosed {
 		return fail(errors.New("closed"))
 	}
+	o.mu.Lock()
+	err := o.e.checkHeaderRoom(rt.p, a, j.headersGen)
+	o.mu.Unlock()
+	if err != nil {
+		return fail(err)
+	}
 	if a.version == rt.version {
 		// The version names the set, not the answer: the most common answer
 		// while leases run is the same set with later ends, which renews
