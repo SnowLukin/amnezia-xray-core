@@ -24,18 +24,20 @@ func (p *PeerConfig) AsAccount() (protocol.Account, error) {
 	}
 
 	return &MemoryAccount{
-		Pub:          *pub,
-		AllowedIPs:   allowedIPs,
-		PreSharedKey: p.PreSharedKey,
-		KeepAlive:    p.KeepAlive,
+		Pub:             *pub,
+		AllowedIPs:      allowedIPs,
+		PreSharedKey:    p.PreSharedKey,
+		KeepAlive:       p.KeepAlive,
+		ProtocolVersion: p.ProtocolVersion,
 	}, nil
 }
 
 type MemoryAccount struct {
-	Pub          [32]byte
-	AllowedIPs   []netip.Prefix
-	PreSharedKey string
-	KeepAlive    string
+	Pub             [32]byte
+	AllowedIPs      []netip.Prefix
+	PreSharedKey    string
+	KeepAlive       string
+	ProtocolVersion string
 }
 
 func (a *MemoryAccount) Equals(other protocol.Account) bool {
@@ -52,9 +54,10 @@ func (a *MemoryAccount) ToProto() proto.Message {
 	}
 
 	return &PeerConfig{
-		PublicKey:    hex.EncodeToString(a.Pub[:]),
-		AllowedIps:   allowedIPs,
-		PreSharedKey: a.PreSharedKey,
-		KeepAlive:    a.KeepAlive,
+		PublicKey:       hex.EncodeToString(a.Pub[:]),
+		AllowedIps:      allowedIPs,
+		PreSharedKey:    a.PreSharedKey,
+		KeepAlive:       a.KeepAlive,
+		ProtocolVersion: a.ProtocolVersion,
 	}
 }

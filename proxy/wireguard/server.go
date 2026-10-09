@@ -146,6 +146,7 @@ func (s *Server) AddUser(ctx context.Context, user *protocol.MemoryUser) error {
 	}
 	var sb strings.Builder
 	sb.WriteString("public_key=" + hex.EncodeToString(peer.Pub[:]) + "\n")
+	writeProtocolVersion(&sb, peer.ProtocolVersion)
 	sb.WriteString("replace_allowed_ips=true\n")
 	for i := range peer.AllowedIPs {
 		sb.WriteString("allowed_ip=" + peer.AllowedIPs[i].String() + "\n")
@@ -302,6 +303,7 @@ func (s *Server) Start() error {
 	s.users.Range(func(key, value any) bool {
 		peer := value.(*protocol.MemoryUser).Account.(*MemoryAccount)
 		cfg.WriteString("public_key=" + hex.EncodeToString(peer.Pub[:]) + "\n")
+		writeProtocolVersion(&cfg, peer.ProtocolVersion)
 		for i := range peer.AllowedIPs {
 			cfg.WriteString("allowed_ip=" + peer.AllowedIPs[i].String() + "\n")
 		}
