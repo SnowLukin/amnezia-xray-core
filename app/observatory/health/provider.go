@@ -271,6 +271,13 @@ func (e *engine) heldBack(p *provider, t refreshTrigger, expiry expiryWant, idle
 		return "idle"
 	case e.networkDown:
 		return "network_down"
+	case e.pinnedBalancer(p.cfg.balancer):
+		// The host keeps the balancer where it is, often while it verifies
+		// the outbound of the start pin, and stops the core when that fails:
+		// a refresh then only loads the backend, once for every attempt of
+		// a host that starts the core again. The release kicks the loop,
+		// and the timer of a start pin ends it within the same turn.
+		return "pinned"
 	case e.memoryLow && !t.urgent() && !(t == triggerExpiry && expiry.urgent):
 		// A refresh is the heaviest work of the observer. With low memory
 		// only the host, a balancer with nothing left and a lease that
@@ -283,6 +290,13 @@ func (e *engine) heldBack(p *provider, t refreshTrigger, expiry expiryWant, idle
 		return "auth"
 	}
 	return ""
+}
+
+// pinnedBalancer tells whether the balancer is pinned, by the host or by
+// startPinned.
+func (e *engine) pinnedBalancer(tag string) bool {
+	s := e.selectors[tag]
+	return s != nil && s.pinned != ""
 }
 
 // wantedRefresh returns the triggers that want a refresh now, what the

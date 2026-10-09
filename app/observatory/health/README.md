@@ -178,7 +178,8 @@ for `hostProbes` `perMinute` half of `schedule.perMinute`, `reuse` 5 min,
   it, for example while another component verifies the connection.
   `startPinnedFor` releases it by itself after that long: a host that
   verifies within a known time and stops the core when the check fails
-  then needs no release call.
+  then needs no release call. While a balancer is pinned, the triggers of
+  its provider wait, but for a host request, see Providers.
 - `startWith` starts the balancer on one outbound instead of the cheapest,
   without a pin, when it is a usable candidate whose lease did not end: the
   host passes the outbound that worked last time, so a restart needs no
@@ -455,9 +456,14 @@ answers name.
 | host | `RequestRefresh`, see below. |
 
 Every trigger but a host request waits while the network is down, while
-the backend refuses the headers (see Token), and while there is no user
-traffic, except the first request for a lease: an outbound would end under
-a sleeping device. A refresh asks about the leases due by
+the balancer of the provider is pinned, by the host or by `startPinned`,
+while the backend refuses the headers (see Token), and while there is no
+user traffic, except the first request for a lease: an outbound would end
+under a sleeping device. The host decides about a pinned outbound; one that
+verifies the outbound of a start pin stops the core when the check fails,
+and a refresh then would only load the backend, once for every attempt of a
+host that starts the core again. The triggers go on at the release, by the
+host or by the timer of the start pin. A refresh asks about the leases due by
 then, to be renewed or ended, whatever its trigger; when it fails, they are
 asked about again after the backoff, and then only with user traffic, so a
 dead backend does not wake the device.
@@ -674,7 +680,7 @@ changed its settings). `kinds` counts failures by kind: `dial_failed`, `dial_tim
 | `provider_headers` | `provider`, `by`, `names` | Headers of the requests changed: `by` an `answer`, the `initial` set or the `host`. `names` are the headers whose values changed; the values are never told. |
 | `provider_base_changed` | `provider`, `from`, `to` | An applied answer named the base config `to` while the core runs with `from`: the host is to fetch the config anew, see Base config. Once per value, until an answer names `from` again. |
 | `provider_restart_needed` | `provider`, `version`, `sections` | Kept for sections of the config the core reads only at start. Protocol 1 refuses an answer with such a section, so this version does not write it. |
-| `provider_skip` | `provider`, `trigger`, `reason`, `wait_ms` | A trigger wants a refresh that cannot start yet. `reason`: `min_interval`, `backoff`, `retry_after`, `max_per_hour`, `idle`, `network_down`, `memory`, `auth` (the backend refused the headers). Reported once per trigger and reason until a refresh starts. |
+| `provider_skip` | `provider`, `trigger`, `reason`, `wait_ms` | A trigger wants a refresh that cannot start yet. `reason`: `min_interval`, `backoff`, `retry_after`, `max_per_hour`, `idle`, `network_down`, `pinned` (the balancer of the provider is pinned), `memory`, `auth` (the backend refused the headers). Reported once per trigger and reason until a refresh starts. |
 | `provider_drained` | `provider`, `outbound`, `replaced` | An outbound that left the set, or the old handler of a replaced one, was closed: after `drain`, at once without connections, or early to keep at most `maxOutbounds` draining. |
 | `outbound_sleep` | `outbound`, `idle_ms`, `reason` | An outbound released what it held, see Sleep. `idle_ms` is the time since its last use; `reason` is `idle` (after `sleep.after`) or `memory` (sooner, while memory is low). |
 

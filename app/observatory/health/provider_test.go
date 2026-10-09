@@ -165,6 +165,73 @@ func TestRefreshWaitsForTheNetworkButNotTheHost(t *testing.T) {
 	expectRefresh(t, te, at(time.Hour+2*time.Minute), "host")
 }
 
+// While the balancer of the provider is pinned, by the host or by the start,
+// every trigger but the host waits for the release: the host decides about
+// the outbound it pinned, and a refresh would only load the backend.
+func TestRefreshWaitsForThePinButNotTheHost(t *testing.T) {
+	for _, start := range []bool{false, true} {
+		name := "pin of the host"
+		if start {
+			name = "start pin"
+		}
+		t.Run(name, func(t *testing.T) {
+			sc := &SelectorConfig{Costs: costs("a", 1, "b", 3)}
+			if start {
+				sc.StartPinned = "a1"
+			}
+			te := newProviderEngine(t, quietProvider(func(p *ProviderConfig) {
+				p.Triggers.Interval = int64(time.Hour)
+				p.Triggers.Jitter = -1
+				p.Triggers.MinHealthy = 2
+			}), sc, "a1", "b1")
+			if !start {
+				te.pin("auto", "a1", at(time.Second))
+			}
+			// One candidate is left: min_healthy wants a refresh at once,
+			// interval after an hour.
+			te.path("b1").status = statusDown
+			expectNoRefresh(t, te, at(2*time.Second))
+			expectNoRefresh(t, te, at(time.Hour))
+			var held []string
+			for _, e := range te.eventsOf(t, "provider_skip") {
+				if e.Fields["reason"] != "pinned" {
+					t.Fatalf("skip %v, want pinned", e.Fields)
+				}
+				held = append(held, e.Fields["trigger"].(string))
+			}
+			if fmt.Sprint(held) != "[min_healthy interval]" {
+				t.Fatalf("triggers held by the pin %v", held)
+			}
+			te.requestRefresh("fresh")
+			j := expectRefresh(t, te, at(time.Hour+time.Second), "host")
+			te.onRefreshDone(j, refreshOutcome{ok: true}, at(time.Hour+time.Second))
+			expectNoRefresh(t, te, at(3*time.Hour))
+			te.release("auto", at(3*time.Hour))
+			expectRefresh(t, te, at(3*time.Hour), "interval")
+		})
+	}
+}
+
+// A lease due for renewal waits for the release as well, although it does
+// not wait for traffic.
+func TestRenewalWaitsForThePin(t *testing.T) {
+	te := leaseEngine(t, renewing(func(x *ExpiryTrigger) { x.Jitter = -1 }),
+		&SelectorConfig{Costs: costs("p-", 1)}, "p-x1", "p-x2")
+	te.lease(t0, map[string]time.Duration{"p-x1": time.Minute}, "p-x1", "p-x2")
+	te.pin("auto", "p-x1", at(time.Second))
+	if jobs, _ := te.tickProviders(at(40 * time.Second)); len(jobs) != 0 {
+		t.Fatalf("idle under the pin: refreshes %v", triggers(jobs))
+	}
+	if skips := te.eventsOf(t, "provider_skip"); len(skips) != 1 || skips[0].Fields["reason"] != "pinned" ||
+		skips[0].Fields["trigger"] != "expiry" {
+		t.Fatalf("want one pinned skip of the renewal, got %+v", skips)
+	}
+	te.release("auto", at(41*time.Second))
+	if jobs, _ := te.tickProviders(at(41 * time.Second)); len(jobs) != 1 || jobs[0].trigger != triggerExpiry {
+		t.Fatalf("after the release: refreshes %v, want the renewal", triggers(jobs))
+	}
+}
+
 func TestMinHealthyFiresOnceBelowThreshold(t *testing.T) {
 	te := newProviderEngine(t, quietProvider(func(p *ProviderConfig) {
 		p.Triggers.MinHealthy = 2
