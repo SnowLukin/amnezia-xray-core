@@ -190,7 +190,9 @@ for `hostProbes` `perMinute` half of `schedule.perMinute`, `reuse` 5 min,
 A provider fetches a fresh set of outbounds over HTTP and puts it into a
 balancer without a restart, for example when every address of the current
 set is blocked. It is configured inside `healthObservatory`, because its
-triggers are judged on what the observatory knows about the balancer.
+triggers are judged on what the observatory knows about the balancer. What
+goes over the wire is protocol 1: [PROVIDER.md](PROVIDER.md) describes the
+request, the answer, the errors and what a backend has to do, for backends.
 
 ```json
 {
@@ -244,14 +246,10 @@ is tried. An answer that is a JSON object but breaks the protocol ends the
 attempts: the backend itself sent it, and another entry leads to the same
 backend.
 
-An answer other than 200 may carry an error body of the protocol,
-`{"protocol": 1, "error": "<code>", "message": "..."}`, sent along with the
-status. The core reads its first 4 KiB, waiting at most 2 seconds after the
-status, and takes only the code, into `provider_fetch`; the message may
-echo the request and is kept nowhere. A 429 or 503 with `Retry-After`, in
-seconds or as an HTTP date counted from the `Date` of the answer, holds
-every trigger, the host and an exhausted balancer too, for that long: at
-most `backoff.max`, then spread by up to `backoff.jitter` upward only, so no
+An answer other than 200 may carry an error body of the protocol, whose
+code goes into `provider_fetch`. A 429 or 503 with `Retry-After` holds every
+trigger, the host and an exhausted balancer too, for that long: at most
+`backoff.max`, then spread by up to `backoff.jitter` upward only, so no
 client comes back sooner than asked and clients told the same pause come
 back apart. Such a pause is no failure, and the backoff does not grow. An
 error body and `Retry-After` end the attempts, as the backend itself
@@ -260,99 +258,26 @@ one way, and the next entry is tried; a bare 401 or 403 too, which such a
 box sends often, see Token.
 
 The body of a POST tells the backend why it is asked and what broke, so that
-it can answer with the right outbounds at once:
+it can answer with the right outbounds at once: the trigger and the previous
+failure, the set and the base config the core runs with, the network, the
+balancer, and per outbound of the set its state, failures, last probe,
+traffic and lease. It never holds destinations, domains, addresses or server
+names, the targets of failures, the text of an error that may name the probe
+URL, or header values. `run` and the network id go out hashed for the
+provider, so the raw run, which the report carries as `health_run`, never
+leaves the device. A usual set takes a few kilobytes, the largest one some
+60 KB.
 
-```json
-{
-  "protocol": 1, "provider": "fresh", "run": "9f2c6a1e5b7d3c40", "refresh": 7,
-  "trigger": "exhausted", "retry": 1,
-  "lastFailure": { "status": 503, "error": "status", "agoMs": 61000 },
-  "version": "2026-10-08.3", "baseVersion": "cfg-12", "clientTime": "2026-10-08T12:00:03Z",
-  "network": { "id": "5d0c1f2a9b3e4c71", "known": false, "up": true },
-  "memoryLow": false,
-  "balancer": { "tag": "auto", "current": "x2", "own": true, "cost": 3, "exhausted": false, "pinned": false,
-                "heldMs": 840000 },
-  "outbounds": [
-    { "tag": "x1", "state": "down", "reason": "traffic", "stateMs": 81000, "seenMs": 3600000,
-      "quarantineLevel": 2, "quarantineMs": 81000, "failures": { "dial_timeout": 4 },
-      "probe": { "ok": false, "error": "timeout", "agoMs": 30000 },
-      "connsOk": 12, "connsFailed": 4, "bytesUp": 90112, "bytesDown": 1048576, "activeMs": 600000,
-      "ttfbP50Ms": 300, "expiresInMs": 61200000 },
-    { "tag": "x2", "state": "up", "probe": { "ok": true, "rttMs": 180, "agoMs": 840000 },
-      "connsOk": 412, "bytesDown": 52428800, "activeMs": 840000, "expiresInMs": 61200000 }
-  ]
-}
-```
-
-- `run` and `network.id` go out hashed for the provider: the first 16 hex
-  digits of SHA-256 of `url`, a zero byte and the value. One backend sees
-  them stable across runs, two backends cannot match theirs, and the raw
-  run, which the report carries as `health_run`, never leaves the device.
-  An empty network id is left out.
-- `refresh` grows with every refresh and is the same through every `via` of
-  it, which all send the same bytes: `run` and `refresh` together tell a
-  request sent again from a new one. `trigger` and `retry` are those of
-  `provider_fetch`.
-- `lastFailure` comes when the previous refresh failed: the HTTP status or
-  0, how long ago, and as `error` the reason a well-formed answer was
-  refused (at most 200 bytes) or the class of the failure: `timeout`,
-  `network`, `status`, `too_large` or `broken_json`. It is what the last
-  `via` that was asked met; entries skipped after it do not hide it.
-- `version` is the set applied now, `baseVersion` the config the core runs
-  with, see Base config; `clientTime` the clock of the device, so the
-  backend sees how far off it is.
-- `balancer` is the one the provider feeds. `current` and `own` tell whether
-  it uses an outbound of this provider, without the prefix; the path of
-  another provider or of the config is not named. `cost` is the cost of the
-  chosen outbound, `heldMs` how long it has been chosen.
-- `outbounds` are the set of the provider in the order of the answer; before
-  the first answer the outbounds of the config with its prefix. Tags go
-  without `tagPrefix`, and outbounds that left the set are not listed.
-  `state`, `reason` and `stateMs` are as in `path_state`, `unknown` for an
-  outbound the observatory knows nothing about yet; `seenMs` is how long its
-  counters have been kept. Quarantine shows while it lasts. `failures` counts
-  by kind over the life of the outbound, `probe` is the last probe that
-  finished, `agoMs` after its result, with its error as a class: `timeout`,
-  `no_progress`, `status_<N>`, `short_body`, `reset`, `refused`, `eof`,
-  `tls` or `other`. A probe still running is not in it. The traffic counters
-  are those of Status. `expiresInMs` is what is left of the lease of the
-  outbound, below zero once it ended; there is none without a lease.
-
-Zero and empty values are left out, except `protocol`, `provider`, `run`,
-`refresh`, `trigger`, `retry`, `clientTime`, `network.known`, `network.up`,
-`memoryLow` and the flags of `balancer`. The body never holds destinations,
-domains, addresses or server names, the targets of failures, the text of an
-error that may name the probe URL, or header values. Its size is an
-estimate, not a limit: up to about 500 bytes per outbound besides its tag,
-so a usual set takes a few kilobytes and the largest one with every counter
-busy some 60 KB, plus the tags and the version the backend chose itself. A
-backend ignores fields it does not know: protocol 1 may gain fields in the
-body.
-
-**Answer.**
-
-```json
-{
-  "protocol": 1,
-  "outbounds": [ { "tag": "x1", "protocol": "vless", "settings": {}, "streamSettings": {} } ],
-  "costs": { "x1": 1 },
-  "routing": { "rules": [], "balancers": [], "domainStrategy": "IPIfNonMatch" },
-  "expiresAt": { "x1": "2026-10-09T12:00:00Z" },
-  "serverTime": "2026-10-08T12:00:00Z",
-  "nextRefreshIn": "90m",
-  "headers": { "Authorization": "Bearer <new token>" },
-  "baseVersion": "cfg-12",
-  "version": "2026-10-08.3"
-}
-```
-
-The answer is read strictly. `protocol` is 1 or left out; an answer of
-another protocol is refused for that, whatever keys it has. A key not shown
-here, a section of the config such as `dns`, `inbounds` or `policy`, and
-`healthObservatory` refuse the whole answer, so a backend never takes a key
-for applied that the core threw away; a new key is a new protocol. A refused
-answer changes nothing and is reported in `provider_apply` with `ok` false
-and the reason, cut to 200 bytes like every reason that quotes the answer.
+**Answer.** An answer is a JSON object with `outbounds` and, optionally,
+`protocol`, `version`, `costs`, `nextRefreshIn`, `expiresAt`, `serverTime`,
+`headers`, `baseVersion` and `routing`. It is read strictly. `protocol` is 1
+or left out; an answer of another protocol is refused for that, whatever
+keys it has. Any other key, a section of the config such as `dns`,
+`inbounds` or `policy`, and `healthObservatory` refuse the whole answer, so
+a backend never takes a key for applied that the core threw away; a new key
+is a new protocol. A refused answer changes nothing and is reported in
+`provider_apply` with `ok` false and the reason, cut to 200 bytes like every
+reason that quotes the answer, which the next request tells the backend.
 
 `outbounds` use the format of the config file and need unique tags. Their
 protocols must be in `apply.protocols`; by default `vless`, `vmess`,
