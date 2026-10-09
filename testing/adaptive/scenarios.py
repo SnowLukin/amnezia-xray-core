@@ -262,6 +262,11 @@ def jitter_check(events, since=0, spacing=2.0):
 
 # ---- 1. failover ------------------------------------------------------------
 
+def handshakes_within(seconds):
+    """The most handshakes an AmneziaWG device that gets no answer sends in a window."""
+    return int(seconds // bench.AWG_REKEY_TIMEOUT) + 1
+
+
 def failover(stand, xray, work, name, port, mode, limit, members=THREE, costs=THREE_COSTS, expect_to=None,
              traffic=None, duration=40, tag="a1", count_conns=True, kinds=None, confirm=False, immediate=False,
              redials=False):
@@ -271,8 +276,8 @@ def failover(stand, xray, work, name, port, mode, limit, members=THREE, costs=TH
     confirm: the evidence is weak, so a confirming probe must fail and rule the
     outbound out. immediate: the evidence is strong and rules it out without a
     probe. count_conns is off for a mode that the proxy cannot count (refuse). redials: the
-    transport dials the address again by itself (gRPC does after a failure, a WireGuard device
-    repeats its handshake for up to 90 s). mode may be a callable that sets the fault itself."""
+    transport dials the address again by itself (gRPC does after a failure, a WireGuard outbound
+    wakes for a probe). mode may be a callable that sets the fault itself."""
     cfg = bench.client_config(members, costs)
     ports = port if isinstance(port, list) else [port]
     m = Marks()
@@ -312,10 +317,24 @@ def failover(stand, xray, work, name, port, mode, limit, members=THREE, costs=TH
             checks.append(check("connections at the dead address after switch", n, n == 0 or not judged,
                                 "== 0" if judged else "info (the transport redials)"))
             if set(ports) & set(bench.UDP_PORTS):
-                # A UDP address counts sockets as connections; the handshakes the device
-                # repeats come through the one it has.
+                # A UDP address counts sockets as connections. Left by the balancer, a dead
+                # AmneziaWG outbound sleeps once its connections end; until then its device
+                # repeats the handshake, as it does for each probe that wakes it. The bound
+                # follows from the window and the protocol, not from the speed of the
+                # machine: one handshake series over the window, and one over each probe of
+                # the outbound in it.
                 up, _ = cs.packets(ports, t_sw, end)
-                checks.append(check("datagrams to the dead address after switch", up, True, "info"))
+                woken = [e for e in bench.probes(c.events, t_sw) if e["fields"].get("outbound") == tag]
+                limit = bench.AWG_HANDSHAKE_DATAGRAMS * (
+                    handshakes_within(end - t_sw) + len(woken) * handshakes_within(bench.PROBE_TIMEOUT))
+                checks.append(check("datagrams to the dead address after switch", up,
+                                    up is not None and up <= limit, f"<= {limit}"))
+                slept = [e for e in bench.events_of(c.events, "outbound_sleep", sw[0]["ts"] / 1000)
+                         if e["fields"].get("outbound") == tag]
+                took = slept and round(slept[0]["ts"] / 1000 - sw[0]["ts"] / 1000, 1)
+                checks.append(check("dead outbound asleep after switch: reason, s",
+                                    slept and f"{slept[0]['fields'].get('reason')} {took}",
+                                    bool(slept) and slept[0]["fields"].get("reason") == "down", "down"))
         recheck = [e for e in c.events if e["type"] == "probe_start" and e["ts"] / 1000 > t_sw]
         checks.append(check("probes after switch", len(recheck), len(recheck) == 0, "== 0"))
     # The event log alone must tell the story: when the path became suspect or
@@ -2871,7 +2890,8 @@ W1 = bench.AWG_ADDRESSES[0]
 def awg_failover_blackhole(stand, xray, work, name):
     """The address of w1 drops every datagram both ways. The connections of users wait for
     the server in vain: dials that time out, strong evidence that rules w1 out without a
-    probe. The device of w1 goes on with its handshakes after the switch."""
+    probe. Left by the balancer, w1 sleeps at once, and its device stops sending to the
+    dead address."""
     return failover(stand, xray, work, name, W1, "blackhole", 10, members=AWG_PAIR, costs=AWG_PAIR_COSTS,
                     expect_to="w2", tag="w1", kinds=("dial_timeout",), immediate=True, redials=True)
 

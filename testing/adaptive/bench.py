@@ -66,6 +66,8 @@ METRICS_PORT = 11111 + OFFSET
 TRANSPORTS = {"tcp_tls": 1, "reality": 2, "ws": 3, "xhttp": 4, "grpc": 5}
 ADDRESSES = 4
 TARGETS = [f"t{i}.test" for i in range(1, 7)]
+# The timeout of the probes of the client, in seconds.
+PROBE_TIMEOUT = 6
 
 
 def server_port(kind):
@@ -112,6 +114,10 @@ AWG_SERVER_ADDRESS = "10.66.0.1"
 AWG_PARAMS = {"jc": 4, "jmin": 40, "jmax": 70, "s1": 20, "s2": 78, "s3": 15, "s4": 25,
               "h1": "100000-100100", "h2": "200000-200100", "h3": "300000-300100", "h4": "400000-400100",
               "headerProtectionKey": AWG_HEADER_KEY, "randomTrailers": True}
+# A device that gets no answer repeats its handshake every AWG_REKEY_TIMEOUT seconds
+# (device.RekeyTimeout); each one is the initiation after the I-packets and jc junk packets.
+AWG_REKEY_TIMEOUT = 5
+AWG_HANDSHAKE_DATAGRAMS = 1 + AWG_PARAMS["jc"] + sum(1 for i in range(1, 6) if f"i{i}" in AWG_PARAMS)
 # A loopback address cannot cross the tunnel: the network stacks at both ends
 # drop it on an interface that is not loopback. The DNS of the AmneziaWG server
 # answers every target with this address instead, and its freedom takes it back
@@ -304,7 +310,7 @@ def client_config(members, costs, health=None, strategy=None, burst=None, loglev
     h = {
         "subjectSelector": subjects,
         "probes": [{"destination": f"http://probe.test:{TARGET_PORT}/bytes/32768", "minBytes": 32768,
-                    "expectStatus": [200], "timeout": "6s", "progressTimeout": "3s"}],
+                    "expectStatus": [200], "timeout": f"{PROBE_TIMEOUT}s", "progressTimeout": "3s"}],
         "connectivity": {"outbound": "net", "destination": f"http://{HOST}:{CONNECTIVITY_PORT}/204",
                          "timeout": "2s"},
     }
