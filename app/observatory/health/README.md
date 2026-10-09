@@ -91,8 +91,9 @@ one server name never run at once: several near-simultaneous handshakes to
 one server name are a known censor signal. Without user traffic for
 `pauseWhenIdle` there are no probes and no timers, except the renewal and
 the end of a provider lease, see Providers, putting an outbound to sleep
-after its last use, see Sleep, and the one look at the connections of an
-outbound found down `stallTimeout` after the decision, see below. Closing
+after its last use and ending its idle connections, see Sleep, and the one
+look at the connections of an outbound found down `stallTimeout` after the
+decision, see below. Closing
 the core ends the probes still running, and their outcome is not held
 against the outbound.
 
@@ -154,7 +155,7 @@ A decision made while the network check was failing ends nothing.
     "events": { "maxEvents": 1000, "maxBytes": 65536 },
     "network": { "remember": true, "maxNetworks": 16 },
     "report": { "interval": "24h" },
-    "sleep": { "after": "5m" }
+    "sleep": { "after": "5m", "closeIdleAfter": "0s" }
   },
   "routing": {
     "balancers": [{
@@ -239,6 +240,12 @@ for `hostProbes` `perMinute` half of `schedule.perMinute`, `reuse` 5 min,
   does so this long after its last use while no balancer chooses it, and
   at once while it is down, see Sleep. At least 10 s; `"0s"` turns sleep
   off.
+- `sleep.closeIdleAfter`: on such an outbound that no balancer has chosen
+  for `sleep.after`, connections that received nothing for this long are
+  ended, so that it can sleep, see Sleep. `"0s"`, the default, keeps them;
+  otherwise at least 10 s, as a connection between two requests is not
+  idle, and at most 10 min, as the observer may stop following a connection
+  without traffic after that. Nothing without sleep.
 - `hostProbes` limits the probes the host asks for, see Probes on request.
 
 ## Providers
@@ -663,6 +670,32 @@ outbound `sleep.after` after its last use and for the retries; once
 everything sleeps no timer is left. An outbound the observatory does not
 observe never sleeps, even when a provider request goes through it.
 
+The flows a phone opens through an outbound while a balancer chooses it,
+such as push connections to ports 5228 and 5223, iCloud over QUIC or TLS,
+outlive the choice and stay silent most of the time. On a path that works
+nothing ends them, and they would keep the tunnel awake for good, with its
+keepalives and their battery cost. With `closeIdleAfter`, an outbound that
+can sleep, that nothing but its connections holds by the list above and
+that no balancer has chosen for `sleep.after` has its connections that
+received nothing for `closeIdleAfter` ended, TCP and UDP alike, one
+`idle_closed` per check. Their applications reconnect through the outbound
+chosen now, and it sleeps as soon as the rest are gone, with reason `idle`:
+the ends of the connections, uses as they are, restart no wait. A
+connection that received anything within `closeIdleAfter` is kept, and so
+is everything while a balancer chooses the outbound or something else above
+holds it, while the network is down or in doubt, and until it has worked
+for `closeIdleAfter` after a network change or an outage: silence then may
+be the network's. A spliced connection is judged by what its socket
+received; on a platform that does not tell, it is kept. A new connection
+through the outbound is a use like any other, after which it waits
+`sleep.after` again. The observer notes what the connections have received
+at the first turn after the outbound was left or used, and looks again
+once, when the first of them may have been silent long enough: at the later
+of `sleep.after` after the last use and `closeIdleAfter` after its silence
+began, a connection past `successBytes` counting from the note, as its
+reads are no longer timed. Nothing is planned while there is nothing to
+wait for, and each look reads the counters of the open connections once.
+
 ## Memory
 
 What the observatory keeps does not grow with the length of a session or the
@@ -776,7 +809,8 @@ changed its settings). `kinds` counts failures by kind: `dial_failed`, `dial_tim
 | `provider_restart_needed` | `provider`, `version`, `sections` | Reserved for an answer with sections of the config the core reads only at the start. Protocol 1 refuses such an answer, see [PROVIDER.md](PROVIDER.md#answer), so this version never writes it. |
 | `provider_skip` | `provider`, `trigger`, `reason`, `wait_ms` | A trigger wants a refresh that cannot start yet. `reason`: `min_interval`, `backoff`, `retry_after`, `max_per_hour`, `idle`, `network_down`, `pinned` (the balancer of the provider is pinned), `memory`, `auth` (the backend refused the headers). Reported once per trigger and reason until a refresh starts. |
 | `provider_drained` | `provider`, `outbound`, `replaced` | An outbound that left the set, or the old handler of a replaced one, was closed: after `drain`, or at the release of a pin that held it past that, at once without connections, or early to keep at most `maxOutbounds` draining. |
-| `outbound_sleep` | `outbound`, `idle_ms`, `reason` | An outbound released what it held, see Sleep. `idle_ms` is the time since its last use; `reason` is `idle` (after `sleep.after`), `down` (sooner, while it rests in quarantine) or `memory` (sooner, while memory is low). |
+| `outbound_sleep` | `outbound`, `idle_ms`, `reason` | An outbound released what it held, see Sleep. `idle_ms` is the time since its last use; `reason` is `idle` (after `sleep.after`, or at once once `idle_closed` ended its idle connections), `down` (sooner, while it rests in quarantine) or `memory` (sooner, while memory is low). |
+| `idle_closed` | `outbound`, `connections` | Connections of an outbound that can sleep, which no balancer has chosen for `sleep.after`, were ended after they received nothing for `sleep.closeIdleAfter`, see Sleep. The path works: unlike `pending_closed`, no failure is behind it. |
 
 ## Report
 
@@ -828,6 +862,7 @@ to this one. Reports of one run add up.
 | `exhausted`, `pinned_down` | Events of those types. |
 | `path_down`, `path_suspect` | `path_state` events with those states. |
 | `pending_closed` | Connections of outbounds found down ended by `pending_closed` events: those that had received nothing and, with `silent`, those that went silent after the decision. |
+| `idle_closed` | Connections of outbounds no balancer chooses ended by `idle_closed` events, so that the outbounds can sleep. Ending them changes no choice and is no decision. |
 | `probes`, `probes_failed`, `probe_bytes` | `probe_result` events, the failed ones, and their `bytes`. |
 | `host_probe_requests`, `host_probes` | `probe_request` events, and `probe_result` events with reason `host`. |
 | `upgrade_attempts`, `upgrade_failures` | `upgrade_start` and `upgrade_failed` events. |

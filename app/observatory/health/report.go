@@ -35,6 +35,7 @@ type reportCounts struct {
 	PathDown              int64            `json:"path_down"`
 	PathSuspect           int64            `json:"path_suspect"`
 	PendingClosed         int64            `json:"pending_closed"`
+	IdleClosed            int64            `json:"idle_closed"`
 	Probes                int64            `json:"probes"`
 	ProbesFailed          int64            `json:"probes_failed"`
 	ProbeBytes            int64            `json:"probe_bytes"`
@@ -155,6 +156,9 @@ func (r *report) count(typ string, f map[string]any) {
 		}
 	case "pending_closed":
 		c.PendingClosed += number(f["connections"])
+	case "idle_closed":
+		// Ending what idles on a path that works changes no choice.
+		c.IdleClosed += number(f["connections"])
 	case "probe_result":
 		c.Probes++
 		if f["ok"] != true {

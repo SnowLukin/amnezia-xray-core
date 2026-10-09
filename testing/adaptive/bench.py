@@ -1112,8 +1112,8 @@ START_REASONS = ("start", "start_pinned", "start_remembered", "start_with")
 def fold_report(events):
     """Adds up events the way the report of the core counts them. Returns the
     counters and whether there was a decision."""
-    keys = ["events", "switches", "exhausted", "path_down", "path_suspect", "pending_closed", "probes",
-            "probes_failed", "probe_bytes", "host_probe_requests", "host_probes", "upgrade_attempts",
+    keys = ["events", "switches", "exhausted", "path_down", "path_suspect", "pending_closed", "idle_closed",
+            "probes", "probes_failed", "probe_bytes", "host_probe_requests", "host_probes", "upgrade_attempts",
             "upgrade_failures", "pinned_down",
             "network_changes", "network_known", "network_down", "provider_fetches", "provider_fetch_failures",
             "provider_retry_after", "provider_applied", "provider_rejected", "provider_restart_needed",
@@ -1138,6 +1138,8 @@ def fold_report(events):
             c["path_" + f["state"]] += 1
         elif t == "pending_closed":
             c["pending_closed"] += f.get("connections", 0)
+        elif t == "idle_closed":
+            c["idle_closed"] += f.get("connections", 0)
         elif t == "probe_result":
             c["probes"] += 1
             c["probes_failed"] += f.get("ok") is not True

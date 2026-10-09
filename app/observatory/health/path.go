@@ -138,6 +138,13 @@ type path struct {
 	// Connections its proxy processes now, as its handler tells: it does
 	// not sleep under one.
 	processes int
+	// Ending idle connections, see idle.go: the uses of the path at the
+	// last check, and when a connection it kept may first have received
+	// nothing for closeIdleAfter, zero when none may. idleClosed: a check
+	// ended connections, and the outbound sleeps once the rest are gone.
+	idleUses   uint64
+	idleNext   time.Time
+	idleClosed bool
 }
 
 type pathStats struct {

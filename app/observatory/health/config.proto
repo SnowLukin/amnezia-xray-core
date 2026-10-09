@@ -172,6 +172,10 @@ message SleepConfig {
   // How long after its last use an outbound sleeps. Zero is the default of
   // 5 minutes, negative turns sleep off.
   int64 after = 1;
+  // Connections that received nothing for this long are ended on an
+  // outbound that can sleep and that no balancer has chosen for after, so
+  // that it can sleep. Zero, the default, and negative turn it off.
+  int64 close_idle_after = 2;
 }
 
 message NetworkConfig {

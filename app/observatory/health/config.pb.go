@@ -1045,9 +1045,13 @@ type SleepConfig struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// How long after its last use an outbound sleeps. Zero is the default of
 	// 5 minutes, negative turns sleep off.
-	After         int64 `protobuf:"varint,1,opt,name=after,proto3" json:"after,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	After int64 `protobuf:"varint,1,opt,name=after,proto3" json:"after,omitempty"`
+	// Connections that received nothing for this long are ended on an
+	// outbound that can sleep and that no balancer has chosen for after, so
+	// that it can sleep. Zero, the default, and negative turn it off.
+	CloseIdleAfter int64 `protobuf:"varint,2,opt,name=close_idle_after,json=closeIdleAfter,proto3" json:"close_idle_after,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *SleepConfig) Reset() {
@@ -1083,6 +1087,13 @@ func (*SleepConfig) Descriptor() ([]byte, []int) {
 func (x *SleepConfig) GetAfter() int64 {
 	if x != nil {
 		return x.After
+	}
+	return 0
+}
+
+func (x *SleepConfig) GetCloseIdleAfter() int64 {
+	if x != nil {
+		return x.CloseIdleAfter
 	}
 	return 0
 }
@@ -2069,9 +2080,10 @@ const file_app_observatory_health_config_proto_rawDesc = "" +
 	"max_events\x18\x01 \x01(\x05R\tmaxEvents\x12\x1b\n" +
 	"\tmax_bytes\x18\x02 \x01(\x03R\bmaxBytes\"*\n" +
 	"\fReportConfig\x12\x1a\n" +
-	"\binterval\x18\x01 \x01(\x03R\binterval\"#\n" +
+	"\binterval\x18\x01 \x01(\x03R\binterval\"M\n" +
 	"\vSleepConfig\x12\x14\n" +
-	"\x05after\x18\x01 \x01(\x03R\x05after\"O\n" +
+	"\x05after\x18\x01 \x01(\x03R\x05after\x12(\n" +
+	"\x10close_idle_after\x18\x02 \x01(\x03R\x0ecloseIdleAfter\"O\n" +
 	"\rNetworkConfig\x12\x1b\n" +
 	"\tno_memory\x18\x01 \x01(\bR\bnoMemory\x12!\n" +
 	"\fmax_networks\x18\x02 \x01(\x05R\vmaxNetworks\"\xac\x04\n" +

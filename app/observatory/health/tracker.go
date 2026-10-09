@@ -80,6 +80,10 @@ type connTracker struct {
 	// noted. Guarded by the observer's trackMu.
 	silentMark int64
 	silentRead uint64
+	// The same for the check of an outbound no balancer chooses for idle
+	// connections at idleMark, see idle.go. Guarded by trackMu as well.
+	idleMark int64
+	idleRead uint64
 
 	dialedConn net.Conn
 	read       stats.Counter
