@@ -3,7 +3,9 @@
 Long scenarios read their length from the environment so a quick pass and the
 full acceptance run use the same code: BENCH_IDLE_MIN (default 10),
 BENCH_FLAP_MIN (10), BENCH_HEALTHY_MIN (30), BENCH_EXPENSIVE_MIN (60),
-BENCH_SOAK_MIN (120) and BENCH_DEAD_SITE_SEC (300). A shorter BENCH_EXPENSIVE_MIN
+BENCH_SOAK_MIN (120), BENCH_DEAD_SITE_SEC (300) and BENCH_AWG_WAKES (6);
+BENCH_AWG_DELAY delays the datagrams of w1 by that many ms on the wakes of
+awg_wake_by_probe that lose nothing. A shorter BENCH_EXPENSIVE_MIN
 judges the cost of one probe instead of a whole hour; BENCH_EXPENSIVE_UPGRADE
 (a duration such as 1m) sets upgrade.interval there, so that a short run sees
 probes at all.
@@ -267,6 +269,12 @@ def handshakes_within(seconds):
     return int(seconds // bench.AWG_REKEY_TIMEOUT) + 1
 
 
+def wake_handshakes_within(seconds):
+    """The same for a device woken for a connection: a second after the first handshake the
+    connection has it repeat that one at once, and the device goes on from there."""
+    return handshakes_within(max(seconds - 1, 0)) + 1
+
+
 def failover(stand, xray, work, name, port, mode, limit, members=THREE, costs=THREE_COSTS, expect_to=None,
              traffic=None, duration=40, tag="a1", count_conns=True, kinds=None, confirm=False, immediate=False,
              redials=False, actions=(), more=None):
@@ -328,7 +336,7 @@ def failover(stand, xray, work, name, port, mode, limit, members=THREE, costs=TH
                 up, _ = cs.packets(ports, t_sw, end)
                 woken = [e for e in bench.probes(c.events, t_sw) if e["fields"].get("outbound") == tag]
                 limit = bench.AWG_HANDSHAKE_DATAGRAMS * (
-                    handshakes_within(end - t_sw) + len(woken) * handshakes_within(bench.PROBE_TIMEOUT))
+                    handshakes_within(end - t_sw) + len(woken) * wake_handshakes_within(bench.PROBE_TIMEOUT))
                 checks.append(check("datagrams to the dead address after switch", up,
                                     up is not None and up <= limit, f"<= {limit}"))
                 slept = [e for e in bench.events_of(c.events, "outbound_sleep", sw[0]["ts"] / 1000)
@@ -2690,6 +2698,9 @@ def provider_slots_last_resort(stand, xray, work, name):
 
 AWG_SLEEP = 10  # sleep.after: its minimum
 AWG_MEMBERS = [("v1", "reality", 0), ("w1", "awg", 0)]
+# Wakes of awg_wake_by_probe, and the delay of the datagrams of w1 in ms on those that lose nothing.
+AWG_WAKES = int(os.environ.get("BENCH_AWG_WAKES", "6"))
+AWG_DELAY = os.environ.get("BENCH_AWG_DELAY", "")
 
 
 def awg_config():
@@ -2878,6 +2889,80 @@ def awg_wake(stand, xray, work, name):
     return checks
 
 
+def first_datagram(cs, port, t1, t2):
+    """When the client first sent anything to the port between t1 and t2, by the sampler."""
+    rows = [(t, s[port]) for t, s in cs.samples if t1 <= t <= t2 and port in s]
+    return next((t for (t, s), (_, p) in zip(rows[1:], rows) if s[3] > p[3]), None)
+
+
+@scenario()
+def awg_wake_by_probe(stand, xray, work, name):
+    """w1 sleeps as in awg_sleep, and a probe the host asks for wakes it, AWG_WAKES times in a
+    row. Every other time the address of w1 loses the first datagram back to the new socket:
+    the handshake response of the new device, which the device alone repeats only
+    AWG_REKEY_TIMEOUT later, after progressTimeout. Its tunnel asks for the handshake again a
+    second after the first, and every probe passes. A phone on Wi-Fi lost such a response,
+    and the probe that woke w1 for a failover put it in quarantine."""
+    m = Marks()
+    wakes = []
+    cfg = awg_config()
+    # A host probe of w1 every sleep.after: room in the budgets of its server name and of the host.
+    cfg["healthObservatory"]["schedule"] |= {"perServerNamePerMinute": 30, "perMinute": 60,
+                                             "hostProbes": {"reuse": "1s", "perMinute": 30}}
+    with bench.Client(xray, cfg, work, name) as c, bench.ConnSampler(period=0.1) as cs:
+        tr = bench.Traffic(rate=2, big=0.5, timeout=5)
+        away, slept = awg_to_sleep(c, tr, m)
+        tr.stop()
+        since = m.get("asleep", 0)
+        for i in range(AWG_WAKES if slept else 0):
+            if not wait_for(lambda: w1_sleeps(c, since), AWG_SLEEP + 20):
+                break
+            lose = i % 2 == 0
+            clean = f"delay:{AWG_DELAY}" if AWG_DELAY else "pass"
+            bench.chaos(bench.AWG_ADDRESS, "lose_reply:1" if lose else clean)
+            time.sleep(0.5)
+            t0 = time.time()
+            r = c.api("-t", "15", "probe", "auto", "w1", timeout=20)
+            t1 = time.time()
+            since = t0
+            got = next((o for o in (r.get("request") or {}).get("outbounds", []) if o["outbound"] == "w1"), {})
+            wakes.append({"lose": lose, "t0": t0, "t1": t1, "result": f"{got.get('result')}/{got.get('source')}",
+                          "error": got.get("error", "")})
+        bench.chaos(bench.AWG_ADDRESS, "pass")
+        time.sleep(0.5)
+        m["end"] = time.time()
+    for w in wakes:
+        w["sockets"] = cs.between(bench.AWG_ADDRESS, w["t0"] - 0.2, w["t1"] + 0.2)
+        w["packets"] = cs.packets(bench.AWG_ADDRESS, w["t0"] - 0.2, w["t1"] + 0.2)
+        w["first"] = first_datagram(cs, bench.AWG_ADDRESS, w["t0"] - 0.2, w["t1"] + 0.2)
+    with open(os.path.join(work, f"{name}-wakes.json"), "w") as f:
+        json.dump(wakes, f, indent=1)
+    checks = [check("w1 asleep before the probes", bool(slept), bool(slept), "True")]
+    hs = bench.AWG_HANDSHAKE_DATAGRAMS
+    for lose, what in ((True, "first response lost"), (False, "nothing lost")):
+        ws = [w for w in wakes if w["lose"] == lose]
+        ok = [w for w in ws if w["result"] == "ok/probe"]
+        want = (AWG_WAKES + lose) // 2
+        took = max((round(w["t1"] - w["first"], 2) for w in ok if w["first"]), default=None)
+        checks.append(check(f"wakes by a probe, {what}: passed, slowest s from the first datagram",
+                            f"{len(ok)}/{len(ws)}, {took}", len(ws) == want and len(ok) == want,
+                            f"{want}/{want}"))
+        for w in ws:
+            if w not in ok:
+                checks.append(check(f"failed wake, {what}: result, error, s", f"{w['result']} {w['error']} "
+                                    f"{round(w['t1'] - w['t0'], 2)}", False, "ok/probe"))
+        socks = sorted({w["sockets"] for w in ws})
+        checks.append(check(f"new sockets at the proxy for each wake, {what}", socks, socks == [1], "[1]"))
+    # Without the response the device has no session to send anything else in: what goes up
+    # beyond the first handshake starts with the second.
+    lossy = [w for w in wakes if w["lose"] and w["packets"][0] is not None]
+    twice = [w for w in lossy if w["packets"][0] >= 2 * hs]
+    checks.append(check("wakes that lost the response and sent a second handshake", f"{len(twice)}/{len(lossy)}",
+                        lossy and len(twice) == len(lossy), "all"))
+    checks.append(leak_check(c))
+    return checks
+
+
 # ---- AmneziaWG: failover by traffic alone ---------------------------------------
 #
 # w1 and w2 are peers of the one AmneziaWG server, each behind a UDP address of its
@@ -2979,7 +3064,7 @@ def awg_failover_blackhole_held(stand, xray, work, name):
         checks.append(check("datagrams to the dead address from the switch to the sleep", up, True, "info"))
         up, _ = cs.packets(W1, asleep + 1.5, end)
         woken = [e for e in bench.probes(c.events, asleep) if e["fields"].get("outbound") == "w1"]
-        limit = bench.AWG_HANDSHAKE_DATAGRAMS * len(woken) * handshakes_within(bench.PROBE_TIMEOUT)
+        limit = bench.AWG_HANDSHAKE_DATAGRAMS * len(woken) * wake_handshakes_within(bench.PROBE_TIMEOUT)
         checks.append(check(f"datagrams to the dead address in {round(end - asleep - 1.5, 1)} s after the sleep",
                             up, up is not None and up <= limit, f"<= {limit}"))
         return checks

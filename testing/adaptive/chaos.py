@@ -34,6 +34,8 @@ takes the modes that apply to datagrams, and refuses the others:
   pass            forward everything
   blackhole       drop every datagram both ways, silently
   drop_after:N    forward N datagrams each way per client address, then drop
+  lose_reply:N    drop the first N datagrams back to each client address, as
+                  the network loses the handshake response of a new socket
   delay:MS        delay every datagram by MS milliseconds
 Its status line adds the datagrams: "... pkts_up=P pkts_down=Q", counted as
 the bytes are.
@@ -54,7 +56,7 @@ SERVERS = {}
 # UDP ports: listen port -> upstream port, and datagrams [up, down] per port.
 UDP = {}
 PACKETS = {}
-UDP_MODES = ("pass", "blackhole", "drop_after", "delay")
+UDP_MODES = ("pass", "blackhole", "drop_after", "lose_reply", "delay")
 
 
 def rst(writer):
@@ -174,6 +176,8 @@ class UdpSession:
         self.pending = []
         # Datagrams forwarded each way, for drop_after.
         self.forwarded = [0, 0]
+        # Datagrams back to the client, whatever became of them, for lose_reply.
+        self.replies = 0
 
     async def open(self):
         loop = asyncio.get_running_loop()
@@ -190,7 +194,9 @@ class UdpSession:
 
     def forward(self, direction, data):
         name, arg = mode_of(self.port)
-        if name == "blackhole" or (name == "drop_after" and self.forwarded[direction] >= arg):
+        self.replies += direction
+        if name == "blackhole" or (name == "drop_after" and self.forwarded[direction] >= arg) or (
+                name == "lose_reply" and direction == 1 and self.replies <= arg):
             return
         self.forwarded[direction] += 1
         if name == "delay":
