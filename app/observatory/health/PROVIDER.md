@@ -356,10 +356,11 @@ headers an answer or the host set in place of its own, `serverTime`
 replaced by the time its leases count from and `receivedAt` added, the
 clock of the device when it arrived, and starts the next core with it when
 there is no fresh answer of a connect. The leases of a kept set count from
-its `serverTime` plus the time since `receivedAt`, and a lease that ended
-meanwhile is asked about once at the start, also under a start pin. So
-after a restart the backend sees the token it rotated last, the `version`
-of the kept set and, after a long pause, an `expiry` request.
+its `serverTime` plus the time since `receivedAt` and are renewed when they
+would have been without the restart; a lease that ended meanwhile is asked
+about once at the start, also under a start pin. So after a restart the
+backend sees the token it rotated last, the `version` of the kept set and,
+after a long pause, an `expiry` request.
 
 ## What a backend must do
 

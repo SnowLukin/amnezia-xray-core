@@ -1039,6 +1039,7 @@ func leasesOf(a *providerAnswer, prefix string) leaseAnswer {
 		// The leases ran on while the set was kept: they count from the
 		// clock of the backend when it arrived, plus the time since.
 		la.clock = "saved"
+		la.age = a.age
 		base := a.serverTime
 		if base.IsZero() {
 			base = a.receivedAt

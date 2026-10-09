@@ -297,3 +297,37 @@ func TestKeptSetOfALargeAnswerStartsTheNextCore(t *testing.T) {
 		t.Fatalf("the next core refused the kept set: %v", ev)
 	}
 }
+
+// A kept lease renews where it would have in the run that got it, however
+// often the core starts again in between: the renewal counts from the
+// length the lease had when its answer arrived, not from what is left.
+func TestKeptLeaseRenewsAtTheSamePointAcrossRestarts(t *testing.T) {
+	f, now := initialFixture(t, "")
+	wall := now.Round(0)
+	f.rt.cfg.renewJitter = 0
+	if _, err := f.apply(t, leasedAnswer(t, "v1", wall, wall.Add(10*time.Hour), "")); err != nil {
+		t.Fatal(err)
+	}
+	raw, _, err := f.o.ProviderSet("fresh", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, after := range []time.Duration{2 * time.Hour, 4 * time.Hour} {
+		g, _ := initialFixture(t, string(raw))
+		start := now.Add(after)
+		g.o.clock = func() time.Time { return start }
+		g.rt.cfg.renewJitter = 0
+		g.o.applyInitial()
+		g.o.mu.Lock()
+		l := g.rt.p.leases["p-x1"]
+		renew, urgent := start.Add(l.renewIn).Sub(now), start.Add(l.urgentIn).Sub(now)
+		g.o.mu.Unlock()
+		if renew != 5*time.Hour || urgent != 8*time.Hour {
+			t.Fatalf("started %v later: renewal at %v, urgent at %v; want 5h and 8h", after, renew, urgent)
+		}
+		// The core started on the kept set keeps it as it was.
+		if raw, _, err = g.o.ProviderSet("fresh", 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+}

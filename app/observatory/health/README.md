@@ -420,22 +420,24 @@ registered by the time the first connection comes; connections that came
 earlier stay on the outbounds of the config. A set the host kept counts as
 old as it is: its leases count from its `serverTime` plus the time since
 `receivedAt`, by the clock `saved`, and `maxAge` and `nextRefreshIn` from
-when it arrived; a lease that ended meanwhile ends at the start with
-renewal `saved`, and one urgent refresh asks about it, also under a start
-pin. A fresh one counts from its `serverTime`, as an answer that just
-arrived. Its headers lie over those of the config and under those the host
-set, also before the start, name by name: a header of another name that the
-host set, such as one that names the device, leaves the token of the set in
-place. An initial set may be larger than `maxBytes` by what `ProviderSet`
-adds to an answer, the headers and the clock, some 200 KiB at most. An
-initial set that is not an object, is larger than that, breaks the protocol
-or does not build is reported in `provider_apply` with trigger `initial`
-and `ok` false, and the core starts on the outbounds of the config: a bad
-saved set never keeps the core from starting. Once applied, the set lives
-on only as the last applied answer of `ProviderSet`. A host passes the
-answer of a connect when it has one, and the kept set only without it: the
-headers of a kept set would lie over a fresh token in the config, which
-then needs `SetProviderHeaders` after the start.
+when it arrived; its renewal comes at `renewAt` and `urgentAt` of the
+length a lease had then, as in the run that got it, so a start does not put
+it off; a lease that ended meanwhile ends at the start with renewal
+`saved`, and one urgent refresh asks about it, also under a start pin. A
+fresh one counts from its `serverTime`, as an answer that just arrived. Its
+headers lie over those of the config and under those the host set, also
+before the start, name by name: a header of another name that the host set,
+such as one that names the device, leaves the token of the set in place. An
+initial set may be larger than `maxBytes` by what `ProviderSet` adds to an
+answer, the headers and the clock, some 200 KiB at most. An initial set
+that is not an object, is larger than that, breaks the protocol or does not
+build is reported in `provider_apply` with trigger `initial` and `ok`
+false, and the core starts on the outbounds of the config: a bad saved set
+never keeps the core from starting. Once applied, the set lives on only as
+the last applied answer of `ProviderSet`. A host passes the answer of a
+connect when it has one, and the kept set only without it: the headers of a
+kept set would lie over a fresh token in the config, which then needs
+`SetProviderHeaders` after the start.
 
 **Base config.** A backend that generates the config of the core names it
 with `baseVersion`, at most 256 bytes; without one there, the `baseVersion`

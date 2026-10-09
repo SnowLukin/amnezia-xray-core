@@ -87,6 +87,9 @@ type leaseAnswer struct {
 	// The initial set of the config: a lease that ended there is asked
 	// about once, since no backend has answered about it in this run.
 	initial bool
+	// How long the host kept the set: its leases were that much longer
+	// when the answer arrived, and their renewal counts from then.
+	age time.Duration
 }
 
 type leaseCounts struct {
@@ -167,9 +170,14 @@ func (e *engine) acceptLeases(p *provider, tags []string, a leaseAnswer, now tim
 			p.leases[tag] = l
 			if p.cfg.renewAt > 0 {
 				// Spread per value: clients that got their leases at once
-				// do not renew them at once.
-				l.urgentIn = time.Duration(p.cfg.urgentAt * float64(ttl))
-				l.renewIn = min(e.jitter(time.Duration(p.cfg.renewAt*float64(ttl)), p.cfg.renewJitter), l.urgentIn)
+				// do not renew them at once. A set the host kept renews at
+				// the shares of the lease it had when the answer arrived,
+				// less the time it was kept: the shares of what is left
+				// would put the renewal off with every start.
+				length := ttl + a.age
+				urgent := time.Duration(p.cfg.urgentAt * float64(length))
+				renew := min(e.jitter(time.Duration(p.cfg.renewAt*float64(length)), p.cfg.renewJitter), urgent)
+				l.urgentIn, l.renewIn = max(urgent-a.age, 0), max(renew-a.age, 0)
 			}
 		} else {
 			// The same value or a shorter one: the renewal stays where it
