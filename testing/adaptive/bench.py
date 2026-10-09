@@ -385,12 +385,16 @@ def chaos(ports, mode):
 
 
 def chaos_stats():
-    """Per chaos port: (connections accepted, bytes the client sent, bytes that reached it)."""
+    """Per chaos port: (connections accepted, bytes the client sent, bytes that reached it,
+    datagrams the client sent, datagrams that reached it). A UDP port counts client
+    addresses as connections; a TCP port has no datagrams."""
     out = urllib.request.urlopen(f"http://127.0.0.1:{CHAOS_CONTROL}/set", timeout=3).read().decode()
     res = {}
     for line in out.strip().splitlines():
-        port, _, conns, up, down = line.split(" ")
-        res[int(port)] = (int(conns.split("=")[1]), int(up.split("=")[1]), int(down.split("=")[1]))
+        port, _, *fields = line.split(" ")
+        f = dict(field.split("=", 1) for field in fields)
+        res[int(port)] = (int(f["conns"]), int(f["up"]), int(f["down"]), int(f.get("pkts_up", 0)),
+                          int(f.get("pkts_down", 0)))
     return res
 
 
@@ -865,7 +869,8 @@ class ConnSampler:
         if not before or not after:
             return None
         ports = ports if isinstance(ports, (list, tuple, set)) else [ports]
-        return sum(after[-1].get(p, (0, 0, 0))[field] - before[-1].get(p, (0, 0, 0))[field] for p in ports)
+        none = (0, 0, 0, 0, 0)
+        return sum(after[-1].get(p, none)[field] - before[-1].get(p, none)[field] for p in ports)
 
     def between(self, ports, t1, t2):
         """Connections accepted on the port (or ports) between t1 and t2."""
@@ -874,6 +879,10 @@ class ConnSampler:
     def traffic(self, ports, t1, t2):
         """Bytes sent by the client and bytes that reached it, between t1 and t2."""
         return self._delta(ports, t1, t2, 1), self._delta(ports, t1, t2, 2)
+
+    def packets(self, ports, t1, t2):
+        """Datagrams sent by the client and datagrams that reached it on UDP ports, between t1 and t2."""
+        return self._delta(ports, t1, t2, 3), self._delta(ports, t1, t2, 4)
 
 
 def open_stream(host, timeout, tls=TLS):
