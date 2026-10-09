@@ -1,6 +1,7 @@
 package health
 
 import (
+	"cmp"
 	"sort"
 	"time"
 )
@@ -31,6 +32,9 @@ type lease struct {
 	// The last refresh that asked about it failed.
 	failed  bool
 	expired bool
+	// It came ended in the initial set: the device kept the set longer
+	// than the lease.
+	saved bool
 }
 
 // elapsed tells how long ago the lease was named, by the longer of the two
@@ -77,6 +81,12 @@ type leaseAnswer struct {
 	date time.Time
 	// When the answer arrived; zero takes the time of the apply.
 	at time.Time
+	// Names the clock instead of the one serverTime and date tell: saved
+	// for a set the host kept, whose serverTime is moved on by its age.
+	clock string
+	// The initial set of the config: a lease that ended there is asked
+	// about once, since no backend has answered about it in this run.
+	initial bool
 }
 
 type leaseCounts struct {
@@ -118,6 +128,7 @@ func (e *engine) acceptLeases(p *provider, tags []string, a leaseAnswer, now tim
 	}
 	wall := at.Round(0)
 	ref, clock := leaseRef(a.serverTime, a.date, wall)
+	clock = cmp.Or(a.clock, clock)
 	var c leaseCounts
 	moved := false
 	inSet := make(map[string]bool, len(tags))
@@ -169,9 +180,12 @@ func (e *engine) acceptLeases(p *provider, tags []string, a leaseAnswer, now tim
 		// A fresh clock of the server is more exact than what the device
 		// counted, which may have slept.
 		l.at, l.ttl = at, ttl
-		if l.ttl > 0 {
+		switch {
+		case l.ttl > 0:
 			l.expired = false
-		} else {
+		case a.initial:
+			l.saved = true
+		default:
 			// The backend has just answered and gave no more: asking it
 			// again about this value would be a loop.
 			l.asked = true
@@ -236,12 +250,14 @@ func (e *engine) expireLeases(p *provider, now time.Time) bool {
 	return true
 }
 
-// renewalOf tells why a lease ended without a renewal: the backend answered
-// without one, the last refresh that asked failed, renewal is off, or no
-// refresh that asked has ended, also when one is under way: what it brings
-// is not known yet.
+// renewalOf tells why a lease ended without a renewal: it came ended in the
+// initial set, the backend answered without one, the last refresh that asked
+// failed, renewal is off, or no refresh that asked has ended, also when one
+// is under way: what it brings is not known yet.
 func renewalOf(p *provider, l *lease) string {
 	switch {
+	case l.saved:
+		return "saved"
 	case l.failed:
 		return "failed"
 	case l.asked:

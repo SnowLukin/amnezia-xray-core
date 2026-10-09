@@ -954,7 +954,7 @@ def recovery(records, at, streak=10, hosts=None):
 # when it stops; run.py adds them to the checks of the scenario.
 REPORT_CHECKS = []
 
-START_REASONS = ("start", "start_pinned", "start_remembered")
+START_REASONS = ("start", "start_pinned", "start_remembered", "start_with")
 
 
 def fold_report(events):
@@ -1012,7 +1012,7 @@ def fold_report(events):
             if f.get("ok") is False:
                 c["provider_rejected"] += 1
                 decided = True
-            elif f.get("changed") is True:
+            elif f.get("changed") is True and f.get("trigger") != "initial":
                 c["provider_applied"] += 1
                 decided = True
             if f.get("ok") is True and f.get("renewed", 0) > 0 and f.get("trigger") != "initial":
@@ -1022,7 +1022,7 @@ def fold_report(events):
             decided = True
         elif t in ("provider_expired", "provider_auth_failed"):
             c[t] += 1
-            decided = True
+            decided = decided or f.get("renewal") != "saved"
         elif t in ("pin", "release"):
             c[t + "s"] += 1
         elif t == "memory_low":

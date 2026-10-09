@@ -87,6 +87,11 @@ type providerAnswer struct {
 	// Headers to put over those of the config, by canonical name; nil
 	// without the key.
 	headers map[string]string
+	// The answer is the initial set of the config. A set the host saved
+	// has receivedAt, the wall clock it arrived by, and is age old.
+	initial    bool
+	receivedAt time.Time
+	age        time.Duration
 }
 
 type outboundHead struct {
@@ -131,6 +136,16 @@ func isAnswerError(err error) bool {
 // built. A body that is not a JSON object is a broken answer, which another
 // via may bring whole; an object against the protocol is an answerError.
 func parseAnswer(body []byte) (*providerAnswer, error) {
+	return readAnswer(body, false)
+}
+
+// parseInitial reads the initial set of the config: an answer, which may
+// add receivedAt when the host saved it.
+func parseInitial(body []byte) (*providerAnswer, error) {
+	return readAnswer(body, true)
+}
+
+func readAnswer(body []byte, initial bool) (*providerAnswer, error) {
 	var sections map[string]json.RawMessage
 	if err := json.Unmarshal(body, &sections); err != nil {
 		return nil, err
@@ -151,11 +166,12 @@ func parseAnswer(body []byte) (*providerAnswer, error) {
 		switch {
 		case key == "healthObservatory":
 			return nil, answerErrorf("healthObservatory is not accepted in an answer")
+		case key == "receivedAt" && initial:
 		case !setKeys[key] && !metaKeys[key]:
 			return nil, answerErrorf("unknown key %q", cut(key))
 		}
 	}
-	a := &providerAnswer{outbounds: sections["outbounds"]}
+	a := &providerAnswer{outbounds: sections["outbounds"], initial: initial}
 	if isNull(a.outbounds) {
 		return nil, answerErrorf("no outbounds")
 	}
@@ -197,6 +213,13 @@ func parseAnswer(body []byte) (*providerAnswer, error) {
 			return nil, answerErrorf("serverTime: %s is not a time in RFC 3339 with a zone", cut(string(raw)))
 		}
 		a.serverTime = t
+	}
+	if raw := sections["receivedAt"]; initial && !isNull(raw) {
+		t, ok := answerTime(raw)
+		if !ok {
+			return nil, answerErrorf("receivedAt: %s is not a time in RFC 3339 with a zone", cut(string(raw)))
+		}
+		a.receivedAt = t
 	}
 	if raw := sections["headers"]; !isNull(raw) {
 		h, err := parseHeaders(raw)
@@ -791,7 +814,7 @@ func (o *Observer) applySet(rt *providerRuntime, a *providerAnswer, j *refreshJo
 		if moved {
 			o.e.refreshCandidates(now)
 		}
-		names, stale := o.e.takeAnswerHeaders(rt.p, a.headers, j.headersGen, now)
+		names, stale := o.e.takeAnswerHeaders(rt.p, a.headers, j.headersGen, headersBy(j), now)
 		fields["ok"] = true
 		fields["changed"] = false
 		fields["unchanged"] = len(a.heads)
@@ -946,7 +969,7 @@ func (o *Observer) applySet(rt *providerRuntime, a *providerAnswer, j *refreshJo
 	}, now)
 	rt.p.version = a.version
 	rt.p.draining = len(rt.draining)
-	names, stale := o.e.takeAnswerHeaders(rt.p, a.headers, j.headersGen, now)
+	names, stale := o.e.takeAnswerHeaders(rt.p, a.headers, j.headersGen, headersBy(j), now)
 	fields["ok"] = true
 	fields["changed"] = true
 	fields["added"] = len(added)
@@ -965,7 +988,17 @@ func (o *Observer) applySet(rt *providerRuntime, a *providerAnswer, j *refreshJo
 // leasesOf gives the leases of an answer by full tag. A lease of a tag the
 // answer does not list is ignored.
 func leasesOf(a *providerAnswer, prefix string) leaseAnswer {
-	la := leaseAnswer{serverTime: a.serverTime, date: a.date, at: a.received}
+	la := leaseAnswer{serverTime: a.serverTime, date: a.date, at: a.received, initial: a.initial}
+	if !a.receivedAt.IsZero() {
+		// The leases ran on while the set was kept: they count from the
+		// clock of the backend when it arrived, plus the time since.
+		la.clock = "saved"
+		base := a.serverTime
+		if base.IsZero() {
+			base = a.receivedAt
+		}
+		la.serverTime = base.Add(a.age)
+	}
 	for _, h := range a.heads {
 		if end, ok := a.expiresAt[h.Tag]; ok {
 			if la.ends == nil {

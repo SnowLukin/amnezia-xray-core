@@ -45,7 +45,7 @@ func foldReport(t *testing.T, raw []byte) (reportCounts, bool) {
 			if len(c.SwitchPath) > reportSwitches {
 				c.SwitchPath = c.SwitchPath[1:]
 			}
-			decided = decided || !slices.Contains([]string{"start", "start_pinned", "start_remembered"}, reason)
+			decided = decided || !slices.Contains([]string{"start", "start_pinned", "start_remembered", "start_with"}, reason)
 		case "exhausted":
 			c.Exhausted++
 			decided = true
@@ -99,7 +99,7 @@ func foldReport(t *testing.T, raw []byte) (reportCounts, bool) {
 			if f["ok"] == false {
 				c.ProviderRejected++
 				decided = true
-			} else if f["changed"] == true {
+			} else if f["changed"] == true && f["trigger"] != "initial" {
 				c.ProviderApplied++
 				decided = true
 			}
@@ -111,7 +111,7 @@ func foldReport(t *testing.T, raw []byte) (reportCounts, bool) {
 			decided = true
 		case "provider_expired":
 			c.ProviderExpired++
-			decided = true
+			decided = decided || f["renewal"] != "saved"
 		case "provider_auth_failed":
 			c.ProviderAuthFailed++
 			decided = true
@@ -246,6 +246,13 @@ func TestReportDecisions(t *testing.T) {
 			{"switch", map[string]any{"from": "", "to": "a1", "reason": "start_pinned"}},
 			{"switch", map[string]any{"from": "a1", "to": "a2", "reason": "start_remembered"}},
 		}, false},
+		{"start with", []emitted{{"switch", map[string]any{"from": "", "to": "b1", "reason": "start_with"}}}, false},
+		{"initial set", []emitted{
+			{"provider_apply", map[string]any{"trigger": "initial", "ok": true, "changed": true, "renewed": 0}},
+			{"provider_headers", map[string]any{"provider": "p", "by": "initial"}},
+			{"provider_expired", map[string]any{"provider": "p", "renewal": "saved"}},
+		}, false},
+		{"initial set refused", []emitted{{"provider_apply", map[string]any{"trigger": "initial", "ok": false, "error": "x"}}}, true},
 		{"suspicion and probes", []emitted{
 			{"path_state", map[string]any{"outbound": "a1", "state": "suspect"}},
 			{"probe_result", map[string]any{"outbound": "a1", "ok": false}},

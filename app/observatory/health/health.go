@@ -8,6 +8,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"sort"
 	"strings"
 	"sync"
@@ -28,11 +29,12 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// Observer is the healthObservatory feature.
+// Observer is the healthObservatory feature. It keeps no reference to its
+// Config: the initial sets in it take up to 1 MiB per provider, and once
+// applied they live on as the applied answer.
 type Observer struct {
-	config *Config
-	s      *settings
-	ctx    context.Context
+	s   *settings
+	ctx context.Context
 
 	dispatcher routing.Dispatcher
 	ohm        outbound.Manager
@@ -102,7 +104,6 @@ func New(ctx context.Context, config *Config) (*Observer, error) {
 func newObserver(ctx context.Context, config *Config) *Observer {
 	s := newSettings(config)
 	o := &Observer{
-		config:         config,
 		s:              s,
 		ctx:            ctx,
 		e:              newEngine(s, time.Now().UnixNano()),
@@ -155,9 +156,61 @@ func (o *Observer) Start() error {
 	// Outside the lock: like the apply of a set, the observer never holds it
 	// across a call into the outbound manager.
 	o.seedProviderSets()
+	o.applyInitial()
 	running.Store(o)
 	go o.loop(o.done)
 	return nil
+}
+
+// applyInitial applies the initial set of every provider that has one
+// before the loop starts, the way it applies an answer: the core starts on
+// the set the connect brought or the host kept, without a request. A set
+// that does not apply is reported, and the provider goes on with the
+// outbounds of the config and its triggers. Like the start switches, an
+// applied initial set is no decision for the report.
+func (o *Observer) applyInitial() {
+	for _, rt := range o.providers {
+		raw := rt.cfg.initial
+		if len(raw) == 0 {
+			continue
+		}
+		// Up to 1 MiB per provider: from here on the set lives as the
+		// applied one.
+		rt.cfg.initial = nil
+		a, err := o.initialAnswer(rt, raw)
+		if err != nil {
+			o.emit("provider_apply", map[string]any{"provider": rt.cfg.tag, "trigger": triggerInitial.String(),
+				"ok": false, "error": cutText(err.Error(), maxFailureText)})
+			continue
+		}
+		// The headers lie under those the host set before the start, which
+		// gen zero tells.
+		if _, err := o.applySet(rt, a, &refreshJob{p: rt.p, trigger: triggerInitial}); err != nil {
+			continue
+		}
+		o.mu.Lock()
+		o.e.startFromInitial(rt.p, a.age, a.nextRefreshIn, o.now())
+		o.mu.Unlock()
+	}
+}
+
+// initialAnswer reads the initial set of a provider. One the host saved
+// tells by receivedAt how old it is.
+func (o *Observer) initialAnswer(rt *providerRuntime, raw []byte) (*providerAnswer, error) {
+	if int64(len(raw)) > rt.cfg.maxBytes {
+		return nil, fmt.Errorf("initial larger than %d bytes", rt.cfg.maxBytes)
+	}
+	a, err := parseInitial(raw)
+	if err != nil {
+		if !isAnswerError(err) {
+			err = fmt.Errorf("invalid answer: %w", err)
+		}
+		return nil, err
+	}
+	if !a.receivedAt.IsZero() {
+		a.age = min(max(o.now().Round(0).Sub(a.receivedAt), 0), maxLease)
+	}
+	return a, nil
 }
 
 // seedProviderSets gives every provider the outbounds of the config with its

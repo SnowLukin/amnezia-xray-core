@@ -138,8 +138,10 @@ func (e *engine) rotate(p *provider, headers map[string]string, by string, now t
 
 // takeAnswerHeaders puts the headers of an applied answer over the rotated
 // ones, unless the host changed them while the request ran: the host wins.
-// It returns the names the answer carried and whether they lost.
-func (e *engine) takeAnswerHeaders(p *provider, headers map[string]string, gen uint64, now time.Time) ([]string, bool) {
+// The initial set lies under the host the same way, as gen zero: headers
+// the host set before the start stay. It returns the names the answer
+// carried and whether they lost.
+func (e *engine) takeAnswerHeaders(p *provider, headers map[string]string, gen uint64, by string, now time.Time) ([]string, bool) {
 	if len(headers) == 0 {
 		return nil, false
 	}
@@ -147,8 +149,16 @@ func (e *engine) takeAnswerHeaders(p *provider, headers map[string]string, gen u
 	if gen != p.headersGen {
 		return names, true
 	}
-	e.rotate(p, headers, "answer", now)
+	e.rotate(p, headers, by, now)
 	return names, false
+}
+
+// headersBy names what set the headers of an applied answer.
+func headersBy(j *refreshJob) string {
+	if j.trigger == triggerInitial {
+		return "initial"
+	}
+	return "answer"
 }
 
 // headerFields tells in provider_apply which headers an answer carried and

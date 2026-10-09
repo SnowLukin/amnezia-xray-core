@@ -64,7 +64,7 @@ func TestAnswerRotatesOnlyAllowedHeaders(t *testing.T) {
 	if err != nil || checkRotation(a, te.prov().cfg) != nil {
 		t.Fatalf("a header of another case: %v", err)
 	}
-	if names, stale := te.takeAnswerHeaders(te.prov(), a.headers, 0, t0); fmt.Sprint(names) != "[Authorization]" || stale {
+	if names, stale := te.takeAnswerHeaders(te.prov(), a.headers, 0, "answer", t0); fmt.Sprint(names) != "[Authorization]" || stale {
 		t.Fatalf("names %v, stale %v", names, stale)
 	}
 	if got := fmt.Sprint(te.prov().requestHeaders()); got != "map[Authorization:Bearer t1 X-Client:core]" {
@@ -75,7 +75,7 @@ func TestAnswerRotatesOnlyAllowedHeaders(t *testing.T) {
 		t.Fatalf("provider_headers %v", ev.Fields)
 	}
 	// The same value again changes nothing and tells nothing.
-	te.takeAnswerHeaders(te.prov(), a.headers, te.prov().headersGen, t0)
+	te.takeAnswerHeaders(te.prov(), a.headers, te.prov().headersGen, "answer", t0)
 	if evs := te.eventsOf(t, "provider_headers"); len(evs) != 0 || te.prov().headersGen != 1 {
 		t.Fatalf("the same value again: %v, generation %d", evs, te.prov().headersGen)
 	}

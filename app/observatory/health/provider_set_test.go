@@ -466,6 +466,7 @@ func TestParseAnswer(t *testing.T) {
 		`{"outbounds": [{"tag": "x"}], "dns": {}}`:                              `unknown key "dns"`,
 		`{"outbounds": [{"tag": "x"}], "inbounds": []}`:                         `unknown key "inbounds"`,
 		`{"outbounds": [{"tag": "x"}], "healthObservatory": {}}`:                "healthObservatory is not accepted in an answer",
+		`{"outbounds": [{"tag": "x"}], "receivedAt": "2026-10-08T12:00:00Z"}`:   `unknown key "receivedAt"`,
 		`{"outbounds": [{"tag": "x"}], "routing": {"rules": [], "foo": 1}}`:     `routing: unknown key "foo"`,
 		`{"outbounds": [{"tag": "x"}], "nextRefreshIn": "soon"}`:                "nextRefreshIn",
 		`{"outbounds": [{"tag": "x"}], "` + strings.Repeat("k", 1000) + `": 1}`: "...",
@@ -489,6 +490,12 @@ func TestVersionIgnoresMetaKeys(t *testing.T) {
 	a4, _ := parseAnswer([]byte(`{"outbounds": [{"tag": "x"}], "costs": {"x": 2}, "routing": {"rules": []}}`))
 	if a1.version != a2.version || a1.version == a3.version || a1.version == a4.version {
 		t.Fatalf("versions %s %s %s %s; want the first two equal and the others apart", a1.version, a2.version, a3.version, a4.version)
+	}
+	// A set the host saved is the set it saved, with a fresh token or not.
+	saved, err := parseInitial([]byte(`{"outbounds": [{"tag": "x"}], "costs": {"x": 2}, "headers": {"Authorization": "Bearer t2"},
+		"receivedAt": "2026-10-08T12:00:00Z"}`))
+	if err != nil || saved.version != a1.version || saved.receivedAt.IsZero() {
+		t.Fatalf("saved set %+v, %v", saved, err)
 	}
 }
 

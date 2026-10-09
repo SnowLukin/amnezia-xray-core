@@ -130,7 +130,7 @@ decision made while the network check was failing ends nothing.
         "upgrade": { "interval": "30m", "randomPhase": true, "successes": 3, "spacing": "20s",
                      "penaltyWindow": "5m", "penaltyMultiplier": 2, "maxPenalty": "2h",
                      "onNetworkChange": true, "unknownNetworksOnly": true },
-        "startPinned": "", "startPinnedFor": "0s",
+        "startPinned": "", "startPinnedFor": "0s", "startWith": "",
         "onNetworkChange": "recheck"
       } },
       "fallbackTag": "block"
@@ -140,7 +140,7 @@ decision made while the network check was failing ends nothing.
 ```
 
 The values above are the defaults, except `subjectSelector`, `probes`,
-`connectivity`, `costs`, `lazy` and `startPinned`, which have none. Without a
+`connectivity`, `costs`, `lazy`, `startPinned` and `startWith`, which have none. Without a
 matching probe profile an outbound is probed with a GET of
 `https://www.gstatic.com/generate_204`.
 
@@ -175,6 +175,10 @@ for `hostProbes` `perMinute` half of `schedule.perMinute`, `reuse` 5 min,
   `startPinnedFor` releases it by itself after that long: a host that
   verifies within a known time and stops the core when the check fails
   then needs no release call.
+- `startWith` starts the balancer on one outbound instead of the cheapest,
+  without a pin, when it is a usable candidate whose lease did not end: the
+  host passes the outbound that worked last time, so a restart needs no
+  probing. An outbound remembered for the network comes first.
 - Set `fallbackTag` to a blackhole: without it, an empty choice sends traffic
   to the default outbound.
 - `report.interval`: a window with a decision is reported once it lasts
@@ -210,14 +214,16 @@ triggers are judged on what the observatory knows about the balancer.
         "backoff": { "initial": "30s", "multiplier": 2, "max": "30m", "jitter": 0.3 }, "authRetry": "1h"
       },
       "apply": { "balancer": "auto", "tagPrefix": "p-", "drain": "5m", "maxOutbounds": 64, "routing": false,
-                 "headers": ["Authorization"] }
+                 "headers": ["Authorization"] },
+      "initial": null
     }]
   }
 }
 ```
 
 The values above are the defaults, except `whenCostAbove`, which is off
-unless set, and `maxBytes`, which is 4 KiB per outbound of `maxOutbounds`. `tag`, `url`, `apply.balancer` and `apply.tagPrefix` are
+unless set, and `maxBytes`, which is 4 KiB per outbound of `maxOutbounds`.
+`initial` is an answer to start with, see Initial set. `tag`, `url`, `apply.balancer` and `apply.tagPrefix` are
 required. A trigger or a limit set to an explicit zero (`"0s"`, `0`) is off.
 
 **Request.** A provider that serves a static file on a web server needs
@@ -377,9 +383,10 @@ client.
 `apply.balancer` has to be a `leastCost` balancer with a selector that
 matches that prefix, and the observatory observes such outbounds without
 listing them in `subjectSelector`. The provider owns every outbound whose
-tag starts with the prefix, also ones from the config, so a host can start
-the core with the set it saved last time; such an outbound should not be the
-first one, which the core takes as the default. All outbounds are
+tag starts with the prefix, also ones from the config; such an outbound
+should not be the first one, which the core takes as the default. A host
+that starts the core with the set it saved last time passes it as
+`initial` instead. All outbounds are
 validated and built before anything changes; a broken answer or a set that
 does not build changes nothing. Outbounds whose settings did not change are
 not touched and keep their connections. An outbound whose settings changed
@@ -455,6 +462,29 @@ the next `via` is tried: portals and firewalls on mobile networks and in
 hotels answer so often. A refusal of a request that was sent before the host
 changed the headers is no refusal of the new ones: the refresh is tried
 again with them as soon as the limits allow.
+
+**Initial set.** `initial` is an answer of the backend that the core
+applies as it starts, before the first connection and without a request:
+the answer of a connect, or the set the host kept from `ProviderSet` with
+`receivedAt`, the time it arrived by the clock of the device. It is read as
+an answer, with the same checks, except that its `headers` may have any
+name the host may set and that it may have `receivedAt`. Its outbounds are
+registered by the time the first connection comes; connections that came
+earlier stay on the outbounds of the config. A set the host kept counts as
+old as it is: its leases count from its `serverTime` plus the time since
+`receivedAt`, by the clock `saved`, and `maxAge` and `nextRefreshIn` from
+when it arrived; a lease that ended meanwhile ends at the start with
+renewal `saved`, and one urgent refresh asks about it. A fresh one counts
+from its `serverTime`, as an answer that just arrived. Its headers lie over
+those of the config and under those the host set, also before the start.
+An initial set that is not an object, is larger than `maxBytes`, breaks the
+protocol or does not build is reported in `provider_apply` with trigger
+`initial` and `ok` false, and the core starts on the outbounds of the
+config: a bad saved set never keeps the core from starting. The core does
+not keep the raw set once applied. A host passes the answer of a connect
+when it has one, and the kept set only without it: the headers of a kept
+set would lie over a fresh token in the config, which then needs
+`SetProviderHeaders` after the start.
 
 **Triggers.** Any trigger may start a refresh:
 
@@ -616,7 +646,7 @@ Every event is `{"seq": n, "ts": unix_ms, "type": "...", "fields": {...}}`.
 
 | Type | Fields | When |
 | --- | --- | --- |
-| `switch` | `balancer`, `from`, `to`, `reason`, `held_ms`, `cost` | New connections go to another outbound. `reason`: `start`, `start_pinned`, `start_remembered`, `failover`, `upgrade`, `recovered`, `remembered`, `network_change`, `candidates_changed`, `pin`, `retired` (the previous one left its provider set), `expired` (the lease of the previous one ended; one that failed as well is left with `failover`). `held_ms` is the time on the previous one. |
+| `switch` | `balancer`, `from`, `to`, `reason`, `held_ms`, `cost` | New connections go to another outbound. `reason`: `start`, `start_pinned`, `start_remembered`, `start_with`, `failover`, `upgrade`, `recovered`, `remembered`, `network_change`, `candidates_changed`, `pin`, `retired` (the previous one left its provider set), `expired` (the lease of the previous one ended; one that failed as well is left with `failover`). `held_ms` is the time on the previous one. |
 | `path_state` | `outbound`, `state`, `reason`; for `suspect` also `failures`, `targets`, `kinds`, `strong`; for `down` also `quarantine_ms`, `quarantine_level` and `provisional` when it was ruled out while the network check was failing | An outbound became `up`, `suspect`, `down` or `unknown`. `reason`: `traffic`, `probe`, `upgrade_probe`, `host_probe`, `network_change`, `network_down`, `network_up`, `replaced` (a provider
 changed its settings). `kinds` counts failures by kind: `dial_failed`, `dial_timeout`, `server_unverified`, `no_response`, `closed`, `stall`, `partial_stall`. |
 | `probe_start` | `outbound`, `reason`, `balancer`, `running`, `request` | A probe started. `reason`: `confirm`, `failover`, `network_change`, `remembered`, `recheck`, `upgrade`, `host`. `running` counts the outbound probes running now, this one included. `request` is the id of the request a `host` probe is for. |
@@ -639,10 +669,10 @@ changed its settings). `kinds` counts failures by kind: `dial_failed`, `dial_tim
 | `network_change` | `network`, `known`, `generation` | The host reported a network change. |
 | `memory_low` | `on` | The host reported that memory is low (`on` true) or no longer. |
 | `provider_fetch` | `provider`, `trigger`, `retry`, `attempt`, `via`, `outbound`, `method`, `refresh`, `ok`, `status`, `ms`, `bytes`, `code`, `retry_after_ms`, `error` | One request of a refresh through one `via` entry; `outbound` is what the entry resolved to, `refresh` the number of the refresh as the body tells it, `bytes` the size of the answer. `code` is the code of an error body of the protocol, `retry_after_ms` the pause `Retry-After` asked for, after the ceiling and before the spread. A skipped entry has `ok` false and only `error`: `balancer exhausted`, `outbound down` or `no such outbound`. `error` never holds the URL. `trigger`: `host`, `exhausted`, `expiry`, `min_healthy`, `cost_above`, `network_change`, `next_refresh`, `max_age`, `interval`; `retry` counts failed refreshes before this one. An answer that breaks the protocol has `ok` true: the backend answered, and the refusal is the `provider_apply`'s. |
-| `provider_apply` | `provider`, `trigger`, `ok`, `changed`, `added`, `replaced`, `removed`, `unchanged`, `version`, `exhausted`, `rules`, `routing_error`, `routing_ignored`, `leases`, `renewed`, `expired`, `skew_ms`, `clock`, `headers`, `headers_stale`, `error` | The answer was applied (`changed`), was the applied set already, or was rejected (`ok` false with `error`). `exhausted` tells whether the balancer had nothing usable at that moment. `rules` counts the routing rules applied with the set; `routing_ignored` tells that the answer had routing while `apply.routing` is off. When the answer names leases: `leases` counts them, `renewed` the ones it gave a later end that has not passed, ended ones too, `expired` the leases that ended after it, where one that had ended and got a later end that passed as well gives no second `provider_expired`; `skew_ms` is how far the clock they count from is ahead of the device, and `clock` which one that is: `server`, `date` (the `Date` of the answer plus `Age`) or `device`. `headers` names the headers of the answer; `headers_stale` tells that the host changed the headers while the request ran, and the answer did not set them. |
-| `provider_expired` | `provider`, `outbound`, `active`, `renewal` | The lease of an outbound ended, or an answer brought it ended. `active` tells whether a balancer chose the outbound. `renewal` tells why no later end came: `refused` (the backend answered without one), `failed` (the last refresh that asked failed), `off` (`renewAt` is 0) or `pending` (no refresh that asked about it has ended: no network, the limits, or the one that asks is still under way). |
+| `provider_apply` | `provider`, `trigger`, `ok`, `changed`, `added`, `replaced`, `removed`, `unchanged`, `version`, `exhausted`, `rules`, `routing_error`, `routing_ignored`, `leases`, `renewed`, `expired`, `skew_ms`, `clock`, `headers`, `headers_stale`, `error` | The answer was applied (`changed`), was the applied set already, or was rejected (`ok` false with `error`); `trigger` `initial` is the initial set at the start. `exhausted` tells whether the balancer had nothing usable at that moment. `rules` counts the routing rules applied with the set; `routing_ignored` tells that the answer had routing while `apply.routing` is off. When the answer names leases: `leases` counts them, `renewed` the ones it gave a later end that has not passed, ended ones too, `expired` the leases that ended after it, where one that had ended and got a later end that passed as well gives no second `provider_expired`; `skew_ms` is how far the clock they count from is ahead of the device, and `clock` which one that is: `server`, `date` (the `Date` of the answer plus `Age`), `saved` (the `serverTime` of a kept initial set plus its age) or `device`. `headers` names the headers of the answer; `headers_stale` tells that the host changed the headers while the request ran, and the answer did not set them. |
+| `provider_expired` | `provider`, `outbound`, `active`, `renewal` | The lease of an outbound ended, or an answer brought it ended. `active` tells whether a balancer chose the outbound. `renewal` tells why no later end came: `refused` (the backend answered without one), `failed` (the last refresh that asked failed), `off` (`renewAt` is 0), `saved` (it ended in the initial set before the start) or `pending` (no refresh that asked about it has ended: no network, the limits, or the one that asks is still under way). |
 | `provider_auth_failed` | `provider`, `trigger`, `status`, `via`, `code` | The backend refused the headers of a request with `status` 401 or 403 and the error `code` `unauthorized` or `forbidden`; every trigger but the host waits, see Token. |
-| `provider_headers` | `provider`, `by`, `names` | Headers of the requests changed: `by` an `answer` or the `host`. `names` are the headers whose values changed; the values are never told. |
+| `provider_headers` | `provider`, `by`, `names` | Headers of the requests changed: `by` an `answer`, the `initial` set or the `host`. `names` are the headers whose values changed; the values are never told. |
 | `provider_restart_needed` | `provider`, `version`, `sections` | Kept for sections of the config the core reads only at start. Protocol 1 refuses an answer with such a section, so this version does not write it. |
 | `provider_skip` | `provider`, `trigger`, `reason`, `wait_ms` | A trigger wants a refresh that cannot start yet. `reason`: `min_interval`, `backoff`, `retry_after`, `max_per_hour`, `idle`, `network_down`, `memory`, `auth` (the backend refused the headers). Reported once per trigger and reason until a refresh starts. |
 | `provider_drained` | `provider`, `outbound`, `replaced` | An outbound that left the set, or the old handler of a replaced one, was closed: after `drain`, at once without connections, or early to keep at most `maxOutbounds` draining. |
@@ -654,11 +684,14 @@ the host needs neither the event log nor counters of its own. Every event is
 counted as it is written: a full log, or a host that never drains it,
 changes nothing in the report.
 
-A decision is a `switch` for any reason but `start`, `start_pinned` and
-`start_remembered`, `exhausted`, `upgrade_failed`, `pinned_down`, a
-`provider_apply` that was rejected or changed the set,
+A decision is a `switch` for any reason but `start`, `start_pinned`,
+`start_remembered` and `start_with`, `exhausted`, `upgrade_failed`,
+`pinned_down`, a `provider_apply` that was rejected or changed the set,
 `provider_restart_needed`, `provider_expired` and `provider_auth_failed`.
-Events the log dropped are no decision.
+The initial set is no decision, as a start switch is not, nor a lease that
+ended in it before the start, the usual morning after a device was off;
+otherwise every session would have one. A refused initial set is. Events
+the log dropped are no decision.
 
 `TakeReport(final)` returns the report when one is due and starts a new
 window:
@@ -697,9 +730,9 @@ to this one. Reports of one run add up.
 | `network_changes`, `network_known`, `network_down` | `network_change` events, the ones with `known`, and `network_down` events. |
 | `provider_fetches`, `provider_fetch_failures`, `provider_triggers` | `provider_fetch` events, the ones without `ok`, and their count by `trigger`. |
 | `provider_retry_after` | `provider_fetch` events with `retry_after_ms`: a busy backend asked to wait. |
-| `provider_applied`, `provider_rejected`, `provider_restart_needed` | `provider_apply` events that changed the set, the rejected ones, and `provider_restart_needed` events. |
+| `provider_applied`, `provider_rejected`, `provider_restart_needed` | `provider_apply` events that changed the set, but for the initial set, the rejected ones, and `provider_restart_needed` events. |
 | `provider_expired` | `provider_expired` events: leases that ended. |
-| `provider_renewals` | `provider_apply` events with `ok` and `renewed` above zero: answers that renewed leases. A renewal keeps what the balancer has and is no decision. |
+| `provider_renewals` | `provider_apply` events with `ok` and `renewed` above zero, but for the initial set: answers that renewed leases. A renewal keeps what the balancer has and is no decision. |
 | `provider_auth_failed` | `provider_auth_failed` events: the backend refused the headers. |
 | `pins`, `releases` | `pin` and `release` events. |
 | `memory_low` | `memory_low` events with `on`. |

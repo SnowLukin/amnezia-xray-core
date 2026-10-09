@@ -260,6 +260,10 @@ message ProviderConfig {
   // POST, the default, sends the state of the core to the provider; GET
   // sends no body, for a static file on a web server.
   string method = 10;
+  // An answer of the provider as JSON, applied when the core starts: the
+  // answer of a connect, or a set the host kept, which may add receivedAt.
+  // A broken one is reported and the core starts without it.
+  bytes initial = 11;
 }
 
 message ProviderTriggers {

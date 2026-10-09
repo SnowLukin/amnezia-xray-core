@@ -245,6 +245,8 @@ type providerSettings struct {
 	via      []string
 	timeout  time.Duration
 	maxBytes int64
+	// An answer to apply at the start; dropped once applied.
+	initial []byte
 
 	// Zero durations and counts below mean the trigger or limit is off.
 	interval       time.Duration
@@ -310,6 +312,7 @@ func newProviderSettings(c *ProviderConfig) *providerSettings {
 		via:      c.GetVia(),
 		timeout:  dur(c.GetTimeout(), defaultProviderTimeout),
 		maxBytes: min(size(c.GetMaxBytes(), int64(maxOutbounds)*answerBytesPerOutbound), maxAnswerBytes),
+		initial:  c.GetInitial(),
 
 		interval:      optional(t.GetInterval(), defaultRefreshInterval),
 		minHealthy:    optionalNum(t.GetMinHealthy(), defaultMinHealthy),

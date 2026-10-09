@@ -21,6 +21,9 @@ const (
 	triggerMaxAge
 	triggerInterval
 	triggerCount
+	// The initial set of the config, applied at the start. No trigger
+	// wants it; it only names the apply.
+	triggerInitial
 )
 
 func (t refreshTrigger) String() string {
@@ -43,6 +46,8 @@ func (t refreshTrigger) String() string {
 		return "max_age"
 	case triggerInterval:
 		return "interval"
+	case triggerInitial:
+		return "initial"
 	default:
 		return "unknown"
 	}
@@ -444,6 +449,16 @@ func (e *engine) beginRefresh(p *provider, t refreshTrigger, now time.Time) *ref
 		j.request = e.providerRequest(p, j, now)
 	}
 	return j
+}
+
+// startFromInitial dates the initial set the provider starts with. A set
+// the host kept is as old as it was when it was saved: maxAge and
+// nextRefreshIn count from when the backend sent it, so an old set is
+// refreshed soon and a fresh one is not asked for again at the start.
+func (e *engine) startFromInitial(p *provider, age, nextRefreshIn time.Duration, now time.Time) {
+	p.started = true
+	p.setAt = now.Add(-age)
+	e.scheduleRefresh(p, max(nextRefreshIn-age, 0), now)
 }
 
 func (e *engine) scheduleRefresh(p *provider, hint time.Duration, now time.Time) {

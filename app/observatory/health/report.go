@@ -14,6 +14,9 @@ const (
 	reportSnapshot = "snapshot"
 )
 
+// Reasons of a switch the core takes at the start, which are no decision.
+var startReasons = []string{"start", "start_pinned", "start_remembered", "start_with"}
+
 const (
 	// A report lists at most this many paths, the first ones by tag.
 	reportPaths = 16
@@ -135,7 +138,7 @@ func (r *report) count(typ string, f map[string]any) {
 			c.SwitchPath = append(c.SwitchPath[:0], c.SwitchPath[1:]...)
 		}
 		c.SwitchPath = append(c.SwitchPath, from+">"+to+":"+reason)
-		if reason != "start" && reason != "start_pinned" && reason != "start_remembered" {
+		if !slices.Contains(startReasons, reason) {
 			r.decide()
 		}
 	case "exhausted":
@@ -191,11 +194,14 @@ func (r *report) count(typ string, f map[string]any) {
 			c.ProviderRetryAfter++
 		}
 	case "provider_apply":
+		// The initial set the core starts with is no decision, like a
+		// start switch, or every session would count as one. Refused, it
+		// is: the core runs without the set the host gave it.
 		switch {
 		case f["ok"] == false:
 			c.ProviderRejected++
 			r.decide()
-		case f["changed"] == true:
+		case f["changed"] == true && f["trigger"] != "initial":
 			c.ProviderApplied++
 			r.decide()
 		}
@@ -208,8 +214,12 @@ func (r *report) count(typ string, f map[string]any) {
 		r.decide()
 	case "provider_expired":
 		// The balancer leaves the outbound or keeps it as the last resort.
+		// A lease that ended in a saved set is the usual morning after a
+		// device was off: the core asks for a new one at the start.
 		c.ProviderExpired++
-		r.decide()
+		if f["renewal"] != "saved" {
+			r.decide()
+		}
 	case "provider_auth_failed":
 		// The provider stops refreshing until the host brings new headers.
 		c.ProviderAuthFailed++

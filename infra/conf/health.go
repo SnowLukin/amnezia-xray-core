@@ -1,6 +1,8 @@
 package conf
 
 import (
+	"bytes"
+	"encoding/json"
 	"net/url"
 	"regexp"
 	"strings"
@@ -195,7 +197,14 @@ type HealthProviderConfig struct {
 	Triggers       *HealthProviderTriggersConfig `json:"triggers"`
 	Limits         *HealthProviderLimitsConfig   `json:"limits"`
 	Apply          *HealthProviderApplyConfig    `json:"apply"`
+	// Initial is an answer applied at the start. Only its form is checked
+	// here: a bad saved set must not keep the core from starting, so the
+	// observatory checks the rest and starts without it.
+	Initial json.RawMessage `json:"initial"`
 }
+
+// maxInitial bounds the initial set, as the observatory bounds an answer.
+const maxInitial = 1 << 20
 
 // optionalDuration maps a JSON duration where an explicit zero turns the
 // feature off to the protobuf convention: zero is the default, negative off.
@@ -280,6 +289,15 @@ func (c *HealthProviderConfig) build() (*health.ProviderConfig, error) {
 	if a.Headers != nil {
 		out.Apply.Headers = *a.Headers
 		out.Apply.FixedHeaders = len(*a.Headers) == 0
+	}
+	if raw := bytes.TrimSpace(c.Initial); len(raw) > 0 && !bytes.Equal(raw, []byte("null")) {
+		if raw[0] != '{' {
+			return nil, errors.New("healthObservatory: ", where, ": initial must be an object or null")
+		}
+		if len(raw) > maxInitial {
+			return nil, errors.New("healthObservatory: ", where, ": initial is larger than 1 MiB")
+		}
+		out.Initial = raw
 	}
 	if t := c.Triggers; t != nil {
 		out.Triggers = &health.ProviderTriggers{

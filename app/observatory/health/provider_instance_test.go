@@ -838,3 +838,74 @@ func TestTokenNeverInEventsStatusReportOrBody(t *testing.T) {
 		}
 	}
 }
+
+// The initial set applies as the core starts, before the first connection
+// and without a request: the connect already brought it. Its outbounds are
+// registered, though not as the default one, which stays the first
+// outbound of the config.
+func TestInitialAppliedBeforeTheFirstConnection(t *testing.T) {
+	srv := &setServer{}
+	srv.set(`{"outbounds": [{"tag": "x9", "protocol": "freedom"}]}`)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	cfg, err := core.LoadConfig("json", strings.NewReader(`{
+	  "log": {"loglevel": "none"},
+	  "outbounds": [{"tag": "direct", "protocol": "freedom"}, {"tag": "p-old", "protocol": "blackhole"}],
+	  "routing": {"balancers": [{"tag": "auto", "selector": ["p-"], "strategy": {"type": "leastCost", "settings": {}}}]},
+	  "healthObservatory": {
+	    "subjectSelector": ["p-"],
+	    "providers": [{
+	      "tag": "fresh", "url": "`+ts.URL+`/set", "allowPlainHttp": true, "via": ["direct"],
+	      "triggers": {"interval": "1h", "minHealthy": 0, "whenExhausted": false, "maxAge": "0s", "onNetworkChange": "never"},
+	      "apply": {"balancer": "auto", "tagPrefix": "p-", "protocols": ["freedom"]},
+	      "initial": {"protocol": 1, "version": "v1", "outbounds": [{"tag": "x1", "protocol": "freedom"},
+	        {"tag": "x2", "protocol": "freedom"}], "headers": {"Authorization": "Bearer saved"}}
+	    }]
+	  }
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	inst, err := core.New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := inst.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer inst.Close()
+	obs := health.FromInstance(inst)
+	ohm := inst.GetFeature(outbound.ManagerType()).(outbound.Manager)
+	if ohm.GetHandler("p-x1") == nil || ohm.GetHandler("p-x2") == nil || ohm.GetDefaultHandler().Tag() != "direct" {
+		t.Fatalf("after the start: p-x1 %v, p-x2 %v, default %s", ohm.GetHandler("p-x1") != nil,
+			ohm.GetHandler("p-x2") != nil, ohm.GetDefaultHandler().Tag())
+	}
+	var st struct {
+		Providers []struct {
+			Version   string   `json:"version"`
+			Members   int      `json:"members"`
+			Refreshes int      `json:"refreshes"`
+			Headers   []string `json:"headers"`
+		} `json:"providers"`
+	}
+	if err := json.Unmarshal(obs.Status(), &st); err != nil || st.Providers[0].Version != "v1" || st.Providers[0].Members != 2 ||
+		st.Providers[0].Refreshes != 0 || fmt.Sprint(st.Providers[0].Headers) != "[Authorization]" {
+		t.Fatalf("status %+v, %v", st, err)
+	}
+	w := &eventWaiter{t: t, o: obs}
+	if ev := w.until("provider_apply", nil); ev.Fields["trigger"] != "initial" || ev.Fields["added"] != 2.0 || ev.Fields["removed"] != 1.0 {
+		t.Fatalf("apply %v", ev.Fields)
+	}
+	time.Sleep(200 * time.Millisecond)
+	if n := srv.requests(); n != 0 {
+		t.Fatalf("%d provider requests at the start", n)
+	}
+	// The first request carries the token of the initial set.
+	obs.RequestRefresh("fresh")
+	w.until("provider_apply", func(e health.Event) bool { return e.Fields["trigger"] == "host" })
+	srv.mu.Lock()
+	defer srv.mu.Unlock()
+	if fmt.Sprint(srv.auth) != "[Bearer saved]" {
+		t.Fatalf("requests sent %v", srv.auth)
+	}
+}
