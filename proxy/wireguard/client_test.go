@@ -10,6 +10,7 @@ import (
 	"io"
 	stdnet "net"
 	"net/netip"
+	"reflect"
 	"runtime"
 	"strconv"
 	"strings"
@@ -722,5 +723,24 @@ func TestNewClientRejectsDuplicateAddress(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("an outbound with a duplicate address was created")
+	}
+}
+
+// TestWakeCopiesEveryField fails when the Handler gains a field that wake
+// neither copies from the Handler NewClient built nor sets for the wake, as
+// a rebase onto a newer upstream may bring.
+func TestWakeCopiesEveryField(t *testing.T) {
+	known := map[string]bool{
+		// Copied by wake.
+		"conf": true, "policyManager": true, "dns": true,
+		"streamSettings": true, "uplinkCounter": true, "downlinkCounter": true,
+		// Of the wake itself.
+		"tun": true, "tnet": true, "dev": true, "mu": true, "recv": true,
+	}
+	ht := reflect.TypeFor[Handler]()
+	for i := range ht.NumField() {
+		if name := ht.Field(i).Name; !known[name] {
+			t.Errorf("Handler.%s is new: copy it in lazyClient.wake, or list it here", name)
+		}
 	}
 }
