@@ -806,3 +806,30 @@ func TestTooManyOutboundsAreRefusedBeforeBuilding(t *testing.T) {
 		t.Fatalf("three outbounds with a limit of two: %v, built %v", err, parsed)
 	}
 }
+
+// A drain that ends on its timer takes the outbound from the balancers,
+// which fail over and queue probes: it kicks the loop to run them.
+func TestDrainEndedByItsTimerWakesTheLoop(t *testing.T) {
+	f := newApplyFixture(t, 50*time.Millisecond)
+	if _, err := f.apply(t, answer(t, fakeOutbound{Tag: "x1", V: 1}, fakeOutbound{Tag: "x2", V: 1})); err != nil {
+		t.Fatal(err)
+	}
+	f.follow("p-x1", "p-x2")
+	x1 := f.m.GetHandler("p-x1").(*fakeHandler)
+	f.open("p-x1")
+	if _, err := f.apply(t, answer(t, fakeOutbound{Tag: "x2", V: 1})); err != nil {
+		t.Fatal(err)
+	}
+	for len(f.o.kick) > 0 {
+		<-f.o.kick
+	}
+	drainUntil(func() bool { return x1.closes() > 0 })
+	if x1.closes() != 1 {
+		t.Fatal("setup: the drain did not end")
+	}
+	select {
+	case <-f.o.kick:
+	default:
+		t.Fatal("the end of the drain left the loop asleep")
+	}
+}

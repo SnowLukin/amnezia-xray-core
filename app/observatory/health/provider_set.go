@@ -1291,6 +1291,10 @@ func (o *Observer) finishDrain(rt *providerRuntime, d *drainingOutbound) {
 		return
 	}
 	o.endDrain(rt, d)
+	// The balancers that offered the outbound left it, which may fail them
+	// over and queue probes; the loop runs those now, not at whatever wakes
+	// it next.
+	o.wake()
 }
 
 // endDrain removes and closes a draining outbound. The caller holds applyMu.
