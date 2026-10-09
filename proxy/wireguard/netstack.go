@@ -64,8 +64,9 @@ type netTun struct {
 // the congestion window; a connection that stalls keeps what it has. So the
 // starting sizes bound the many connections that carry little, and the
 // maximum, gVisor's 4 MiB, bounds throughput: at 2 MiB, 64 MiB over a 50 ms
-// round trip came about 40% slower. Starting at 128 KiB cost under 3% from
-// 0 to 100 ms; starting at 64 KiB cost about 20% on 4 MiB over 50 ms.
+// round trip came about 40% slower. Starting at 128 KiB cost at most 6% on a
+// median from 0 to 100 ms, less than the runs varied; starting at 64 KiB
+// cost about 20% on 4 MiB over 50 ms.
 //
 // The inbound creates its stack here too and gets the same: its forwarder
 // gives each connection a receive buffer of its own, and the send buffer
