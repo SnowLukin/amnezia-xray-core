@@ -36,8 +36,11 @@ func (f *wireGuardFailover) within(from int, typ string, match func(health.Event
 // the balancer is on w2: the path works, and nothing else ends it. With
 // sleep.closeIdleAfter, once nothing has chosen w1 for sleep.after and the
 // connection has received nothing for closeIdleAfter, the observer ends it
-// with idle_closed; w1 then sleeps at once with reason idle and sends its
-// server nothing more.
+// with idle_closed; w1 then sleeps with reason idle the shortest
+// sleep.after later, once the end of the connection has crossed the tunnel.
+// It sends nothing more, and its server at most the one passive keepalive
+// that answers the end: a tunnel gone before it, the server would repeat
+// its end of the connection.
 func TestWireGuardUnchosenOutboundSleepsOnceItsIdleConnectionsEnd(t *testing.T) {
 	const idle = 10 * time.Second
 	ts := targetServer(t)
@@ -94,17 +97,19 @@ func TestWireGuardUnchosenOutboundSleepsOnceItsIdleConnectionsEnd(t *testing.T) 
 	case <-time.After(5 * time.Second):
 		t.Fatal("the held connection is still open after the idle close")
 	}
-	slept := f.within(from, "outbound_sleep", about("w1"), 10*time.Second)
+	slept := f.within(from, "outbound_sleep", about("w1"), idle+10*time.Second)
 	if slept.Fields["reason"] != "idle" || slept.Time < closed.Time {
 		t.Fatalf("w1 slept with %v at %d, idle close at %d; want reason idle after the close", slept.Fields, slept.Time, closed.Time)
 	}
-	if after := time.Duration(slept.Time-closed.Time) * time.Millisecond; after > 2*time.Second {
-		t.Fatalf("w1 slept %v after the idle close, want at once", after)
+	// The shortest sleep.after, which is idle here too.
+	if after := time.Duration(slept.Time-closed.Time) * time.Millisecond; after < idle-50*time.Millisecond ||
+		after > idle+3*time.Second {
+		t.Fatalf("w1 slept %v after the idle close, want %v, the shortest sleep.after", after, idle)
 	}
-	sent := f.w1.sent.Load()
-	time.Sleep(3 * time.Second)
-	if n := f.w1.sent.Load() - sent; n != 0 {
-		t.Fatalf("%d datagrams from the sleeping w1", n)
+	sent, answered := f.w1.sent.Load(), f.w1.answered.Load()
+	time.Sleep(5 * time.Second)
+	if n, m := f.w1.sent.Load()-sent, f.w1.answered.Load()-answered; n != 0 || m > 1 {
+		t.Fatalf("%d datagrams from the sleeping w1, %d from its server; want none, and at most a keepalive", n, m)
 	}
 	// w2, chosen, keeps working.
 	if err := f.get("10.10.0.1", "/small", 10*time.Second); err != nil {

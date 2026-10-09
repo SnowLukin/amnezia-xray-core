@@ -11,7 +11,8 @@ import "time"
 // outbound for sleep.after and nothing but its connections holds it, the
 // observer ends those that have received nothing for closeIdleAfter. Their
 // applications reconnect through the outbound chosen now, and the outbound
-// sleeps as soon as the rest are gone.
+// sleeps soon after the rest are gone: the shortest sleep.after later, as a
+// connection that ended may still be closing inside the tunnel.
 //
 // It is the one place where the observer ends connections on a path that
 // works, so it stays lazy. A check notes what the connections have received

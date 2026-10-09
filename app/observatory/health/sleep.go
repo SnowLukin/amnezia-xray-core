@@ -176,9 +176,11 @@ func (e *engine) planSleeps(now time.Time) time.Time {
 		due := maxTime(p.usedAt.Add(after), p.nextSleepTry)
 		if p.idleClosed {
 			// Its idle connections were ended once nothing had chosen it
-			// for sleep.after: their ends, uses as they are, and those of
-			// the rest restart no wait.
-			due = p.nextSleepTry
+			// for sleep.after: their ends and those of the rest restart no
+			// such wait. The last one may still be closing inside the
+			// tunnel, and the server would repeat its end of it to a
+			// tunnel gone, so the outbound waits the shortest sleep.after.
+			due = maxTime(p.usedAt.Add(minSleepAfter), p.nextSleepTry)
 		}
 		if now.Before(due) {
 			// A refusal still waits for its retry: the connection that made

@@ -122,8 +122,9 @@ func (f *idleFixture) events(typ string) []Event {
 // also one that never received anything and one past the bytes whose time
 // the tracker takes: as one idle_closed, counted in the report. Those that
 // received within closeIdleAfter are kept and ended once they fall silent
-// that long, each at the one wake planned for it. The outbound sleeps once
-// the last is gone, at once, with reason idle; then no wake is left.
+// that long, each at the one wake planned for it. The outbound sleeps with
+// reason idle the shortest sleep.after after the last is gone, not
+// sleep.after: the ends restart no such wait. Then no wake is left.
 func TestIdleConnectionsEndOnceLeftAndSilent(t *testing.T) {
 	const after, n = 5 * time.Minute, 2 * time.Minute
 	f := newIdleFixture(t, after, n)
@@ -198,12 +199,19 @@ func TestIdleConnectionsEndOnceLeftAndSilent(t *testing.T) {
 	default:
 		t.Fatal("the end of the last connection did not turn the loop")
 	}
-	if wake := f.turn(ended); !wake.IsZero() {
+	if wake := f.turn(ended); !wake.Equal(ended.Add(minSleepAfter)) {
+		t.Fatalf("wake %v after the last end, want the shortest sleep.after %v", wake.Sub(ended), minSleepAfter)
+	}
+	f.turn(ended.Add(minSleepAfter - time.Millisecond))
+	if len(f.sleeps(t)) != 0 {
+		t.Fatal("slept while the last connection may still be closing")
+	}
+	if wake := f.turn(ended.Add(minSleepAfter)); !wake.IsZero() {
 		t.Fatalf("a wake %v after the sleep is left", wake.Sub(ended))
 	}
 	slept := f.sleeps(t)
 	if len(slept) != 1 || slept[0].Fields["reason"] != "idle" || !f.asleep(t, "w1") {
-		t.Fatalf("after the last end: sleeps %+v, want one with reason idle at once", slept)
+		t.Fatalf("after the last end: sleeps %+v, want one with reason idle", slept)
 	}
 }
 
@@ -478,7 +486,7 @@ func TestIdleCloseOfSplicedConnectionsByTheKernel(t *testing.T) {
 	}
 }
 
-// Once a check ended its idle connections, the outbound sleeps as soon as
+// Once a check ended its idle connections, the outbound sleeps soon after
 // the rest are gone. A new connection through it is a use like any other:
 // after its end the outbound waits sleep.after again.
 func TestIdleCloseThenANewConnectionWaitsSleepAfter(t *testing.T) {

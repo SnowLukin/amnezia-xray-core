@@ -679,8 +679,10 @@ can sleep, that nothing but its connections holds by the list above and
 that no balancer has chosen for `sleep.after` has its connections that
 received nothing for `closeIdleAfter` ended, TCP and UDP alike, one
 `idle_closed` per check. Their applications reconnect through the outbound
-chosen now, and it sleeps as soon as the rest are gone, with reason `idle`:
-the ends of the connections, uses as they are, restart no wait. A
+chosen now, and it sleeps with reason `idle` 10 s after the rest are gone,
+the shortest `sleep.after`, rather than `sleep.after` again: a connection
+that just ended may still be closing inside the tunnel, and its server
+would repeat its end of it to a tunnel gone. A
 connection that received anything within `closeIdleAfter` is kept, and so
 is everything while a balancer chooses the outbound or something else above
 holds it, while the network is down or in doubt, and until it has worked
@@ -809,7 +811,7 @@ changed its settings). `kinds` counts failures by kind: `dial_failed`, `dial_tim
 | `provider_restart_needed` | `provider`, `version`, `sections` | Reserved for an answer with sections of the config the core reads only at the start. Protocol 1 refuses such an answer, see [PROVIDER.md](PROVIDER.md#answer), so this version never writes it. |
 | `provider_skip` | `provider`, `trigger`, `reason`, `wait_ms` | A trigger wants a refresh that cannot start yet. `reason`: `min_interval`, `backoff`, `retry_after`, `max_per_hour`, `idle`, `network_down`, `pinned` (the balancer of the provider is pinned), `memory`, `auth` (the backend refused the headers). Reported once per trigger and reason until a refresh starts. |
 | `provider_drained` | `provider`, `outbound`, `replaced` | An outbound that left the set, or the old handler of a replaced one, was closed: after `drain`, or at the release of a pin that held it past that, at once without connections, or early to keep at most `maxOutbounds` draining. |
-| `outbound_sleep` | `outbound`, `idle_ms`, `reason` | An outbound released what it held, see Sleep. `idle_ms` is the time since its last use; `reason` is `idle` (after `sleep.after`, or at once once `idle_closed` ended its idle connections), `down` (sooner, while it rests in quarantine) or `memory` (sooner, while memory is low). |
+| `outbound_sleep` | `outbound`, `idle_ms`, `reason` | An outbound released what it held, see Sleep. `idle_ms` is the time since its last use; `reason` is `idle` (after `sleep.after`, or 10 s after the last connection ended once `idle_closed` ended its idle ones), `down` (sooner, while it rests in quarantine) or `memory` (sooner, while memory is low). |
 | `idle_closed` | `outbound`, `connections` | Connections of an outbound that can sleep, which no balancer has chosen for `sleep.after`, were ended after they received nothing for `sleep.closeIdleAfter`, see Sleep. The path works: unlike `pending_closed`, no failure is behind it. |
 
 ## Report
