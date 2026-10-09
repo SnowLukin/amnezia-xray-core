@@ -20,7 +20,6 @@ import (
 	"github.com/xtls/xray-core/common/serial"
 	"github.com/xtls/xray-core/common/session"
 	"github.com/xtls/xray-core/core"
-	"github.com/xtls/xray-core/features/extension"
 	"github.com/xtls/xray-core/features/outbound"
 	"github.com/xtls/xray-core/features/policy"
 	"github.com/xtls/xray-core/features/stats"
@@ -83,9 +82,7 @@ func NewHandler(ctx context.Context, config *core.OutboundHandlerConfig) (outbou
 		outboundManager: v.GetFeature(outbound.ManagerType()).(outbound.Manager),
 		uplinkCounter:   uplinkCounter,
 		downlinkCounter: downlinkCounter,
-	}
-	if observer, ok := v.GetFeature(extension.ObservatoryType()).(outbound.ConnectionObserver); ok && observer.Observes(config.Tag) {
-		h.observer = observer
+		observer:        observerOf(v, config.Tag),
 	}
 
 	if config.SenderSettings != nil {

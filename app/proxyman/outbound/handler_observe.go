@@ -7,6 +7,8 @@ import (
 	xctx "github.com/xtls/xray-core/common/ctx"
 	"github.com/xtls/xray-core/common/net"
 	"github.com/xtls/xray-core/common/session"
+	"github.com/xtls/xray-core/core"
+	"github.com/xtls/xray-core/features/extension"
 	"github.com/xtls/xray-core/features/outbound"
 	"github.com/xtls/xray-core/proxy"
 	"github.com/xtls/xray-core/transport"
@@ -16,6 +18,15 @@ import (
 
 // The observer hook lives here, apart from handler.go, so the handler body
 // keeps following upstream without conflicts.
+
+// observerOf returns the observer that follows the outbound with the tag, or
+// nil.
+func observerOf(v *core.Instance, tag string) outbound.ConnectionObserver {
+	if o, ok := v.GetFeature(extension.ObservatoryType()).(outbound.ConnectionObserver); ok && o.Observes(tag) {
+		return o
+	}
+	return nil
+}
 
 // process runs the proxy. With an observer, the proxy dials through
 // observedDialer, which reports every dial of this connection, or reports
