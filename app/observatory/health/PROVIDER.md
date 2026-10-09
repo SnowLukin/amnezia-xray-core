@@ -233,7 +233,7 @@ sent goes on to the next `via`:
 
 | Answer | Next `via` | Then |
 | --- | --- | --- |
-| 200 with a valid answer | no | Applied; the backoff starts over. |
+| 200 with a valid answer | no | Applied; the backoff starts over, unless an exhausted balancer got the same set again. |
 | 200 that is no JSON object, is cut short or too large | yes | A failure; the backoff grows. |
 | 200 with a JSON object against the protocol, or a set that does not build | no | Refused, see [Answer](#answer); the backoff grows. |
 | 401 or 403 with the code `unauthorized` or `forbidden` | no | The headers are refused, see [Token](#token). |
@@ -322,12 +322,12 @@ replaced while the request ran is no refusal of the new ones.
 generated the config names it in `baseVersion` of the provider in the
 config, or in the answer of the connect that came with the config; a set
 the host kept named the config of an earlier run and never becomes the
-base. Every request tells the base. An answer may name the base config the
-backend serves now: when that is another one, the host is told once per
-value, fetches the config anew and restarts the core when that is cheap. An
-answer that names the base of the core again ends the change. The set of
-such an answer applies all the same: the backend answers with outbounds
-that work with the base of the request.
+base. The body of every request tells the base. An answer may name the base
+config the backend serves now: when that is another one, the host is told
+once per value, fetches the config anew and restarts the core when that is
+cheap. An answer that names the base of the core again ends the change. The
+set of such an answer applies all the same: the backend answers with
+outbounds that work with the base of the request.
 
 ## Initial and kept sets
 

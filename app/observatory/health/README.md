@@ -418,18 +418,18 @@ config, which then needs `SetProviderHeaders` after the start.
 with `baseVersion`, at most 256 bytes; without one there, the `baseVersion`
 of a fresh `initial`, the answer of the connect that brought the config,
 names it. A set the host kept named the config of an earlier run, so its
-`baseVersion` never becomes the base. Every request tells the base, and an
-answer may name the one the backend serves now: an applied answer that
-names another one, the same set and a kept initial set at the start as
-well, gives `provider_base_changed` once per value, so a host learns also
-of a change it put off. The host then fetches the config anew and restarts
-the core when that is cheap, after a random delay, as a fleet that restarts
-at once loads the backend like a storm. An answer that names the base of
-the core again ends the change, and a later one is told again; an answer
-without `baseVersion` changes nothing. The set applies whatever base it
-names: the backend answers with outbounds that work with the base of the
-request. Without a base nothing is told, and Status shows what the answers
-name.
+`baseVersion` never becomes the base. The body of every request tells the
+base, and an answer may name the one the backend serves now: an applied
+answer that names another one, the same set and a kept initial set at the
+start as well, gives `provider_base_changed` once per value, so a host
+learns also of a change it put off. The host then fetches the config anew
+and restarts the core when that is cheap, after a random delay, as a fleet
+that restarts at once loads the backend like a storm. An answer that names
+the base of the core again ends the change, and a later one is told again;
+an answer without `baseVersion` changes nothing. The set applies whatever
+base it names: the backend answers with outbounds that work with the base
+of the request. Without a base nothing is told, and Status shows what the
+answers name.
 
 **Triggers.** Any trigger may start a refresh:
 
