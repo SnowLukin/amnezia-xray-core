@@ -566,10 +566,12 @@ is low, when all of this holds:
 - it was used since it last slept: an outbound never used is never asked;
 - no balancer chooses it, pinned or not: a chosen outbound never sleeps,
   however long it idles;
-- it is not the target of a return, and no failover under way probes it or
-  tried it;
-- no probe of it waits or runs, and no probe request of the host waits for
-  it;
+- it is not the target of a return, but while memory is low, and no
+  failover under way probes it or tried it;
+- no probe of it runs or is about to start, and no probe request of the
+  host waits for it; a probe held back while the network is down, the
+  device idles or memory is low does not count, as it wakes the outbound
+  once it starts;
 - no provider request goes through it, and it is neither the outbound of the
   network check nor a witness;
 - it is not leaving its provider set, which the drain closes, nor having its

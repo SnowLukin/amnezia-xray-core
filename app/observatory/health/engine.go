@@ -1142,7 +1142,7 @@ func (e *engine) tick(now time.Time) ([]*probeJob, time.Time) {
 		if j.generation != e.generation && j.reason != reasonConnectivity {
 			continue
 		}
-		if j.reason != reasonConnectivity && (e.networkDown || e.putOff(j, idle)) {
+		if e.heldBackNow(j, idle) {
 			kept = append(kept, j)
 			continue
 		}
@@ -1199,6 +1199,15 @@ func soonestOf(a, b time.Time) time.Time {
 		return b
 	}
 	return a
+}
+
+// heldBackNow tells whether tick leaves a queued probe waiting now, or
+// drops it as one of a network left since: it does not start on its own.
+func (e *engine) heldBackNow(j *probeJob, idle bool) bool {
+	if j.reason == reasonConnectivity {
+		return false
+	}
+	return j.generation != e.generation || e.networkDown || e.putOff(j, idle)
 }
 
 // putOff tells whether a probe waits for the first user connection after a

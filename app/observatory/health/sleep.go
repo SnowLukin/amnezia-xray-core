@@ -104,6 +104,7 @@ func (e *engine) planSleeps(now time.Time) time.Time {
 		return time.Time{}
 	}
 	var wake time.Time
+	idle := e.idle(now)
 	for tag, p := range e.paths {
 		if !p.awake || p.sleeping || p.sleeper == sleeperNo {
 			continue
@@ -113,7 +114,7 @@ func (e *engine) planSleeps(now time.Time) time.Time {
 			p.sleeping = true
 			continue
 		}
-		if e.keptAwake(tag) {
+		if e.keptAwake(tag, idle) {
 			// Whatever holds it uses it again when it lets go.
 			continue
 		}
@@ -136,11 +137,14 @@ func (e *engine) planSleeps(now time.Time) time.Time {
 }
 
 // keptAwake tells whether something the observer knows of uses the outbound
-// or is about to.
-func (e *engine) keptAwake(tag string) bool {
+// or is about to. A probe that tick holds back now, while the network is
+// down, the device idles or memory is low, is not about to, and neither is
+// a return while memory is low: the probe wakes the outbound when it
+// starts, and until then the tunnel would idle in memory for nothing.
+func (e *engine) keptAwake(tag string, idle bool) bool {
 	// A drain closes an outbound that left its set, a provider is swapping
 	// the handler, a provider request goes through it, a request of the
-	// host waits for its probe.
+	// host waits for an answer about it, also while its probe waits.
 	if e.retiring[tag] || e.replacing[tag] || e.fetchVia[tag] > 0 || e.waitedFor(tag) {
 		return true
 	}
@@ -151,13 +155,13 @@ func (e *engine) keptAwake(tag string) bool {
 		// The choice, a pin included, and the target of a return. While a
 		// failover probes, every candidate it tried as well: one that
 		// passed waits there for the cheaper ones to answer.
-		if s.current() == tag || s.upgradeTarget == tag ||
+		if s.current() == tag || (s.upgradeTarget == tag && !e.memoryLow) ||
 			(len(s.failoverProbing) > 0 && (s.failoverProbing[tag] || s.failoverTried[tag])) {
 			return true
 		}
 	}
 	for _, j := range e.queue {
-		if j.tag == tag {
+		if j.tag == tag && !e.heldBackNow(j, idle) {
 			return true
 		}
 	}

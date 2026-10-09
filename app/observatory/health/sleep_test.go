@@ -244,7 +244,7 @@ func TestSleepsAfterIdle(t *testing.T) {
 }
 
 // Whatever uses an outbound or is about to keeps it awake.
-func TestNeverSleepsChosenPinnedTargetProbedQueuedRequestedOrFetchVia(t *testing.T) {
+func TestNeverSleepsChosenPinnedTargetProbedQueuedOrFetchVia(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		hold func(t *testing.T, e *engine, s *selector, now time.Time)
@@ -272,11 +272,6 @@ func TestNeverSleepsChosenPinnedTargetProbedQueuedRequestedOrFetchVia(t *testing
 		{"running probe", func(t *testing.T, e *engine, s *selector, now time.Time) {
 			e.running[1<<40] = &probeJob{id: 1 << 40, tag: "w1", reason: reasonHost}
 		}},
-		{"host request", func(t *testing.T, e *engine, s *selector, now time.Time) {
-			if _, _, err := e.requestProbe("auto", []string{"w1"}, now); err != nil {
-				t.Fatal(err)
-			}
-		}},
 		{"provider request through it", func(t *testing.T, e *engine, s *selector, now time.Time) {
 			e.fetchingVia("w1", 1, now)
 		}},
@@ -290,6 +285,84 @@ func TestNeverSleepsChosenPinnedTargetProbedQueuedRequestedOrFetchVia(t *testing
 			f.turn(at(time.Hour))
 			if n := f.proxies["w1"].asked(); n != 0 || len(f.sleeps(t)) != 0 {
 				t.Fatalf("asked to sleep %d times", n)
+			}
+		})
+	}
+}
+
+// A probe request of the host keeps the outbound it waits for awake, also
+// while nothing probes it: here the network is down, so its probe waits and
+// the request alone holds the outbound, until it ends after its timeout.
+func TestHostRequestKeepsItsOutboundAwake(t *testing.T) {
+	f := newSleepFixture(t, &Config{Sleep: &SleepConfig{After: int64(10 * time.Second)}}, nil, "a1", "w1")
+	f.use("w1", at(time.Second))
+	f.engine(func(e *engine) {
+		e.onNetworkLost(at(2 * time.Second))
+		if _, _, err := e.requestProbe("auto", []string{"w1"}, at(2*time.Second)); err != nil {
+			t.Fatal(err)
+		}
+	})
+	for _, now := range []time.Time{at(2 * time.Second), at(15 * time.Second), at(time.Minute)} {
+		f.turn(now)
+		if n := f.proxies["w1"].asked(); n != 0 {
+			t.Fatalf("at %v, while the request waits: asked to sleep %d times", now.Sub(t0), n)
+		}
+	}
+	var running int
+	f.engine(func(e *engine) { running = len(e.running) })
+	if running != 0 {
+		t.Fatalf("setup: %d probes run while the network is down", running)
+	}
+	// hostProbes.timeout of two minutes ends the request.
+	f.turn(at(2*time.Minute + 3*time.Second))
+	if n := f.proxies["w1"].asked(); n != 1 || len(f.sleeps(t)) != 1 {
+		t.Fatalf("after the request: asked to sleep %d times", n)
+	}
+}
+
+// What tick holds back keeps nothing awake: a probe that waits for the
+// network, for traffic or for memory, and a return while memory is low. The
+// probe wakes the outbound once it starts.
+func TestSleepsUnderAProbeThatWaits(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		hold   func(e *engine, now time.Time)
+		at     time.Duration
+		reason string
+	}{
+		{"network down", func(e *engine, now time.Time) {
+			e.enqueue("w1", reasonRecheck, "auto", now)
+			e.onNetworkLost(now)
+		}, defaultSleepAfter, "idle"},
+		// Idle from an hour on: a probe after a network change waits for
+		// the next connection.
+		{"idle", func(e *engine, now time.Time) {
+			e.enqueue("w1", reasonNetwork, "", now)
+		}, defaultSleepAfter, "idle"},
+		{"memory low", func(e *engine, now time.Time) {
+			e.selectors["auto"].upgradeTarget = "w1"
+			e.enqueue("w1", reasonUpgrade, "auto", now)
+			e.setMemoryLow(true, now)
+		}, 0, "memory"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newSleepFixture(t, nil, nil, "a1", "w1")
+			from := at(time.Second)
+			if tc.name == "idle" {
+				from = at(2 * time.Hour)
+			}
+			f.use("w1", from)
+			f.engine(func(e *engine) { tc.hold(e, from) })
+			f.turn(from)
+			f.turn(from.Add(tc.at))
+			evs := f.sleeps(t)
+			if n := f.proxies["w1"].asked(); n != 1 || len(evs) != 1 || evs[0].Fields["reason"] != tc.reason {
+				t.Fatalf("asked to sleep %d times, events %+v", n, evs)
+			}
+			var queued int
+			f.engine(func(e *engine) { queued = len(e.queue) })
+			if queued == 0 {
+				t.Fatal("setup: the probe did not wait")
 			}
 		})
 	}
