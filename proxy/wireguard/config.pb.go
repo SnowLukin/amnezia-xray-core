@@ -165,7 +165,12 @@ func (x *PeerConfig) GetProtocolVersion() string {
 	return ""
 }
 
-// AmneziaWG obfuscation parameters.
+// AmneziaWG obfuscation parameters. Outbounds and inbounds write them to
+// their devices alike, and both sides must agree on S1-S4, H1-H4,
+// header_protection_key and random_trailers. Junk (jc, jmin, jmax) and
+// I1-I5 go out before every handshake a side starts: always the client,
+// an inbound only when its keys ran out while it has packets for a client.
+// The rest acts on the side that has it.
 type AmneziaParameters struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	Jc    string                 `protobuf:"bytes,1,opt,name=jc,proto3" json:"jc,omitempty"`
@@ -184,15 +189,14 @@ type AmneziaParameters struct {
 	I3    string                 `protobuf:"bytes,14,opt,name=i3,proto3" json:"i3,omitempty"`
 	I4    string                 `protobuf:"bytes,15,opt,name=i4,proto3" json:"i4,omitempty"`
 	I5    string                 `protobuf:"bytes,16,opt,name=i5,proto3" json:"i5,omitempty"`
-	// AmneziaWG 3.1 flags. Only outbounds apply them: the inbound writes no
-	// AmneziaWG parameters to its device.
+	// AmneziaWG 3.1 flags.
 	//
 	// random_trailers appends random bytes to handshake messages and pads
 	// transport packets. Both sides must agree: a peer without it drops every
 	// handshake.
 	RandomTrailers bool `protobuf:"varint,17,opt,name=random_trailers,json=randomTrailers,proto3" json:"random_trailers,omitempty"`
 	// disable_cookies stops answering handshakes under load with cookies. That
-	// is the side receiving handshake initiations, a server, so on an outbound
+	// is the side receiving handshake initiations, an inbound; on an outbound
 	// it does next to nothing.
 	DisableCookies bool `protobuf:"varint,18,opt,name=disable_cookies,json=disableCookies,proto3" json:"disable_cookies,omitempty"`
 	// AmneziaWG 3.1 device keys. Each is written to the device only when set,

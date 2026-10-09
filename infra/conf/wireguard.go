@@ -1,7 +1,6 @@
 package conf
 
 import (
-	"context"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -313,9 +312,6 @@ func (c *WireGuardConfig) Build() (proto.Message, error) {
 	config.NoKernelTun = c.NoKernelTun
 	if config.Parameters, err = c.Parameters.Build(); err != nil {
 		return nil, err
-	}
-	if !c.IsClient && c.Parameters != nil {
-		errors.LogWarning(context.Background(), "the WireGuard inbound ignores awg parameters")
 	}
 
 	return config, nil

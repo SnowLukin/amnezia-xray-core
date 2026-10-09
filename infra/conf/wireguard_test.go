@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/xtls/xray-core/common/protocol"
+	"github.com/xtls/xray-core/common/serial"
 	. "github.com/xtls/xray-core/infra/conf"
 	"github.com/xtls/xray-core/proxy/wireguard"
 )
@@ -317,4 +319,61 @@ func TestWireGuardRejectsBadAmnezia31Values(t *testing.T) {
 			}
 		}
 	}
+}
+
+func TestWireGuardInboundAmneziaParameters(t *testing.T) {
+	creator := func() Buildable {
+		return &WireGuardConfig{IsClient: false}
+	}
+
+	runMultiTestCase(t, []TestCase{
+		{
+			// An inbound takes the awg block as an outbound does, and its
+			// peers the keepalive range and the protocol version.
+			Input: `{
+				"secretKey": "` + testSecretKey + `",
+				"address": ["10.0.0.1"],
+				"peers": [{
+					"publicKey": "` + testPublicKey + `",
+					"allowedIPs": ["10.0.0.2/32"],
+					"keepAlive": "20-30",
+					"protocolVersion": "1",
+					"email": "user"
+				}],
+				"awg": {
+					"jc": 4, "jmin": 40, "jmax": 70,
+					"s1": 20, "s2": 78, "s3": 15, "s4": 25,
+					"h1": "100000-100100", "h2": "200000-200100",
+					"h3": "300000-300100", "h4": "400000-400100",
+					"headerProtectionKey": "` + testHeaderKey + `",
+					"randomTrailers": true,
+					"disableCookies": true
+				}
+			}`,
+			Parser: loadJSON(creator),
+			Output: &wireguard.DeviceConfig{
+				SecretKey: testSecretKey,
+				Endpoint:  []string{"10.0.0.1"},
+				Users: []*protocol.User{{
+					Email: "user",
+					Account: serial.ToTypedMessage(&wireguard.PeerConfig{
+						PublicKey:       testPublicKey,
+						AllowedIps:      []string{"10.0.0.2/32"},
+						KeepAlive:       "20-30",
+						ProtocolVersion: "1",
+					}),
+				}},
+				Mtu: 1420,
+				Parameters: &wireguard.AmneziaParameters{
+					Jc: "4", Jmin: "40", Jmax: "70",
+					S1: "20", S2: "78", S3: "15", S4: "25",
+					H1: "100000-100100", H2: "200000-200100",
+					H3: "300000-300100", H4: "400000-400100",
+					HeaderProtectionKey: testHeaderKeyHex,
+					RandomTrailers:      true,
+					DisableCookies:      true,
+				},
+			},
+		},
+	})
 }
