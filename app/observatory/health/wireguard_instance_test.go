@@ -177,6 +177,16 @@ func startWireGuardFailover(t *testing.T, ts *httptest.Server, passive string) *
 // startWireGuard is startWireGuardFailover with the probe of the observer.
 func startWireGuard(t *testing.T, ts *httptest.Server, passive, probe string) *wireGuardFailover {
 	t.Helper()
+	return startWireGuardWith(t, ts, passive, probe, "")
+}
+
+// startWireGuardWith is startWireGuard with more settings of the observer,
+// such as "sleep", as JSON members.
+func startWireGuardWith(t *testing.T, ts *httptest.Server, passive, probe, more string) *wireGuardFailover {
+	t.Helper()
+	if more != "" {
+		more = ", " + more
+	}
 	serverPriv, serverPub := wireGuardKeys(t)
 	priv1, pub1 := wireGuardKeys(t)
 	priv2, pub2 := wireGuardKeys(t)
@@ -209,7 +219,7 @@ func startWireGuard(t *testing.T, ts *httptest.Server, passive, probe string) *w
 	    "subjectSelector": ["w"],
 	    "passive": `+passive+`,
 	    "probes": [`+probe+`],
-	    "schedule": {"spacing": "10ms", "suspectCooldown": "1s", "hostProbes": {"reuse": "1ms"}}
+	    "schedule": {"spacing": "10ms", "suspectCooldown": "1s", "hostProbes": {"reuse": "1ms"}}`+more+`
 	  }
 	}`))
 	if err != nil {

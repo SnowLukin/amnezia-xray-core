@@ -159,6 +159,35 @@ func TestHealthSleepAfter(t *testing.T) {
 	}
 }
 
+// sleep.closeIdleAfter is off unless set: missing and "0s" leave zero.
+func TestHealthSleepCloseIdleAfter(t *testing.T) {
+	for raw, want := range map[string]int64{
+		`{"subjectSelector": ["a"]}`:                                     0,
+		`{"subjectSelector": ["a"], "sleep": {"after": "1m"}}`:           0,
+		`{"subjectSelector": ["a"], "sleep": {"closeIdleAfter": "0s"}}`:  0,
+		`{"subjectSelector": ["a"], "sleep": {"closeIdleAfter": "10s"}}`: int64(10 * time.Second),
+		`{"subjectSelector": ["a"], "sleep": {"closeIdleAfter": "2m"}}`:  int64(2 * time.Minute),
+		`{"subjectSelector": ["a"], "sleep": {"closeIdleAfter": "10m"}}`: int64(10 * time.Minute),
+	} {
+		cfg, err := buildHealth(t, raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := cfg.GetSleep().GetCloseIdleAfter(); got != want {
+			t.Errorf("%s: closeIdleAfter %d, want %d", raw, got, want)
+		}
+	}
+	for _, raw := range []string{
+		`{"subjectSelector": ["a"], "sleep": {"closeIdleAfter": "9s"}}`,
+		`{"subjectSelector": ["a"], "sleep": {"closeIdleAfter": "11m"}}`,
+		`{"subjectSelector": ["a"], "sleep": {"closeIdleAfter": "-1m"}}`,
+	} {
+		if _, err := buildHealth(t, raw); err == nil {
+			t.Errorf("accepted %s", raw)
+		}
+	}
+}
+
 func TestHealthProvidersBuild(t *testing.T) {
 	cfg, err := buildHealth(t, `{
 	  "subjectSelector": ["a"],

@@ -166,6 +166,8 @@ type engine struct {
 	fetchVia  map[string]int
 	sleeps    []sleepJob
 	sleepsOut bool
+	// Since when the network works, for ending idle connections, see idle.go.
+	idleNet idleNet
 
 	report report
 }
@@ -1727,6 +1729,7 @@ func (e *engine) onNetworkChange(id string, now time.Time) {
 		_, known = e.networks[id]
 	}
 	e.providersOnNetworkChange(known, now)
+	e.idleNet.changed = now
 	e.networkID = id
 	e.networkKnown = known
 	e.endPause(now)

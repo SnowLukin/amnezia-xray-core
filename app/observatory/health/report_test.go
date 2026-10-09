@@ -62,6 +62,8 @@ func foldReport(t *testing.T, raw []byte) (reportCounts, bool) {
 			}
 		case "pending_closed":
 			c.PendingClosed += num(f["connections"])
+		case "idle_closed":
+			c.IdleClosed += num(f["connections"])
 		case "probe_result":
 			c.Probes++
 			if f["ok"] != true {
@@ -197,6 +199,7 @@ func TestReportAddsUpTheEvents(t *testing.T) {
 	te.emit(now, "provider_auth_failed", map[string]any{"provider": "p", "trigger": "host", "status": 401, "via": "direct",
 		"code": "unauthorized"})
 	te.emit(now, "provider_base_changed", map[string]any{"provider": "p", "from": "b1", "to": "b2"})
+	te.emit(now, "idle_closed", map[string]any{"outbound": "b1", "connections": 2})
 	te.emit(now, "outbound_sleep", map[string]any{"outbound": "b1", "idle_ms": int64(300_000), "reason": "idle"})
 	te.emit(now, "path_state", map[string]any{"outbound": "a1", "state": "up", "reason": "rescued"})
 

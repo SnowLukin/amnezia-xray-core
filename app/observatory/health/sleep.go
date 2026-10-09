@@ -40,6 +40,15 @@ type sleepJob struct {
 	// idle; before sleep.after has passed, down for an outbound found down
 	// or memory when memory is low.
 	reason string
+	// The job checks the connections of the outbound for silence instead,
+	// see idle.go: closeFrom is when it may end them. The observer notes
+	// whether the check ran, how many connections it ended and when one it
+	// kept may first have been silent long enough.
+	idleCheck bool
+	closeFrom time.Time
+	checked   bool
+	closed    int
+	next      time.Time
 }
 
 type sleepResult int8
@@ -94,6 +103,9 @@ func (e *engine) processStarted(tag string, now time.Time) bool {
 	woke := e.used(tag, now)
 	if p := e.paths[tag]; p != nil {
 		p.processes++
+		// A new connection is a use like any other: the outbound waits
+		// sleep.after from its end, whatever a check ended before.
+		p.idleClosed = false
 	}
 	return woke
 }
@@ -136,7 +148,11 @@ func (e *engine) fetchingVia(tag string, delta int, now time.Time) {
 // Nothing is planned while a batch is under way: its end kicks the loop.
 func (e *engine) planSleeps(now time.Time) time.Time {
 	after := e.s.sleepAfter
-	if after <= 0 || e.sleepsOut {
+	if after <= 0 {
+		return time.Time{}
+	}
+	e.noteNetwork(now)
+	if e.sleepsOut {
 		return time.Time{}
 	}
 	var wake time.Time
@@ -151,11 +167,21 @@ func (e *engine) planSleeps(now time.Time) time.Time {
 			continue
 		}
 		if e.keptAwake(tag, idle) {
-			// Whatever holds it uses it again when it lets go.
+			// Whatever holds it uses it again when it lets go. Connections
+			// alone may idle for good: see idle.go.
+			wake = soonestOf(wake, e.planIdleCheck(tag, p, now, idle))
 			continue
 		}
 		reason := "idle"
 		due := maxTime(p.usedAt.Add(after), p.nextSleepTry)
+		if p.idleClosed {
+			// Its idle connections were ended once nothing had chosen it
+			// for sleep.after: their ends and those of the rest restart no
+			// such wait. The last one may still be closing inside the
+			// tunnel, and the server would repeat its end of it to a
+			// tunnel gone, so the outbound waits the shortest sleep.after.
+			due = maxTime(p.usedAt.Add(minSleepAfter), p.nextSleepTry)
+		}
 		if now.Before(due) {
 			// A refusal still waits for its retry: the connection that made
 			// it may go on for long.
@@ -190,13 +216,19 @@ func (e *engine) planSleeps(now time.Time) time.Time {
 // a return while memory is low: the probe wakes the outbound when it
 // starts, and until then the tunnel would idle in memory for nothing.
 func (e *engine) keptAwake(tag string, idle bool) bool {
-	// A connection goes through it, a drain closes an outbound that left
-	// its set, a provider is swapping the handler, a provider request goes
-	// through it, a request of the host waits for an answer about it, also
-	// while its probe waits.
+	// A connection goes through it.
 	if p := e.paths[tag]; p != nil && p.processes > 0 {
 		return true
 	}
+	return e.heldAwake(tag, idle)
+}
+
+// heldAwake is keptAwake but for the connections through the outbound:
+// whatever else holds it keeps its idle connections as well, see idle.go.
+func (e *engine) heldAwake(tag string, idle bool) bool {
+	// A drain closes an outbound that left its set, a provider is swapping
+	// the handler, a provider request goes through it, a request of the
+	// host waits for an answer about it, also while its probe waits.
 	if e.retiring[tag] || e.replacing[tag] || e.fetchVia[tag] > 0 || e.waitedFor(tag) {
 		return true
 	}
@@ -242,6 +274,10 @@ func (e *engine) onSlept(batch []sleepJob, results []sleepResult, now time.Time)
 	e.sleepsOut = false
 	for i, j := range batch {
 		p := j.p
+		if j.idleCheck {
+			e.onIdleChecked(j, now)
+			continue
+		}
 		if e.paths[j.tag] != p {
 			// Forgotten meanwhile: its handler left.
 			continue
@@ -256,7 +292,7 @@ func (e *engine) onSlept(batch []sleepJob, results []sleepResult, now time.Time)
 		case sleepGone:
 			// Nothing registered under the tag holds a tunnel; a handler
 			// registered later is asked anew once it is used.
-			p.awake = false
+			p.awake, p.idleClosed = false, false
 			p.sleeper = sleeperUnknown
 		case sleepCannot:
 			p.sleeper = sleeperNo
@@ -276,7 +312,7 @@ func (e *engine) onSlept(batch []sleepJob, results []sleepResult, now time.Time)
 			p.nextSleepTry = now.Add(retry)
 		case sleepDone:
 			p.sleeper = sleeperYes
-			p.awake, p.asleep = false, true
+			p.awake, p.asleep, p.idleClosed = false, true, false
 			e.emit(now, "outbound_sleep", map[string]any{
 				"outbound": j.tag, "idle_ms": now.Sub(p.usedAt).Milliseconds(), "reason": j.reason,
 			})
@@ -318,9 +354,13 @@ func (e *engine) awakeSleeper(p *path) bool {
 // sleepOutbounds asks the handlers of a batch outside the observer lock:
 // releasing a tunnel may take a while, and decisions must not wait for it.
 func (o *Observer) sleepOutbounds(batch []sleepJob) {
+	o.closeIdle(batch)
 	var open map[string]int64
 	results := make([]sleepResult, len(batch))
 	for i, j := range batch {
+		if j.idleCheck {
+			continue
+		}
 		if j.sleep && open == nil {
 			open = o.oldestConnections()
 		}

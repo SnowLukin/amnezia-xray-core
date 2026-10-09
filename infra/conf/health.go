@@ -105,6 +105,9 @@ type HealthReportConfig struct {
 
 type HealthSleepConfig struct {
 	After *duration.Duration `json:"after"`
+	// CloseIdleAfter: "0s" or missing keeps the connections of an outbound
+	// that can sleep whatever their silence, the default.
+	CloseIdleAfter *duration.Duration `json:"closeIdleAfter"`
 }
 
 type HealthCostTriggerConfig struct {
@@ -524,6 +527,14 @@ func (c *HealthObservatoryConfig) Build() (proto.Message, error) {
 			return nil, errors.New("healthObservatory: sleep.after must be 0s or at least 10s")
 		}
 		out.Sleep = &health.SleepConfig{After: optionalDuration(s.After)}
+		// Shorter, a connection between two requests would count as idle;
+		// longer, the observer may have stopped following it.
+		if a := s.CloseIdleAfter; a != nil && *a != 0 {
+			if *a < duration.Duration(10*time.Second) || *a > duration.Duration(10*time.Minute) {
+				return nil, errors.New("healthObservatory: sleep.closeIdleAfter must be 0s or in [10s, 10m]")
+			}
+			out.Sleep.CloseIdleAfter = int64(*a)
+		}
 	}
 	for _, p := range c.Providers {
 		if p == nil {

@@ -74,6 +74,12 @@ const (
 	// An outbound found down sleeps at once, and one that refused is asked
 	// again after minDownSleepRetry, doubling the same way.
 	minDownSleepRetry = 5 * time.Second
+	// sleep.closeIdleAfter, when on, is at least the shortest sleep.after:
+	// a connection between two requests is not idle. It is at most
+	// trackerAbandoned, after which the observer may stop following a
+	// connection without traffic and could no longer end it.
+	minCloseIdleAfter = minSleepAfter
+	maxCloseIdleAfter = trackerAbandoned
 
 	// The version of the provider protocol the core speaks.
 	providerProtocol = 1
@@ -262,6 +268,10 @@ type settings struct {
 	// How long after its last use an outbound no balancer chooses is put
 	// to sleep; zero turns sleep off.
 	sleepAfter time.Duration
+	// Connections that received nothing for this long are ended on an
+	// outbound that can sleep and that no balancer has chosen for
+	// sleepAfter, see idle.go; zero turns it off.
+	closeIdleAfter time.Duration
 }
 
 type providerSettings struct {
@@ -516,6 +526,10 @@ func newSettings(c *Config) *settings {
 		// The JSON loader refuses a shorter one; a config built without it
 		// must not cut connections that are still closing either.
 		s.sleepAfter = max(after, minSleepAfter)
+		// The JSON loader refuses a value out of bounds as well.
+		if n := time.Duration(c.GetSleep().GetCloseIdleAfter()); n > 0 {
+			s.closeIdleAfter = min(max(n, minCloseIdleAfter), maxCloseIdleAfter)
+		}
 	}
 	s.remember = !c.GetNetwork().GetNoMemory()
 	s.maxNetworks = min(num(c.GetNetwork().GetMaxNetworks(), defaultMaxNetworks), maxNetworks)

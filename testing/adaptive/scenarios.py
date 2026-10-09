@@ -3220,3 +3220,203 @@ def awg_failover_freeze(stand, xray, work, name):
     caught = [r for r in tr.records if r[0] >= m["cut"] - tr.timeout and not r[1] and r[3] > 0]
     checks.append(check("requests cut in the middle of their answer", len(caught), True, "info"))
     return checks
+
+
+# sleep.closeIdleAfter of awg_unchosen_idle_close, and the wait from the end of the last
+# connection to the sleep after an idle close: the shortest sleep.after.
+AWG_IDLE_CLOSE = 15
+AWG_IDLE_SETTLE = 10
+
+
+class QuietConnection:
+    """A keep-alive connection through the client that asks for an empty answer every few
+    seconds until hush, then stays open and quiet, as the push connections of a phone do once
+    their application has nothing to say. Marks its last answer and when the client ends it."""
+
+    def __init__(self, host, every=2.0):
+        self.host = host
+        self.every = every
+        self.sock = None
+        self.answers = 0
+        self.last = None
+        self.ended = None
+        self._hush = threading.Event()
+
+    def open(self):
+        s = bench.open_stream(self.host, 10)
+        if s is None:
+            return
+        self.sock = s
+        threading.Thread(target=self._run, daemon=True).start()
+
+    def hush(self):
+        self._hush.set()
+
+    def _run(self):
+        s = self.sock
+        try:
+            while not self._hush.is_set():
+                s.sendall(f"GET /204 HTTP/1.1\r\nHost: {self.host}\r\n\r\n".encode())
+                head, _ = bench.read_answer(s, time.time() + 10)
+                if not head.startswith(b"HTTP/1.1 204"):
+                    break
+                self.answers += 1
+                self.last = time.time()
+                self._hush.wait(self.every)
+            s.settimeout(None)
+            s.recv(1)
+        except OSError:
+            pass
+        self.ended = time.time()
+
+    def close(self):
+        if self.sock is not None:
+            self.sock.close()
+
+
+def awg_idle_close_phase(xray, work, name, close_idle):
+    """One client with sleep.closeIdleAfter close_idle seconds, 0 for off. Traffic and a quiet
+    connection go through w1 under the start pin; the connection stops talking and the host
+    releases the pin, so the balancer returns to v1 and only the connection holds w1. Returns
+    the client, the sampler, the traffic, the connection and the marks."""
+    cfg = awg_config()
+    cfg["healthObservatory"]["sleep"]["closeIdleAfter"] = f"{close_idle}s"
+    m = Marks()
+    quiet = QuietConnection(bench.TARGETS[3])
+    try:
+        with bench.Client(xray, cfg, work, name) as c, bench.ConnSampler() as cs:
+            tr = bench.Traffic(rate=2, big=0.5, timeout=5)
+            m["start"] = time.time()
+            tr.start()
+            time.sleep(1)
+            quiet.open()
+            time.sleep(7)
+            quiet.hush()
+            time.sleep(0.5)
+            m["release"] = time.time()
+            c.api("release", "auto")
+            away = wait_for(lambda: [e for e in bench.switches(c.events, m["release"])
+                                     if e["fields"]["from"] == "w1"], 15)
+            m["away"] = away[0]["ts"] / 1000 if away else time.time()
+            if close_idle:
+                slept = wait_for(lambda: w1_sleeps(c, m["release"]), AWG_SLEEP + close_idle + 20)
+                if slept:
+                    m["asleep"] = slept[0]["ts"] / 1000
+                    m["status"] = path_status(c, "w1")
+                # Room for three keepalives, had they gone on.
+                time.sleep(10)
+            else:
+                # The window in which the close and the sleep would have come, and some.
+                time.sleep(max(0.0, m["away"] + AWG_SLEEP + AWG_IDLE_CLOSE + 10 - time.time()))
+                m["status"] = path_status(c, "w1")
+                # The connection ends at the client: w1 then sleeps sleep.after later.
+                m["hung_up"] = time.time()
+                quiet.close()
+                slept = wait_for(lambda: w1_sleeps(c, m["hung_up"]), AWG_SLEEP + 10)
+                if slept:
+                    m["asleep"] = slept[0]["ts"] / 1000
+            m["end"] = time.time()
+            tr.stop()
+    finally:
+        quiet.close()
+    tr.save(os.path.join(work, f"{name}-{close_idle}-traffic.json"))
+    return c, cs, tr, quiet, m, away and away[0]
+
+
+@scenario()
+def awg_unchosen_idle_close(stand, xray, work, name):
+    """Traffic and a keep-alive connection that answers every 2 s go through the AmneziaWG
+    outbound w1 under a start pin; the connection then falls quiet and stays open, as the push
+    connections of a phone do, and the host releases the pin, so the balancer returns to v1.
+    Unchosen, w1 is held by that connection alone. With closeIdleAfter 15 s the core ends it,
+    at the later of sleep.after after the switch off w1 and 15 s after its last answer, with
+    idle_closed; its client sees the end, w1 sleeps with reason idle 10 s later, once the end
+    has crossed the tunnel, and its datagrams stop at the UDP proxy; the server sends at most
+    the one passive keepalive that answers the end. With closeIdleAfter 0s nothing is ended and w1 stays awake through
+    the same window, with its keepalives; it sleeps sleep.after after the client hangs up."""
+    c, cs, tr, quiet, m, away = awg_idle_close_phase(xray, work, f"{name}-on", AWG_IDLE_CLOSE)
+    checks = [check(f"{k} (closeIdleAfter {AWG_IDLE_CLOSE}s)", v, ok, lim) for k, v, ok, lim in
+              idle_close_on_checks(c, cs, tr, quiet, m, away)]
+    c, cs, tr, quiet, m, away = awg_idle_close_phase(xray, work, f"{name}-off", 0)
+    checks += [check(f"{k} (closeIdleAfter 0s)", v, ok, lim) for k, v, ok, lim in
+               idle_close_off_checks(c, cs, tr, quiet, m, away)]
+    return checks
+
+
+def idle_close_common(c, tr, quiet, m, away):
+    """What both phases share: the quiet connection talked through w1 under the pin, and the
+    release moved the balancer to v1."""
+    out = [("quiet connection: answers through w1 under the pin", quiet.answers, quiet.answers >= 3, ">= 3")]
+    for x in awg_away_checks(c, tr, m, away):
+        out.append((x["check"], x["value"], x["ok"], x["limit"]))
+    return out
+
+
+def idle_close_on_checks(c, cs, tr, quiet, m, away):
+    out = idle_close_common(c, tr, quiet, m, away)
+    closed = [e for e in bench.events_of(c.events, "idle_closed", m["release"]) if e["fields"].get("outbound") == "w1"]
+    at = closed and closed[0]["ts"] / 1000
+    # The core counts sleep.after from the last use of w1, which the connections that were
+    # still under way at the switch push back by up to the request timeout.
+    due = away and quiet.last and max(m["away"] + AWG_SLEEP, quiet.last + AWG_IDLE_CLOSE)
+    late = closed and due and round(at - due, 1)
+    out.append(("idle_closed of w1: connections, s after max(switch + sleep.after, last answer + closeIdleAfter)",
+                closed and f"{closed[0]['fields'].get('connections')}, {late}",
+                len(closed) == 1 and closed[0]["fields"].get("connections") == 1 and bool(due)
+                and -0.5 <= late <= tr.timeout + 1, f"1, 0 .. {tr.timeout + 1}"))
+    ended = quiet.ended and closed and round(quiet.ended - at, 1)
+    out.append(("quiet connection ended at the client after idle_closed, s", ended,
+                bool(closed) and quiet.ended is not None and -0.5 <= ended <= 2, "0 .. 2"))
+    slept = w1_sleeps(c, m["release"])
+    asleep = slept and slept[0]["ts"] / 1000
+    f = slept[0]["fields"] if slept else {}
+    out.append(("outbound_sleep of w1 after idle_closed: reason, s", slept and closed
+                and f"{f.get('reason')} {round(asleep - at, 2)}",
+                bool(slept) and bool(closed) and f.get("reason") == "idle"
+                and AWG_IDLE_SETTLE - 0.5 <= asleep - at <= AWG_IDLE_SETTLE + 2,
+                f"idle, {AWG_IDLE_SETTLE} .. {AWG_IDLE_SETTLE + 2}"))
+    if away and slept and closed:
+        kept = cs.packets(bench.AWG_ADDRESS, m["away"] + 2, at - 0.5)
+        out.append(("keepalives of w1 held awake by the connection, datagrams up/down", kept,
+                    kept[0] is not None and kept[0] >= 2, "up >= 2"))
+        # A tunnel gone before the end crossed it, the server would repeat its end of the
+        # connection; one passive keepalive answers the end 10 s after it, about at the sleep.
+        after = cs.packets(bench.AWG_ADDRESS, asleep, m["end"])
+        out.append((f"datagrams at the proxy in {round(m['end'] - asleep, 1)} s after the sleep, up/down",
+                    after, after[0] == 0 and after[1] is not None and after[1] <= 1, "up 0, down <= 1"))
+    status = m.get("status", {})
+    out.append(("Status of w1 after the sleep", f"asleep={status.get('asleep')}", status.get("asleep") is True,
+                "asleep=True"))
+    ok, n = requests_ok(tr, m["start"], m["end"])
+    out.append(("requests answered", f"{ok}/{n}", ok == n, "all"))
+    lc = leak_check(c)
+    out.append((lc["check"], lc["value"], lc["ok"], lc["limit"]))
+    return out
+
+
+def idle_close_off_checks(c, cs, tr, quiet, m, away):
+    out = idle_close_common(c, tr, quiet, m, away)
+    closed = bench.events_of(c.events, "idle_closed", m["start"])
+    out.append(("idle_closed events", len(closed), not closed, "== 0"))
+    early = [e for e in w1_sleeps(c, m["release"]) if e["ts"] / 1000 < m["hung_up"]]
+    out.append((f"outbound_sleep of w1 in {round(m['hung_up'] - m['away'], 1)} s after the switch off it",
+                len(early), not early, "== 0"))
+    out.append(("quiet connection open until the client hung up", quiet.ended is None or quiet.ended >= m["hung_up"],
+                quiet.ended is None or quiet.ended >= m["hung_up"], "True"))
+    if away:
+        kept = cs.packets(bench.AWG_ADDRESS, m["away"] + AWG_SLEEP + 2, m["hung_up"])
+        out.append(("keepalives of w1 past sleep.after, datagrams up/down", kept,
+                    kept[0] is not None and kept[0] >= 2, "up >= 2"))
+    status = m.get("status", {})
+    out.append(("Status of w1 before the hang-up", f"asleep={bool(status.get('asleep'))}",
+                bool(status) and not status.get("asleep"), "asleep=False"))
+    late = [e for e in w1_sleeps(c, m["hung_up"])]
+    gap = late and round(late[0]["ts"] / 1000 - m["hung_up"], 1)
+    out.append(("outbound_sleep of w1 after the hang-up: reason, s", late and f"{late[0]['fields'].get('reason')} {gap}",
+                bool(late) and late[0]["fields"].get("reason") == "idle" and AWG_SLEEP - 0.5 <= gap <= AWG_SLEEP + 3,
+                f"idle, {AWG_SLEEP} .. {AWG_SLEEP + 3}"))
+    ok, n = requests_ok(tr, m["start"], m["end"])
+    out.append(("requests answered", f"{ok}/{n}", ok == n, "all"))
+    lc = leak_check(c)
+    out.append((lc["check"], lc["value"], lc["ok"], lc["limit"]))
+    return out
