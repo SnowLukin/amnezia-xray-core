@@ -86,9 +86,15 @@ const (
 	// gone wild does not keep an outbound for good.
 	maxLease = 30 * 24 * time.Hour
 	// Headers an answer or the host put over those of the config: at most
-	// this many, each value at most this long.
+	// this many, each name and value at most this long.
 	maxRotatedHeaders = 8
+	maxHeaderName     = 256
 	maxHeaderValue    = 4096
+	// What ProviderSet may add to an answer of at most maxBytes: the
+	// headers an answer or the host set, a value at most six times as long
+	// once escaped for JSON, and serverTime and receivedAt. An initial set,
+	// which may be such a set, may be this much larger than an answer.
+	keptSetRoom = maxRotatedHeaders*(maxHeaderName+6*maxHeaderValue+6) + 16 + 2*64
 	// The name of a base config, in the config and in an answer.
 	maxBaseVersion = 256
 

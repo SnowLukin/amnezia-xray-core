@@ -305,8 +305,8 @@ token of the provider:
 - only names the client allows, by default `Authorization`, in any case:
   `authorization` replaces the `Authorization` of the config;
 - at most 8, also together with the headers the host and earlier answers
-  set, each value non-empty, at most 4 KiB, without line breaks or other
-  control characters;
+  set, each name at most 256 bytes, each value non-empty, at most 4 KiB,
+  without line breaks or other control characters;
 - names of the transport (`Host`, `Content-Length`, `Content-Type`,
   `Transfer-Encoding`, `Connection`, `Keep-Alive`, `TE`, `Trailer`,
   `Upgrade`, `Accept`, `Proxy-*`) never.

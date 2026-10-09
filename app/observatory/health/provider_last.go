@@ -87,6 +87,9 @@ func (o *Observer) ProviderSet(provider string, after uint64) ([]byte, uint64, e
 	return doc, seq, nil
 }
 
+// document builds the set as the next start takes it. It escapes no HTML:
+// the sections of the answer keep their bytes, so the set grows past the
+// answer only by what keptSetRoom allows for, which the next start takes.
 func (l lastAnswer) document(rotated map[string]string) ([]byte, error) {
 	var sections map[string]json.RawMessage
 	if err := json.Unmarshal(l.raw, &sections); err != nil {
@@ -94,9 +97,19 @@ func (l lastAnswer) document(rotated map[string]string) ([]byte, error) {
 	}
 	delete(sections, "headers")
 	if len(rotated) > 0 {
-		sections["headers"], _ = json.Marshal(rotated)
+		sections["headers"] = marshalRaw(rotated)
 	}
-	sections["serverTime"], _ = json.Marshal(l.ref.UTC().Format(time.RFC3339Nano))
-	sections["receivedAt"], _ = json.Marshal(l.receivedAt.UTC().Format(time.RFC3339Nano))
-	return json.Marshal(sections)
+	sections["serverTime"] = marshalRaw(l.ref.UTC().Format(time.RFC3339Nano))
+	sections["receivedAt"] = marshalRaw(l.receivedAt.UTC().Format(time.RFC3339Nano))
+	return marshalRaw(sections), nil
+}
+
+// marshalRaw encodes v as json.Marshal does, without escaping HTML. It
+// takes only values that always encode.
+func marshalRaw(v any) json.RawMessage {
+	var b bytes.Buffer
+	enc := json.NewEncoder(&b)
+	enc.SetEscapeHTML(false)
+	_ = enc.Encode(v)
+	return bytes.TrimSuffix(b.Bytes(), []byte("\n"))
 }

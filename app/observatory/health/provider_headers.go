@@ -28,6 +28,10 @@ func CheckHeaderName(name string) error {
 	if !httpguts.ValidHeaderFieldName(name) {
 		return fmt.Errorf("header name %q is not a token", cut(name))
 	}
+	if len(name) > maxHeaderName {
+		// The set the host keeps carries the name: it bounds that set.
+		return fmt.Errorf("header name %s is longer than %d bytes", cut(name), maxHeaderName)
+	}
 	if canon := http.CanonicalHeaderKey(name); transportHeaders[canon] || strings.HasPrefix(canon, "Proxy-") {
 		return fmt.Errorf("header %s cannot be set", canon)
 	}

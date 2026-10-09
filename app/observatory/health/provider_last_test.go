@@ -260,3 +260,40 @@ func TestKeptAnswerIsReplacedNotAdded(t *testing.T) {
 		t.Fatalf("version %s, seq %d", doc["version"], seq)
 	}
 }
+
+// The set the host keeps starts the next core even when the answer took
+// all of maxBytes and the host set eight headers of the longest values
+// JSON escapes: the answer keeps its bytes, and the initial set has room
+// for what ProviderSet adds.
+func TestKeptSetOfALargeAnswerStartsTheNextCore(t *testing.T) {
+	f, _ := initialFixture(t, "")
+	head := `{"outbounds": [{"tag": "x1", "protocol": "vless", "v": 1, "pad": "`
+	tail := `"}]}`
+	body := head + strings.Repeat("<&>", (int(f.rt.cfg.maxBytes)-len(head)-len(tail))/3) + tail
+	a, err := parseAnswer([]byte(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.apply(t, a); err != nil {
+		t.Fatal(err)
+	}
+	host := map[string]string{}
+	for i := range maxRotatedHeaders {
+		host[fmt.Sprintf("X-%s%d", strings.Repeat("h", maxHeaderName-4), i)] = strings.Repeat(`"`, maxHeaderValue)
+	}
+	if err := f.o.SetProviderHeaders("fresh", host); err != nil {
+		t.Fatal(err)
+	}
+	raw, _, err := f.o.ProviderSet("fresh", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if int64(len(raw)) <= f.rt.cfg.maxBytes || int64(len(raw)) > f.rt.cfg.maxBytes+keptSetRoom {
+		t.Fatalf("a set of %d bytes for an answer of %d", len(raw), len(body))
+	}
+	g, _ := initialFixture(t, string(raw))
+	g.o.applyInitial()
+	if ev := g.lastApply(t); ev["ok"] != true || ev["trigger"] != "initial" {
+		t.Fatalf("the next core refused the kept set: %v", ev)
+	}
+}

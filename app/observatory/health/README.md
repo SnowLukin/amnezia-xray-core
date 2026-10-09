@@ -378,9 +378,10 @@ revoked outbound is no block. One a balancer still uses is judged as usual.
 the token of the provider. Only names in `apply.headers` may come, in any
 case: `authorization` replaces the `Authorization` of the config rather than
 going beside it. `[]` lets no answer set a header, and an answer with
-`headers` is then refused. At most 8 headers, each value non-empty, without
-line breaks or other control characters and at most 4 KiB; names of the
-transport such as `Host`, `Content-Type`, `Connection` or `Proxy-*` never.
+`headers` is then refused. At most 8 headers, each name at most 256 bytes,
+each value non-empty, without line breaks or other control characters and
+at most 4 KiB; names of the transport such as `Host`, `Content-Type`,
+`Connection` or `Proxy-*` never.
 The host sets headers the same way with `SetProviderHeaders`, any names but
 those of the transport; an empty value removes what the host or an answer
 set, and the config applies again. The headers an answer or the host set
@@ -425,14 +426,16 @@ pin. A fresh one counts from its `serverTime`, as an answer that just
 arrived. Its headers lie over those of the config and under those the host
 set, also before the start, name by name: a header of another name that the
 host set, such as one that names the device, leaves the token of the set in
-place. An initial set that is not an object, is larger than `maxBytes`,
-breaks the protocol or does not build is reported in `provider_apply` with
-trigger `initial` and `ok` false, and the core starts on the outbounds of
-the config: a bad saved set never keeps the core from starting. Once
-applied, the set lives on only as the last applied answer of `ProviderSet`.
-A host passes the answer of a connect when it has one, and the kept set
-only without it: the headers of a kept set would lie over a fresh token in
-the config, which then needs `SetProviderHeaders` after the start.
+place. An initial set may be larger than `maxBytes` by what `ProviderSet`
+adds to an answer, the headers and the clock, some 200 KiB at most. An
+initial set that is not an object, is larger than that, breaks the protocol
+or does not build is reported in `provider_apply` with trigger `initial`
+and `ok` false, and the core starts on the outbounds of the config: a bad
+saved set never keeps the core from starting. Once applied, the set lives
+on only as the last applied answer of `ProviderSet`. A host passes the
+answer of a connect when it has one, and the kept set only without it: the
+headers of a kept set would lie over a fresh token in the config, which
+then needs `SetProviderHeaders` after the start.
 
 **Base config.** A backend that generates the config of the core names it
 with `baseVersion`, at most 256 bytes; without one there, the `baseVersion`
@@ -594,8 +597,9 @@ a deadline, and the config values that size anything have ceilings. For an
 open connection of a watched outbound it keeps under 1 KB and no goroutine
 of its own. The report keeps fixed counters, the latest 10 switches and
 seven numbers per outbound. A provider keeps its last applied answer for
-`ProviderSet`, at most `maxBytes` and replaced by the next one; the config
-drops its initial set once applied.
+`ProviderSet`, at most `maxBytes`, a kept initial set some 200 KiB more,
+and replaced by the next one; the config drops its initial set once
+applied.
 
 A host that watches the memory of the process, such as an iOS network
 extension close to its limit, reports pressure with `SetMemoryLow(true)` and

@@ -42,6 +42,7 @@ func TestAnswerRotatesOnlyAllowedHeaders(t *testing.T) {
 		{`{"Host": "example.com"}`, allowed, "header Host cannot be set"},
 		{`{"Proxy-Authorization": "x"}`, allowed, "header Proxy-Authorization cannot be set"},
 		{`{"Bad Name": "x"}`, allowed, `header name "Bad Name" is not a token`},
+		{`{"X-` + strings.Repeat("n", maxHeaderName) + `": "x"}`, allowed, "is longer than 256 bytes"},
 		{`{"authorization": "a", "Authorization": "b"}`, allowed, "headers: Authorization given twice"},
 		{`{` + strings.Join(many, ", ") + `}`, two, "headers: more than 8"},
 	} {
@@ -408,6 +409,7 @@ func TestSetProviderHeadersRejectsBadNames(t *testing.T) {
 		{"fresh", map[string]string{"Authorization": "Bearer secret\r\nX: 1"}, "header Authorization has a value that is not valid"},
 		{"fresh", map[string]string{"Authorization": strings.Repeat("s", maxHeaderValue+1)}, "longer than"},
 		{"fresh", map[string]string{"authorization": "a", "Authorization": "b"}, "given twice"},
+		{"fresh", map[string]string{"X-" + strings.Repeat("n", maxHeaderName): "v"}, "is longer than 256 bytes"},
 		{"fresh", many, "more than 8 headers"},
 	} {
 		err := o.SetProviderHeaders(tc.provider, tc.headers)

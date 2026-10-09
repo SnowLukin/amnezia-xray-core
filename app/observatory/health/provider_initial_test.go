@@ -37,7 +37,8 @@ func TestBrokenInitialKeepsTheCoreRunning(t *testing.T) {
 	for _, tc := range []struct{ name, initial, want string }{
 		{"garbage", `{"outbounds": [`, "invalid answer: unexpected end of JSON input"},
 		{"not an object", `[1]`, "invalid answer: "},
-		{"too large", `{"outbounds": [{"tag": "x1", "v": "` + strings.Repeat("x", 300<<10) + `"}]}`, "initial larger than 262144 bytes"},
+		{"too large", `{"outbounds": [{"tag": "x1", "v": "` + strings.Repeat("x", 262144+keptSetRoom) + `"}]}`,
+			fmt.Sprintf("initial larger than %d bytes", 262144+keptSetRoom)},
 		{"protocol 2", `{"protocol": 2, "outbounds": [{"tag": "x1", "protocol": "vless"}]}`, "protocol 2 is not supported"},
 		{"bad receivedAt", `{"outbounds": [{"tag": "x1", "protocol": "vless"}], "receivedAt": "yesterday"}`, "receivedAt"},
 		{"does not build", `{"outbounds": [{"tag": "x1", "protocol": "vless", "bad": true}]}`, "cannot build"},

@@ -197,8 +197,10 @@ func (o *Observer) applyInitial() {
 // initialAnswer reads the initial set of a provider. One the host saved
 // tells by receivedAt how old it is.
 func (o *Observer) initialAnswer(rt *providerRuntime, raw []byte) (*providerAnswer, error) {
-	if int64(len(raw)) > rt.cfg.maxBytes {
-		return nil, fmt.Errorf("initial larger than %d bytes", rt.cfg.maxBytes)
+	// A set the host kept is the answer with the headers and the clock of
+	// ProviderSet, which may take it past maxBytes by keptSetRoom.
+	if limit := rt.cfg.maxBytes + keptSetRoom; int64(len(raw)) > limit {
+		return nil, fmt.Errorf("initial larger than %d bytes", limit)
 	}
 	a, err := parseInitial(raw)
 	if err != nil {
