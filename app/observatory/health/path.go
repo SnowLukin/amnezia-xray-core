@@ -116,6 +116,21 @@ type path struct {
 	stats      pathStats
 	// The counters at the previous report.
 	reported pathTotals
+
+	// Sleep, see sleep.go. The outbound was used since it last slept, last
+	// at usedAt; uses counts the uses, so a result of Sleep that a later use
+	// overtook is told apart. asleep: Sleep released what it held.
+	awake  bool
+	asleep bool
+	usedAt time.Time
+	uses   uint64
+	// Whether the proxy can sleep, once the observer asked its handler.
+	sleeper sleeperKind
+	// A batch asks the handler now.
+	sleeping bool
+	// Refusals in a row, and when to ask again after the last one.
+	sleepTries   int
+	nextSleepTry time.Time
 }
 
 type pathStats struct {

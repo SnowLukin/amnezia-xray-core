@@ -73,8 +73,9 @@ least `spacing` apart. They stay within `perMinute` in total and
 one server name never run at once: several near-simultaneous handshakes to
 one server name are a known censor signal. Without user traffic for
 `pauseWhenIdle` there are no probes and no timers, except the renewal and
-the end of a provider lease, see Providers. Closing the core ends the
-probes still running, and their outcome is not held against the outbound.
+the end of a provider lease, see Providers, and putting an outbound to
+sleep after its last use, see Sleep. Closing the core ends the probes still
+running, and their outcome is not held against the outbound.
 
 Existing connections stay where they are; only new connections move. The
 exception is an outbound found down: its connections that have received
@@ -114,7 +115,8 @@ decision made while the network check was failing ends nothing.
     },
     "events": { "maxEvents": 1000, "maxBytes": 65536 },
     "network": { "remember": true, "maxNetworks": 16 },
-    "report": { "interval": "24h" }
+    "report": { "interval": "24h" },
+    "sleep": { "after": "5m" }
   },
   "routing": {
     "balancers": [{
@@ -185,6 +187,9 @@ for `hostProbes` `perMinute` half of `schedule.perMinute`, `reuse` 5 min,
   to the default outbound.
 - `report.interval`: a window with a decision is reported once it lasts
   this long, see Report. `"0s"` leaves only the report at the stop.
+- `sleep.after`: an outbound that can release what it holds while idle
+  does so this long after its last use while no balancer chooses it, see
+  Sleep. At least 10 s; `"0s"` turns sleep off.
 - `hostProbes` limits the probes the host asks for, see Probes on request.
 
 ## Providers
@@ -326,9 +331,11 @@ closed, and what the observatory knew about it and its traffic counters are
 forgotten; if the balancer uses it, the balancer moves to another candidate
 the usual way and stays where it is while there is nothing else. The old
 handler of a replaced outbound drains the same way. A drain ends at once
-when the outbound has no open connections and no balancer chooses it, and
-at most `maxOutbounds` outbounds drain at a time: beyond that the oldest
-drains end early.
+when the outbound has no open connections and no balancer chooses it. An
+outbound that can sleep is asked as well, since the observatory may not
+see its connections, see Sleep: while one goes on it refuses, and the drain
+runs its time. At most `maxOutbounds` outbounds drain at a time: beyond
+that the oldest drains end early.
 
 **Leases.** `expiresAt` tells by tag when the backend stops serving an
 outbound, in RFC 3339 with a zone, and `serverTime` is the clock of the
@@ -519,17 +526,56 @@ A host that calls in a loop costs at most `perMinute` probes a minute and a
 few kilobytes: the observer keeps the open requests and the latest four
 closed ones.
 
+## Sleep
+
+An outbound that can release what it holds while idle, such as WireGuard
+with its tunnel, network stack and their goroutines, creates them with its
+first connection or probe and releases them when the observatory puts it to
+sleep; its next connection creates them again, at the cost of a handshake.
+The observatory decides when, since it knows what uses an outbound. An
+outbound sleeps `sleep.after` after its last use, and at once while memory
+is low, when all of this holds:
+
+- it was used since it last slept: an outbound never used is never asked;
+- no balancer chooses it, pinned or not: a chosen outbound never sleeps,
+  however long it idles;
+- it is not the target of a return, and no failover under way probes it or
+  tried it;
+- no probe of it waits or runs, and no probe request of the host waits for
+  it;
+- no provider request goes through it, and it is neither the outbound of the
+  network check nor a witness;
+- it is not leaving its provider set, which the drain closes, nor having its
+  handler replaced.
+
+A use is a switch to or away from it, a probe, a connection the observatory
+follows, and the start and the end of a provider request through it as a
+`via`. The outbound has the last word: it refuses while a connection uses
+it, and WireGuard dials past the handler, so the observatory sees none of
+its connections. A refused sleep, or one an open connection the observatory
+follows holds back, is asked for again after `sleep.after`, at least a
+minute, doubling with every refusal in a row up to 30 minutes. Whether an
+outbound can sleep at all is asked at its first use, and again only once a
+provider replaced its handler; one that cannot is never asked to sleep. A
+sleeping outbound shows `asleep` in Status, and every sleep writes
+`outbound_sleep`. Without user traffic the observatory still wakes for
+this, once per used outbound `sleep.after` after its last use and for the
+retries; once everything sleeps no timer is left. An outbound the
+observatory does not observe never sleeps, even when a provider request
+goes through it.
+
 ## Memory
 
 What the observatory keeps does not grow with the length of a session or the
 number of networks, outbounds and connections: what it knows about an
-outbound is forgotten once no balancer offers it, failures per outbound are
-capped, probes end by a deadline, and the config values that size anything
-have ceilings. For an open connection of a watched outbound it keeps under
-1 KB and no goroutine of its own. The report keeps fixed counters, the
-latest 10 switches and seven numbers per outbound. A provider keeps its
-last applied answer for `ProviderSet`, at most `maxBytes` and replaced by
-the next one; the config drops its initial set once applied.
+outbound is forgotten once no balancer offers it (one that can sleep once it
+sleeps or its handler goes), failures per outbound are capped, probes end by
+a deadline, and the config values that size anything have ceilings. For an
+open connection of a watched outbound it keeps under 1 KB and no goroutine
+of its own. The report keeps fixed counters, the latest 10 switches and
+seven numbers per outbound. A provider keeps its last applied answer for
+`ProviderSet`, at most `maxBytes` and replaced by the next one; the config
+drops its initial set once applied.
 
 A host that watches the memory of the process, such as an iOS network
 extension close to its limit, reports pressure with `SetMemoryLow(true)` and
@@ -544,8 +590,9 @@ its end with `SetMemoryLow(false)`. While memory is low:
   usable `via` only. A network check in doubt repeats at most every 2
   minutes.
 - What can go goes at once: drains of outbounds without connections that no
-  balancer chooses, and what the observatory knows about outbounds no
-  balancer offers.
+  balancer chooses, the tunnels of outbounds no balancer chooses, which
+  sleep without waiting for `sleep.after` (see Sleep), and what the
+  observatory knows about outbounds no balancer offers.
 - Finding failures goes on as usual: confirming probes, failovers, rechecks
   of an exhausted balancer and the first network check. No user connection
   is ended for memory.
@@ -629,6 +676,7 @@ changed its settings). `kinds` counts failures by kind: `dial_failed`, `dial_tim
 | `provider_restart_needed` | `provider`, `version`, `sections` | Kept for sections of the config the core reads only at start. Protocol 1 refuses an answer with such a section, so this version does not write it. |
 | `provider_skip` | `provider`, `trigger`, `reason`, `wait_ms` | A trigger wants a refresh that cannot start yet. `reason`: `min_interval`, `backoff`, `retry_after`, `max_per_hour`, `idle`, `network_down`, `memory`, `auth` (the backend refused the headers). Reported once per trigger and reason until a refresh starts. |
 | `provider_drained` | `provider`, `outbound`, `replaced` | An outbound that left the set, or the old handler of a replaced one, was closed: after `drain`, at once without connections, or early to keep at most `maxOutbounds` draining. |
+| `outbound_sleep` | `outbound`, `idle_ms`, `reason` | An outbound released what it held, see Sleep. `idle_ms` is the time since its last use; `reason` is `idle` (after `sleep.after`) or `memory` (sooner, while memory is low). |
 
 ## Report
 
@@ -692,6 +740,7 @@ to this one. Reports of one run add up.
 | `provider_base_changed` | `provider_base_changed` events: the backend serves another base config. |
 | `pins`, `releases` | `pin` and `release` events. |
 | `memory_low` | `memory_low` events with `on`. |
+| `outbound_sleeps` | `outbound_sleep` events: outbounds that released what they held. A sleep changes no choice and is no decision. |
 | `active`, `balancer_exhausted`, `network_up`, `connectivity` | At the time of the report: the chosen outbound by balancer, whether a balancer is exhausted, and the network as in Status. |
 | `paths` | The first 16 outbounds by tag. `state` and `ttfb_p50_ms` (over the whole life of the outbound, 0 without samples) as they are now; `active_ms`, `bytes_up`, `bytes_down`, `conns_ok`, `conns_failed`, `probes` and `probe_bytes` grown since the previous report. An outbound forgotten and seen again counts from zero. |
 
@@ -701,10 +750,10 @@ to this one. Reports of one run add up.
 `ok`, `paused`, `doubt` or `ignored`, `generation`, `idle`), whether memory is low (`memory_low`), probe queue sizes, per outbound the state and its age, failures in
 the window, quarantine, last probe RTT and error, connections, bytes, time to
 first byte (p50, p90), failures by kind, probes and their bytes, time as
-the chosen outbound, and what is left of its provider lease
-(`expires_in_ms`, below zero with `expired` once it ended); per balancer the
-chosen and pinned outbound, whether it is exhausted, the time on the chosen
-outbound and the next return attempt; per provider the method, the version
+the chosen outbound, what is left of its provider lease
+(`expires_in_ms`, below zero with `expired` once it ended) and whether it
+sleeps (`asleep`); per balancer the chosen and pinned outbound, whether it
+is exhausted, the time on the chosen outbound and the next return attempt; per provider the method, the version
 of the set, its size, outbounds still draining, refreshes and failures, the
 age of the set, the next timed refresh, the backoff, what is left of a pause
 a busy backend asked for (`retry_after_ms`), the next renewal of a lease

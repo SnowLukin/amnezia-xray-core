@@ -59,6 +59,19 @@ const (
 	defaultMaxPenalty        = 2 * time.Hour
 	maxJitter                = 0.9
 
+	// An outbound no balancer chooses sleeps this long after its last use,
+	// as long as penaltyWindow: a return to a cheaper outbound that fails
+	// within it finds the previous one still awake. Shorter, a connection
+	// that just ended may still be closing inside the tunnel.
+	defaultSleepAfter = 5 * time.Minute
+	minSleepAfter     = 10 * time.Second
+	// An outbound that refused to sleep is asked again after the longer of
+	// sleep.after and minSleepRetry, doubling with every refusal up to
+	// maxSleepRetry: its connections may be invisible to the observer, and
+	// they end by themselves.
+	minSleepRetry = time.Minute
+	maxSleepRetry = 30 * time.Minute
+
 	// The version of the provider protocol the core speaks.
 	providerProtocol = 1
 	// How much of an answer that is not 200 is read for its error code, and
@@ -236,6 +249,9 @@ type settings struct {
 	providers    []*providerSettings
 	// Zero turns the periodic report off.
 	reportInterval time.Duration
+	// How long after its last use an outbound no balancer chooses is put
+	// to sleep; zero turns sleep off.
+	sleepAfter time.Duration
 }
 
 type providerSettings struct {
@@ -485,6 +501,11 @@ func newSettings(c *Config) *settings {
 	s.maxEvents = min(num(c.GetEvents().GetMaxEvents(), defaultMaxEvents), maxEvents)
 	s.maxBytes = int(min(size(c.GetEvents().GetMaxBytes(), defaultMaxEventBytes), maxEventBytes))
 	s.reportInterval = optional(c.GetReport().GetInterval(), defaultReportInterval)
+	if after := optional(c.GetSleep().GetAfter(), defaultSleepAfter); after > 0 {
+		// The JSON loader refuses a shorter one; a config built without it
+		// must not cut connections that are still closing either.
+		s.sleepAfter = max(after, minSleepAfter)
+	}
 	s.remember = !c.GetNetwork().GetNoMemory()
 	s.maxNetworks = min(num(c.GetNetwork().GetMaxNetworks(), defaultMaxNetworks), maxNetworks)
 	for _, pc := range c.GetProviders() {

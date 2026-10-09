@@ -132,6 +132,32 @@ func TestHealthReportInterval(t *testing.T) {
 	}
 }
 
+func TestHealthSleepAfter(t *testing.T) {
+	for raw, want := range map[string]int64{
+		`{"subjectSelector": ["a"]}`:                            0,
+		`{"subjectSelector": ["a"], "sleep": {}}`:               0,
+		`{"subjectSelector": ["a"], "sleep": {"after": "0s"}}`:  -1,
+		`{"subjectSelector": ["a"], "sleep": {"after": "10s"}}`: int64(10 * time.Second),
+		`{"subjectSelector": ["a"], "sleep": {"after": "15m"}}`: int64(15 * time.Minute),
+	} {
+		cfg, err := buildHealth(t, raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := cfg.GetSleep().GetAfter(); got != want {
+			t.Errorf("%s: after %d, want %d", raw, got, want)
+		}
+	}
+	for _, raw := range []string{
+		`{"subjectSelector": ["a"], "sleep": {"after": "5s"}}`,
+		`{"subjectSelector": ["a"], "sleep": {"after": "-1m"}}`,
+	} {
+		if _, err := buildHealth(t, raw); err == nil {
+			t.Errorf("accepted %s", raw)
+		}
+	}
+}
+
 func TestHealthProvidersBuild(t *testing.T) {
 	cfg, err := buildHealth(t, `{
 	  "subjectSelector": ["a"],

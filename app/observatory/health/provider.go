@@ -668,6 +668,12 @@ func (e *engine) resetPath(tag string, now time.Time) {
 	p.cooldownUntil = time.Time{}
 	p.falseAlarms = 0
 	p.serverName = ""
+	// The new handler holds nothing until it is used, and its proxy may
+	// sleep where the old one could not. The old handler drains apart.
+	// Counting a use sets the answer to a sleep asked meanwhile aside.
+	p.awake, p.asleep, p.sleeper = false, false, sleeperUnknown
+	p.sleepTries, p.nextSleepTry = 0, time.Time{}
+	p.uses++
 	if p.setStatus(statusUnknown, "replaced", now) {
 		e.emitPath(p, now)
 	}

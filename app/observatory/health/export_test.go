@@ -1,6 +1,10 @@
 package health
 
-import "time"
+import (
+	"time"
+
+	"github.com/xtls/xray-core/features/outbound"
+)
 
 func Probe(o *Observer, tag, dest string, minBytes int64, expect ...int32) (bool, int64, string) {
 	r := probeOnce(o, tag, dest, minBytes, expect...)
@@ -25,4 +29,10 @@ func QueueProbe(o *Observer, tag string) {
 	o.e.enqueue(tag, reasonNetwork, "", now)
 	o.mu.Unlock()
 	o.wake()
+}
+
+// CanSleep tells whether the observer would put the outbound of a handler
+// to sleep.
+func CanSleep(h outbound.Handler) bool {
+	return sleeperOf(h) != nil
 }

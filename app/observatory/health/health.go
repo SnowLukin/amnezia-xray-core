@@ -260,11 +260,15 @@ func (o *Observer) loop(done chan struct{}) {
 		now := o.now()
 		jobs, refreshes, wake := o.e.step(now)
 		downs := o.e.takeDowns()
+		sleeps := o.e.takeSleeps()
 		o.mu.Unlock()
 		// Ending a connection reports back to the observer, so it happens
 		// outside the lock.
 		for _, d := range downs {
 			o.closePending(d)
+		}
+		if len(sleeps) > 0 {
+			go o.sleepOutbounds(sleeps)
 		}
 		for _, j := range jobs {
 			go o.runProbe(j)
@@ -489,6 +493,7 @@ func (o *Observer) sweepLoop(done chan struct{}) {
 // neither tells anything about outbounds now.
 func (o *Observer) failure(t *connTracker, kind failureKind) {
 	o.mu.Lock()
+	o.e.used(t.tag, o.now())
 	stale := kind.pathLevel() && o.e.startedInPause(o.base.Add(time.Duration(t.started)))
 	if t.network == o.e.generation && !stale {
 		o.e.onFailure(t.tag, kind, t.target, t.conn, o.now())
@@ -525,7 +530,8 @@ func (o *Observer) witnessed() {
 
 func (o *Observer) finished(t *connTracker) {
 	o.mu.Lock()
-	st := &o.e.pathAt(t.tag, o.now()).stats
+	now := o.now()
+	st := &o.e.pathAt(t.tag, now).stats
 	if t.bytesRead.Load() > 0 {
 		st.connsOK++
 	} else if t.bytesWritten.Load() > 0 {
@@ -536,7 +542,13 @@ func (o *Observer) finished(t *connTracker) {
 	if ttfb := t.ttfb.Load(); ttfb > 0 {
 		st.ttfb.add(time.Duration(ttfb))
 	}
+	// The loop plans the sleep of an outbound that has just woken; nothing
+	// else may wake it after the last connection ends.
+	woke := o.e.used(t.tag, now)
 	o.mu.Unlock()
+	if woke {
+		o.wake()
+	}
 }
 
 // ---- extension.Observatory --------------------------------------------------
@@ -649,9 +661,10 @@ func (o *Observer) NetworkLost() {
 // While it is, the observer puts off what only improves the choice: returns
 // to cheaper outbounds, probes after a network change and timed provider
 // refreshes. It lets go at once of what it can: drains without connections,
-// state about outbounds nothing offers, most of the event log. Finding
-// failures and moving away from them go on as usual. It is safe to call from
-// any goroutine; repeating the current value does nothing.
+// the tunnels of outbounds no balancer chooses, state about outbounds nothing
+// offers. Finding failures and moving away from them go on as usual, and the
+// event log keeps every event. It is safe to call from any goroutine;
+// repeating the current value does nothing.
 func (o *Observer) SetMemoryLow(low bool) {
 	o.mu.Lock()
 	changed := o.e.setMemoryLow(low, o.now())

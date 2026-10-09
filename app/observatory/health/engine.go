@@ -154,6 +154,13 @@ type engine struct {
 	// choice waits, finding failures does not.
 	memoryLow bool
 
+	// Sleep, see sleep.go: provider requests under way by the outbound they
+	// go through, the batch planned for the observer, and whether one is
+	// under way.
+	fetchVia  map[string]int
+	sleeps    []sleepJob
+	sleepsOut bool
+
 	report report
 }
 
@@ -173,6 +180,7 @@ func newEngine(s *settings, seed int64) *engine {
 		retiring:         map[string]bool{},
 		replacing:        map[string]bool{},
 		expired:          map[string]bool{},
+		fetchVia:         map[string]int{},
 	}
 	for _, ps := range s.providers {
 		e.providers = append(e.providers, newProvider(ps))
@@ -318,6 +326,7 @@ func (e *engine) awaiting(tag string) bool {
 
 func (e *engine) onSuccess(tag string, now time.Time) {
 	p := e.pathAt(tag, now)
+	e.used(tag, now)
 	e.sawSuccess("traffic", now)
 	if p.status == statusDown && p.quarantined(now) {
 		// Old connections may still work on an address that refuses new ones.
@@ -681,6 +690,8 @@ func (e *engine) switchTo(s *selector, tag string, reason string, now time.Time)
 		// Connections kept going to the dead outbound while its replacement
 		// was being probed.
 		e.noteDown(e.path(from), now)
+		// Its connections go on; it sleeps sleep.after from here.
+		e.used(from, now)
 	}
 	held := time.Duration(0)
 	if !s.activeSince.IsZero() {
@@ -692,6 +703,7 @@ func (e *engine) switchTo(s *selector, tag string, reason string, now time.Time)
 		p.setStatus(statusUnknown, "chosen", now)
 		p.failures = p.failures[:0]
 	}
+	e.used(tag, now)
 	s.setActive(tag)
 	s.activeSince = now
 	s.exhausted = false
@@ -716,6 +728,7 @@ func (e *engine) exhaust(s *selector, now time.Time) {
 	if from != "" && !s.activeSince.IsZero() {
 		e.path(from).stats.activeTime += now.Sub(s.activeSince)
 	}
+	e.used(from, now)
 	s.setActive("")
 	s.activeSince = time.Time{}
 	s.exhausted = true
@@ -1163,7 +1176,8 @@ func (e *engine) tick(now time.Time) ([]*probeJob, time.Time) {
 // this turn as well rather than at whatever wakes the loop next, and a
 // balancer that stays for now gets the wake of its return. Nothing else
 // may wake the loop: traffic through the outbound that still works sends
-// no kick.
+// no kick. Sleeps are planned last, once the probes of the turn started:
+// an outbound they probe stays awake.
 func (e *engine) step(now time.Time) ([]*probeJob, []*refreshJob, time.Time) {
 	jobs, wake := e.tick(now)
 	queued, ended := e.nextID, e.leaseEnds
@@ -1173,7 +1187,7 @@ func (e *engine) step(now time.Time) ([]*probeJob, []*refreshJob, time.Time) {
 		jobs = append(jobs, more...)
 		wake = soonestOf(wake, moreWake)
 	}
-	return jobs, refreshes, soonestOf(wake, refreshWake)
+	return jobs, refreshes, soonestOf(soonestOf(wake, refreshWake), e.planSleeps(now))
 }
 
 // soonestOf returns the earlier of two wakes; zero is none.
@@ -1221,6 +1235,7 @@ func (e *engine) begin(j *probeJob, now time.Time) {
 	p := e.pathAt(j.tag, now)
 	p.probing = true
 	p.lastProbe = now
+	e.used(j.tag, now)
 	running := 0
 	for _, r := range e.running {
 		if r.reason != reasonConnectivity {
@@ -1293,6 +1308,10 @@ func (e *engine) maybeUpgrade(s *selector, now time.Time) time.Time {
 
 func (e *engine) onProbeResult(j *probeJob, r probeResult, now time.Time) {
 	delete(e.running, j.id)
+	if j.reason != reasonConnectivity {
+		// The probe may have woken a sleeping tunnel; it sleeps from here.
+		e.used(j.tag, now)
+	}
 	if r.canceled {
 		if p := e.paths[j.tag]; p != nil {
 			p.probing = false
@@ -1874,7 +1893,10 @@ func (e *engine) gc(now time.Time, stale time.Duration) {
 		offered[s.current()] = true
 	}
 	for tag, p := range e.paths {
-		if !offered[tag] && !p.probing && now.Sub(p.statusSince) >= stale {
+		// An outbound that may hold a tunnel is kept until it sleeps or its
+		// handler leaves: forgotten, it would hold it for good. There are
+		// at most as many as handlers.
+		if !offered[tag] && !p.probing && now.Sub(p.statusSince) >= stale && !e.awakeSleeper(p) {
 			e.forget(tag)
 		}
 	}

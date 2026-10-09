@@ -583,8 +583,10 @@ func (o *Observer) fetchSet(rt *providerRuntime, j *refreshJob, body []byte) (fe
 			continue
 		}
 		asked = true
+		o.fetchingVia(tag, 1)
 		start := time.Now()
 		r, err := o.fetchOnce(rt.cfg, j.headers, tag, body)
+		o.fetchingVia(tag, -1)
 		r.via = v
 		// An answer against the protocol still came from the backend: the
 		// request did its job and the refusal is the apply's, so the report
@@ -621,6 +623,18 @@ func (o *Observer) fetchSet(rt *providerRuntime, j *refreshJob, body []byte) (fe
 		}
 	}
 	return last, lastErr
+}
+
+// fetchingVia counts a provider request through an outbound while it runs,
+// so the outbound does not sleep under it; a request without via goes the
+// way of the routing.
+func (o *Observer) fetchingVia(tag string, delta int) {
+	if tag == "" {
+		return
+	}
+	o.mu.Lock()
+	o.e.fetchingVia(tag, delta, o.now())
+	o.mu.Unlock()
 }
 
 func (o *Observer) fetchOnce(cfg *providerSettings, headers map[string]string, tag string, body []byte) (fetchResult, error) {
@@ -1185,9 +1199,12 @@ func (o *Observer) startDrain(rt *providerRuntime, tag string, h outbound.Handle
 }
 
 // settleDrains ends at once the drains nothing waits for: outbounds without
-// open connections that no balancer chooses. Beyond maxOutbounds draining
-// outbounds the oldest drains end early, so sets replaced one after another
-// do not pile up handlers. The caller holds applyMu.
+// open connections that no balancer chooses. An outbound that can sleep is
+// asked as well: WireGuard dials past the handler, so the observer sees none
+// of its connections, and Sleep refuses while one goes on; the drain then
+// runs its time. Beyond maxOutbounds draining outbounds the oldest drains
+// end early, so sets replaced one after another do not pile up handlers.
+// The caller holds applyMu.
 func (o *Observer) settleDrains(rt *providerRuntime) {
 	open := o.oldestConnections()
 	var idle []*drainingOutbound
@@ -1203,6 +1220,9 @@ func (o *Observer) settleDrains(rt *providerRuntime) {
 	}
 	o.mu.Unlock()
 	for _, d := range idle {
+		if s := sleeperOf(d.handler); s != nil && !s.Sleep() {
+			continue
+		}
 		o.endDrain(rt, d)
 	}
 	if over := len(rt.draining) - rt.cfg.maxOutbounds; over > 0 {

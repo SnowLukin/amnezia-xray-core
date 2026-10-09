@@ -60,6 +60,7 @@ type reportCounts struct {
 	Pins                  int64            `json:"pins"`
 	Releases              int64            `json:"releases"`
 	MemoryLow             int64            `json:"memory_low"`
+	OutboundSleeps        int64            `json:"outbound_sleeps"`
 }
 
 type reportPath struct {
@@ -241,6 +242,9 @@ func (r *report) count(typ string, f map[string]any) {
 		if f["on"] == true {
 			c.MemoryLow++
 		}
+	case "outbound_sleep":
+		// Releasing what an idle outbound holds changes no choice.
+		c.OutboundSleeps++
 	}
 }
 

@@ -16,6 +16,7 @@ import (
 	"github.com/xtls/xray-core/core"
 	"github.com/xtls/xray-core/features/outbound"
 	"github.com/xtls/xray-core/features/stats"
+	"github.com/xtls/xray-core/proxy"
 	"github.com/xtls/xray-core/transport"
 )
 
@@ -24,6 +25,11 @@ type fakeHandler struct {
 	proxy  *serial.TypedMessage
 	mu     sync.Mutex
 	closed int
+	// The proxy behind the handler, how often the observer looked at it, and
+	// the calls of Sleep on the handler; see sleep_test.go.
+	out    proxy.Outbound
+	looked int
+	slept  int
 }
 
 func (h *fakeHandler) Start() error { return nil }

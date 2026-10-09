@@ -2,6 +2,7 @@ package health
 
 import (
 	"context"
+	"fmt"
 	gonet "net"
 	"runtime"
 	"strings"
@@ -169,5 +170,25 @@ func TestConfigValuesHaveCeilings(t *testing.T) {
 		if v[0] != v[1] {
 			t.Errorf("%s %d, want the ceiling %d", name, v[0], v[1])
 		}
+	}
+}
+
+// Provider requests through a balancer go through whatever it chose, and a
+// provider rotates its tags: the counts of requests under way by outbound
+// keep nothing once the requests ended.
+func TestFetchViaKeepsNothingAfterTheRequests(t *testing.T) {
+	te := newTestEngine(t, &Config{SubjectSelector: []string{"p-"}}, &SelectorConfig{SwitchWithoutProbe: true}, "p-0")
+	for i := 1; i <= 100; i++ {
+		tag := fmt.Sprintf("p-%d", i)
+		te.updateCandidates(te.sel, []string{tag}, at(time.Duration(i)*time.Second))
+		via, skip := te.resolveVia("auto", at(time.Duration(i)*time.Second))
+		if via != tag || skip != "" {
+			t.Fatalf("setup: via auto resolves to %q (%s), want %s", via, skip, tag)
+		}
+		te.fetchingVia(via, 1, at(time.Duration(i)*time.Second))
+		te.fetchingVia(via, -1, at(time.Duration(i)*time.Second+time.Millisecond))
+	}
+	if len(te.fetchVia) != 0 {
+		t.Fatalf("%d outbounds counted after every request ended", len(te.fetchVia))
 	}
 }

@@ -126,6 +126,8 @@ func foldReport(t *testing.T, raw []byte) (reportCounts, bool) {
 			if f["on"] == true {
 				c.MemoryLow++
 			}
+		case "outbound_sleep":
+			c.OutboundSleeps++
 		}
 	}
 	return c, decided
@@ -191,6 +193,7 @@ func TestReportAddsUpTheEvents(t *testing.T) {
 	te.emit(now, "provider_auth_failed", map[string]any{"provider": "p", "trigger": "host", "status": 401, "via": "direct",
 		"code": "unauthorized"})
 	te.emit(now, "provider_base_changed", map[string]any{"provider": "p", "from": "b1", "to": "b2"})
+	te.emit(now, "outbound_sleep", map[string]any{"outbound": "b1", "idle_ms": int64(300_000), "reason": "idle"})
 
 	raw, dropped := te.events.drain()
 	if dropped != 0 {
@@ -280,6 +283,7 @@ func TestReportDecisions(t *testing.T) {
 		{"headers refused", []emitted{{"provider_auth_failed", map[string]any{"provider": "p", "status": 401}}}, true},
 		{"base changed", []emitted{{"provider_base_changed", map[string]any{"provider": "p", "from": "b1", "to": "b2"}}}, true},
 		{"headers changed", []emitted{{"provider_headers", map[string]any{"provider": "p", "by": "host"}}}, false},
+		{"outbound asleep", []emitted{{"outbound_sleep", map[string]any{"outbound": "b1", "reason": "idle"}}}, false},
 	} {
 		te := newReportEngine(t, nil, nil, "a1", "b1")
 		for _, ev := range tc.events {

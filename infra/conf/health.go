@@ -102,6 +102,10 @@ type HealthReportConfig struct {
 	Interval *duration.Duration `json:"interval"`
 }
 
+type HealthSleepConfig struct {
+	After *duration.Duration `json:"after"`
+}
+
 type HealthCostTriggerConfig struct {
 	Cost  float32           `json:"cost"`
 	After duration.Duration `json:"for"`
@@ -383,6 +387,7 @@ type HealthObservatoryConfig struct {
 	Network         *HealthNetworkConfig      `json:"network"`
 	Providers       []*HealthProviderConfig   `json:"providers"`
 	Report          *HealthReportConfig       `json:"report"`
+	Sleep           *HealthSleepConfig        `json:"sleep"`
 }
 
 func checkSelectors(name string, selectors []string) error {
@@ -518,6 +523,14 @@ func (c *HealthObservatoryConfig) Build() (proto.Message, error) {
 	}
 	if r := c.Report; r != nil {
 		out.Report = &health.ReportConfig{Interval: optionalDuration(r.Interval)}
+	}
+	if s := c.Sleep; s != nil {
+		// Sooner, a connection that just ended may still be closing inside
+		// the tunnel that sleep releases.
+		if a := s.After; a != nil && *a != 0 && *a < duration.Duration(10*time.Second) {
+			return nil, errors.New("healthObservatory: sleep.after must be 0s or at least 10s")
+		}
+		out.Sleep = &health.SleepConfig{After: optionalDuration(s.After)}
 	}
 	for _, p := range c.Providers {
 		if p == nil {

@@ -34,6 +34,8 @@ type pathStatusView struct {
 	// without a lease.
 	ExpiresInMs *int64 `json:"expires_in_ms,omitempty"`
 	Expired     bool   `json:"expired,omitempty"`
+	// The outbound released its tunnel; its next connection creates it.
+	Asleep bool `json:"asleep,omitempty"`
 }
 
 type balancerStatusView struct {
@@ -166,6 +168,7 @@ func (e *engine) status(now time.Time) statusView {
 			ProbesFailed: p.stats.probesFailed,
 			ProbeBytes:   p.stats.probeBytes,
 			ActiveMs:     (p.stats.activeTime + active[tag]).Milliseconds(),
+			Asleep:       p.asleep,
 		}
 		if !p.statusSince.IsZero() {
 			pv.ForMs = now.Sub(p.statusSince).Milliseconds()
