@@ -1449,6 +1449,51 @@ def hybrid_pin_timer(stand, xray, work, name):
 
 
 @scenario()
+def hybrid_pin_stop(stand, xray, work, name):
+    """The core stops under the pin after pinned_down, as when Conquest gives up on a dead a1.
+    Under the start pin that failure is no decision, so the stop leaves no final report: the host
+    reports its failed check itself. The same stop under a pin of the host sends one."""
+    clients = {}
+    pinned = None
+    for label, cfg in (("start", hybrid_config()), ("host", bench.client_config(THREE, THREE_COSTS))):
+        with bench.Client(xray, cfg, work, f"{name}-{label}") as c:
+            tr = bench.Traffic(rate=2, big=0.5)
+            start = time.time()
+            tr.start()
+            time.sleep(1)
+            if label == "host":
+                pinned = c.api("pin", "auto", "a1", c.status()["run"])
+            bench.chaos(A0, "blackhole")
+            wait_for(lambda: bench.events_of(c.events, "pinned_down", start), 15)
+            tr.stop()
+        bench.chaos(A0, "pass")
+        clients[label] = c
+    checks = [check("pin of the host", pinned, pinned == {"ok": True}, "ok")]
+    for label, c in clients.items():
+        downs = bench.events_of(c.events, "pinned_down")
+        marks = sorted({e["fields"].get("start_pinned") is True for e in downs})
+        sw = [f"{e['fields']['to']} ({e['fields']['reason']})" for e in bench.switches(c.events)]
+        released = bench.events_of(c.events, "release")
+        final = c.final_report
+        checks += [
+            check(f"pinned_down, start_pinned ({label})", f"{len(downs)} {marks}",
+                  bool(downs) and marks == [label == "start"], f">= 1, {label == 'start'}"),
+            check(f"switches and releases before the stop ({label})", sw + [len(released)],
+                  len(sw) == 1 and sw[0].startswith("a1 (start") and not released, "the start only"),
+        ]
+        if label == "start":
+            checks.append(check("final report (start)", final and f"{final['report_reason']} "
+                                f"pinned_down {final['pinned_down']}", final is None, "none"))
+        else:
+            checks.append(check("final report (host)", final and f"{final['report_reason']} "
+                                f"pinned_down {final['pinned_down']}",
+                                bool(final) and final["report_reason"] == "stop" and final["pinned_down"] >= 1,
+                                "stop, pinned_down >= 1"))
+        checks.append(leak_check(c))
+    return checks
+
+
+@scenario()
 def hybrid_pin_network(stand, xray, work, name):
     """The network changes under the pin while a1 works, and nothing is probed until the pin is
     released. Traffic pauses over the change under the start pin, so the release by the timer
