@@ -1228,9 +1228,9 @@ func (o *Observer) startDrain(rt *providerRuntime, tag string, h outbound.Handle
 
 // settleDrains ends at once the drains nothing waits for: outbounds without
 // open connections that no balancer chooses. An outbound that can sleep is
-// asked as well: WireGuard dials past the handler, so the observer sees none
-// of its connections, and Sleep refuses while one goes on; the drain then
-// runs its time. Beyond maxOutbounds draining outbounds the oldest drains
+// asked as well: the observer forgets a connection idle for long, and
+// Sleep refuses while one goes on through the tunnel; the drain then runs
+// its time. Beyond maxOutbounds draining outbounds the oldest drains
 // end early, so sets replaced one after another do not pile up handlers.
 // The caller holds applyMu.
 func (o *Observer) settleDrains(rt *providerRuntime) {

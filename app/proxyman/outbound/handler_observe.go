@@ -18,8 +18,9 @@ import (
 // keeps following upstream without conflicts.
 
 // process runs the proxy. With an observer, the proxy dials through
-// observedDialer, which reports every dial of this connection, and a proxy
-// that can sleep reports the connection itself, which may wake it.
+// observedDialer, which reports every dial of this connection, or reports
+// the connection through its tunnel there (outbound.TunnelDialer), and a
+// proxy that can sleep reports the connection itself, which may wake it.
 func (h *Handler) process(ctx context.Context, link *transport.Link) error {
 	if h.observer == nil {
 		return h.proxy.Process(ctx, link, h)
@@ -67,6 +68,8 @@ func (p observedProxy) Process(ctx context.Context, link *transport.Link, _ inte
 	return p.h.process(ctx, link)
 }
 
+var _ outbound.TunnelDialer = (*observedDialer)(nil)
+
 type observedDialer struct {
 	*Handler
 	abort    func()
@@ -82,23 +85,13 @@ type observedDialer struct {
 
 // Dial implements internet.Dialer.
 func (d *observedDialer) Dial(ctx context.Context, dest net.Destination) (stat.Connection, error) {
-	d.mu.Lock()
-	finished := d.finished
-	if xctx.IDFromContext(ctx) == 0 && d.id == 0 {
-		d.id = session.NewID()
-	}
-	id := d.id
-	d.mu.Unlock()
-	observed := ctx
+	observed, finished := d.connection(ctx)
 	abort := d.abort
-	switch {
-	case finished:
+	if finished {
 		// A proxy that keeps dialing for later connections, such as VLESS
 		// pre-connections: each dial is a connection of its own.
 		observed = xctx.ContextWithID(ctx, session.NewID())
 		abort = nil
-	case xctx.IDFromContext(ctx) == 0:
-		observed = xctx.ContextWithID(ctx, id)
 	}
 	tracker := d.observer.StartDial(observed, d.tag, dest, abort)
 	if tracker == nil {
@@ -116,12 +109,7 @@ func (d *observedDialer) Dial(ctx context.Context, dest net.Destination) (stat.C
 		tracker.Finished(nil)
 		return conn, nil
 	}
-	d.mu.Lock()
-	if d.trackers == nil {
-		d.trackers = d.first[:0]
-	}
-	d.trackers = append(d.trackers, tracker)
-	d.mu.Unlock()
+	d.keep(tracker)
 	if read == nil && write == nil {
 		return conn, nil
 	}
@@ -130,6 +118,46 @@ func (d *observedDialer) Dial(ctx context.Context, dest net.Destination) (stat.C
 		return c, nil
 	}
 	return &stat.CounterConnection{Connection: conn, ReadCounter: read, WriteCounter: write}, nil
+}
+
+// StartTunnelDial implements outbound.TunnelDialer. The proxy reports the
+// dial itself; the tracker ends with the connection, as those of Dial do.
+func (d *observedDialer) StartTunnelDial(ctx context.Context, server net.Destination) outbound.DialTracker {
+	observed, finished := d.connection(ctx)
+	if finished {
+		// A tunnel carries only the connection the proxy processes, and
+		// nothing would end a tracker started after that.
+		return nil
+	}
+	tracker := d.observer.StartDial(observed, d.tag, server, d.abort)
+	if tracker != nil {
+		d.keep(tracker)
+	}
+	return tracker
+}
+
+// connection returns ctx with the session the dials of this user connection
+// count under, and whether processing has already ended.
+func (d *observedDialer) connection(ctx context.Context) (context.Context, bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if xctx.IDFromContext(ctx) != 0 {
+		return ctx, d.finished
+	}
+	if d.id == 0 {
+		d.id = session.NewID()
+	}
+	return xctx.ContextWithID(ctx, d.id), d.finished
+}
+
+// keep has finish end the tracker with the connection.
+func (d *observedDialer) keep(tracker outbound.DialTracker) {
+	d.mu.Lock()
+	if d.trackers == nil {
+		d.trackers = d.first[:0]
+	}
+	d.trackers = append(d.trackers, tracker)
+	d.mu.Unlock()
 }
 
 func (d *observedDialer) finish(err error) {

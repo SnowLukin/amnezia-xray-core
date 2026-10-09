@@ -17,8 +17,9 @@ import (
 // the connections the handler gives the proxy (outbound.ProcessObserver). An
 // outbound none of them holds sleeps sleep.after after its last use, at once
 // while memory is low; a chosen one never does. The outbound has the last
-// word: WireGuard dials past the handler, so the observer sees none of its
-// dials, and Sleep refuses while a connection uses it.
+// word: the observer follows the connections through the tunnel only of
+// outbounds it judges, and forgets one idle for long, while Sleep refuses
+// whenever a connection uses the tunnel.
 
 type sleeperKind int8
 
@@ -85,9 +86,9 @@ func (e *engine) used(tag string, now time.Time) bool {
 // processStarted counts a connection the proxy of an outbound that can
 // sleep processes, as its handler tells. It is a use whatever routed it
 // there: a rule straight at the tag, a fallbackTag or a dialerProxy chain
-// wake the proxy as well, and the observer would see none of them, since
-// such a proxy dials past the handler. It reports whether the loop has a
-// sleep to plan.
+// wake the proxy as well, before it reports the connection through its
+// tunnel, and only for an outbound the observer judges. It reports whether
+// the loop has a sleep to plan.
 func (e *engine) processStarted(tag string, now time.Time) bool {
 	woke := e.used(tag, now)
 	if p := e.paths[tag]; p != nil {

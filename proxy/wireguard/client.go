@@ -2,6 +2,7 @@ package wireguard
 
 import (
 	"context"
+	goerrors "errors"
 	"fmt"
 	gonet "net"
 	"net/netip"
@@ -9,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/amnezia-vpn/amneziawg-go/v3/tun"
@@ -67,7 +69,16 @@ type Handler struct {
 	// ifName is the name of the kernel interface, kept across wakes. init
 	// sets it while initDone is set; mu guards it otherwise.
 	ifName string
+
+	// For the observer of the outbound, see client_observe.go: the server
+	// the tunnel reaches, the peers to ask for a handshake, and the
+	// datagrams the devices of the outbound received, across wakes.
+	server   net.Destination
+	peerKeys []device.NoisePublicKey
+	received atomic.Uint64
 }
+
+var errOutboundClosed = goerrors.New("outbound closed")
 
 // initRetryDelay is how long connections fail with the error of the last init
 // before one tries again.
@@ -163,6 +174,9 @@ func NewClient(ctx context.Context, conf *DeviceConfig) (*Handler, error) {
 
 		localAddresses: localAddresses,
 		kernelTun:      kernelTun,
+
+		server:   tunnelServer(conf),
+		peerKeys: handshakePeers(conf),
 	}, nil
 }
 
@@ -176,16 +190,22 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
 	ob.Name = "wireguard"
 	ob.CanSpliceCopy = 3
 
+	td := h.startTunnelDial(ctx, dialer)
+	defer td.end()
+
 	tnet, err := h.acquire(ctx)
 	if err != nil {
+		td.failed(err)
 		return err
 	}
 	defer h.release()
+	td.entered()
 
 	var addr netip.Addr
 	if ob.Target.Address.Family().IsDomain() {
 		ip, err := h.resolveRemote(tnet, ob.Target.Address.String())
 		if err != nil {
+			td.failedInside()
 			return errors.New("failed to resolve domain").Base(err)
 		}
 		addr, _ = netip.AddrFromSlice(ip)
@@ -232,8 +252,10 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
 			conn, err = tnet.DialContextTCPAddrPort(ctx, addrPort)
 		}
 		if err != nil {
+			td.failedInside()
 			return errors.New("failed to create TCP connection").Base(err)
 		}
+		conn = td.opened(conn)
 		defer conn.Close()
 		reader = buf.NewReader(conn)
 		writer = buf.NewWriter(conn)
@@ -244,7 +266,7 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
 		}
 		defer conn.Close()
 		c := &udpConnClient{
-			PacketConn: conn.(*internet.PacketConnWrapper).PacketConn,
+			PacketConn: td.openedPacket(conn.(*internet.PacketConnWrapper).PacketConn),
 			resolveFunc: func(host string) (net.IP, error) {
 				return h.resolveRemote(tnet, host)
 			},
@@ -306,7 +328,7 @@ func (h *Handler) acquire(ctx context.Context) (*Net, error) {
 	for h.dev == nil {
 		if h.closed {
 			h.mu.Unlock()
-			return nil, errors.New("outbound closed")
+			return nil, errOutboundClosed
 		}
 		if h.initErr != nil && time.Since(h.initErrTime) < initRetryDelay {
 			err := h.initErr
@@ -342,7 +364,7 @@ func (h *Handler) acquire(ctx context.Context) (*Net, error) {
 			if dev != nil {
 				dev.Close()
 			}
-			return nil, errors.New("outbound closed")
+			return nil, errOutboundClosed
 		}
 		if err != nil {
 			h.initErr, h.initErrTime = err, time.Now()
@@ -428,6 +450,7 @@ func (h *Handler) init(ctx context.Context) (_ *Net, _ *device.Device, err error
 		resolveFunc: h.resolveLocal,
 		listenFunc:  listenFunc,
 		reserved:    h.conf.Reserved,
+		received:    &h.received,
 	}
 	logger := &device.Logger{
 		Verbosef: func(format string, args ...any) {
