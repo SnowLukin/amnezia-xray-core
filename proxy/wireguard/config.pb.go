@@ -23,14 +23,20 @@ const (
 )
 
 type PeerConfig struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	PublicKey     string                 `protobuf:"bytes,1,opt,name=public_key,json=publicKey,proto3" json:"public_key,omitempty"`
-	PreSharedKey  string                 `protobuf:"bytes,2,opt,name=pre_shared_key,json=preSharedKey,proto3" json:"pre_shared_key,omitempty"`
-	Endpoint      string                 `protobuf:"bytes,3,opt,name=endpoint,proto3" json:"endpoint,omitempty"`
-	KeepAlive     string                 `protobuf:"bytes,4,opt,name=keep_alive,json=keepAlive,proto3" json:"keep_alive,omitempty"`
-	AllowedIps    []string               `protobuf:"bytes,5,rep,name=allowed_ips,json=allowedIps,proto3" json:"allowed_ips,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state        protoimpl.MessageState `protogen:"open.v1"`
+	PublicKey    string                 `protobuf:"bytes,1,opt,name=public_key,json=publicKey,proto3" json:"public_key,omitempty"`
+	PreSharedKey string                 `protobuf:"bytes,2,opt,name=pre_shared_key,json=preSharedKey,proto3" json:"pre_shared_key,omitempty"`
+	Endpoint     string                 `protobuf:"bytes,3,opt,name=endpoint,proto3" json:"endpoint,omitempty"`
+	// The persistent keepalive in seconds: a number, or a range such as
+	// "25-35" from which AmneziaWG picks every interval anew.
+	KeepAlive  string   `protobuf:"bytes,4,opt,name=keep_alive,json=keepAlive,proto3" json:"keep_alive,omitempty"`
+	AllowedIps []string `protobuf:"bytes,5,rep,name=allowed_ips,json=allowedIps,proto3" json:"allowed_ips,omitempty"`
+	// protocol_version of the peer in UAPI. AmneziaWG accepts only 1, the
+	// version it speaks anyway; the field lets a config copied from UAPI load.
+	// Numbered away from the upstream fields, like DeviceConfig.parameters.
+	ProtocolVersion string `protobuf:"bytes,1000,opt,name=protocol_version,json=protocolVersion,proto3" json:"protocol_version,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *PeerConfig) Reset() {
@@ -98,6 +104,13 @@ func (x *PeerConfig) GetAllowedIps() []string {
 	return nil
 }
 
+func (x *PeerConfig) GetProtocolVersion() string {
+	if x != nil {
+		return x.ProtocolVersion
+	}
+	return ""
+}
+
 // AmneziaWG obfuscation parameters.
 type AmneziaParameters struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -128,8 +141,27 @@ type AmneziaParameters struct {
 	// is the side receiving handshake initiations, a server, so on an outbound
 	// it does next to nothing.
 	DisableCookies bool `protobuf:"varint,18,opt,name=disable_cookies,json=disableCookies,proto3" json:"disable_cookies,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// AmneziaWG 3.1 device keys. Each is written to the device only when set,
+	// so a config without them configures the device as before.
+	//
+	// header_protection_key, 32 bytes in hex, encrypts the header fields of
+	// every message, with the S1-S4 padding as the nonce: each of S1-S4 must
+	// be at least 12. Both sides must have the same key.
+	HeaderProtectionKey string `protobuf:"bytes,19,opt,name=header_protection_key,json=headerProtectionKey,proto3" json:"header_protection_key,omitempty"`
+	// content_padding_addition pads every transport packet with a number of
+	// random bytes picked from the range. Only the side that sends uses it.
+	ContentPaddingAddition string `protobuf:"bytes,20,opt,name=content_padding_addition,json=contentPaddingAddition,proto3" json:"content_padding_addition,omitempty"`
+	// The timings of the protocol in seconds, and the handshake attempts, each
+	// a number or a range from which the device picks anew every time. They
+	// replace the constants of WireGuard: rekey after 120 s, rekey timeout
+	// 5 s, reject after 180 s, keepalive timeout 10 s and 18 attempts.
+	RekeyAfterTime       string `protobuf:"bytes,21,opt,name=rekey_after_time,json=rekeyAfterTime,proto3" json:"rekey_after_time,omitempty"`
+	RekeyTimeout         string `protobuf:"bytes,22,opt,name=rekey_timeout,json=rekeyTimeout,proto3" json:"rekey_timeout,omitempty"`
+	RejectAfterTime      string `protobuf:"bytes,23,opt,name=reject_after_time,json=rejectAfterTime,proto3" json:"reject_after_time,omitempty"`
+	KeepaliveTimeout     string `protobuf:"bytes,24,opt,name=keepalive_timeout,json=keepaliveTimeout,proto3" json:"keepalive_timeout,omitempty"`
+	MaxHandshakeAttempts string `protobuf:"bytes,25,opt,name=max_handshake_attempts,json=maxHandshakeAttempts,proto3" json:"max_handshake_attempts,omitempty"`
+	unknownFields        protoimpl.UnknownFields
+	sizeCache            protoimpl.SizeCache
 }
 
 func (x *AmneziaParameters) Reset() {
@@ -288,6 +320,55 @@ func (x *AmneziaParameters) GetDisableCookies() bool {
 	return false
 }
 
+func (x *AmneziaParameters) GetHeaderProtectionKey() string {
+	if x != nil {
+		return x.HeaderProtectionKey
+	}
+	return ""
+}
+
+func (x *AmneziaParameters) GetContentPaddingAddition() string {
+	if x != nil {
+		return x.ContentPaddingAddition
+	}
+	return ""
+}
+
+func (x *AmneziaParameters) GetRekeyAfterTime() string {
+	if x != nil {
+		return x.RekeyAfterTime
+	}
+	return ""
+}
+
+func (x *AmneziaParameters) GetRekeyTimeout() string {
+	if x != nil {
+		return x.RekeyTimeout
+	}
+	return ""
+}
+
+func (x *AmneziaParameters) GetRejectAfterTime() string {
+	if x != nil {
+		return x.RejectAfterTime
+	}
+	return ""
+}
+
+func (x *AmneziaParameters) GetKeepaliveTimeout() string {
+	if x != nil {
+		return x.KeepaliveTimeout
+	}
+	return ""
+}
+
+func (x *AmneziaParameters) GetMaxHandshakeAttempts() string {
+	if x != nil {
+		return x.MaxHandshakeAttempts
+	}
+	return ""
+}
+
 type DeviceConfig struct {
 	state       protoimpl.MessageState `protogen:"open.v1"`
 	SecretKey   string                 `protobuf:"bytes,1,opt,name=secret_key,json=secretKey,proto3" json:"secret_key,omitempty"`
@@ -410,7 +491,7 @@ var File_proxy_wireguard_config_proto protoreflect.FileDescriptor
 
 const file_proxy_wireguard_config_proto_rawDesc = "" +
 	"\n" +
-	"\x1cproxy/wireguard/config.proto\x12\x14xray.proxy.wireguard\x1a\x1acommon/protocol/user.proto\"\xad\x01\n" +
+	"\x1cproxy/wireguard/config.proto\x12\x14xray.proxy.wireguard\x1a\x1acommon/protocol/user.proto\"\xd9\x01\n" +
 	"\n" +
 	"PeerConfig\x12\x1d\n" +
 	"\n" +
@@ -420,7 +501,8 @@ const file_proxy_wireguard_config_proto_rawDesc = "" +
 	"\n" +
 	"keep_alive\x18\x04 \x01(\tR\tkeepAlive\x12\x1f\n" +
 	"\vallowed_ips\x18\x05 \x03(\tR\n" +
-	"allowedIps\"\xed\x02\n" +
+	"allowedIps\x12*\n" +
+	"\x10protocol_version\x18\xe8\a \x01(\tR\x0fprotocolVersion\"\xb9\x05\n" +
 	"\x11AmneziaParameters\x12\x0e\n" +
 	"\x02jc\x18\x01 \x01(\tR\x02jc\x12\x12\n" +
 	"\x04jmin\x18\x02 \x01(\tR\x04jmin\x12\x12\n" +
@@ -440,7 +522,14 @@ const file_proxy_wireguard_config_proto_rawDesc = "" +
 	"\x02i4\x18\x0f \x01(\tR\x02i4\x12\x0e\n" +
 	"\x02i5\x18\x10 \x01(\tR\x02i5\x12'\n" +
 	"\x0frandom_trailers\x18\x11 \x01(\bR\x0erandomTrailers\x12'\n" +
-	"\x0fdisable_cookies\x18\x12 \x01(\bR\x0edisableCookies\"\xfe\x02\n" +
+	"\x0fdisable_cookies\x18\x12 \x01(\bR\x0edisableCookies\x122\n" +
+	"\x15header_protection_key\x18\x13 \x01(\tR\x13headerProtectionKey\x128\n" +
+	"\x18content_padding_addition\x18\x14 \x01(\tR\x16contentPaddingAddition\x12(\n" +
+	"\x10rekey_after_time\x18\x15 \x01(\tR\x0erekeyAfterTime\x12#\n" +
+	"\rrekey_timeout\x18\x16 \x01(\tR\frekeyTimeout\x12*\n" +
+	"\x11reject_after_time\x18\x17 \x01(\tR\x0frejectAfterTime\x12+\n" +
+	"\x11keepalive_timeout\x18\x18 \x01(\tR\x10keepaliveTimeout\x124\n" +
+	"\x16max_handshake_attempts\x18\x19 \x01(\tR\x14maxHandshakeAttempts\"\xfe\x02\n" +
 	"\fDeviceConfig\x12\x1d\n" +
 	"\n" +
 	"secret_key\x18\x01 \x01(\tR\tsecretKey\x12\x1a\n" +
