@@ -418,6 +418,22 @@ func TestProcessWakesAndHoldsASleepingOutbound(t *testing.T) {
 	if n := f.proxies["w1"].asked(); n != 2 || !f.asleep(t, "w1") {
 		t.Fatalf("after the last connection: asked %d times, asleep %v", n, f.asleep(t, "w1"))
 	}
+	// The end of a connection through the chosen outbound turns no loop:
+	// the balancer holds it anyway.
+	f.engine(func(e *engine) { e.switchTo(e.selectors["auto"], "w1", "failover", at(4*time.Hour)) })
+	kicked()
+	f.now = at(4 * time.Hour)
+	f.o.ProcessStarted("w1")
+	f.o.ProcessEnded("w1")
+	if kicked() {
+		t.Fatal("the end of a connection through the chosen outbound kicked the loop")
+	}
+	f.engine(func(e *engine) { e.switchTo(e.selectors["auto"], "a1", "upgrade", at(5*time.Hour)) })
+	f.turn(at(5 * time.Hour))
+	f.turn(at(5*time.Hour + defaultSleepAfter))
+	if n := f.proxies["w1"].asked(); n != 3 || !f.asleep(t, "w1") {
+		t.Fatalf("once the balancer left it: asked %d times, asleep %v", n, f.asleep(t, "w1"))
+	}
 	// An end the observer cannot match counts for nothing.
 	f.o.ProcessEnded("w1")
 	f.o.ProcessEnded("w9")

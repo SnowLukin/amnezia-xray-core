@@ -95,8 +95,11 @@ func (e *engine) processStarted(tag string, now time.Time) bool {
 }
 
 // processEnded counts the end of a connection processStarted counted, a
-// use as well. It reports whether that was the last one: the loop then
-// plans the sleep, which nothing else would.
+// use as well. It reports whether that was the last one and nothing else
+// holds the outbound: the loop then plans the sleep, which nothing else
+// would. Whatever else holds it, a balancer that chose it for one, lets go
+// in a turn of the loop, so the end of every connection through a chosen
+// outbound does not turn it.
 func (e *engine) processEnded(tag string, now time.Time) bool {
 	p := e.paths[tag]
 	if p == nil || p.processes == 0 {
@@ -105,7 +108,7 @@ func (e *engine) processEnded(tag string, now time.Time) bool {
 	}
 	p.processes--
 	e.used(tag, now)
-	return p.processes == 0 && e.s.sleepAfter > 0
+	return p.processes == 0 && e.s.sleepAfter > 0 && !e.keptAwake(tag, e.idle(now))
 }
 
 // fetchingVia counts the provider requests under way through an outbound:
