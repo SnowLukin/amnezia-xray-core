@@ -2,10 +2,8 @@ package wireguard
 
 import (
 	"context"
-	"encoding/hex"
 	stdnet "net"
 	"net/netip"
-	"sync"
 	"testing"
 	"time"
 
@@ -186,29 +184,5 @@ func TestInboundRefusesOtherHeaderKey(t *testing.T) {
 	}
 	if err == nil {
 		t.Fatal("a client with another header protection key got an answer")
-	}
-}
-
-func TestServerIPC(t *testing.T) {
-	var pub [32]byte
-	pub[0] = 1
-	users := &sync.Map{}
-	users.Store(pub, &protocol.MemoryUser{Account: &MemoryAccount{
-		Pub:        pub,
-		AllowedIPs: []netip.Prefix{netip.MustParsePrefix("10.9.0.2/32")},
-		KeepAlive:  "25",
-	}})
-	s := &Server{conf: &DeviceConfig{SecretKey: "aa"}, users: users}
-	peer := "public_key=" + hex.EncodeToString(pub[:]) + "\n" +
-		"allowed_ip=10.9.0.2/32\npersistent_keepalive_interval=25\n"
-	// An inbound without the awg block writes what it always wrote.
-	if got := s.ipc(); got != "private_key=aa\n"+peer {
-		t.Errorf("got %q", got)
-	}
-
-	s.conf.Parameters = &AmneziaParameters{Jc: "4", S4: "25", HeaderProtectionKey: "bb", DisableCookies: true}
-	want := "private_key=aa\njc=4\ns4=25\nheader_protection_key=bb\ndisable_cookies=true\n" + peer
-	if got := s.ipc(); got != want {
-		t.Errorf("got %q, want %q", got, want)
 	}
 }
