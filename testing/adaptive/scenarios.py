@@ -269,7 +269,7 @@ def handshakes_within(seconds):
 
 def failover(stand, xray, work, name, port, mode, limit, members=THREE, costs=THREE_COSTS, expect_to=None,
              traffic=None, duration=40, tag="a1", count_conns=True, kinds=None, confirm=False, immediate=False,
-             redials=False):
+             redials=False, actions=(), more=None):
     """One fault on the address of the chosen outbound, or on a list of addresses at once.
 
     kinds: one of these failure kinds must be in the suspicion of the outbound.
@@ -277,7 +277,9 @@ def failover(stand, xray, work, name, port, mode, limit, members=THREE, costs=TH
     outbound out. immediate: the evidence is strong and rules it out without a
     probe. count_conns is off for a mode that the proxy cannot count (refuse). redials: the
     transport dials the address again by itself (gRPC does after a failure, a WireGuard outbound
-    wakes for a probe). mode may be a callable that sets the fault itself."""
+    wakes for a probe). mode may be a callable that sets the fault itself. actions are more
+    (second, callable) of the timeline, the fault comes at 10 s; more(c, cs, sw, marks, end)
+    returns more checks once the client stopped."""
     cfg = bench.client_config(members, costs)
     ports = port if isinstance(port, list) else [port]
     m = Marks()
@@ -286,7 +288,7 @@ def failover(stand, xray, work, name, port, mode, limit, members=THREE, costs=TH
         mech = []
         sample = [(10 + s, lambda s=s: mech.append(c.mechanism_heap(f"{s}"))) for s in (1, 5, 8, 10, 12, 15)]
         fault = m.at("fault", mode if callable(mode) else lambda: bench.chaos(",".join(map(str, ports)), mode))
-        run_timeline(tr, [(10, fault)] + sample, duration)
+        run_timeline(tr, [(10, fault)] + sample + list(actions), duration)
         end = time.time()
         peak = max((h for t, h, _ in c.mem if t >= m["fault"]), default=0)
         base = max((h for t, h, _ in c.mem if t < m["fault"]), default=0)
@@ -376,6 +378,8 @@ def failover(stand, xray, work, name, port, mode, limit, members=THREE, costs=TH
     checks.append(leak_check(c))
     if c.splices() is not None:
         checks.append(check("spliced connections", c.splices(), True, "info"))
+    if more:
+        checks += more(c, cs, sw, m, end)
     return checks
 
 
@@ -2894,6 +2898,98 @@ def awg_failover_blackhole(stand, xray, work, name):
     dead address."""
     return failover(stand, xray, work, name, W1, "blackhole", 10, members=AWG_PAIR, costs=AWG_PAIR_COSTS,
                     expect_to="w2", tag="w1", kinds=("dial_timeout",), immediate=True, redials=True)
+
+
+# passive.stallTimeout of the client: its default.
+STALL = 8
+
+
+class HeldConnection:
+    """A keep-alive connection through the client that got its answer and then waits, quiet,
+    as the push and DNS connections of a phone do. Marks when the client ends it."""
+
+    def __init__(self, host):
+        self.host = host
+        self.sock = None
+        self.answered = False
+        self.ended = None
+
+    def open(self):
+        s = bench.open_stream(self.host, 10)
+        if s is None:
+            return
+        s.sendall(f"GET /204 HTTP/1.1\r\nHost: {self.host}\r\n\r\n".encode())
+        head, _ = bench.read_answer(s, time.time() + 10)
+        self.answered = head.startswith(b"HTTP/1.1 204")
+        s.settimeout(None)
+        self.sock = s
+        threading.Thread(target=self._wait, daemon=True).start()
+
+    def _wait(self):
+        try:
+            self.sock.recv(1)
+        except OSError:
+            pass
+        self.ended = time.time()
+
+    def close(self):
+        if self.sock is not None:
+            self.sock.close()
+
+
+@scenario()
+def awg_failover_blackhole_held(stand, xray, work, name):
+    """As awg_failover_blackhole, with a keep-alive connection through w1, opened before the
+    fault, that got its answer and waits. It received something, so the decision keeps it,
+    and it keeps the tunnel of w1 awake: its device repeats the handshake to the dead address.
+    stallTimeout after a decision on strong evidence, the core ends it as silent, its client
+    sees the end, and w1 sleeps with reason down: its device stops sending to the dead
+    address."""
+    held = HeldConnection(bench.TARGETS[3])
+
+    def more(c, cs, sw, m, end):
+        checks = [check("held connection answered through w1 before the fault", held.answered, held.answered,
+                        "True")]
+        if not sw:
+            return checks
+        t_sw = sw[0]["ts"] / 1000
+        down = next((e for e in bench.events_of(c.events, "path_state", m["fault"])
+                     if e["fields"].get("outbound") == "w1" and e["fields"].get("state") == "down"), None)
+        silent = [e for e in bench.events_of(c.events, "pending_closed", m["fault"])
+                  if e["fields"].get("outbound") == "w1" and e["fields"].get("silent") is True]
+        at = silent and silent[0]["ts"] / 1000
+        decided = silent and down and round(at - down["ts"] / 1000, 1)
+        checks.append(check("silent close of w1: connections, s after the switch (after the decision)",
+                            silent and f"{silent[0]['fields'].get('connections')}, {round(at - t_sw, 1)} ({decided})",
+                            bool(silent) and silent[0]["fields"].get("connections", 0) >= 1 and bool(down)
+                            and STALL - 0.5 <= decided <= STALL + 2, f">= 1, {STALL} .. {STALL + 2} after the decision"))
+        ended = held.ended and silent and round(held.ended - at, 1)
+        checks.append(check("held connection ended at the client after the silent close, s", ended,
+                            bool(silent) and held.ended is not None and -0.5 <= ended <= 2, "0 .. 2"))
+        slept = [e for e in bench.events_of(c.events, "outbound_sleep", t_sw) if e["fields"].get("outbound") == "w1"]
+        asleep = slept and slept[0]["ts"] / 1000
+        checks.append(check("w1 asleep after the switch: reason, s", slept and f"{slept[0]['fields'].get('reason')} "
+                            f"{round(asleep - t_sw, 1)}", bool(slept) and slept[0]["fields"].get("reason") == "down"
+                            and asleep - t_sw <= STALL + 5, f"down, <= {STALL + 5}"))
+        if not (slept and silent):
+            return checks
+        checks.append(check("w1 held awake until the silent close, s from it to the sleep", round(asleep - at, 2),
+                            -0.05 <= asleep - at <= 2, "0 .. 2"))
+        up, _ = cs.packets(W1, t_sw, asleep)
+        checks.append(check("datagrams to the dead address from the switch to the sleep", up, True, "info"))
+        up, _ = cs.packets(W1, asleep + 1.5, end)
+        woken = [e for e in bench.probes(c.events, asleep) if e["fields"].get("outbound") == "w1"]
+        limit = bench.AWG_HANDSHAKE_DATAGRAMS * len(woken) * handshakes_within(bench.PROBE_TIMEOUT)
+        checks.append(check(f"datagrams to the dead address in {round(end - asleep - 1.5, 1)} s after the sleep",
+                            up, up is not None and up <= limit, f"<= {limit}"))
+        return checks
+
+    try:
+        return failover(stand, xray, work, name, W1, "blackhole", 10, members=AWG_PAIR, costs=AWG_PAIR_COSTS,
+                        expect_to="w2", tag="w1", kinds=("dial_timeout",), immediate=True, redials=True,
+                        duration=45, actions=[(4, held.open)], more=more)
+    finally:
+        held.close()
 
 
 @scenario()
