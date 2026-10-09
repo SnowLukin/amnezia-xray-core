@@ -1644,7 +1644,9 @@ func (e *engine) remember(tag string) {
 		return
 	}
 	for _, s := range e.selectors {
-		if s.current() != tag {
+		// The host chose a pinned outbound; it tells nothing about which one
+		// the balancer should go back to in this network.
+		if s.current() != tag || s.pinned != "" {
 			continue
 		}
 		m := e.networks[e.networkID]

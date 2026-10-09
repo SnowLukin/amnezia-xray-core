@@ -125,6 +125,25 @@ func TestRecheckOnReleaseRemembersNetworksAndWaitsForMemory(t *testing.T) {
 	}
 }
 
+// The host chose the pinned outbound, so traffic on it does not replace the
+// outbound remembered for the network, and the release goes back to that one.
+func TestPinnedOutboundIsNotRememberedForTheNetwork(t *testing.T) {
+	te := newTestEngine(t, nil, &SelectorConfig{Costs: costs("a", 1, "b", 3)}, "a1", "b1")
+	te.onNetworkChange("home", at(0))
+	te.run(t, at(time.Second), nil)
+	te.pin("auto", "b1", at(time.Minute))
+	te.onNetworkChange("home", at(2*time.Minute))
+	te.onSuccess("b1", at(2*time.Minute+time.Second))
+	te.release("auto", at(3*time.Minute))
+	te.noteDemand(at(3 * time.Minute))
+	if jobs := te.run(t, at(3*time.Minute), nil); !slices.Equal(reasons(jobs), []string{"remembered:a1"}) {
+		t.Fatalf("probes %v after the release, want a1 remembered for home", reasons(jobs))
+	}
+	if te.sel.current() != "a1" {
+		t.Fatalf("the balancer is on %q after the release, want a1", te.sel.current())
+	}
+}
+
 // A release after a change to a network the core does not know starts a
 // return to a cheaper outbound as soon as the change would have.
 func TestReleaseInUnknownNetworkReturnsSoon(t *testing.T) {
@@ -136,14 +155,19 @@ func TestReleaseInUnknownNetworkReturnsSoon(t *testing.T) {
 		soon     bool
 	}{
 		{"no change", nil, false},
-		{"unknown network", []string{"cafe"}, true},
-		{"known network", []string{"cafe", "office", "cafe"}, false},
+		{"unknown network", []string{"office"}, true},
+		{"known network", []string{"office", "cafe"}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			te := newTestEngine(t, nil, sc, "a1", "b1")
+			// cafe learns b1 between the start pin and a pin of the host.
+			te.onNetworkChange("cafe", at(time.Second))
+			te.release("auto", at(time.Second))
+			te.onSuccess("b1", at(2*time.Second))
+			te.pin("auto", "b1", at(3*time.Second))
 			for i, network := range tc.networks {
-				te.onNetworkChange(network, at(time.Duration(i+1)*time.Second))
-				te.onSuccess("b1", at(time.Duration(i+1)*time.Second+time.Millisecond))
+				te.onNetworkChange(network, at(time.Duration(i+4)*time.Second))
+				te.onSuccess("b1", at(time.Duration(i+4)*time.Second+time.Millisecond))
 			}
 			te.release("auto", at(20*time.Second))
 			if soon := !te.sel.upgradeAt.After(at(21 * time.Second)); soon != tc.soon {
