@@ -1,7 +1,7 @@
-"""TCP proxy with failures on command. Every listen port stands in for one
-server address.
+"""TCP and UDP proxy with failures on command. Every listen port stands in for
+one server address.
 
-Run:      chaos.py <control_port> <listen:upstream>...
+Run:      chaos.py <control_port> <listen:upstream>... [udp:<listen:upstream>]...
 Control:  GET http://127.0.0.1:<control_port>/set?port=21001,21002&mode=blackhole
           GET http://127.0.0.1:<control_port>/set   (status only)
 
@@ -24,6 +24,16 @@ session.
 The status line of a port: "<port> <mode> conns=N up=U down=D". up counts the
 bytes the client sent, whatever became of them; down the bytes that reached the
 client. Together they are what a client pays for traffic on the port.
+
+A udp: port forwards datagrams. Each client address gets a socket of its own
+to the upstream, as a NAT would give it; conns counts those addresses. It
+takes the modes that apply to datagrams, and refuses the others:
+  pass            forward everything
+  blackhole       drop every datagram both ways, silently
+  drop_after:N    forward N datagrams each way per client address, then drop
+  delay:MS        delay every datagram by MS milliseconds
+Its status line adds the datagrams: "... pkts_up=P pkts_down=Q", counted as
+the bytes are.
 """
 import asyncio
 import socket
@@ -37,6 +47,10 @@ CONNS = {}
 BYTES = {}
 LISTEN = {}
 SERVERS = {}
+# UDP ports: listen port -> upstream port, and datagrams [up, down] per port.
+UDP = {}
+PACKETS = {}
+UDP_MODES = ("pass", "blackhole", "drop_after", "delay")
 
 
 def rst(writer):
@@ -139,6 +153,97 @@ async def handle(port, upstream, reader, writer):
     await asyncio.gather(pump(port, reader, writer, up, uw, 0), pump(port, ur, uw, down, writer, 1))
 
 
+def count_packet(port, direction, n):
+    count(port, direction, n)
+    PACKETS.setdefault(port, [0, 0])[direction] += 1
+
+
+class UdpSession:
+    """One client address of a UDP port with its own socket to the upstream."""
+
+    def __init__(self, port, listener, client):
+        self.port = port
+        self.listener = listener
+        self.client = client
+        self.upstream = None
+        # Datagrams of the client that came before its socket to the upstream.
+        self.pending = []
+        # Datagrams forwarded each way, for drop_after.
+        self.forwarded = [0, 0]
+
+    async def open(self):
+        loop = asyncio.get_running_loop()
+        try:
+            transport, _ = await loop.create_datagram_endpoint(
+                lambda: UdpUpstream(self), remote_addr=("127.0.0.1", UDP[self.port]))
+        except OSError:
+            self.pending = []
+            return
+        self.upstream = transport
+        for data in self.pending:
+            transport.sendto(data)
+        self.pending = []
+
+    def forward(self, direction, data):
+        name, arg = mode_of(self.port)
+        if name == "blackhole" or (name == "drop_after" and self.forwarded[direction] >= arg):
+            return
+        self.forwarded[direction] += 1
+        if name == "delay":
+            asyncio.get_running_loop().call_later(arg / 1000, self.deliver, direction, data)
+        else:
+            self.deliver(direction, data)
+
+    def deliver(self, direction, data):
+        if direction == 0:
+            if self.upstream is None:
+                self.pending.append(data)
+            else:
+                self.upstream.sendto(data)
+        elif self.listener.transport is not None:
+            self.listener.transport.sendto(data, self.client)
+            count_packet(self.port, 1, len(data))
+
+
+class UdpUpstream(asyncio.DatagramProtocol):
+    def __init__(self, session):
+        self.session = session
+
+    def datagram_received(self, data, addr):
+        self.session.forward(1, data)
+
+    def error_received(self, exc):
+        # The upstream port is closed: to the client that is loss.
+        pass
+
+
+class UdpListener(asyncio.DatagramProtocol):
+    def __init__(self, port):
+        self.port = port
+        self.transport = None
+        self.sessions = {}
+
+    def connection_made(self, transport):
+        self.transport = transport
+
+    def datagram_received(self, data, addr):
+        count_packet(self.port, 0, len(data))
+        session = self.sessions.get(addr)
+        if session is None:
+            session = self.sessions[addr] = UdpSession(self.port, self, addr)
+            CONNS[self.port] = CONNS.get(self.port, 0) + 1
+            asyncio.ensure_future(session.open())
+        session.forward(0, data)
+
+    def error_received(self, exc):
+        # A client went away; its socket answers with an ICMP error.
+        pass
+
+
+async def listen_udp(lp):
+    await asyncio.get_running_loop().create_datagram_endpoint(lambda: UdpListener(lp), local_addr=("127.0.0.1", lp))
+
+
 async def listen(lp):
     up = LISTEN[lp]
     SERVERS[lp] = await asyncio.start_server(lambda r, w, lp=lp, up=up: handle(lp, up, r, w), "127.0.0.1", lp)
@@ -159,15 +264,29 @@ async def control(reader, writer):
         pass
     q = parse_qs(urlparse(line.split(" ")[1]).query)
     body = ""
+    status = "200 OK"
     if "port" in q and "mode" in q:
-        for p in q["port"][0].split(","):
-            MODES[int(p)] = q["mode"][0]
-            if int(p) in LISTEN:
-                await follow_mode(int(p))
-        body = f"{time.time():.3f} set {q['port'][0]} {q['mode'][0]}\n"
-    body += "".join(f"{p} {MODES.get(p, 'pass')} conns={CONNS.get(p, 0)} up={BYTES.get(p, [0, 0])[0]} "
-                    f"down={BYTES.get(p, [0, 0])[1]}\n" for p in sorted(LISTEN))
-    writer.write(f"HTTP/1.1 200 OK\r\nContent-Length: {len(body)}\r\nConnection: close\r\n\r\n{body}".encode())
+        ports = [int(p) for p in q["port"][0].split(",")]
+        mode = q["mode"][0]
+        # A mode that does not apply to datagrams changes nothing, so a
+        # scenario that asks for it fails instead of testing nothing.
+        wrong = [p for p in ports if p in UDP and mode.partition(":")[0] not in UDP_MODES]
+        if wrong:
+            status = "400 Bad Request"
+            body = f"mode {mode} does not apply to the udp ports {wrong}\n"
+        else:
+            for p in ports:
+                MODES[p] = mode
+                if p in LISTEN:
+                    await follow_mode(p)
+            body = f"{time.time():.3f} set {q['port'][0]} {mode}\n"
+    for p in sorted(set(LISTEN) | set(UDP)):
+        body += (f"{p} {MODES.get(p, 'pass')} conns={CONNS.get(p, 0)} up={BYTES.get(p, [0, 0])[0]} "
+                 f"down={BYTES.get(p, [0, 0])[1]}")
+        if p in UDP:
+            body += f" pkts_up={PACKETS.get(p, [0, 0])[0]} pkts_down={PACKETS.get(p, [0, 0])[1]}"
+        body += "\n"
+    writer.write(f"HTTP/1.1 {status}\r\nContent-Length: {len(body)}\r\nConnection: close\r\n\r\n{body}".encode())
     await writer.drain()
     writer.close()
 
@@ -175,11 +294,16 @@ async def control(reader, writer):
 async def main():
     control_port = int(sys.argv[1])
     for spec in sys.argv[2:]:
+        if spec.startswith("udp:"):
+            lp, up = map(int, spec[len("udp:"):].split(":"))
+            UDP[lp] = up
+            await listen_udp(lp)
+            continue
         lp, up = map(int, spec.split(":"))
         LISTEN[lp] = up
         await listen(lp)
     await asyncio.start_server(control, "127.0.0.1", control_port)
-    print("chaos up", LISTEN, flush=True)
+    print("chaos up", LISTEN, "udp", UDP, flush=True)
     await asyncio.Event().wait()
 
 

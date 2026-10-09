@@ -146,6 +146,7 @@ func (s *Server) AddUser(ctx context.Context, user *protocol.MemoryUser) error {
 	}
 	var sb strings.Builder
 	sb.WriteString("public_key=" + hex.EncodeToString(peer.Pub[:]) + "\n")
+	writeProtocolVersion(&sb, peer.ProtocolVersion)
 	sb.WriteString("replace_allowed_ips=true\n")
 	for i := range peer.AllowedIPs {
 		sb.WriteString("allowed_ip=" + peer.AllowedIPs[i].String() + "\n")
@@ -254,6 +255,10 @@ func (s *Server) Start() error {
 	if s.dev != nil {
 		return nil
 	}
+	if s.tun == nil {
+		// Close or a failed Start closed it, and a device needs one.
+		return errors.New("closed")
+	}
 	if s.src.Address.Family().IsDomain() {
 		return errors.New("address is domain")
 	}
@@ -296,12 +301,37 @@ func (s *Server) Start() error {
 			})
 		},
 	}
-	dev := device.NewDevice(s.tun, bind, logger)
+	// The first packet the device reads would otherwise leave with the
+	// padding of an unconfigured device, see readyTun: with S4 set, the
+	// first answer to the first client.
+	rt := newReadyTun(s.tun)
+	dev := device.NewDevice(rt, bind, logger)
+	err := dev.IpcSet(s.ipc())
+	if err == nil {
+		rt.open()
+		err = dev.Up()
+	}
+	if err != nil {
+		// The device closes the TUN with it.
+		dev.Close()
+		s.tun = nil
+		return err
+	}
+	s.dev = dev
+	createForwarder(s.stack, s.HandleConnection)
+	return nil
+}
+
+// ipc is the IPC config of the device: the same AmneziaWG parameters as an
+// outbound writes, then the peers.
+func (s *Server) ipc() string {
 	var cfg strings.Builder
 	cfg.WriteString("private_key=" + s.conf.SecretKey + "\n")
+	writeAmneziaParams(&cfg, s.conf.Parameters)
 	s.users.Range(func(key, value any) bool {
 		peer := value.(*protocol.MemoryUser).Account.(*MemoryAccount)
 		cfg.WriteString("public_key=" + hex.EncodeToString(peer.Pub[:]) + "\n")
+		writeProtocolVersion(&cfg, peer.ProtocolVersion)
 		for i := range peer.AllowedIPs {
 			cfg.WriteString("allowed_ip=" + peer.AllowedIPs[i].String() + "\n")
 		}
@@ -313,17 +343,7 @@ func (s *Server) Start() error {
 		}
 		return true
 	})
-	err := dev.IpcSet(cfg.String())
-	if err != nil {
-		return err
-	}
-	err = dev.Up()
-	if err != nil {
-		return err
-	}
-	s.dev = dev
-	createForwarder(s.stack, s.HandleConnection)
-	return nil
+	return cfg.String()
 }
 
 func (s *Server) HandleConnection(conn net.Conn, dest net.Destination) {

@@ -1,8 +1,8 @@
 """Bench for the health observatory and the leastCost balancer.
 
-One machine, no root: Xray servers for five transports, a TCP proxy that
-breaks server addresses on command, a local HTTP target instead of the
-internet, and an Xray client built from this branch.
+One machine, no root: Xray servers for five transports and an AmneziaWG
+server, a TCP and UDP proxy that breaks server addresses on command, a local
+HTTP target instead of the internet, and an Xray client built from this branch.
 
 Environment:
   BENCH_PORT_OFFSET   moves every port, so two benches can run side by side.
@@ -74,12 +74,40 @@ def address_port(kind, index):
 
 
 def all_address_ports():
-    return [address_port(k, i) for k in TRANSPORTS for i in range(ADDRESSES)] + [CONNECTIVITY_PORT]
+    return [address_port(k, i) for k in TRANSPORTS for i in range(ADDRESSES)] + [CONNECTIVITY_PORT, AWG_ADDRESS]
 
 
 # The connectivity check of the client goes through this chaos port to the
 # target, so a scenario can take "the internet" away without touching servers.
 CONNECTIVITY_PORT = 21099 + OFFSET
+
+# The AmneziaWG server, an Xray process of its own, listens on AWG_PORT and is
+# reached through the UDP chaos port AWG_ADDRESS. The target echoes datagrams on
+# UDP_ECHO_PORT. Each of them ends in digits no other port here ends in, so
+# benches whose offsets differ by thousands never take the same port.
+AWG_PORT = 20061 + OFFSET
+AWG_ADDRESS = 21071 + OFFSET
+UDP_ECHO_PORT = 18997 + OFFSET
+UDP_PORTS = [AWG_PORT, AWG_ADDRESS, UDP_ECHO_PORT]
+
+AWG_SERVER_PRIVATE = "KLWsMvV9jay7/DbNtHYRzqpRtSSp55JUhzHLmO4rWnI="
+AWG_SERVER_PUBLIC = "FaIcjcrbDGj21AiVKy630Bv7q+gLHOV9JGe6abLPL2U="
+AWG_CLIENT_PRIVATE = "0BgPQbtCBDnYWtZTdx/L7GYuS79kaV+RcO5TUJR8LVM="
+AWG_CLIENT_PUBLIC = "Qu7uu5ddbF+kuPr6h4Ur0/uMh6GIicWxq5D+nizJjCU="
+AWG_HEADER_KEY = "CKsSn78skewyso2x1VqceKtV9MBdqz8IJ/SkUfCrWkE="
+AWG_SERVER_ADDRESS = "10.66.0.1"
+AWG_CLIENT_ADDRESS = "10.66.0.2"
+# Both sides: junk, paddings, header ranges, header protection and trailers,
+# all away from their defaults.
+AWG_PARAMS = {"jc": 4, "jmin": 40, "jmax": 70, "s1": 20, "s2": 78, "s3": 15, "s4": 25,
+              "h1": "100000-100100", "h2": "200000-200100", "h3": "300000-300100", "h4": "400000-400100",
+              "headerProtectionKey": AWG_HEADER_KEY, "randomTrailers": True}
+# A loopback address cannot cross the tunnel: the network stacks at both ends
+# drop it on an interface that is not loopback. The DNS of the AmneziaWG server
+# answers every target with this address instead, and its freedom takes it back
+# to loopback on the same port.
+TUNNEL_TARGET = "198.18.0.1"
+TUNNEL_DEAD = "198.18.0.2"
 
 SERVER_NAMES = {"tcp_tls": "std.example.com", "reality": "example.com", "ws": "ws.example.com",
                 "xhttp": "x.example.com", "grpc": "g.example.com"}
@@ -136,12 +164,51 @@ def server_config():
     }
 
 
+def awg_server_config():
+    """The AmneziaWG server. Its DNS, which the client reaches through the
+    tunnel, answers every target with TUNNEL_TARGET; everything else that comes
+    out of the tunnel goes to loopback on the port it was meant for."""
+    hosts = {t: TUNNEL_TARGET for t in TARGETS + ["probe.test"]}
+    hosts["dead.test"] = TUNNEL_DEAD
+    return {
+        "log": {"loglevel": "warning"},
+        "dns": {"hosts": hosts, "queryStrategy": "UseIPv4"},
+        "inbounds": [{"tag": "awg", "listen": "127.0.0.1", "port": AWG_PORT, "protocol": "wireguard",
+                      "settings": {"secretKey": AWG_SERVER_PRIVATE, "address": [AWG_SERVER_ADDRESS], "mtu": 1420,
+                                   "peers": [{"publicKey": AWG_CLIENT_PUBLIC,
+                                              "allowedIPs": [f"{AWG_CLIENT_ADDRESS}/32"]}],
+                                   "awg": AWG_PARAMS}}],
+        "outbounds": [
+            {"tag": "local", "protocol": "freedom",
+             "settings": {"redirect": "127.0.0.1:0", "finalRules": [{"action": "allow"}]}},
+            {"tag": "dns", "protocol": "dns"},
+            {"tag": "dead", "protocol": "blackhole"},
+        ],
+        "routing": {"rules": [{"port": "53", "outboundTag": "dns"},
+                              {"ip": [TUNNEL_DEAD], "outboundTag": "dead"}]},
+    }
+
+
+def awg_member(tag):
+    """A client outbound to the AmneziaWG server through its chaos address.
+    keepAlive is a range, which the device picks every interval from;
+    contentPaddingAddition pads what the client sends, which only the client
+    needs to know."""
+    return {"tag": tag, "protocol": "wireguard", "settings": {
+        "secretKey": AWG_CLIENT_PRIVATE, "address": [f"{AWG_CLIENT_ADDRESS}/32"], "mtu": 1420, "noKernelTun": True,
+        "peers": [{"publicKey": AWG_SERVER_PUBLIC, "endpoint": f"{HOST}:{AWG_ADDRESS}", "keepAlive": "2-3"}],
+        "awg": AWG_PARAMS | {"contentPaddingAddition": "8-32"}}}
+
+
 def member(tag, kind, index=0, pin=None):
-    """A client outbound: transport kind through address number index.
+    """A client outbound: transport kind through address number index; kind
+    awg is the AmneziaWG server, which has one address.
 
     Transports use different server names, as different variants do in
     production; the probe budget per server name depends on it.
     """
+    if kind == "awg":
+        return awg_member(tag)
     tls = {"serverName": SERVER_NAMES[kind], "pinnedPeerCertSha256": pin}
     streams = {
         "tcp_tls": {"network": "tcp", "security": "tls", "tlsSettings": tls},
@@ -264,21 +331,24 @@ class Stand:
         busy = [p for p in [TARGET_PORT, TARGET_TLS_PORT, CHAOS_CONTROL, PROVIDER_PORT, SOCKS_PORT, API_PORT,
                             METRICS_PORT]
                 + [server_port(k) for k in TRANSPORTS] + all_address_ports() if port_open(p)]
+        busy += [f"udp {p}" for p in UDP_PORTS if udp_bound(p)]
         if busy:
             raise RuntimeError(f"ports already in use, another bench running? {busy}")
         open(self.target_log, "w").close()
         self.procs.append(subprocess.Popen(
             ["python3", os.path.join(HERE, "target.py"), str(TARGET_PORT), self.target_log, str(TARGET_TLS_PORT),
-             TARGET_CERT, TARGET_KEY],
+             TARGET_CERT, TARGET_KEY, str(UDP_ECHO_PORT)],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
-        path = os.path.join(self.workdir, "server.json")
-        with open(path, "w") as f:
-            json.dump(server_config(), f)
-        self.procs.append(subprocess.Popen([self.xray, "run", "-c", path],
-                                           stdout=open(os.path.join(self.workdir, "server.log"), "w"),
-                                           stderr=subprocess.STDOUT))
+        for name, config in (("server", server_config()), ("server-awg", awg_server_config())):
+            path = os.path.join(self.workdir, f"{name}.json")
+            with open(path, "w") as f:
+                json.dump(config, f)
+            self.procs.append(subprocess.Popen([self.xray, "run", "-c", path],
+                                               stdout=open(os.path.join(self.workdir, f"{name}.log"), "w"),
+                                               stderr=subprocess.STDOUT))
         specs = [f"{address_port(k, i)}:{server_port(k)}" for k in TRANSPORTS for i in range(ADDRESSES)]
         specs.append(f"{CONNECTIVITY_PORT}:{TARGET_PORT}")
+        specs.append(f"udp:{AWG_ADDRESS}:{AWG_PORT}")
         self.procs.append(subprocess.Popen(["python3", os.path.join(HERE, "chaos.py"), str(CHAOS_CONTROL)] + specs,
                                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
         self.answer([("n1", "reality", 2)])
@@ -290,6 +360,8 @@ class Stand:
         try:
             for p in [TARGET_PORT, TARGET_TLS_PORT, CHAOS_CONTROL, PROVIDER_PORT] + [server_port(k) for k in TRANSPORTS]:
                 wait_port(p)
+            for p in UDP_PORTS:
+                wait_udp(p)
         except RuntimeError:
             self.__exit__()
             raise
@@ -365,6 +437,27 @@ def port_open(port):
         return False
 
 
+def udp_bound(port):
+    """Whether something holds a UDP port on loopback: binding it fails then."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.bind(("127.0.0.1", port))
+        return False
+    except OSError:
+        return True
+    finally:
+        s.close()
+
+
+def wait_udp(port, timeout=10):
+    end = time.time() + timeout
+    while time.time() < end:
+        if udp_bound(port):
+            return
+        time.sleep(0.1)
+    raise RuntimeError(f"udp port {port} did not open")
+
+
 def wait_port(port, timeout=10):
     end = time.time() + timeout
     while time.time() < end:
@@ -385,12 +478,16 @@ def chaos(ports, mode):
 
 
 def chaos_stats():
-    """Per chaos port: (connections accepted, bytes the client sent, bytes that reached it)."""
+    """Per chaos port: (connections accepted, bytes the client sent, bytes that reached it,
+    datagrams the client sent, datagrams that reached it). A UDP port counts client
+    addresses as connections; a TCP port has no datagrams."""
     out = urllib.request.urlopen(f"http://127.0.0.1:{CHAOS_CONTROL}/set", timeout=3).read().decode()
     res = {}
     for line in out.strip().splitlines():
-        port, _, conns, up, down = line.split(" ")
-        res[int(port)] = (int(conns.split("=")[1]), int(up.split("=")[1]), int(down.split("=")[1]))
+        port, _, *fields = line.split(" ")
+        f = dict(field.split("=", 1) for field in fields)
+        res[int(port)] = (int(f["conns"]), int(f["up"]), int(f["down"]), int(f.get("pkts_up", 0)),
+                          int(f.get("pkts_down", 0)))
     return res
 
 
@@ -865,7 +962,8 @@ class ConnSampler:
         if not before or not after:
             return None
         ports = ports if isinstance(ports, (list, tuple, set)) else [ports]
-        return sum(after[-1].get(p, (0, 0, 0))[field] - before[-1].get(p, (0, 0, 0))[field] for p in ports)
+        none = (0, 0, 0, 0, 0)
+        return sum(after[-1].get(p, none)[field] - before[-1].get(p, none)[field] for p in ports)
 
     def between(self, ports, t1, t2):
         """Connections accepted on the port (or ports) between t1 and t2."""
@@ -874,6 +972,10 @@ class ConnSampler:
     def traffic(self, ports, t1, t2):
         """Bytes sent by the client and bytes that reached it, between t1 and t2."""
         return self._delta(ports, t1, t2, 1), self._delta(ports, t1, t2, 2)
+
+    def packets(self, ports, t1, t2):
+        """Datagrams sent by the client and datagrams that reached it on UDP ports, between t1 and t2."""
+        return self._delta(ports, t1, t2, 3), self._delta(ports, t1, t2, 4)
 
 
 def open_stream(host, timeout, tls=TLS):
@@ -931,6 +1033,36 @@ def read_answer(s, deadline=None):
     except OSError:
         pass
     return head, body
+
+
+def udp_echo(ip, port, payload, timeout=5.0):
+    """Sends one datagram through the socks inbound of the client to ip:port, and
+    never again: UDP is not retried. Returns the seconds until it came back, or
+    None if it did not. Only for a client on this machine: adb forwards TCP."""
+    ctl = socket.create_connection(("127.0.0.1", SOCKS_PORT), timeout=timeout)
+    u = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        ctl.settimeout(timeout)
+        ctl.sendall(b"\x05\x01\x00")
+        ctl.recv(2)
+        # UDP ASSOCIATE; the datagrams come from an address the client learns from the first one.
+        ctl.sendall(b"\x05\x03\x00\x01" + bytes(6))
+        rep = ctl.recv(10)
+        if len(rep) < 10 or rep[1] != 0:
+            return None
+        relay = socket.inet_ntoa(rep[4:8])
+        relay = ("127.0.0.1" if relay == "0.0.0.0" else relay, struct.unpack(">H", rep[8:10])[0])
+        u.settimeout(timeout)
+        t0 = time.time()
+        u.sendto(b"\x00\x00\x00\x01" + socket.inet_aton(ip) + struct.pack(">H", port) + payload, relay)
+        try:
+            data, _ = u.recvfrom(65536)
+        except socket.timeout:
+            return None
+        return time.time() - t0 if data[10:] == payload else None
+    finally:
+        u.close()
+        ctl.close()
 
 
 def download(host, path, timeout=120, tls=TLS):
