@@ -127,6 +127,20 @@ func (s *service) SetProviderHeaders(_ context.Context, r *SetProviderHeadersReq
 	return &SetProviderHeadersResponse{}, nil
 }
 
+// GetProviderSet hands over the token and the keys of the outbounds of the
+// provider, as HandlerService hands over outbounds: the API listens where
+// only the host reaches it.
+func (s *service) GetProviderSet(_ context.Context, r *GetProviderSetRequest) (*GetProviderSetResponse, error) {
+	if err := s.ready(); err != nil {
+		return nil, err
+	}
+	set, seq, err := s.observer.ProviderSet(r.Provider, r.After)
+	if err != nil {
+		return nil, err
+	}
+	return &GetProviderSetResponse{Json: string(set), Seq: seq}, nil
+}
+
 func (s *service) Register(server *grpc.Server) {
 	RegisterHealthServiceServer(server, s)
 }

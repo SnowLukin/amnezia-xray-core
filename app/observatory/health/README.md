@@ -480,11 +480,11 @@ those of the config and under those the host set, also before the start.
 An initial set that is not an object, is larger than `maxBytes`, breaks the
 protocol or does not build is reported in `provider_apply` with trigger
 `initial` and `ok` false, and the core starts on the outbounds of the
-config: a bad saved set never keeps the core from starting. The core does
-not keep the raw set once applied. A host passes the answer of a connect
-when it has one, and the kept set only without it: the headers of a kept
-set would lie over a fresh token in the config, which then needs
-`SetProviderHeaders` after the start.
+config: a bad saved set never keeps the core from starting. Once applied,
+the set lives on only as the last applied answer of `ProviderSet`. A host
+passes the answer of a connect when it has one, and the kept set only
+without it: the headers of a kept set would lie over a fresh token in the
+config, which then needs `SetProviderHeaders` after the start.
 
 **Triggers.** Any trigger may start a refresh:
 
@@ -580,7 +580,9 @@ outbound is forgotten once no balancer offers it, failures per outbound are
 capped, probes end by a deadline, and the config values that size anything
 have ceilings. For an open connection of a watched outbound it keeps under
 1 KB and no goroutine of its own. The report keeps fixed counters, the
-latest 10 switches and seven numbers per outbound.
+latest 10 switches and seven numbers per outbound. A provider keeps its
+last applied answer for `ProviderSet`, at most `maxBytes` and replaced by
+the next one; the config drops its initial set once applied.
 
 A host that watches the memory of the process, such as an iOS network
 extension close to its limit, reports pressure with `SetMemoryLow(true)` and
@@ -602,7 +604,9 @@ its end with `SetMemoryLow(false)`. While memory is low:
   is ended for memory.
 - What can be observed stays as it is: the event log keeps its limits, every
   event is written and the report counts as usual. Pressure is when a host
-  most needs to see what happened, and the log costs a few kilobytes.
+  most needs to see what happened, and the log costs a few kilobytes. The
+  last answer of a provider stays too: it is state, not work, and without
+  it a process killed under pressure loses a rotated token.
 - Probes the host asks for go on only for outbounds a balancer uses. The
   others are answered `skipped` unless a probe of the observer answers them,
   their probes that have not started are dropped, and one closed request is
@@ -627,6 +631,7 @@ when the core runs through a library that keeps the instance to itself:
 | `Release(balancer, run)` / `release` | Let the balancer choose again. |
 | `RequestRefresh(provider)` / `refresh [provider]` | Fetch the set of a provider, or of every provider when empty, as soon as the limits allow. False when there is no such provider. |
 | `SetProviderHeaders(provider, headers)` / `headers <provider>` | Put headers over those of the config for the requests of a provider, see Token; an empty value removes one. The command reads them as a JSON object from stdin, never from the arguments, which the process list shows, and prints `{"ok":true}`. Ends the pause after refused headers, not a pause the backend asked for nor the backoff, and starts no refresh. An error names the header, never its value: no such provider, a name that is not a token or belongs to the transport, a bad value, more than 8 headers. |
+| `ProviderSet(provider, after)` / `set <provider> [after]` | The last set the provider applied as JSON valid as its `initial`, with `seq`, a number that grows when the set, the end of a lease or the headers an answer or the host set change. The answer keeps its keys, with those headers in place of its own (the headers of the config stay out), `serverTime` the time its leases count from and `receivedAt`. Nil (`null`) when nothing was applied or nothing changed since `after`; then the call allocates nothing, so a host may ask next to `TakeReport`. The host keeps the set in safe storage, as it holds the token and the keys of the outbounds, and passes it as `initial` when it starts the core without a fresh answer. Over gRPC it goes to any client of the API, as outbounds do through `HandlerService`, so the API listens only where the host reaches it. |
 | `RequestProbe(request)` / `probe <balancer> [outbound...]` | Probe outbounds of a balancer now, see Probes on request. Returns the ticket at once or an error: no such balancer, no candidates yet, not a candidate, too many outbounds. The command waits for the result up to its timeout (`-t`) and prints it; over gRPC `wait_ms` does the same. |
 | `ProbeResult(id)` | One request as in Status and whether it ended; nil when it is no longer kept. |
 | `Status()` / `status` | Current state as JSON, see below. |
@@ -755,7 +760,8 @@ a busy backend asked for (`retry_after_ms`), the next renewal of a lease
 (`renew_in_ms`, below zero while it waits for a limit), the leases that
 ended (`expired`), the `skew_ms` and `clock` of the last answer as in
 `provider_apply`, none when it named no lease, the names of the headers an
-answer or the host set (`headers`), and whether the backend refused the
+answer or the host set (`headers`), the number of the set `ProviderSet`
+returns (`answer_seq`), and whether the backend refused the
 headers (`auth_failed`) with what is left of the pause (`auth_retry_in_ms`,
 below zero once a refresh may try them again, none while it waits for new
 headers); the probe requests of the host (`probe_requests`), each with `id`,

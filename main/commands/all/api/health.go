@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 
 	healthService "github.com/xtls/xray-core/app/observatory/health/command"
 	"github.com/xtls/xray-core/main/commands/base"
@@ -13,7 +14,7 @@ import (
 
 var cmdHealth = &base.Command{
 	CustomFlags: true,
-	UsageLine:   "{{.Exec}} api health [--server=127.0.0.1:8080] <status|events|network [id]|lost|pin <balancer> <outbound> [run]|release <balancer> [run]|refresh [provider]|report [take|final]|probe <balancer> [outbound...]|headers <provider>>",
+	UsageLine:   "{{.Exec}} api health [--server=127.0.0.1:8080] <status|events|network [id]|lost|pin <balancer> <outbound> [run]|release <balancer> [run]|refresh [provider]|report [take|final]|probe <balancer> [outbound...]|headers <provider>|set <provider> [after]>",
 	Short:       "Query and control the health observatory",
 	Long: `
 Query and control the health observatory. Output is JSON.
@@ -49,6 +50,10 @@ Commands:
 	                            {"Authorization": "Bearer ..."}; an empty
 	                            value removes one. Never from arguments,
 	                            which the process list shows
+	set <provider> [after]      the last set the provider applied, valid
+	                            as its initial, with the token: {"seq": n,
+	                            "set": {...}}; set is null when nothing
+	                            changed since the seq after
 
 Arguments:
 
@@ -171,6 +176,27 @@ func executeHealth(cmd *base.Command, args []string) {
 			request = "null"
 		}
 		fmt.Printf("{\"id\":%d,\"run\":%q,\"request\":%s}\n", r.Id, r.Run, request)
+	case "set":
+		if len(a) < 2 {
+			base.Fatalf("health set: need provider")
+		}
+		req := &healthService.GetProviderSetRequest{Provider: a[1]}
+		if len(a) > 2 {
+			after, err := strconv.ParseUint(a[2], 10, 64)
+			if err != nil {
+				base.Fatalf("health set: after must be a number")
+			}
+			req.After = after
+		}
+		r, err := client.GetProviderSet(ctx, req)
+		if err != nil {
+			base.Fatalf("health set: %s", err)
+		}
+		set := r.Json
+		if set == "" {
+			set = "null"
+		}
+		fmt.Printf("{\"seq\":%d,\"set\":%s}\n", r.Seq, set)
 	case "headers":
 		if _, err := client.SetProviderHeaders(ctx, &healthService.SetProviderHeadersRequest{Provider: a[1], Headers: headers}); err != nil {
 			base.Fatalf("health headers: %s", err)

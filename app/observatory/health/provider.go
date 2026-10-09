@@ -132,6 +132,12 @@ type provider struct {
 	// until authRetryAt, or until the headers change when it is zero.
 	authFailed  bool
 	authRetryAt time.Time
+
+	// The last applied answer for the host to keep, and the number of what
+	// ProviderSet returns. Kept while memory is low as well: it is state,
+	// not work, and without it a killed process loses a rotated token.
+	last lastAnswer
+	seq  uint64
 }
 
 func newProvider(cfg *providerSettings) *provider {

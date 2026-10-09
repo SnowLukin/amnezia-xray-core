@@ -76,6 +76,8 @@ type providerStatusView struct {
 	Headers       []string `json:"headers,omitempty"`
 	AuthFailed    bool     `json:"auth_failed,omitempty"`
 	AuthRetryInMs *int64   `json:"auth_retry_in_ms,omitempty"`
+	// The number ProviderSet returns with the set.
+	AnswerSeq uint64 `json:"answer_seq,omitempty"`
 }
 
 type statusView struct {
@@ -231,6 +233,7 @@ func (e *engine) status(now time.Time) statusView {
 			pv.Headers = slices.Sorted(maps.Keys(p.rotated))
 		}
 		pv.AuthFailed = p.authFailed
+		pv.AnswerSeq = p.seq
 		if p.authFailed && !p.authRetryAt.IsZero() {
 			in := p.authRetryAt.Sub(now).Milliseconds()
 			pv.AuthRetryInMs = &in

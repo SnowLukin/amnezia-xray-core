@@ -91,6 +91,8 @@ type leaseAnswer struct {
 
 type leaseCounts struct {
 	leases, renewed, expired int
+	// An end came, went or changed: the set the host keeps is out of date.
+	ends bool
 }
 
 // askedLease is a lease a refresh asks the backend about: one that ended
@@ -136,6 +138,9 @@ func (e *engine) acceptLeases(p *provider, tags []string, a leaseAnswer, now tim
 		inSet[tag] = true
 		end, ok := a.ends[tag]
 		if !ok {
+			if p.leases[tag] != nil {
+				c.ends = true
+			}
 			moved = e.dropLease(p, tag) || moved
 			continue
 		}
@@ -154,6 +159,7 @@ func (e *engine) acceptLeases(p *provider, tags []string, a leaseAnswer, now tim
 			if l != nil && ttl > 0 {
 				c.renewed++
 			}
+			c.ends = true
 			l = &lease{end: end, expired: was && ttl <= 0}
 			if p.leases == nil {
 				p.leases = map[string]*lease{}
@@ -175,6 +181,7 @@ func (e *engine) acceptLeases(p *provider, tags []string, a leaseAnswer, now tim
 			l.renewIn, l.urgentIn = max(l.renewIn-gone, 0), max(l.urgentIn-gone, 0)
 			if end.Before(l.end) {
 				l.end = end
+				c.ends = true
 			}
 		}
 		// A fresh clock of the server is more exact than what the device
@@ -197,6 +204,7 @@ func (e *engine) acceptLeases(p *provider, tags []string, a leaseAnswer, now tim
 	}
 	for tag := range p.leases {
 		if !inSet[tag] {
+			c.ends = true
 			moved = e.dropLease(p, tag) || moved
 		}
 	}

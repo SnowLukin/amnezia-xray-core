@@ -191,7 +191,10 @@ func (e *engine) setProviderHeaders(tag string, headers map[string]string, now t
 	if n > maxRotatedHeaders {
 		return fmt.Errorf("more than %d headers", maxRotatedHeaders)
 	}
-	e.rotate(p, headers, "host", now)
+	if e.rotate(p, headers, "host", now) {
+		// The headers the host keeps with the set changed.
+		p.seq++
+	}
 	// The host vouches for the headers, changed or not.
 	p.authFailed, p.authRetryAt = false, time.Time{}
 	return nil

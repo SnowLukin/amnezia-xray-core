@@ -27,6 +27,7 @@ const (
 	HealthService_GetReport_FullMethodName          = "/xray.core.app.observatory.health.command.HealthService/GetReport"
 	HealthService_Probe_FullMethodName              = "/xray.core.app.observatory.health.command.HealthService/Probe"
 	HealthService_SetProviderHeaders_FullMethodName = "/xray.core.app.observatory.health.command.HealthService/SetProviderHeaders"
+	HealthService_GetProviderSet_FullMethodName     = "/xray.core.app.observatory.health.command.HealthService/GetProviderSet"
 )
 
 // HealthServiceClient is the client API for HealthService service.
@@ -41,6 +42,7 @@ type HealthServiceClient interface {
 	GetReport(ctx context.Context, in *GetReportRequest, opts ...grpc.CallOption) (*GetReportResponse, error)
 	Probe(ctx context.Context, in *ProbeRequest, opts ...grpc.CallOption) (*ProbeResponse, error)
 	SetProviderHeaders(ctx context.Context, in *SetProviderHeadersRequest, opts ...grpc.CallOption) (*SetProviderHeadersResponse, error)
+	GetProviderSet(ctx context.Context, in *GetProviderSetRequest, opts ...grpc.CallOption) (*GetProviderSetResponse, error)
 }
 
 type healthServiceClient struct {
@@ -131,6 +133,16 @@ func (c *healthServiceClient) SetProviderHeaders(ctx context.Context, in *SetPro
 	return out, nil
 }
 
+func (c *healthServiceClient) GetProviderSet(ctx context.Context, in *GetProviderSetRequest, opts ...grpc.CallOption) (*GetProviderSetResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetProviderSetResponse)
+	err := c.cc.Invoke(ctx, HealthService_GetProviderSet_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // HealthServiceServer is the server API for HealthService service.
 // All implementations must embed UnimplementedHealthServiceServer
 // for forward compatibility.
@@ -143,6 +155,7 @@ type HealthServiceServer interface {
 	GetReport(context.Context, *GetReportRequest) (*GetReportResponse, error)
 	Probe(context.Context, *ProbeRequest) (*ProbeResponse, error)
 	SetProviderHeaders(context.Context, *SetProviderHeadersRequest) (*SetProviderHeadersResponse, error)
+	GetProviderSet(context.Context, *GetProviderSetRequest) (*GetProviderSetResponse, error)
 	mustEmbedUnimplementedHealthServiceServer()
 }
 
@@ -176,6 +189,9 @@ func (UnimplementedHealthServiceServer) Probe(context.Context, *ProbeRequest) (*
 }
 func (UnimplementedHealthServiceServer) SetProviderHeaders(context.Context, *SetProviderHeadersRequest) (*SetProviderHeadersResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method SetProviderHeaders not implemented")
+}
+func (UnimplementedHealthServiceServer) GetProviderSet(context.Context, *GetProviderSetRequest) (*GetProviderSetResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetProviderSet not implemented")
 }
 func (UnimplementedHealthServiceServer) mustEmbedUnimplementedHealthServiceServer() {}
 func (UnimplementedHealthServiceServer) testEmbeddedByValue()                       {}
@@ -342,6 +358,24 @@ func _HealthService_SetProviderHeaders_Handler(srv interface{}, ctx context.Cont
 	return interceptor(ctx, in, info, handler)
 }
 
+func _HealthService_GetProviderSet_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetProviderSetRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(HealthServiceServer).GetProviderSet(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: HealthService_GetProviderSet_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(HealthServiceServer).GetProviderSet(ctx, req.(*GetProviderSetRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // HealthService_ServiceDesc is the grpc.ServiceDesc for HealthService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -380,6 +414,10 @@ var HealthService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "SetProviderHeaders",
 			Handler:    _HealthService_SetProviderHeaders_Handler,
+		},
+		{
+			MethodName: "GetProviderSet",
+			Handler:    _HealthService_GetProviderSet_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

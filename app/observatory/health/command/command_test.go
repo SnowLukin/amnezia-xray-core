@@ -240,3 +240,59 @@ func TestSetProviderHeadersWithoutObservatory(t *testing.T) {
 		t.Fatal("headers without a health observatory")
 	}
 }
+
+func TestGetProviderSet(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"version": "v1", "outbounds": [{"tag": "x1", "protocol": "freedom"}],
+		  "headers": {"Authorization": "Bearer t2"}}`))
+	}))
+	defer ts.Close()
+	s, inst := service(t, `{
+	  "log": {"loglevel": "none"},
+	  "outbounds": [{"tag": "direct", "protocol": "freedom"}, {"tag": "block", "protocol": "blackhole"}],
+	  "routing": {"balancers": [{"tag": "auto", "selector": ["p-"], "strategy": {"type": "leastCost"}, "fallbackTag": "block"}]},
+	  "healthObservatory": {"subjectSelector": ["p-"], "providers": [{
+	    "tag": "fresh", "url": "`+ts.URL+`", "via": ["direct"], "allowPlainHttp": true,
+	    "triggers": {"interval": "0s", "minHealthy": 0, "whenExhausted": false, "maxAge": "0s", "onNetworkChange": "never"},
+	    "apply": {"balancer": "auto", "tagPrefix": "p-", "protocols": ["freedom"]}}]}
+	}`)
+	ctx := context.Background()
+	get := func(after uint64) *command.GetProviderSetResponse {
+		t.Helper()
+		r, err := s.GetProviderSet(ctx, &command.GetProviderSetRequest{Provider: "fresh", After: after})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+	if r := get(0); r.Json != "" || r.Seq != 0 {
+		t.Fatalf("before an answer: %+v", r)
+	}
+	health.FromInstance(inst).RequestRefresh("fresh")
+	var r *command.GetProviderSetResponse
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+		if r = get(0); r.Json != "" {
+			break
+		}
+	}
+	var set struct {
+		Version string            `json:"version"`
+		Headers map[string]string `json:"headers"`
+	}
+	if err := json.Unmarshal([]byte(r.Json), &set); err != nil || r.Seq != 1 || set.Version != "v1" || set.Headers["Authorization"] != "Bearer t2" {
+		t.Fatalf("set %+v: %v", r, err)
+	}
+	if r := get(1); r.Json != "" || r.Seq != 1 {
+		t.Fatalf("nothing newer: %+v", r)
+	}
+	if _, err := s.GetProviderSet(ctx, &command.GetProviderSetRequest{Provider: "other"}); err == nil {
+		t.Fatal("a set of no provider")
+	}
+}
+
+func TestGetProviderSetWithoutObservatory(t *testing.T) {
+	s, _ := service(t, `{"log": {"loglevel": "none"}, "outbounds": [{"tag": "direct", "protocol": "freedom"}]}`)
+	if _, err := s.GetProviderSet(context.Background(), &command.GetProviderSetRequest{Provider: "fresh"}); err == nil {
+		t.Fatal("a set without a health observatory")
+	}
+}

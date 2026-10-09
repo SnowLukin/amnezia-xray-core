@@ -92,6 +92,9 @@ type providerAnswer struct {
 	initial    bool
 	receivedAt time.Time
 	age        time.Duration
+	// The answer as it came, for ProviderSet once it applied. Parsing
+	// copies nothing more of it.
+	body []byte
 }
 
 type outboundHead struct {
@@ -260,6 +263,7 @@ func readAnswer(body []byte, initial bool) (*providerAnswer, error) {
 	if a.version == "" {
 		a.version = setHash(sections)
 	}
+	a.body = body
 	return a, nil
 }
 
@@ -808,13 +812,16 @@ func (o *Observer) applySet(rt *providerRuntime, a *providerAnswer, j *refreshJo
 		// The version names the set, not the answer: the most common answer
 		// while leases run is the same set with later ends, which renews
 		// them without rebuilding anything.
+		kept := compactAnswer(a.body)
 		now := o.now()
 		o.mu.Lock()
 		leases, moved := o.e.acceptLeases(rt.p, rt.p.tags, leasesOf(a, rt.cfg.prefix), now)
 		if moved {
 			o.e.refreshCandidates(now)
 		}
+		gen := rt.p.headersGen
 		names, stale := o.e.takeAnswerHeaders(rt.p, a.headers, j.headersGen, headersBy(j), now)
+		o.e.keepAnswer(rt.p, a, kept, leases.ends || rt.p.headersGen != gen, now)
 		fields["ok"] = true
 		fields["changed"] = false
 		fields["unchanged"] = len(a.heads)
@@ -951,6 +958,7 @@ func (o *Observer) applySet(rt *providerRuntime, a *providerAnswer, j *refreshJo
 	for tag, c := range a.costs {
 		costs[rt.cfg.prefix+tag] = c
 	}
+	kept := compactAnswer(a.body)
 	now := o.now()
 	o.mu.Lock()
 	exhausted := false
@@ -970,6 +978,7 @@ func (o *Observer) applySet(rt *providerRuntime, a *providerAnswer, j *refreshJo
 	rt.p.version = a.version
 	rt.p.draining = len(rt.draining)
 	names, stale := o.e.takeAnswerHeaders(rt.p, a.headers, j.headersGen, headersBy(j), now)
+	o.e.keepAnswer(rt.p, a, kept, true, now)
 	fields["ok"] = true
 	fields["changed"] = true
 	fields["added"] = len(added)
