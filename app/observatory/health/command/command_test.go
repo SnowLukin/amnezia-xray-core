@@ -192,3 +192,51 @@ func TestGetReportWithoutObservatory(t *testing.T) {
 		t.Fatal("a report without a health observatory")
 	}
 }
+
+func TestSetProviderHeaders(t *testing.T) {
+	s, inst := service(t, `{
+	  "log": {"loglevel": "none"},
+	  "outbounds": [{"tag": "direct", "protocol": "freedom"}, {"tag": "block", "protocol": "blackhole"}],
+	  "routing": {"balancers": [{"tag": "auto", "selector": ["p-"], "strategy": {"type": "leastCost"}, "fallbackTag": "block"}]},
+	  "healthObservatory": {"subjectSelector": ["p-"], "providers": [{
+	    "tag": "fresh", "url": "https://provider.test/set", "headers": {"Authorization": "Bearer config"},
+	    "triggers": {"interval": "0s", "minHealthy": 0, "whenExhausted": false, "maxAge": "0s", "onNetworkChange": "never"},
+	    "apply": {"balancer": "auto", "tagPrefix": "p-"}}]}
+	}`)
+	ctx := context.Background()
+	if _, err := s.SetProviderHeaders(ctx, &command.SetProviderHeadersRequest{Provider: "fresh",
+		Headers: map[string]string{"authorization": "Bearer host-secret"}}); err != nil {
+		t.Fatal(err)
+	}
+	var st struct {
+		Providers []struct {
+			Headers []string `json:"headers"`
+		} `json:"providers"`
+	}
+	status := health.FromInstance(inst).Status()
+	if err := json.Unmarshal(status, &st); err != nil || len(st.Providers) != 1 || strings.Join(st.Providers[0].Headers, ",") != "Authorization" {
+		t.Fatalf("status %s: %v", status, err)
+	}
+	if strings.Contains(string(status), "host-secret") {
+		t.Fatal("the status shows the value")
+	}
+	for name, req := range map[string]*command.SetProviderHeadersRequest{
+		"no such provider": {Provider: "other", Headers: map[string]string{"Authorization": "Bearer host-secret"}},
+		"bad name":         {Provider: "fresh", Headers: map[string]string{"Host": "provider.test"}},
+		"bad value":        {Provider: "fresh", Headers: map[string]string{"Authorization": "Bearer host-secret\r\n"}},
+	} {
+		_, err := s.SetProviderHeaders(ctx, req)
+		if err == nil {
+			t.Errorf("%s: accepted", name)
+		} else if strings.Contains(err.Error(), "host-secret") {
+			t.Errorf("%s: the error quotes the value: %v", name, err)
+		}
+	}
+}
+
+func TestSetProviderHeadersWithoutObservatory(t *testing.T) {
+	s, _ := service(t, `{"log": {"loglevel": "none"}, "outbounds": [{"tag": "direct", "protocol": "freedom"}]}`)
+	if _, err := s.SetProviderHeaders(context.Background(), &command.SetProviderHeadersRequest{Provider: "fresh"}); err == nil {
+		t.Fatal("headers without a health observatory")
+	}
+}

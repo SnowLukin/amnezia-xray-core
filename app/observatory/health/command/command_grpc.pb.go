@@ -19,13 +19,14 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	HealthService_GetStatus_FullMethodName      = "/xray.core.app.observatory.health.command.HealthService/GetStatus"
-	HealthService_DrainEvents_FullMethodName    = "/xray.core.app.observatory.health.command.HealthService/DrainEvents"
-	HealthService_NetworkChanged_FullMethodName = "/xray.core.app.observatory.health.command.HealthService/NetworkChanged"
-	HealthService_Pin_FullMethodName            = "/xray.core.app.observatory.health.command.HealthService/Pin"
-	HealthService_Refresh_FullMethodName        = "/xray.core.app.observatory.health.command.HealthService/Refresh"
-	HealthService_GetReport_FullMethodName      = "/xray.core.app.observatory.health.command.HealthService/GetReport"
-	HealthService_Probe_FullMethodName          = "/xray.core.app.observatory.health.command.HealthService/Probe"
+	HealthService_GetStatus_FullMethodName          = "/xray.core.app.observatory.health.command.HealthService/GetStatus"
+	HealthService_DrainEvents_FullMethodName        = "/xray.core.app.observatory.health.command.HealthService/DrainEvents"
+	HealthService_NetworkChanged_FullMethodName     = "/xray.core.app.observatory.health.command.HealthService/NetworkChanged"
+	HealthService_Pin_FullMethodName                = "/xray.core.app.observatory.health.command.HealthService/Pin"
+	HealthService_Refresh_FullMethodName            = "/xray.core.app.observatory.health.command.HealthService/Refresh"
+	HealthService_GetReport_FullMethodName          = "/xray.core.app.observatory.health.command.HealthService/GetReport"
+	HealthService_Probe_FullMethodName              = "/xray.core.app.observatory.health.command.HealthService/Probe"
+	HealthService_SetProviderHeaders_FullMethodName = "/xray.core.app.observatory.health.command.HealthService/SetProviderHeaders"
 )
 
 // HealthServiceClient is the client API for HealthService service.
@@ -39,6 +40,7 @@ type HealthServiceClient interface {
 	Refresh(ctx context.Context, in *RefreshRequest, opts ...grpc.CallOption) (*RefreshResponse, error)
 	GetReport(ctx context.Context, in *GetReportRequest, opts ...grpc.CallOption) (*GetReportResponse, error)
 	Probe(ctx context.Context, in *ProbeRequest, opts ...grpc.CallOption) (*ProbeResponse, error)
+	SetProviderHeaders(ctx context.Context, in *SetProviderHeadersRequest, opts ...grpc.CallOption) (*SetProviderHeadersResponse, error)
 }
 
 type healthServiceClient struct {
@@ -119,6 +121,16 @@ func (c *healthServiceClient) Probe(ctx context.Context, in *ProbeRequest, opts 
 	return out, nil
 }
 
+func (c *healthServiceClient) SetProviderHeaders(ctx context.Context, in *SetProviderHeadersRequest, opts ...grpc.CallOption) (*SetProviderHeadersResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SetProviderHeadersResponse)
+	err := c.cc.Invoke(ctx, HealthService_SetProviderHeaders_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // HealthServiceServer is the server API for HealthService service.
 // All implementations must embed UnimplementedHealthServiceServer
 // for forward compatibility.
@@ -130,6 +142,7 @@ type HealthServiceServer interface {
 	Refresh(context.Context, *RefreshRequest) (*RefreshResponse, error)
 	GetReport(context.Context, *GetReportRequest) (*GetReportResponse, error)
 	Probe(context.Context, *ProbeRequest) (*ProbeResponse, error)
+	SetProviderHeaders(context.Context, *SetProviderHeadersRequest) (*SetProviderHeadersResponse, error)
 	mustEmbedUnimplementedHealthServiceServer()
 }
 
@@ -160,6 +173,9 @@ func (UnimplementedHealthServiceServer) GetReport(context.Context, *GetReportReq
 }
 func (UnimplementedHealthServiceServer) Probe(context.Context, *ProbeRequest) (*ProbeResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Probe not implemented")
+}
+func (UnimplementedHealthServiceServer) SetProviderHeaders(context.Context, *SetProviderHeadersRequest) (*SetProviderHeadersResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SetProviderHeaders not implemented")
 }
 func (UnimplementedHealthServiceServer) mustEmbedUnimplementedHealthServiceServer() {}
 func (UnimplementedHealthServiceServer) testEmbeddedByValue()                       {}
@@ -308,6 +324,24 @@ func _HealthService_Probe_Handler(srv interface{}, ctx context.Context, dec func
 	return interceptor(ctx, in, info, handler)
 }
 
+func _HealthService_SetProviderHeaders_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetProviderHeadersRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(HealthServiceServer).SetProviderHeaders(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: HealthService_SetProviderHeaders_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(HealthServiceServer).SetProviderHeaders(ctx, req.(*SetProviderHeadersRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // HealthService_ServiceDesc is the grpc.ServiceDesc for HealthService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -342,6 +376,10 @@ var HealthService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Probe",
 			Handler:    _HealthService_Probe_Handler,
+		},
+		{
+			MethodName: "SetProviderHeaders",
+			Handler:    _HealthService_SetProviderHeaders_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

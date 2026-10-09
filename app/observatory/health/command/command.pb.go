@@ -708,6 +708,96 @@ func (x *ProbeResponse) GetJson() string {
 	return ""
 }
 
+type SetProviderHeadersRequest struct {
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	Provider string                 `protobuf:"bytes,1,opt,name=provider,proto3" json:"provider,omitempty"`
+	// Headers to put over those of the config, such as a new token. An empty
+	// value removes what the host or an answer set.
+	Headers       map[string]string `protobuf:"bytes,2,rep,name=headers,proto3" json:"headers,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SetProviderHeadersRequest) Reset() {
+	*x = SetProviderHeadersRequest{}
+	mi := &file_app_observatory_health_command_command_proto_msgTypes[14]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SetProviderHeadersRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SetProviderHeadersRequest) ProtoMessage() {}
+
+func (x *SetProviderHeadersRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_app_observatory_health_command_command_proto_msgTypes[14]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SetProviderHeadersRequest.ProtoReflect.Descriptor instead.
+func (*SetProviderHeadersRequest) Descriptor() ([]byte, []int) {
+	return file_app_observatory_health_command_command_proto_rawDescGZIP(), []int{14}
+}
+
+func (x *SetProviderHeadersRequest) GetProvider() string {
+	if x != nil {
+		return x.Provider
+	}
+	return ""
+}
+
+func (x *SetProviderHeadersRequest) GetHeaders() map[string]string {
+	if x != nil {
+		return x.Headers
+	}
+	return nil
+}
+
+type SetProviderHeadersResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SetProviderHeadersResponse) Reset() {
+	*x = SetProviderHeadersResponse{}
+	mi := &file_app_observatory_health_command_command_proto_msgTypes[15]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SetProviderHeadersResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SetProviderHeadersResponse) ProtoMessage() {}
+
+func (x *SetProviderHeadersResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_app_observatory_health_command_command_proto_msgTypes[15]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SetProviderHeadersResponse.ProtoReflect.Descriptor instead.
+func (*SetProviderHeadersResponse) Descriptor() ([]byte, []int) {
+	return file_app_observatory_health_command_command_proto_rawDescGZIP(), []int{15}
+}
+
 type Config struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	unknownFields protoimpl.UnknownFields
@@ -716,7 +806,7 @@ type Config struct {
 
 func (x *Config) Reset() {
 	*x = Config{}
-	mi := &file_app_observatory_health_command_command_proto_msgTypes[14]
+	mi := &file_app_observatory_health_command_command_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -728,7 +818,7 @@ func (x *Config) String() string {
 func (*Config) ProtoMessage() {}
 
 func (x *Config) ProtoReflect() protoreflect.Message {
-	mi := &file_app_observatory_health_command_command_proto_msgTypes[14]
+	mi := &file_app_observatory_health_command_command_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -741,7 +831,7 @@ func (x *Config) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Config.ProtoReflect.Descriptor instead.
 func (*Config) Descriptor() ([]byte, []int) {
-	return file_app_observatory_health_command_command_proto_rawDescGZIP(), []int{14}
+	return file_app_observatory_health_command_command_proto_rawDescGZIP(), []int{16}
 }
 
 var File_app_observatory_health_command_command_proto protoreflect.FileDescriptor
@@ -783,8 +873,15 @@ const file_app_observatory_health_command_command_proto_rawDesc = "" +
 	"\rProbeResponse\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\x04R\x02id\x12\x10\n" +
 	"\x03run\x18\x02 \x01(\tR\x03run\x12\x12\n" +
-	"\x04json\x18\x03 \x01(\tR\x04json\"\b\n" +
-	"\x06Config2\xbd\a\n" +
+	"\x04json\x18\x03 \x01(\tR\x04json\"\xdf\x01\n" +
+	"\x19SetProviderHeadersRequest\x12\x1a\n" +
+	"\bprovider\x18\x01 \x01(\tR\bprovider\x12j\n" +
+	"\aheaders\x18\x02 \x03(\v2P.xray.core.app.observatory.health.command.SetProviderHeadersRequest.HeadersEntryR\aheaders\x1a:\n" +
+	"\fHeadersEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x1c\n" +
+	"\x1aSetProviderHeadersResponse\"\b\n" +
+	"\x06Config2\xe1\b\n" +
 	"\rHealthService\x12\x86\x01\n" +
 	"\tGetStatus\x12:.xray.core.app.observatory.health.command.GetStatusRequest\x1a;.xray.core.app.observatory.health.command.GetStatusResponse\"\x00\x12\x8c\x01\n" +
 	"\vDrainEvents\x12<.xray.core.app.observatory.health.command.DrainEventsRequest\x1a=.xray.core.app.observatory.health.command.DrainEventsResponse\"\x00\x12\x95\x01\n" +
@@ -792,7 +889,8 @@ const file_app_observatory_health_command_command_proto_rawDesc = "" +
 	"\x03Pin\x124.xray.core.app.observatory.health.command.PinRequest\x1a5.xray.core.app.observatory.health.command.PinResponse\"\x00\x12\x80\x01\n" +
 	"\aRefresh\x128.xray.core.app.observatory.health.command.RefreshRequest\x1a9.xray.core.app.observatory.health.command.RefreshResponse\"\x00\x12\x86\x01\n" +
 	"\tGetReport\x12:.xray.core.app.observatory.health.command.GetReportRequest\x1a;.xray.core.app.observatory.health.command.GetReportResponse\"\x00\x12z\n" +
-	"\x05Probe\x126.xray.core.app.observatory.health.command.ProbeRequest\x1a7.xray.core.app.observatory.health.command.ProbeResponse\"\x00B\x95\x01\n" +
+	"\x05Probe\x126.xray.core.app.observatory.health.command.ProbeRequest\x1a7.xray.core.app.observatory.health.command.ProbeResponse\"\x00\x12\xa1\x01\n" +
+	"\x12SetProviderHeaders\x12C.xray.core.app.observatory.health.command.SetProviderHeadersRequest\x1aD.xray.core.app.observatory.health.command.SetProviderHeadersResponse\"\x00B\x95\x01\n" +
 	",com.xray.core.app.observatory.health.commandP\x01Z8github.com/xtls/xray-core/app/observatory/health/command\xaa\x02(Xray.Core.App.Observatory.Health.Commandb\x06proto3"
 
 var (
@@ -807,44 +905,50 @@ func file_app_observatory_health_command_command_proto_rawDescGZIP() []byte {
 	return file_app_observatory_health_command_command_proto_rawDescData
 }
 
-var file_app_observatory_health_command_command_proto_msgTypes = make([]protoimpl.MessageInfo, 15)
+var file_app_observatory_health_command_command_proto_msgTypes = make([]protoimpl.MessageInfo, 18)
 var file_app_observatory_health_command_command_proto_goTypes = []any{
-	(*GetStatusRequest)(nil),       // 0: xray.core.app.observatory.health.command.GetStatusRequest
-	(*GetStatusResponse)(nil),      // 1: xray.core.app.observatory.health.command.GetStatusResponse
-	(*DrainEventsRequest)(nil),     // 2: xray.core.app.observatory.health.command.DrainEventsRequest
-	(*DrainEventsResponse)(nil),    // 3: xray.core.app.observatory.health.command.DrainEventsResponse
-	(*NetworkChangedRequest)(nil),  // 4: xray.core.app.observatory.health.command.NetworkChangedRequest
-	(*NetworkChangedResponse)(nil), // 5: xray.core.app.observatory.health.command.NetworkChangedResponse
-	(*PinRequest)(nil),             // 6: xray.core.app.observatory.health.command.PinRequest
-	(*PinResponse)(nil),            // 7: xray.core.app.observatory.health.command.PinResponse
-	(*RefreshRequest)(nil),         // 8: xray.core.app.observatory.health.command.RefreshRequest
-	(*RefreshResponse)(nil),        // 9: xray.core.app.observatory.health.command.RefreshResponse
-	(*GetReportRequest)(nil),       // 10: xray.core.app.observatory.health.command.GetReportRequest
-	(*GetReportResponse)(nil),      // 11: xray.core.app.observatory.health.command.GetReportResponse
-	(*ProbeRequest)(nil),           // 12: xray.core.app.observatory.health.command.ProbeRequest
-	(*ProbeResponse)(nil),          // 13: xray.core.app.observatory.health.command.ProbeResponse
-	(*Config)(nil),                 // 14: xray.core.app.observatory.health.command.Config
+	(*GetStatusRequest)(nil),           // 0: xray.core.app.observatory.health.command.GetStatusRequest
+	(*GetStatusResponse)(nil),          // 1: xray.core.app.observatory.health.command.GetStatusResponse
+	(*DrainEventsRequest)(nil),         // 2: xray.core.app.observatory.health.command.DrainEventsRequest
+	(*DrainEventsResponse)(nil),        // 3: xray.core.app.observatory.health.command.DrainEventsResponse
+	(*NetworkChangedRequest)(nil),      // 4: xray.core.app.observatory.health.command.NetworkChangedRequest
+	(*NetworkChangedResponse)(nil),     // 5: xray.core.app.observatory.health.command.NetworkChangedResponse
+	(*PinRequest)(nil),                 // 6: xray.core.app.observatory.health.command.PinRequest
+	(*PinResponse)(nil),                // 7: xray.core.app.observatory.health.command.PinResponse
+	(*RefreshRequest)(nil),             // 8: xray.core.app.observatory.health.command.RefreshRequest
+	(*RefreshResponse)(nil),            // 9: xray.core.app.observatory.health.command.RefreshResponse
+	(*GetReportRequest)(nil),           // 10: xray.core.app.observatory.health.command.GetReportRequest
+	(*GetReportResponse)(nil),          // 11: xray.core.app.observatory.health.command.GetReportResponse
+	(*ProbeRequest)(nil),               // 12: xray.core.app.observatory.health.command.ProbeRequest
+	(*ProbeResponse)(nil),              // 13: xray.core.app.observatory.health.command.ProbeResponse
+	(*SetProviderHeadersRequest)(nil),  // 14: xray.core.app.observatory.health.command.SetProviderHeadersRequest
+	(*SetProviderHeadersResponse)(nil), // 15: xray.core.app.observatory.health.command.SetProviderHeadersResponse
+	(*Config)(nil),                     // 16: xray.core.app.observatory.health.command.Config
+	nil,                                // 17: xray.core.app.observatory.health.command.SetProviderHeadersRequest.HeadersEntry
 }
 var file_app_observatory_health_command_command_proto_depIdxs = []int32{
-	0,  // 0: xray.core.app.observatory.health.command.HealthService.GetStatus:input_type -> xray.core.app.observatory.health.command.GetStatusRequest
-	2,  // 1: xray.core.app.observatory.health.command.HealthService.DrainEvents:input_type -> xray.core.app.observatory.health.command.DrainEventsRequest
-	4,  // 2: xray.core.app.observatory.health.command.HealthService.NetworkChanged:input_type -> xray.core.app.observatory.health.command.NetworkChangedRequest
-	6,  // 3: xray.core.app.observatory.health.command.HealthService.Pin:input_type -> xray.core.app.observatory.health.command.PinRequest
-	8,  // 4: xray.core.app.observatory.health.command.HealthService.Refresh:input_type -> xray.core.app.observatory.health.command.RefreshRequest
-	10, // 5: xray.core.app.observatory.health.command.HealthService.GetReport:input_type -> xray.core.app.observatory.health.command.GetReportRequest
-	12, // 6: xray.core.app.observatory.health.command.HealthService.Probe:input_type -> xray.core.app.observatory.health.command.ProbeRequest
-	1,  // 7: xray.core.app.observatory.health.command.HealthService.GetStatus:output_type -> xray.core.app.observatory.health.command.GetStatusResponse
-	3,  // 8: xray.core.app.observatory.health.command.HealthService.DrainEvents:output_type -> xray.core.app.observatory.health.command.DrainEventsResponse
-	5,  // 9: xray.core.app.observatory.health.command.HealthService.NetworkChanged:output_type -> xray.core.app.observatory.health.command.NetworkChangedResponse
-	7,  // 10: xray.core.app.observatory.health.command.HealthService.Pin:output_type -> xray.core.app.observatory.health.command.PinResponse
-	9,  // 11: xray.core.app.observatory.health.command.HealthService.Refresh:output_type -> xray.core.app.observatory.health.command.RefreshResponse
-	11, // 12: xray.core.app.observatory.health.command.HealthService.GetReport:output_type -> xray.core.app.observatory.health.command.GetReportResponse
-	13, // 13: xray.core.app.observatory.health.command.HealthService.Probe:output_type -> xray.core.app.observatory.health.command.ProbeResponse
-	7,  // [7:14] is the sub-list for method output_type
-	0,  // [0:7] is the sub-list for method input_type
-	0,  // [0:0] is the sub-list for extension type_name
-	0,  // [0:0] is the sub-list for extension extendee
-	0,  // [0:0] is the sub-list for field type_name
+	17, // 0: xray.core.app.observatory.health.command.SetProviderHeadersRequest.headers:type_name -> xray.core.app.observatory.health.command.SetProviderHeadersRequest.HeadersEntry
+	0,  // 1: xray.core.app.observatory.health.command.HealthService.GetStatus:input_type -> xray.core.app.observatory.health.command.GetStatusRequest
+	2,  // 2: xray.core.app.observatory.health.command.HealthService.DrainEvents:input_type -> xray.core.app.observatory.health.command.DrainEventsRequest
+	4,  // 3: xray.core.app.observatory.health.command.HealthService.NetworkChanged:input_type -> xray.core.app.observatory.health.command.NetworkChangedRequest
+	6,  // 4: xray.core.app.observatory.health.command.HealthService.Pin:input_type -> xray.core.app.observatory.health.command.PinRequest
+	8,  // 5: xray.core.app.observatory.health.command.HealthService.Refresh:input_type -> xray.core.app.observatory.health.command.RefreshRequest
+	10, // 6: xray.core.app.observatory.health.command.HealthService.GetReport:input_type -> xray.core.app.observatory.health.command.GetReportRequest
+	12, // 7: xray.core.app.observatory.health.command.HealthService.Probe:input_type -> xray.core.app.observatory.health.command.ProbeRequest
+	14, // 8: xray.core.app.observatory.health.command.HealthService.SetProviderHeaders:input_type -> xray.core.app.observatory.health.command.SetProviderHeadersRequest
+	1,  // 9: xray.core.app.observatory.health.command.HealthService.GetStatus:output_type -> xray.core.app.observatory.health.command.GetStatusResponse
+	3,  // 10: xray.core.app.observatory.health.command.HealthService.DrainEvents:output_type -> xray.core.app.observatory.health.command.DrainEventsResponse
+	5,  // 11: xray.core.app.observatory.health.command.HealthService.NetworkChanged:output_type -> xray.core.app.observatory.health.command.NetworkChangedResponse
+	7,  // 12: xray.core.app.observatory.health.command.HealthService.Pin:output_type -> xray.core.app.observatory.health.command.PinResponse
+	9,  // 13: xray.core.app.observatory.health.command.HealthService.Refresh:output_type -> xray.core.app.observatory.health.command.RefreshResponse
+	11, // 14: xray.core.app.observatory.health.command.HealthService.GetReport:output_type -> xray.core.app.observatory.health.command.GetReportResponse
+	13, // 15: xray.core.app.observatory.health.command.HealthService.Probe:output_type -> xray.core.app.observatory.health.command.ProbeResponse
+	15, // 16: xray.core.app.observatory.health.command.HealthService.SetProviderHeaders:output_type -> xray.core.app.observatory.health.command.SetProviderHeadersResponse
+	9,  // [9:17] is the sub-list for method output_type
+	1,  // [1:9] is the sub-list for method input_type
+	1,  // [1:1] is the sub-list for extension type_name
+	1,  // [1:1] is the sub-list for extension extendee
+	0,  // [0:1] is the sub-list for field type_name
 }
 
 func init() { file_app_observatory_health_command_command_proto_init() }
@@ -858,7 +962,7 @@ func file_app_observatory_health_command_command_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_app_observatory_health_command_command_proto_rawDesc), len(file_app_observatory_health_command_command_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   15,
+			NumMessages:   18,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

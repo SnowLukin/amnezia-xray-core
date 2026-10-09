@@ -1,7 +1,11 @@
 package api
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"os"
 
 	healthService "github.com/xtls/xray-core/app/observatory/health/command"
 	"github.com/xtls/xray-core/main/commands/base"
@@ -9,7 +13,7 @@ import (
 
 var cmdHealth = &base.Command{
 	CustomFlags: true,
-	UsageLine:   "{{.Exec}} api health [--server=127.0.0.1:8080] <status|events|network [id]|lost|pin <balancer> <outbound> [run]|release <balancer> [run]|refresh [provider]|report [take|final]|probe <balancer> [outbound...]>",
+	UsageLine:   "{{.Exec}} api health [--server=127.0.0.1:8080] <status|events|network [id]|lost|pin <balancer> <outbound> [run]|release <balancer> [run]|refresh [provider]|report [take|final]|probe <balancer> [outbound...]|headers <provider>>",
 	Short:       "Query and control the health observatory",
 	Long: `
 Query and control the health observatory. Output is JSON.
@@ -39,6 +43,12 @@ Commands:
 	                            candidates; waits for the result up to
 	                            the timeout and prints the request with
 	                            done false when it is not over yet
+	headers <provider>          put headers over those of the config for
+	                            the requests of the provider, such as a new
+	                            token, from a JSON object on stdin:
+	                            {"Authorization": "Bearer ..."}; an empty
+	                            value removes one. Never from arguments,
+	                            which the process list shows
 
 Arguments:
 
@@ -57,6 +67,18 @@ func executeHealth(cmd *base.Command, args []string) {
 	a := cmd.Flag.Args()
 	if len(a) == 0 {
 		base.Fatalf("health: missing command")
+	}
+	var headers map[string]string
+	if a[0] == "headers" {
+		if len(a) < 2 {
+			base.Fatalf("health headers: need provider")
+		}
+		// Before the dial, whose timeout covers the call: a person may be
+		// typing the object.
+		var err error
+		if headers, err = providerHeaders(os.Stdin); err != nil {
+			base.Fatalf("health headers: %s", err)
+		}
 	}
 	conn, ctx, close := dialAPIServer()
 	defer close()
@@ -149,7 +171,34 @@ func executeHealth(cmd *base.Command, args []string) {
 			request = "null"
 		}
 		fmt.Printf("{\"id\":%d,\"run\":%q,\"request\":%s}\n", r.Id, r.Run, request)
+	case "headers":
+		if _, err := client.SetProviderHeaders(ctx, &healthService.SetProviderHeadersRequest{Provider: a[1], Headers: headers}); err != nil {
+			base.Fatalf("health headers: %s", err)
+		}
+		fmt.Println("{\"ok\":true}")
 	default:
 		base.Fatalf("health: unknown command %s", a[0])
 	}
+}
+
+// maxHeadersInput bounds what providerHeaders reads: eight values of 4 KiB
+// and their names fit many times over.
+const maxHeadersInput = 256 << 10
+
+// providerHeaders reads the headers for a provider as a JSON object of
+// strings. A token never comes from the arguments, which the process list
+// shows, and an error never quotes the input, which holds it.
+func providerHeaders(in io.Reader) (map[string]string, error) {
+	raw, err := io.ReadAll(io.LimitReader(in, maxHeadersInput+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(raw) > maxHeadersInput {
+		return nil, fmt.Errorf("stdin holds more than %d bytes", maxHeadersInput)
+	}
+	var headers map[string]string
+	if json.Unmarshal(raw, &headers) != nil || headers == nil {
+		return nil, errors.New(`stdin must hold a JSON object of strings, such as {"Authorization": "Bearer ..."}`)
+	}
+	return headers, nil
 }

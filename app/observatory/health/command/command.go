@@ -115,6 +115,18 @@ func (s *service) Probe(ctx context.Context, r *ProbeRequest) (*ProbeResponse, e
 	}
 }
 
+// SetProviderHeaders fails like the observer does: the error names the
+// header, never its value.
+func (s *service) SetProviderHeaders(_ context.Context, r *SetProviderHeadersRequest) (*SetProviderHeadersResponse, error) {
+	if err := s.ready(); err != nil {
+		return nil, err
+	}
+	if err := s.observer.SetProviderHeaders(r.Provider, r.Headers); err != nil {
+		return nil, err
+	}
+	return &SetProviderHeadersResponse{}, nil
+}
+
 func (s *service) Register(server *grpc.Server) {
 	RegisterHealthServiceServer(server, s)
 }

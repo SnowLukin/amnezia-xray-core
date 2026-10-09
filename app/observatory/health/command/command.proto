@@ -88,6 +88,15 @@ message ProbeResponse {
   string json = 3;
 }
 
+message SetProviderHeadersRequest {
+  string provider = 1;
+  // Headers to put over those of the config, such as a new token. An empty
+  // value removes what the host or an answer set.
+  map<string, string> headers = 2;
+}
+
+message SetProviderHeadersResponse {}
+
 service HealthService {
   rpc GetStatus(GetStatusRequest) returns (GetStatusResponse) {}
   rpc DrainEvents(DrainEventsRequest) returns (DrainEventsResponse) {}
@@ -96,6 +105,7 @@ service HealthService {
   rpc Refresh(RefreshRequest) returns (RefreshResponse) {}
   rpc GetReport(GetReportRequest) returns (GetReportResponse) {}
   rpc Probe(ProbeRequest) returns (ProbeResponse) {}
+  rpc SetProviderHeaders(SetProviderHeadersRequest) returns (SetProviderHeadersResponse) {}
 }
 
 message Config {}
