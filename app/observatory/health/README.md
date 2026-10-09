@@ -299,7 +299,10 @@ refresh. `version` (or `hash`) names the set; without it the set is named by
 a hash of `outbounds`, `costs` and `routing`, so an answer that differs only
 in `protocol`, `nextRefreshIn`, `expiresAt`, `serverTime`, `headers` or
 `baseVersion` is the same set. A set with the same name as the applied one
-changes no outbound; its leases, headers and base still apply.
+changes no outbound; its leases, headers and base still apply. It is kept
+for `ProviderSet` all the same, so its outbounds are checked short of
+building them, their number, tags, protocols and costs, and an answer that
+fails is refused.
 
 `routing` takes `rules`, `balancers` and `domainStrategy` in the format of
 the config file and replaces all rules and balancers at once, and the domain

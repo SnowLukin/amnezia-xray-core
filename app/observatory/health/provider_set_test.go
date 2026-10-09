@@ -390,6 +390,53 @@ func TestApplySameVersionDoesNothing(t *testing.T) {
 	}
 }
 
+// An answer that names the applied set is kept for the next start, so its
+// outbounds go through the checks that need no build: one that breaks them
+// is refused like any other, and the kept set and its number stay as they
+// were. One that passes counts the outbounds of the applied set.
+func TestApplySameVersionChecksItsOutbounds(t *testing.T) {
+	for name, set := range map[string][]fakeOutbound{
+		"has no tag":    {{Tag: "x1", V: 1}, {V: 1}},
+		"duplicate tag": {{Tag: "x1", V: 1}, {Tag: "x1", V: 2}},
+		"not allowed":   {{Tag: "x1", V: 1}, {Tag: "x3", Protocol: "freedom"}},
+		"cost of x1":    {{Tag: "x1", V: 1}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newApplyFixture(t, time.Minute)
+			applied := answer(t, fakeOutbound{Tag: "x1", V: 1}, fakeOutbound{Tag: "x2", V: 1})
+			applied.version = "v1"
+			if _, err := f.apply(t, applied); err != nil {
+				t.Fatal(err)
+			}
+			kept, seq := f.providerSet(t, 0)
+			a := answer(t, set...)
+			if name == "cost of x1" {
+				a.costs = map[string]float64{"x1": -1}
+			}
+			a.version = "v1"
+			if _, err := f.apply(t, a); err == nil {
+				t.Fatal("a broken body of the applied set was taken")
+			}
+			if ev := f.lastApply(t); ev["ok"] != false || !strings.Contains(fmt.Sprint(ev["error"]), name) {
+				t.Fatalf("apply %v, want a refusal about %q", ev, name)
+			}
+			if again, after := f.providerSet(t, 0); after != seq || fmt.Sprint(again) != fmt.Sprint(kept) {
+				t.Fatalf("the refused answer was kept: seq %d after %d", after, seq)
+			}
+			// A body of one outbound under the version of two still names
+			// the set of two.
+			same := answer(t, fakeOutbound{Tag: "x1", V: 1})
+			same.version = "v1"
+			if changed, err := f.apply(t, same); changed || err != nil {
+				t.Fatalf("the applied set: changed %v, %v", changed, err)
+			}
+			if ev := f.lastApply(t); ev["ok"] != true || ev["unchanged"] != 2.0 {
+				t.Fatalf("apply %v, want two outbounds unchanged", ev)
+			}
+		})
+	}
+}
+
 func TestApplyRevivesRetiringOutbound(t *testing.T) {
 	f := newApplyFixture(t, 100*time.Millisecond)
 	if _, err := f.apply(t, answer(t, fakeOutbound{Tag: "x1", V: 1}, fakeOutbound{Tag: "x2", V: 1})); err != nil {

@@ -219,7 +219,9 @@ token. The reason, cut to 200 bytes, goes with the next request in
 **The same set.** An answer whose `version` is that of the applied set
 changes no outbound, while its leases, headers and base apply as in any
 other answer. This is the usual answer to a renewal: the same set with
-later ends. The keys other than `outbounds`, `costs` and `routing` do not
+later ends. The core keeps such an answer for the next start as well, so
+its outbounds still go through the checks that need no build, their
+number, tags, protocols and costs, and one that fails them is refused. The keys other than `outbounds`, `costs` and `routing` do not
 name the set, so a fresh `serverTime` does not make a new one.
 
 ## Errors and Retry-After

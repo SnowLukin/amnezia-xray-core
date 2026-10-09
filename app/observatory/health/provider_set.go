@@ -839,7 +839,12 @@ func (o *Observer) applySet(rt *providerRuntime, a *providerAnswer, j *refreshJo
 	if a.version == rt.version {
 		// The version names the set, not the answer: the most common answer
 		// while leases run is the same set with later ends, which renews
-		// them without rebuilding anything.
+		// them without rebuilding anything. Its outbounds are checked all
+		// the same, short of building: the answer is kept for the next
+		// start, which would refuse it.
+		if _, err := checkHeads(rt.cfg, a); err != nil {
+			return fail(err)
+		}
 		kept := compactAnswer(a.body)
 		now := o.now()
 		o.mu.Lock()
@@ -853,7 +858,7 @@ func (o *Observer) applySet(rt *providerRuntime, a *providerAnswer, j *refreshJo
 		o.e.keepAnswer(rt.p, a, kept, leases.ends || rt.p.headersGen != gen || based, now)
 		fields["ok"] = true
 		fields["changed"] = false
-		fields["unchanged"] = len(a.heads)
+		fields["unchanged"] = len(rt.p.tags)
 		leaseFields(fields, leases, rt.p)
 		headerFields(fields, names, stale)
 		baseFields(fields, a)
@@ -1064,32 +1069,42 @@ func leaseFields(f map[string]any, c leaseCounts, p *provider) {
 	f["clock"] = p.clock
 }
 
-// buildSet validates the answer and creates handlers for outbounds that are
-// new or changed. It returns them and the tags of outbounds that stay as
-// they are. On error every created handler is closed.
-func (o *Observer) buildSet(rt *providerRuntime, a *providerAnswer) ([]*outboundChange, []string, error) {
-	if len(a.heads) > rt.cfg.maxOutbounds {
-		return nil, nil, fmt.Errorf("set of %d outbounds, at most %d allowed", len(a.heads), rt.cfg.maxOutbounds)
+// checkHeads checks what the answer says of its outbounds without building
+// them: their number, tags, protocols and costs. It returns their full tags.
+func checkHeads(cfg *providerSettings, a *providerAnswer) ([]string, error) {
+	if len(a.heads) > cfg.maxOutbounds {
+		return nil, fmt.Errorf("set of %d outbounds, at most %d allowed", len(a.heads), cfg.maxOutbounds)
 	}
 	for tag, c := range a.costs {
 		if math.IsNaN(c) || math.IsInf(c, 0) || c <= 0 {
-			return nil, nil, fmt.Errorf("cost of %s must be a number above zero", tag)
+			return nil, fmt.Errorf("cost of %s must be a number above zero", tag)
 		}
 	}
 	tags := make([]string, len(a.heads))
 	seen := map[string]bool{}
 	for i, head := range a.heads {
 		if head.Tag == "" {
-			return nil, nil, fmt.Errorf("outbound %d has no tag", i+1)
+			return nil, fmt.Errorf("outbound %d has no tag", i+1)
 		}
-		if !slices.Contains(rt.cfg.protocols, strings.ToLower(head.Protocol)) {
-			return nil, nil, fmt.Errorf("outbound %s: protocol %q is not allowed", head.Tag, head.Protocol)
+		if !slices.Contains(cfg.protocols, strings.ToLower(head.Protocol)) {
+			return nil, fmt.Errorf("outbound %s: protocol %q is not allowed", head.Tag, head.Protocol)
 		}
 		if seen[head.Tag] {
-			return nil, nil, fmt.Errorf("duplicate tag %s", head.Tag)
+			return nil, fmt.Errorf("duplicate tag %s", head.Tag)
 		}
 		seen[head.Tag] = true
-		tags[i] = rt.cfg.prefix + head.Tag
+		tags[i] = cfg.prefix + head.Tag
+	}
+	return tags, nil
+}
+
+// buildSet validates the answer and creates handlers for outbounds that are
+// new or changed. It returns them and the tags of outbounds that stay as
+// they are. On error every created handler is closed.
+func (o *Observer) buildSet(rt *providerRuntime, a *providerAnswer) ([]*outboundChange, []string, error) {
+	tags, err := checkHeads(rt.cfg, a)
+	if err != nil {
+		return nil, nil, err
 	}
 	configs, err := o.parseOutbounds(a.outbounds)
 	if err != nil {
