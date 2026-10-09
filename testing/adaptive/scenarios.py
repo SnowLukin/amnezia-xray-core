@@ -2030,3 +2030,52 @@ def provider_lease_renewal(stand, xray, work, name):
               "the answer and the renewals"),
         check("report provider_renewals", counted, counted >= 1, ">= 1"),
     ]
+
+
+@scenario()
+def provider_token_rotation(stand, xray, work, name):
+    """The backend rotates the token in an answer and later refuses it: the
+    provider stops asking with the dead token instead of every second, and
+    the token the host hands over on stdin goes with the next request. No
+    token shows in events, Status or reports."""
+    stand.answer(FRESH, version="v1")
+    prov = bench.provider_config(["direct"], triggers={"interval": "1s", "jitter": 0},
+                                 limits={"minInterval": "1s", "exhaustedMinInterval": "1s", "maxPerHour": 0})
+    cfg = bench.client_config(BANNED[:1], {"a": 1, "p-": 1}, providers=[prov])
+    m = Marks()
+    tokens = ["bench-token", "answer-t2", "host-t3"]
+
+    def host_token():
+        c.api("headers", "fresh", stdin='{"Authorization": "Bearer host-t3"}')
+        refresh(c)
+
+    with bench.Client(xray, cfg, work, name) as c:
+        tr = bench.Traffic(rate=1, big=0)
+        run_timeline(tr, [(2, m.at("rotate", lambda: bench.provider_mode("rotate:answer-t2"))),
+                          (6, m.at("require", lambda: bench.provider_mode("require:host-t3"))),
+                          (30, m.at("host", host_token))], 36)
+        st = c.status()
+    reqs = stand.provider_requests(m["rotate"])
+    rotated = [a for t, a, _ in reqs if m["rotate"] + 1.5 <= t < m["require"]]
+    held = [t for t, _, _ in reqs if m["require"] <= t < m["host"]]
+    after = [(t, a) for t, a, _ in reqs if t >= m["host"]]
+    refused = [e["fields"] for e in bench.events_of(c.events, "provider_auth_failed", m["require"])]
+    by = [e["fields"].get("by") for e in bench.events_of(c.events, "provider_headers", m["rotate"])]
+    seen = json.dumps([c.events, c.reports, st])
+    shown = [tok for tok in tokens if tok in seen]
+    counted = sum(r.get("provider_auth_failed", 0) for r in c.reports)
+    took = after[0][0] - m["host"] if after else None
+    return [
+        check("requests after the rotation carry the new token", rotated,
+              len(rotated) >= 2 and all(a == "Bearer answer-t2" for a in rotated), "Bearer answer-t2"),
+        check("refusals of the token", [(f.get("status"), f.get("code")) for f in refused],
+              [(f.get("status"), f.get("code")) for f in refused] == [(401, "unauthorized")], "[(401, unauthorized)]"),
+        check("requests while the token is refused", len(held), 1 <= len(held) <= 2, "1 .. 2"),
+        check("quiet before the host token, s", held and round(m["host"] - held[-1], 1),
+              bool(held) and m["host"] - held[-1] >= 20, ">= 20"),
+        check("host token sent after, s", took and round(took, 2),
+              took is not None and took <= 2 and after[0][1] == "Bearer host-t3", "Bearer host-t3 within 2"),
+        check("provider_headers by", by, by == ["answer", "host"], "[answer, host]"),
+        check("tokens in events, Status, reports", shown, not shown, "none"),
+        check("report provider_auth_failed", counted, counted == 1, "== 1"),
+    ]

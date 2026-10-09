@@ -10,6 +10,9 @@ GET /control?mode=<mode>     changes how /set answers:
   garbage       a cut JSON document
   status:N[:R]  HTTP status N with an empty body; with R, Retry-After: R
   error:N:code  HTTP status N with an error body of the protocol
+  rotate:T      the answer file with "headers": {"Authorization": "Bearer T"}
+  require:T     401 with the error body unauthorized unless the request
+                carries Authorization: Bearer T; with it the answer file
   hang          never answers
 Every /set request is logged as "time authorization path" to the log file,
 and the body of a POST as a JSON line {ts, auth, type, bytes, body} to the bodies
@@ -77,9 +80,17 @@ class Handler(BaseHTTPRequestHandler):
             self.reply(int(status), body)
         elif mode == "garbage":
             self.reply(200, b'{"outbounds": [{"tag": ')
+        elif mode.startswith("require:") and self.headers.get("Authorization") != "Bearer " + mode.split(":", 1)[1]:
+            body = json.dumps({"protocol": 1, "error": "unauthorized", "message": "bench"}).encode()
+            self.reply(401, body)
         else:
             with open(ANSWER, "rb") as f:
-                self.reply(200, moments(f.read()))
+                answer = moments(f.read())
+            if mode.startswith("rotate:"):
+                doc = json.loads(answer)
+                doc["headers"] = {"Authorization": "Bearer " + mode.split(":", 1)[1]}
+                answer = json.dumps(doc).encode()
+            self.reply(200, answer)
 
     def do_POST(self):
         raw = self.rfile.read(int(self.headers.get("Content-Length") or 0))

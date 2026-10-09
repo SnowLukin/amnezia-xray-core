@@ -573,9 +573,9 @@ class Client:
         with open(self.log_path, errors="replace") as f:
             return sum(1 for line in f if "CopyRawConn splice" in line)
 
-    def api(self, *args, timeout=10):
+    def api(self, *args, timeout=10, stdin=None):
         out = subprocess.run([self.xray, "api", "health", f"--server=127.0.0.1:{API_PORT}", *args],
-                             capture_output=True, text=True, timeout=timeout)
+                             capture_output=True, text=True, timeout=timeout, input=stdin)
         if out.returncode != 0:
             raise RuntimeError(f"api health {args}: {out.stderr.strip()}")
         return json.loads(out.stdout)
