@@ -198,6 +198,15 @@ func (f *applyFixture) apply(t *testing.T, a *providerAnswer) (bool, error) {
 	return f.o.applySet(f.rt, a, &refreshJob{p: f.rt.p, trigger: triggerHost})
 }
 
+// drainUntil waits until a drain did what done checks. Drains end on
+// timers, which a loaded machine fires late: a fixed wait of a few times the
+// drain failed there. The deadline is only for the check after it to fail.
+func drainUntil(done func() bool) {
+	for deadline := time.Now().Add(10 * time.Second); !done() && time.Now().Before(deadline); {
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 func (f *applyFixture) lastApply(t *testing.T) map[string]any {
 	t.Helper()
 	raw, _ := f.o.DrainEvents()
@@ -242,7 +251,8 @@ func TestApplyKeepsUnchangedAddsNewAndDrainsRemoved(t *testing.T) {
 	if f.m.GetHandler("p-x1") == nil || !retiring || adopted.closes() != 0 {
 		t.Fatalf("p-x1 registered %v retiring %v closed %d right after the apply", f.m.GetHandler("p-x1") != nil, retiring, adopted.closes())
 	}
-	time.Sleep(200 * time.Millisecond)
+	// The handler closes last, after the observer forgot the outbound.
+	drainUntil(func() bool { return adopted.closes() > 0 })
 	if f.m.tags() != "p-x2,p-x3" || adopted.closes() != 1 {
 		t.Fatalf("after drain: manager %s, p-x1 closed %d times", f.m.tags(), adopted.closes())
 	}
@@ -271,7 +281,7 @@ func TestApplyReplacesChangedOutboundUnderSameTag(t *testing.T) {
 	if now == old || old.closes() != 0 {
 		t.Fatalf("not replaced, or the old handler closed before its drain")
 	}
-	time.Sleep(200 * time.Millisecond)
+	drainUntil(func() bool { return old.closes() > 0 })
 	if old.closes() != 1 || now.closes() != 0 || f.m.GetHandler("p-x1") != now {
 		t.Fatalf("after drain: old closed %d, new closed %d", old.closes(), now.closes())
 	}
@@ -550,7 +560,12 @@ func TestDrainedOutboundLeavesNothingBehind(t *testing.T) {
 	if _, err := f.apply(t, answer(t, fakeOutbound{Tag: "x2", V: 1})); err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(200 * time.Millisecond)
+	drainUntil(func() bool {
+		f.o.mu.Lock()
+		defer f.o.mu.Unlock()
+		_, kept := f.o.e.paths["p-x1"]
+		return !kept
+	})
 	// A later outbound under the same tag.
 	f.m.mu.Lock()
 	f.m.handlers["p-x1"] = &fakeHandler{tag: "p-x1"}
@@ -612,7 +627,7 @@ func TestDrainWaitsForOpenConnections(t *testing.T) {
 	if x1.closes() != 0 || x2.closes() != 0 {
 		t.Fatalf("closed with open connections: removed %d, replaced %d", x1.closes(), x2.closes())
 	}
-	time.Sleep(300 * time.Millisecond)
+	drainUntil(func() bool { return x1.closes() > 0 && x2.closes() > 0 })
 	if x1.closes() != 1 || x2.closes() != 1 {
 		t.Fatalf("after the drain: removed closed %d, replaced closed %d", x1.closes(), x2.closes())
 	}
@@ -669,7 +684,11 @@ func TestDrainedOutboundLeavesNoCounters(t *testing.T) {
 	if _, err := f.apply(t, answer(t, fakeOutbound{Tag: "x2", V: 2})); err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(200 * time.Millisecond)
+	drainUntil(func() bool {
+		sm.mu.Lock()
+		defer sm.mu.Unlock()
+		return len(sm.removed) >= 2
+	})
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 	if strings.Join(sm.removed, ",") != "outbound>>>p-x1>>>traffic>>>uplink,outbound>>>p-x1>>>traffic>>>downlink" {
