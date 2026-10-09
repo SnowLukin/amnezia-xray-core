@@ -558,6 +558,111 @@ def short_glitch_blackhole(stand, xray, work, name):
     return glitch(stand, xray, work, name, "blackhole")
 
 
+# The probe of false_down_rescue: 256 KB in four chunks a second apart, so that it runs
+# for three seconds while it keeps making progress.
+RESCUE_PROBE = 3
+
+
+def hang(host):
+    """A request through the client that its target never answers: no first byte, a
+    failure that may be about that one destination. The client ends it when it rules
+    the outbound out."""
+    def run():
+        try:
+            s = bench.open_stream(host, 30, tls=False)
+            if s is not None:
+                s.sendall(f"GET /hang HTTP/1.1\r\nHost: {host}\r\n\r\n".encode())
+                s.recv(1)
+        except OSError:
+            pass
+    threading.Thread(target=run, daemon=True).start()
+
+
+@scenario()
+def false_down_rescue(stand, xray, work, name):
+    """The hiccup of a phone on Wi-Fi under load. Three requests through a1 get no answer
+    from three sites: weak evidence, so after the network check a probe confirms it. While
+    that probe runs, a1 refuses new connections for 1.5 s: their dials fail, strong evidence
+    that rules a1 out at once. The probe, on its connection from before, still passes after
+    the down: it rescues a1, which is back within the probe instead of resting its quarantine,
+    and its connections that went silent are kept. The failover the down started still
+    moves the balancer to b1, which returns to a1 once minHold ends, long before
+    upgrade.interval."""
+    hold, spacing, successes = 15, 3, 2
+    probe = {"destination": f"http://probe.test:{bench.TARGET_PORT}/slow/262144/{RESCUE_PROBE + 1}",
+             "minBytes": 262144, "expectStatus": [200], "timeout": "10s", "progressTimeout": "3s"}
+    strategy = {"minHold": f"{hold}s", "upgrade": {"interval": "10m", "randomPhase": False,
+                                                   "successes": successes, "spacing": f"{spacing}s"}}
+    cfg = bench.client_config(CHEAP_EXPENSIVE, CHEAP_EXPENSIVE_COSTS, health={"probes": [probe]}, strategy=strategy)
+    m = Marks()
+    with bench.Client(xray, cfg, work, name) as c:
+        # Empty answers only: a download of successBytes would prove a1 and clear the evidence.
+        tr = bench.Traffic(rate=5, big=0)
+        tr.start()
+        time.sleep(5)
+        m["weak"] = time.time()
+        for host in bench.TARGETS[3:6]:
+            hang(host)
+        # The suspicion comes firstByteTimeout later; its confirming probe is the first
+        # request of probe.test at the target.
+        hits = wait_for(lambda: stand.probe_hits(m["weak"]), 20, step=0.05)
+        if hits:
+            m["probe"] = hits[0]
+            m["refuse"] = time.time()
+            bench.chaos(A0, "refuse")
+            time.sleep(1.5)
+            bench.chaos(A0, "pass")
+            wait_for(lambda: [e for e in switches_to(c.events, "a1", m["refuse"])
+                              if e["fields"]["reason"] == "upgrade"], 60)
+        time.sleep(2)
+        st = c.status()
+        tr.stop()
+    tr.save(os.path.join(work, f"{name}-traffic.json"))
+    if not hits:
+        return [check("confirming probe of the weak evidence at the target", "none in 20 s", False, "one"),
+                leak_check(c)]
+    a1 = [e for e in c.events if e["ts"] / 1000 >= m["weak"] and e["fields"].get("outbound") == "a1"]
+    story = [("weak suspicion", first_event(a1, "path_state", state="suspect", strong=False)),
+             ("confirm start", first_event(a1, "probe_start", reason="confirm")),
+             ("down by traffic", first_event(a1, "path_state", state="down", reason="traffic")),
+             ("confirm ok", first_event(a1, "probe_result", reason="confirm", ok=True)),
+             ("rescued", first_event(a1, "path_state", state="up", reason="rescued"))]
+    missing = [label for label, e in story if e is None]
+    seqs = [e["seq"] for _, e in story if e is not None]
+    down, rescued = story[2][1], story[4][1]
+    checks = [check("story of a1", f"missing {', '.join(missing)}" if missing else " > ".join(l for l, _ in story),
+                    not missing and seqs == sorted(seqs), "in this order")]
+    if down and rescued:
+        out = (rescued["ts"] - down["ts"]) / 1000
+        rest = down["fields"].get("quarantine_ms", 0) / 1000
+        checks.append(check("a1 out, s (of its quarantine)", f"{round(out, 1)} ({round(rest)})",
+                            out <= RESCUE_PROBE + 1, f"<= the probe {RESCUE_PROBE} + 1"))
+    silent = [e for e in bench.events_of(c.events, "pending_closed", m["weak"])
+              if e["fields"].get("outbound") == "a1" and e["fields"].get("silent")]
+    checks.append(check("silent connections of a1 ended", sum(e["fields"]["connections"] for e in silent),
+                        not silent, "== 0"))
+    sw = bench.switches(c.events, m["refuse"])
+    path = [f"{e['fields']['from']}>{e['fields']['to']}:{e['fields']['reason']}" for e in sw]
+    checks.append(check("switches", path, path == ["a1>b1:failover", "b1>a1:upgrade"],
+                        "a1>b1:failover, b1>a1:upgrade"))
+    if len(sw) == 2:
+        took = (sw[1]["ts"] - sw[0]["ts"]) / 1000
+        limit = hold + successes * RESCUE_PROBE + (successes - 1) * spacing * 1.3 + 5
+        checks.append(check("return to a1 after the failover, s", round(took, 1), hold <= took <= limit,
+                            f"{hold} .. {round(limit)}"))
+    report = c.final_report or {}
+    checks.append(check("report path_rescued", report.get("path_rescued"), report.get("path_rescued") == 1, "== 1"))
+    a1_now = next((p for p in st["paths"] if p["outbound"] == "a1"), {})
+    checks.append(check("a1 at the end, active", f"{a1_now.get('state')}, {st['balancers'][0]['active']}",
+                        a1_now.get("state") == "up" and st["balancers"][0]["active"] == "a1", "up, a1"))
+    ok, n = requests_ok(tr, m["weak"], m["refuse"])
+    checks.append(check("requests answered before the hiccup", f"{ok}/{n}", ok == n and n > 0, "all"))
+    ok, n = requests_ok(tr, m["refuse"] + 3, time.time())
+    checks.append(check("requests answered after it", f"{ok}/{n}", n > 0 and ok == n, "all"))
+    checks.append(leak_check(c))
+    return checks
+
+
 @scenario()
 def splice_keepalive(stand, xray, work, name):
     """A TLS connection that stays open after its answers. On Linux Vision
