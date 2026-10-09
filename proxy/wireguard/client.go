@@ -306,7 +306,10 @@ func (h *Handler) init(ctx context.Context) error {
 		pktConn = h.recv.wrap(pktConn)
 		return pktConn, nil
 	}
-	bind := &bind{}
+	// The device reads the TUN from NewDevice on and opens the bind at the
+	// first up event, which a gVisor TUN sends at once: the bind needs its
+	// functions before that.
+	bind := &bind{resolveFunc: resolveFunc, listenFunc: listenFunc, reserved: h.conf.Reserved}
 	logger := &device.Logger{
 		Verbosef: func(format string, args ...any) {
 			log.Record(&log.GeneralMessage{
@@ -322,10 +325,7 @@ func (h *Handler) init(ctx context.Context) error {
 		},
 	}
 	dev := device.NewDevice(h.tun, bind, logger)
-	bind.resolveFunc = resolveFunc
-	bind.listenFunc = listenFunc
 	bind.downFunc = dev.Down
-	bind.reserved = h.conf.Reserved
 	var cfg strings.Builder
 	cfg.WriteString("private_key=" + h.conf.SecretKey + "\n")
 	writeAmneziaParams(&cfg, h.conf.Parameters)
