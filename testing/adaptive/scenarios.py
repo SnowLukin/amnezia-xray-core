@@ -3184,6 +3184,113 @@ def awg_failover_blackhole_held(stand, xray, work, name):
 
 
 @scenario()
+def awg_probe_down_held(stand, xray, work, name):
+    """Traffic and a keep-alive connection go through the AmneziaWG outbound w1 under a start
+    pin; the connection gets its answer and waits, quiet, and the host releases the pin, so the
+    balancer returns to the cheaper v1 and the connection alone holds w1 awake past
+    sleep.afterLastUse. The address of w1 then drops every datagram both ways, and a probe the
+    host asks for finds w1 dead: a down on a failed probe alone, with no evidence from traffic
+    and no switch. stallTimeout after the decision the core ends the connection as silent, its
+    client sees the end, w1 sleeps with reason down, and its device stops sending to the dead
+    address. On a phone, push connections opened through w1 before such a down kept its device
+    handshaking with the dead address for 102 s."""
+    m = Marks()
+    seen = {}
+    held = HeldConnection(bench.TARGETS[3])
+    try:
+        with bench.Client(xray, awg_config(), work, name) as c, bench.ConnSampler() as cs:
+            tr = bench.Traffic(rate=2, big=0.5, timeout=5)
+            m["start"] = time.time()
+            tr.start()
+            time.sleep(1)
+            held.open()
+            time.sleep(7)
+            m["release"] = time.time()
+            c.api("release", "auto")
+            away = wait_for(lambda: [e for e in bench.switches(c.events, m["release"])
+                                     if e["fields"]["from"] == "w1"], 15)
+            m["away"] = away[0]["ts"] / 1000 if away else time.time()
+            # Unchosen, w1 would sleep sleep.afterLastUse after the switch; the connection holds it.
+            time.sleep(max(0.0, m["away"] + AWG_SLEEP + 3 - time.time()))
+            seen["held"] = path_status(c, "w1")
+            m["fault"] = time.time()
+            bench.chaos(bench.AWG_ADDRESS, "blackhole")
+            time.sleep(1)
+            m["probe"] = time.time()
+            seen["probe"] = c.api("-t", "15", "probe", "auto", "w1", timeout=20)
+            m["probed"] = time.time()
+            slept = wait_for(lambda: w1_sleeps(c, m["fault"]), STALL + 15)
+            if slept:
+                m["asleep"] = slept[0]["ts"] / 1000
+            # Room for two handshakes of a device left awake.
+            time.sleep(2 * bench.AWG_REKEY_TIMEOUT)
+            m["end"] = time.time()
+            tr.stop()
+    finally:
+        held.close()
+    tr.save(os.path.join(work, f"{name}-traffic.json"))
+    checks = awg_away_checks(c, tr, m, away and away[0])
+    checks.append(check("held connection answered through w1 before the fault", held.answered, held.answered,
+                        "True"))
+    early = [e for e in w1_sleeps(c, m["release"]) if e["ts"] / 1000 < m["fault"]]
+    checks.append(check(f"w1 held awake {round(m['fault'] - m['away'], 1)} s after the switch off it: sleeps, asleep",
+                        f"{len(early)}, {bool(seen['held'].get('is_asleep'))}",
+                        not early and seen["held"] and not seen["held"].get("is_asleep"), "0, False"))
+    request = seen["probe"].get("request") or {}
+    got = {o["outbound"]: f"{o['result']}/{o.get('source', '')}" for o in request.get("outbounds", [])}
+    checks.append(check("probe of the host for w1", f"{got.get('w1')} after {round(m['probed'] - m['probe'], 1)} s",
+                        got.get("w1") == "failed/probe", "failed/probe"))
+    down = next((e for e in bench.events_of(c.events, "path_state", m["fault"])
+                 if e["fields"].get("outbound") == "w1" and e["fields"].get("state") == "down"), None)
+    suspects = [e for e in bench.events_of(c.events, "path_state", m["fault"])
+                if e["fields"].get("outbound") == "w1" and e["fields"].get("state") == "suspect"]
+    checks.append(check("w1 down: reason, suspicions from traffic", down and f"{down['fields'].get('reason')}, "
+                        f"{len(suspects)}", bool(down) and down["fields"].get("reason") == "host_probe"
+                        and not suspects, "host_probe, 0"))
+    sw = bench.switches(c.events, m["fault"])
+    checks.append(check("switches after the fault", len(sw), not sw, "== 0"))
+    if not down:
+        return checks + [leak_check(c)]
+    t_down = down["ts"] / 1000
+    silent = [e for e in bench.events_of(c.events, "pending_closed", m["fault"])
+              if e["fields"].get("outbound") == "w1" and e["fields"].get("is_silent") is True]
+    at = silent and silent[0]["ts"] / 1000
+    decided = silent and round(at - t_down, 1)
+    checks.append(check("silent close of w1: connections, reason, s after the decision",
+                        silent and f"{silent[0]['fields'].get('connections')}, {silent[0]['fields'].get('reason')}, "
+                        f"{decided}", bool(silent) and silent[0]["fields"].get("connections", 0) >= 1
+                        and silent[0]["fields"].get("reason") == "host_probe" and STALL - 0.5 <= decided <= STALL + 2,
+                        f">= 1, host_probe, {STALL} .. {STALL + 2}"))
+    ended = held.ended and silent and round(held.ended - at, 1)
+    checks.append(check("held connection ended at the client after the silent close, s", ended,
+                        bool(silent) and held.ended is not None and -0.5 <= ended <= 2, "0 .. 2"))
+    asleep = m.get("asleep")
+    f = slept[0]["fields"] if slept else {}
+    checks.append(check("outbound_sleep of w1: reason, s after the decision",
+                        slept and f"{f.get('reason')} {round(asleep - t_down, 1)}",
+                        bool(slept) and f.get("reason") == "down" and asleep - t_down <= STALL + 3,
+                        f"down, <= {STALL + 3}"))
+    if not (slept and silent):
+        up, _ = cs.packets(bench.AWG_ADDRESS, t_down, m["end"])
+        checks.append(check(f"datagrams to the dead address in {round(m['end'] - t_down, 1)} s after the decision",
+                            up, True, "info"))
+        return checks + [leak_check(c)]
+    checks.append(check("w1 held awake until the silent close, s from it to the sleep", round(asleep - at, 2),
+                        -0.05 <= asleep - at <= 2, "0 .. 2"))
+    up, _ = cs.packets(bench.AWG_ADDRESS, t_down, asleep)
+    checks.append(check("datagrams to the dead address from the decision to the sleep", up, True, "info"))
+    up, _ = cs.packets(bench.AWG_ADDRESS, asleep + 1.5, m["end"])
+    woken = [e for e in bench.probes(c.events, asleep) if e["fields"].get("outbound") == "w1"]
+    limit = bench.AWG_HANDSHAKE_DATAGRAMS * len(woken) * wake_handshakes_within(bench.PROBE_TIMEOUT)
+    checks.append(check(f"datagrams to the dead address in {round(m['end'] - asleep - 1.5, 1)} s after the sleep",
+                        up, up is not None and up <= limit, f"<= {limit}"))
+    ok, n = requests_ok(tr, m["start"], m["end"])
+    checks.append(check("requests answered", f"{ok}/{n}", ok == n, "all"))
+    checks.append(leak_check(c))
+    return checks
+
+
+@scenario()
 def awg_short_glitch(stand, xray, work, name):
     """Datagrams of w1 lost both ways for 3 s. Connections that began meanwhile wait for the
     server, and the first answer after the glitch, to any of them, ends every wait well
