@@ -566,7 +566,7 @@ Without a base nothing is told, and Status shows what the answers name.
 | `minHealthyOutbounds` | The balancer has fewer candidates that are up or not judged yet; once, again only after it got back above. |
 | `shouldRefreshWhenExhausted` | The balancer has no usable candidate and the network is up; again after `exhaustedMinInterval` while it lasts. After a refresh that added outbounds, only once a connection brought them to the balancer. |
 | `expiry` | A lease reached `renewAtFraction` of its length, spread by `jitterFraction` per lease, or ended, and no refresh that got an answer asked about this value of it: once per value, so a backend that keeps a lease short is not asked again. From `urgentAtFraction` of the lease on, and once it ended, the refresh is urgent: it waits only for `exhaustedMinInterval` and runs while memory is low. Before that it waits for `minInterval`, and while memory is low for `urgentAtFraction`. `renewAtFraction` 0 turns renewal off; a lease that ended is still asked about once. `renewAtFraction` is at most 0.95, `urgentAtFraction` between it and 0.95, `jitterFraction` at most 0.5. |
-| `whenCostAbove` | The balancer has kept outbounds of at least `cost` for `after`; the time counts again from every successful refresh. |
+| `whenCostAbove` | The balancer has kept outbounds of at least `cost` for `after`; the time counts again from every successful refresh. `after: "0s"` asks in the turn that chooses such an outbound, using `exhaustedMinInterval`. A positive `after` uses `minInterval`. |
 | `maxAge` | The set was fetched longer ago than this. |
 | `networkChangeMode` | `networkSettleDelay` after a network change: `unknownNotCheapest` in a network without a remembered working outbound when the balancer is not on its cheapest candidate, `unknown` in such a network, `any`, or `never`. A network where the balancer was only pinned has none remembered, since the host chose the outbound there. Under a pin the trigger waits for the release, and `unknownNotCheapest` judges the outbound the balancer is on after it; while a failover is under way, the one the failover moves to. |
 | `nextRefreshIn` | The time the last answer asked for. |
@@ -591,13 +591,19 @@ user traffic, so a dead backend does not wake the device.
 
 **Limits.** Two refreshes start at least `minInterval` apart, or
 `exhaustedMinInterval` for an exhausted balancer, an urgent renewal or a
-lease that ended, and host requests; at most `maxRefreshesPerHour` start within an
+lease that ended, host requests, and `whenCostAbove` with `after: "0s"`;
+at most `maxRefreshesPerHour` start within an
 hour. After a failure the next attempt waits for `backoff`, counted from
 that attempt, so a failing refresh never runs in a loop. A refresh for an
 exhausted balancer that brings the same set counts as a failure for the
 backoff. A failed host request and a failed network
 change refresh are retried after the backoff, or after the pause a busy
 backend asked for.
+
+When several triggers are due, one held by its interval does not hide a
+later trigger whose interval permits a request. The shorter interval for
+immediate cost feedback keeps all other gates, including low memory,
+idle, pin, network, refused credentials, backoff and `Retry-After`.
 
 ## Probes on request
 

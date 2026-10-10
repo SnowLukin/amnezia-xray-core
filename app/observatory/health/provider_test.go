@@ -412,6 +412,191 @@ func TestCostAboveForgetsTimeOnCheapPath(t *testing.T) {
 	expectRefresh(t, te, at(28*time.Minute), "cost_above")
 }
 
+func TestCostAboveZeroAfterStartsInTheSwitchTurnAndUsesShortLimit(t *testing.T) {
+	te := newProviderEngine(t, quietProvider(func(p *ProviderConfig) {
+		p.Triggers.WhenCostAbove = &CostTrigger{Cost: 10, After: -1}
+		p.Limits.MinInterval = int64(5 * time.Minute)
+		p.Limits.ExhaustedMinInterval = int64(30 * time.Second)
+	}), &SelectorConfig{Costs: costs("a", 1, "d", 10)}, "a1", "d1")
+	if te.prov().cfg.costAboveAfter != 0 {
+		t.Fatalf("explicit zero after became %v", te.prov().cfg.costAboveAfter)
+	}
+	te.switchTo(te.sel, "d1", "failover", at(time.Second))
+	_, jobs, _ := te.step(at(time.Second))
+	if got := triggers(jobs); fmt.Sprint(got) != "[cost_above]" {
+		t.Fatalf("switch turn refreshes %v, want cost_above at the exact threshold", got)
+	}
+	te.onRefreshDone(jobs[0], refreshOutcome{ok: true, changed: true}, at(time.Second))
+	expectNoRefresh(t, te, at(30*time.Second))
+	expectRefresh(t, te, at(31*time.Second), "cost_above")
+}
+
+func TestCostAbovePositiveAfterKeepsNormalLimit(t *testing.T) {
+	te := newProviderEngine(t, quietProvider(func(p *ProviderConfig) {
+		p.Triggers.WhenCostAbove = &CostTrigger{Cost: 10, After: int64(15 * time.Second)}
+		p.Limits.MinInterval = int64(5 * time.Minute)
+		p.Limits.ExhaustedMinInterval = int64(time.Second)
+	}), &SelectorConfig{Costs: costs("a", 1, "d", 10)}, "a1", "d1")
+	te.requestRefresh("fresh")
+	j := expectRefresh(t, te, t0, "host")
+	te.onRefreshDone(j, refreshOutcome{ok: true, changed: true}, t0)
+	te.switchTo(te.sel, "d1", "failover", at(time.Second))
+	expectNoRefresh(t, te, at(15*time.Second))
+	expectNoRefresh(t, te, at(16*time.Second))
+	expectNoRefresh(t, te, at(5*time.Minute-time.Second))
+	expectRefresh(t, te, at(5*time.Minute), "cost_above")
+}
+
+func TestCostAboveZeroAfterKeepsBackoffRetryAfterAndHourlyLimit(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		first   refreshOutcome
+		wait    time.Duration
+		minimum time.Duration
+	}{
+		{"backoff", refreshOutcome{err: "timeout"}, 40 * time.Second, 28 * time.Second},
+		{"retry_after", refreshOutcome{err: "status 429", retryAfter: time.Minute}, time.Minute, time.Minute},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			te := newProviderEngine(t, quietProvider(func(p *ProviderConfig) {
+				p.Triggers.WhenCostAbove = &CostTrigger{Cost: 10, After: -1}
+				p.Limits.MinInterval = int64(5 * time.Minute)
+				p.Limits.ExhaustedMinInterval = int64(time.Second)
+				p.Limits.Backoff = &Backoff{InitialDelay: int64(tc.wait), MaxDelay: int64(tc.wait), JitterFraction: -1}
+			}), &SelectorConfig{Costs: costs("a", 1, "d", 10)}, "a1", "d1")
+			te.switchTo(te.sel, "d1", "failover", at(time.Second))
+			j := expectRefresh(t, te, at(time.Second), "cost_above")
+			te.onRefreshDone(j, tc.first, at(time.Second))
+			until := te.prov().backoffUntil
+			if tc.first.retryAfter > 0 {
+				until = te.prov().retryAfterUntil
+			}
+			if until.Before(at(time.Second + tc.minimum)) {
+				t.Fatalf("pause ends at %v, before %v", until.Sub(t0), time.Second+tc.minimum)
+			}
+			expectNoRefresh(t, te, at(2*time.Second))
+			expectNoRefresh(t, te, until.Add(-time.Nanosecond))
+			expectRefresh(t, te, until, "cost_above")
+		})
+	}
+
+	te := newProviderEngine(t, quietProvider(func(p *ProviderConfig) {
+		p.Triggers.WhenCostAbove = &CostTrigger{Cost: 10, After: -1}
+		p.Limits.MinInterval = int64(5 * time.Minute)
+		p.Limits.ExhaustedMinInterval = int64(time.Second)
+		p.Limits.MaxRefreshesPerHour = 1
+	}), &SelectorConfig{Costs: costs("a", 1, "d", 10)}, "a1", "d1")
+	te.switchTo(te.sel, "d1", "failover", at(time.Second))
+	j := expectRefresh(t, te, at(time.Second), "cost_above")
+	te.onRefreshDone(j, refreshOutcome{ok: true, changed: true}, at(time.Second))
+	expectNoRefresh(t, te, at(time.Minute))
+	expectRefresh(t, te, at(time.Hour+time.Second), "cost_above")
+}
+
+func TestCostAboveZeroAfterRespectsOtherGates(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		gate func(*testEngine, time.Time)
+	}{
+		{"memory", func(te *testEngine, now time.Time) { te.setMemoryLow(true, now) }},
+		{"idle", func(te *testEngine, _ time.Time) { te.s.schedule.idleAfter = time.Second }},
+		{"pin", func(te *testEngine, now time.Time) { te.pin("auto", "d1", now) }},
+		{"network", func(te *testEngine, now time.Time) { te.onNetworkLost(now) }},
+		{"auth", func(te *testEngine, now time.Time) {
+			te.requestRefresh("fresh")
+			j := expectRefresh(t, te, now, "host")
+			te.onRefreshDone(j, refused, now)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			te := newProviderEngine(t, quietProvider(func(p *ProviderConfig) {
+				p.Triggers.WhenCostAbove = &CostTrigger{Cost: 10, After: -1}
+				p.Limits.ExhaustedMinInterval = int64(time.Second)
+			}), &SelectorConfig{Costs: costs("a", 1, "d", 10)}, "a1", "d1")
+			now := at(2 * time.Second)
+			te.switchTo(te.sel, "d1", "failover", now)
+			tc.gate(te, now)
+			if jobs, _ := te.tickProviders(now); len(jobs) != 0 {
+				t.Fatalf("refresh through %s gate: %v", tc.name, triggers(jobs))
+			}
+		})
+	}
+}
+
+func TestCostAboveZeroAfterIsNotMaskedByMinHealthy(t *testing.T) {
+	te := newProviderEngine(t, quietProvider(func(p *ProviderConfig) {
+		p.Triggers.WhenCostAbove = &CostTrigger{Cost: 10, After: -1}
+		p.Triggers.MinHealthyOutbounds = 2
+		p.Limits.MinInterval = int64(5 * time.Minute)
+		p.Limits.ExhaustedMinInterval = int64(30 * time.Second)
+	}), &SelectorConfig{Costs: costs("a", 1, "d", 10)}, "a1", "d1")
+	te.requestRefresh("fresh")
+	j := expectRefresh(t, te, t0, "host")
+	te.onRefreshDone(j, refreshOutcome{ok: true, changed: true}, t0)
+	expectNoRefresh(t, te, at(time.Second))
+	te.path("a1").status = statusDown
+	te.switchTo(te.sel, "d1", "failover", at(31*time.Second))
+	expectRefresh(t, te, at(31*time.Second), "cost_above")
+}
+
+func TestCostAboveZeroAfterIsNotMaskedByRenewal(t *testing.T) {
+	te := newProviderEngine(t, quietProvider(func(p *ProviderConfig) {
+		p.Triggers.WhenCostAbove = &CostTrigger{Cost: 10, After: -1}
+		p.Triggers.Expiry = &ExpiryTrigger{RenewAtFraction: 0.5, UrgentAtFraction: 0.8, JitterFraction: -1}
+		p.Limits.MinInterval = int64(5 * time.Minute)
+		p.Limits.ExhaustedMinInterval = int64(30 * time.Second)
+	}), &SelectorConfig{Costs: costs("a", 1, "d", 10)}, "a1", "d1")
+	te.requestRefresh("fresh")
+	j := expectRefresh(t, te, t0, "host")
+	te.onRefreshDone(j, refreshOutcome{ok: true, changed: true}, t0)
+	te.acceptLeases(te.prov(), []string{"a1", "d1"}, leaseAnswer{ends: map[string]time.Time{"d1": at(time.Minute)}, serverTime: t0, at: t0}, t0)
+	te.switchTo(te.sel, "d1", "failover", at(31*time.Second))
+	expectRefresh(t, te, at(31*time.Second), "cost_above")
+}
+
+func TestCostAboveZeroAfterDoesNotBypassSharedLimits(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		limit  func(*ProviderConfig)
+		result refreshOutcome
+		reason string
+	}{
+		{"backoff", func(p *ProviderConfig) {
+			p.Limits.Backoff = &Backoff{InitialDelay: int64(2 * time.Minute), MaxDelay: int64(2 * time.Minute)}
+		}, refreshOutcome{err: "timeout"}, "backoff"},
+		{"retry_after", nil, refreshOutcome{err: "status 429", retryAfter: 2 * time.Minute}, "retry_after"},
+		{"max_per_hour", func(p *ProviderConfig) {
+			p.Limits.MaxRefreshesPerHour = 1
+		}, refreshOutcome{ok: true, changed: true}, "max_per_hour"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			te := newProviderEngine(t, quietProvider(func(p *ProviderConfig) {
+				p.Triggers.WhenCostAbove = &CostTrigger{Cost: 10, After: -1}
+				p.Triggers.MinHealthyOutbounds = 2
+				p.Limits.MinInterval = int64(5 * time.Minute)
+				p.Limits.ExhaustedMinInterval = int64(30 * time.Second)
+				if tc.limit != nil {
+					tc.limit(p)
+				}
+			}), &SelectorConfig{Costs: costs("a", 1, "d", 10)}, "a1", "d1")
+			te.requestRefresh("fresh")
+			j := expectRefresh(t, te, t0, "host")
+			te.onRefreshDone(j, tc.result, t0)
+			expectNoRefresh(t, te, at(time.Second))
+			te.path("a1").status = statusDown
+			te.switchTo(te.sel, "d1", "failover", at(31*time.Second))
+			expectNoRefresh(t, te, at(31*time.Second))
+			found := false
+			for _, ev := range te.eventsOf(t, "provider_skip") {
+				found = found || ev.Fields["trigger"] == "cost_above" && ev.Fields["reason"] == tc.reason
+			}
+			if !found {
+				t.Fatalf("cost_above was not held by %s", tc.reason)
+			}
+		})
+	}
+}
+
 func TestMaxAgeKeepsAskingUntilASuccess(t *testing.T) {
 	te := newProviderEngine(t, quietProvider(func(p *ProviderConfig) {
 		p.Triggers.MaxAge = int64(6 * time.Hour)

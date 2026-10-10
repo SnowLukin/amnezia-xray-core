@@ -12,11 +12,15 @@ import traceback
 
 import bench
 import scenarios
+import cost_scenarios
 
 
 def main():
     xray = os.path.abspath(sys.argv[1])
     wanted = sys.argv[2:]
+    unknown = sorted(set(wanted) - {s.name for s in scenarios.ALL})
+    if unknown:
+        raise SystemExit(f"unknown scenarios: {', '.join(unknown)}")
     work = bench.workdir()
     print(f"workdir {work}", flush=True)
     results = []

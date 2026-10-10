@@ -43,14 +43,15 @@ limits allow. The `trigger` of the request names the reason:
 | `exhausted` | The balancer has no usable outbound left. |
 | `expiry` | A lease reached its renewal point or ended, see [Leases](#leases). |
 | `min_healthy` | Fewer outbounds of the balancer work than the config wants. |
-| `cost_above` | The balancer has kept dear outbounds for a while. |
+| `cost_above` | The chosen outbound costs at least `whenCostAbove.cost`. With `after: "0s"`, the request starts in the same turn that chooses it, subject to the limits and gates; a positive `after` waits that long. |
 | `network_change` | The device moved to a network where the set does not work as well. |
 | `next_refresh` | The time the last answer asked for with `nextRefreshIn` came. |
 | `max_age` | The set is older than the config allows. |
 | `interval` | The regular refresh, `interval` after the previous one. |
 
 By default two refreshes start at least 5 minutes apart, or 30 seconds for
-an exhausted balancer, an urgent renewal and the host; at most 6 start
+an exhausted balancer, an urgent renewal, the host and cost feedback with
+`whenCostAbove.after: "0s"`; at most 6 start
 within an hour; after a failure the next waits for a backoff that starts at
 30 seconds and doubles up to 30 minutes, spread by 30%. Without user
 traffic only the host and the first renewal of a lease ask. While the

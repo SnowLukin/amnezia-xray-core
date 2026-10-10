@@ -222,10 +222,8 @@ func (e *engine) tickProviders(now time.Time) ([]*refreshJob, time.Time) {
 		if !idle {
 			soonest(next)
 		}
-		// Each trigger that wants a refresh goes through the waits that are
-		// not limits, and the first one through starts it: an idle
-		// exhausted balancer must not hide an expiry, which does not wait
-		// for traffic.
+		// Each trigger that wants a refresh goes through its gates and
+		// interval, so an earlier one that waits cannot hide a later one.
 		trigger, ok := refreshTrigger(0), false
 		for t := refreshTrigger(0); t < triggerCount && !ok; t++ {
 			if !want[t] {
@@ -240,15 +238,16 @@ func (e *engine) tickProviders(now time.Time) ([]*refreshJob, time.Time) {
 				e.skipRefresh(p, t, why, wait, now)
 				continue
 			}
+			shortInterval := t.urgent() || (t == triggerExpiry && expiry.urgent) ||
+				(t == triggerCostAbove && p.cfg.costAboveAfter == 0)
+			if at, why := p.allowedAt(shortInterval, now); now.Before(at) {
+				e.skipRefresh(p, t, why, at.Sub(now), now)
+				soonest(at)
+				continue
+			}
 			trigger, ok = t, true
 		}
 		if !ok {
-			continue
-		}
-		urgent := trigger.urgent() || (trigger == triggerExpiry && expiry.urgent)
-		if at, why := p.allowedAt(urgent, now); now.Before(at) {
-			e.skipRefresh(p, trigger, why, at.Sub(now), now)
-			soonest(at)
 			continue
 		}
 		jobs = append(jobs, e.beginRefresh(p, trigger, now))
@@ -425,9 +424,9 @@ func (e *engine) notCheapest(s *selector) bool {
 }
 
 // allowedAt returns when a refresh for a trigger may start and which limit
-// holds it back until then. An urgent one waits only for the shorter
-// exhaustedMinInterval.
-func (p *provider) allowedAt(urgent bool, now time.Time) (time.Time, string) {
+// holds it back until then. A refresh with the short interval waits only
+// for exhaustedMinInterval between attempts.
+func (p *provider) allowedAt(shortInterval bool, now time.Time) (time.Time, string) {
 	var at time.Time
 	why := ""
 	later := func(t time.Time, reason string) {
@@ -436,7 +435,7 @@ func (p *provider) allowedAt(urgent bool, now time.Time) (time.Time, string) {
 		}
 	}
 	gap := p.cfg.minInterval
-	if urgent {
+	if shortInterval {
 		gap = p.cfg.exhaustedMinInterval
 	}
 	if !p.lastAttempt.IsZero() && gap > 0 {
