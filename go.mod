@@ -2,8 +2,6 @@ module github.com/xtls/xray-core
 
 go 1.26
 
-replace github.com/amnezia-vpn/amneziawg-go/v3 => ./third_party/amneziawg-go
-
 require (
 	github.com/amnezia-vpn/amneziawg-go/v3 v3.1.20260828
 	github.com/apernet/quic-go v0.59.1-0.20260425001925-6c6cc9bcb716
@@ -62,3 +60,6 @@ require (
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
+
+// Fix for the Timer.duration data race (amnezia-vpn/amneziawg-go#204) until upstream releases it.
+replace github.com/amnezia-vpn/amneziawg-go/v3 => github.com/StarProxima/amneziawg-go/v3 v3.1.20260829-0.20261009183831-0421ab3db604
