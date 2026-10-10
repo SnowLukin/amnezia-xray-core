@@ -657,13 +657,14 @@ func (v *strategyLeastCostConfig) Build() (proto.Message, error) {
 				return nil, errors.New("leastCost: cost match ", c.Match).Base(err)
 			}
 		}
+		if c.ReturnInterval != nil && *c.ReturnInterval < 0 {
+			return nil, errors.New("leastCost: costs.returnInterval must not be negative")
+		}
 	}
 	costs := make([]*health.CostEntry, 0, len(v.Costs))
 	for _, c := range v.Costs {
 		entry := &health.CostEntry{Match: c.Match, IsRegexp: c.IsRegexp, Cost: c.Cost}
-		if c.ReturnInterval != nil {
-			entry.ReturnInterval = int64(*c.ReturnInterval)
-		}
+		entry.ReturnInterval = optionalDuration(c.ReturnInterval)
 		if c.Group != nil {
 			entry.Group = &health.CostGroupConfig{FailedInRowToLeave: c.Group.FailedInRowToLeave}
 		}

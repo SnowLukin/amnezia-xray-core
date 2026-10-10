@@ -149,6 +149,6 @@ func (e *engine) scheduleReturn(s *selector, now time.Time) {
 	if s.returnToCheaperAt.IsZero() || !u.randomPhase {
 		return
 	}
-	spread := min(u.interval, returnSpread)
+	spread := min(s.cfg.returnInterval(s.current()), returnSpread)
 	s.returnToCheaperAt = s.returnToCheaperAt.Add(time.Duration(e.rnd.Float64() * float64(spread)))
 }

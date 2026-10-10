@@ -2,6 +2,7 @@ package health
 
 import (
 	"net/http"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -572,6 +573,7 @@ func (s *settings) probeFor(tag string) *probeSettings {
 
 type selectorSettings struct {
 	weights          *router.WeightManager
+	costEntries      []costEntrySettings
 	lazy             []string
 	switchAfterProbe bool
 	confirm          ConfirmMode
@@ -581,6 +583,20 @@ type selectorSettings struct {
 	startPinTimeout  time.Duration
 	startOutbound    string
 	onNetworkChange  NetworkChangeMode
+}
+
+type costEntrySettings struct {
+	match          string
+	pattern        *regexp.Regexp
+	isRegexp       bool
+	returnInterval int64
+}
+
+func (e costEntrySettings) matches(tag string) bool {
+	if e.isRegexp {
+		return e.pattern != nil && e.pattern.FindString(tag) != ""
+	}
+	return e.match != "" && strings.Contains(tag, e.match)
 }
 
 type returnToCheaperSettings struct {
@@ -606,11 +622,18 @@ func newSelectorSettings(c *SelectorConfig) *selectorSettings {
 		}
 	}
 	weights := make([]*router.StrategyWeight, 0, len(c.GetCosts()))
+	costEntries := make([]costEntrySettings, 0, len(c.GetCosts()))
 	for _, entry := range c.GetCosts() {
 		weights = append(weights, &router.StrategyWeight{Match: entry.GetMatch(), Regexp: entry.GetIsRegexp(), Value: entry.GetCost()})
+		cost := costEntrySettings{match: entry.GetMatch(), isRegexp: entry.GetIsRegexp(), returnInterval: entry.GetReturnInterval()}
+		if cost.isRegexp {
+			cost.pattern, _ = regexp.Compile(cost.match)
+		}
+		costEntries = append(costEntries, cost)
 	}
 	return &selectorSettings{
 		weights:          router.NewWeightManager(weights, defaultCost, func(v, w float64) float64 { return v * w }),
+		costEntries:      costEntries,
 		lazy:             c.GetLazyOutbounds(),
 		switchAfterProbe: !c.GetSkipProbeBeforeSwitch(),
 		confirm:          c.GetConfirmWithProbe(),
@@ -635,6 +658,29 @@ func newSelectorSettings(c *SelectorConfig) *selectorSettings {
 
 func (s *selectorSettings) cost(tag string) float64 {
 	return s.weights.Get(tag)
+}
+
+func (s *selectorSettings) returnInterval(tag string) time.Duration {
+	for _, entry := range s.costEntries {
+		if entry.matches(tag) {
+			return optional(entry.returnInterval, s.returnToCheaper.interval)
+		}
+	}
+	return s.returnToCheaper.interval
+}
+
+// The next selected outbound is unknown when a return fails, so use the
+// shortest possible base to keep its multiplier finite without losing delay.
+func (s *selectorSettings) penaltyLimit() float64 {
+	base := maxDuration(s.returnToCheaper.interval, s.minHoldTime)
+	for _, entry := range s.costEntries {
+		interval := optional(entry.returnInterval, s.returnToCheaper.interval)
+		base = min(base, maxDuration(interval, s.minHoldTime))
+	}
+	if base == 0 {
+		base = time.Nanosecond
+	}
+	return max(1, float64(s.returnToCheaper.maxPenalty)/float64(base))
 }
 
 func (s *selectorSettings) isLazy(tag string) bool {

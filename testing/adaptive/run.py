@@ -13,6 +13,7 @@ import traceback
 import bench
 import scenarios
 import cost_scenarios
+import return_interval_scenarios
 
 
 def main():

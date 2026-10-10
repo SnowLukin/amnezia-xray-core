@@ -454,9 +454,8 @@ func (e *engine) markDown(p *path, reason string, strong bool, now time.Time) {
 	for _, s := range e.sortedSelectors() {
 		if s.returnedTo == p.tag && now.Sub(s.returnedAt) < s.cfg.returnToCheaper.penaltyWindow {
 			p.rescue.notePenalty(s, p.tag)
-			base := maxDuration(s.cfg.returnToCheaper.interval, s.cfg.minHoldTime)
 			s.penalty[p.tag] = minFloat(s.penaltyFor(p.tag)*s.cfg.returnToCheaper.penaltyMultiplier,
-				float64(s.cfg.returnToCheaper.maxPenalty)/float64(base))
+				s.cfg.penaltyLimit())
 			e.emit(now, "return_penalty", map[string]any{"balancer": s.tag, "outbound": p.tag, "multiplier": s.penalty[p.tag]})
 			s.returnedTo = ""
 		}
@@ -964,9 +963,13 @@ func (e *engine) scheduleReturnToCheaper(s *selector, now time.Time, soon bool) 
 		return
 	}
 	u := s.cfg.returnToCheaper
-	wait := u.interval
+	interval := s.cfg.returnInterval(cur)
+	if interval == 0 {
+		return
+	}
+	wait := interval
 	if u.randomPhase {
-		wait = time.Duration(e.rnd.Float64() * float64(u.interval))
+		wait = time.Duration(e.rnd.Float64() * float64(interval))
 	}
 	s.returnToCheaperAt = maxTime(now.Add(wait), s.activeSince.Add(s.cfg.minHoldTime))
 }
@@ -1342,11 +1345,21 @@ func (e *engine) maybeReturnToCheaper(s *selector, now time.Time) time.Time {
 		return wake
 	}
 	if pen := s.penaltyFor(target); pen > 1 && !s.penaltyServed {
-		delay := time.Duration(float64(maxDuration(s.cfg.returnToCheaper.interval, s.cfg.minHoldTime)) * (pen - 1))
-		s.penaltyServed = true
-		s.returnToCheaperAt = now.Add(delay)
-		e.emit(now, "return_delayed", map[string]any{"balancer": s.tag, "outbound": target, "delay_ms": delay.Milliseconds()})
-		return s.returnToCheaperAt
+		base := maxDuration(s.cfg.returnInterval(s.current()), s.cfg.minHoldTime)
+		if limit := s.cfg.returnToCheaper.maxPenalty - base; base > 0 && limit > 0 {
+			var delay time.Duration
+			if additional := float64(base) * (pen - 1); additional >= float64(limit) {
+				delay = limit
+			} else {
+				delay = time.Duration(additional)
+			}
+			if delay > 0 {
+				s.penaltyServed = true
+				s.returnToCheaperAt = now.Add(delay)
+				e.emit(now, "return_delayed", map[string]any{"balancer": s.tag, "outbound": target, "delay_ms": delay.Milliseconds()})
+				return s.returnToCheaperAt
+			}
+		}
 	}
 	s.penaltyServed = false
 	s.returnToCheaperTarget = target

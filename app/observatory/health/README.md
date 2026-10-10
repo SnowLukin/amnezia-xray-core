@@ -264,6 +264,17 @@ for `hostProbes` `probesPerMinute` half of `schedule.probesPerMinute`, `reuseWin
   not probed when traffic or a probe has already judged it there.
 - `returnToCheaper.interval` cannot be zero; a very long interval such as `8760h`
   leaves only returns after network changes.
+- Each `costs` entry may set `returnInterval`, a Go duration that replaces
+  `returnToCheaper.interval` while an outbound matched by that entry is chosen.
+  The first matching entry wins, including when it has no own interval;
+  provider prices do not change that match. Absence keeps the global interval.
+  `"0s"` disables periodic returns from that entry; returns caused by a
+  network change or a successful check remain possible and respect
+  `minHoldTime`. The chosen interval also bounds the random first phase.
+  When a return fails, the chosen interval and `minHoldTime` set the base
+  of its penalty. The base plus additional delay is capped by `maxPenaltyDelay`;
+  a base already longer than that cap keeps its own period and gains no
+  additional delay. The cap is applied after the next outbound is chosen.
 - `startPinnedOutbound` keeps the balancer on one outbound until the host releases
   it, for example while another component verifies the connection.
   `startPinTimeout` releases it by itself after that long: a host that
