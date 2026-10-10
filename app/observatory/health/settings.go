@@ -586,6 +586,7 @@ type selectorSettings struct {
 }
 
 type costEntrySettings struct {
+	groupLimit     int
 	match          string
 	pattern        *regexp.Regexp
 	isRegexp       bool
@@ -626,6 +627,9 @@ func newSelectorSettings(c *SelectorConfig) *selectorSettings {
 	for _, entry := range c.GetCosts() {
 		weights = append(weights, &router.StrategyWeight{Match: entry.GetMatch(), Regexp: entry.GetIsRegexp(), Value: entry.GetCost()})
 		cost := costEntrySettings{match: entry.GetMatch(), isRegexp: entry.GetIsRegexp(), returnInterval: entry.GetReturnInterval()}
+		if entry.Group != nil {
+			cost.groupLimit = min(max(num(entry.Group.FailedInRowToLeave, 3), 1), 16)
+		}
 		if cost.isRegexp {
 			cost.pattern, _ = regexp.Compile(cost.match)
 		}

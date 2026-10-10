@@ -308,6 +308,48 @@ for `hostProbes` `probesPerMinute` half of `schedule.probesPerMinute`, `reuseWin
   without traffic after that. Nothing without sleep.
 - `hostProbes` limits the probes the host asks for, see Probes on request.
 
+## Outbound groups
+
+An entry of `costs` may set `group: {"failedInRowToLeave": 3}`. Its `match`
+names the group; the first matching cost entry assigns an outbound to it.
+Its `match` must be unique among cost entries when any matching entry defines
+a group, including entries with a different `isRegexp` value.
+The limit defaults to 3 and accepts 1 through 16. Tags are sorted as
+strings, so a backend that numbers them uses leading zeroes and interleaves
+addresses from different failure domains. The initial position is
+the first eight bytes of SHA-256 of `run + "\x00" + match`, interpreted as a
+big-endian uint64, modulo its member count.
+An explicit start choice and a remembered working outbound take precedence.
+
+After a chosen member fails, failover advances around the ring. A successful
+probe or `successBytes` clears consecutive failures. The chosen dead member
+and failed following probes count towards `failedInRowToLeave`; at the limit
+the group rests in `schedule.quarantine`, and unvisited members are skipped.
+Equal-priced groups follow the order of their first tags. Provider prices
+remain per member: lower-priced members come first, and equal prices retain
+their ring order. An outbound without an explicit group keeps its existing
+selection behavior.
+
+After group quarantine, one following member is checked with reason
+`group_recheck`. A passed check makes the group available; unvisited members
+remain unknown and individually quarantined members keep their rest. This
+check does not move a working balancer by itself or replace `probesToReturn`.
+It can restore group availability when `returnInterval` disables periodic
+returns. Idle, a lost network and a pin postpone it; low memory permits it
+only for an exhausted balancer. Lazy members and expired leases are not
+checked in the background, but remain exhausted reserves. The existing
+probe budgets and the one-probe-per-server-name rule still apply.
+
+Status and reports include `groups` only for explicit groups. Each record
+has `balancer`, `group`, `state`, `members`, `healthy`, `quarantined`,
+`client_position`, `failed`, `quarantine_ms` and optional `last_failure`.
+`healthy` counts proven working members with live leases, and is zero while
+the group is down; `quarantined` counts individual member quarantines.
+`client_position` is the zero-based initial hash position. Provider requests
+use the same summary with camelCase names, omit `balancer`, and count only
+members owned by that provider; the position still belongs to the full ring.
+A down group contributes no usable members to `minHealthyOutbounds`.
+
 ## Providers
 
 A provider fetches a fresh set of outbounds over HTTP and puts it into a
@@ -638,6 +680,13 @@ Status. The limits below are those of `schedule.hostProbes`.
   balancer and are taken as they are, lazyOutbounds ones too. A request covers at most
   `maxOutbounds`. Before the first connection through the balancer it has no
   candidates, and a request fails.
+- A request checks one representative of each explicit group, including
+  when several listed tags belong to it. Before group quarantine ends,
+  its representative is answered `down` with source `group_quarantine`.
+  The default plan excludes lazy and expired members, and prefers a member
+  outside individual quarantine. At equal price it starts at the hash position;
+  resting representatives follow their price and group first-tag order.
+  An explicit list uses its first listed member of each group.
 - An outbound in quarantine is answered `down` without a probe: the request
   does not shorten its rest. An outbound that works and proved it within
   `reuseWindow`, by a probe or by a connection that received `successBytes`, is
@@ -850,8 +899,9 @@ Every event is `{"seq": n, "ts": unix_ms, "type": "...", "fields": {...}}`.
 | `switch` | `balancer`, `from`, `to`, `reason`, `held_ms`, `cost` | New connections go to another outbound. `reason`: `start`, `start_pinned`, `start_remembered`, `start_with`, `failover`, `return`, `recovered`, `remembered`, `network_change`, `network_up` (the network check passed again and brought back outbounds ruled out while it failed, to a balancer that had nothing usable), `candidates_changed`, `pin`, `retired` (the previous one left its provider set), `expired` (the lease of the previous one ended; one that failed as well is left with `failover`). `held_ms` is the time on the previous one. |
 | `path_state` | `outbound`, `state`, `reason`; for `suspect` also `failures`, `targets`, `kinds`, `is_strong`; for `down` also `quarantine_ms`, `quarantine_level` and `is_provisional` when it was ruled out while the network check was failing | An outbound became `up`, `suspect`, `down` or `unknown`. `reason`: `traffic`, `probe`, `return_probe`, `host_probe`, `network_change`, `network_down`, `network_up`, `replaced` (a provider
 changed its settings), `rescued` (a probe that was confirming a suspicion when strong evidence ruled the outbound out passed, see How it decides). `kinds` counts failures by kind: `dial_failed`, `dial_timeout`, `server_unverified`, `no_response`, `closed`, `stall`, `partial_stall`. For an outbound with a tunnel, `dial_failed` and `dial_timeout` tell that the tunnel could not be set up or that its server did not answer a connection, see How it decides. |
-| `probe_start` | `outbound`, `reason`, `balancer`, `running`, `request` | A probe started. `reason`: `confirm`, `failover`, `network_change`, `remembered`, `recheck`, `return`, `host`. `running` counts the outbound probes running now, this one included. `request` is the id of the request a `host` probe is for. |
+| `probe_start` | `outbound`, `reason`, `balancer`, `running`, `request` | A probe started. `reason`: `confirm`, `failover`, `network_change`, `remembered`, `recheck`, `return`, `group_recheck`, `host`. `running` counts the outbound probes running now, this one included. `request` is the id of the request a `host` probe is for. |
 | `probe_result` | `outbound`, `reason`, `balancer`, `is_ok`, `rtt_ms`, `bytes`, `error`, `is_stale`, `request` | A probe finished. `bytes` counts both directions above TLS. `is_stale` means it was made in the previous network and was ignored. |
+| `group_state` | `balancer`, `group`, `state`, `members`, `failed`, `quarantine_ms` | An explicit group became `down` after consecutive failures or `up` after a successful recovery check. Unvisited members of a down group are skipped. |
 | `probe_request` | `request`, `balancer`, `outbounds`, `end`, `ms`, `probed`, `reused`, `ok`, `failed`, `down`, `skipped`, `expired`, `gone` | A request of the host that waited for a probe ended; one answered at once writes none. `end`: `done`, `timeout`, `network_change`, `gone`. The counts are by result; `probed` and `reused` count the answers of a probe and of a recent proof. |
 | `exhausted` | `balancer`, `from`, `candidates` | No usable candidate is left; traffic goes to `fallbackTag`. |
 | `pending_closed` | `outbound`, `connections`, `reason`, `is_silent` | Connections of an outbound found down were ended: at the decision and at the switch away from it those that had received nothing, or, with `is_silent` true, `stallTimeout` after a decision on path failures those that received nothing since it, see How it decides. `reason` is the one the outbound went down for. |
@@ -930,6 +980,7 @@ to this one. Reports of one run add up.
 | `switches`, `switch_reasons`, `switch_path` | `switch` events, their count by reason, and the latest 10 as `from>to:reason`. |
 | `exhausted_count`, `pinned_down_count` | Events of those types. |
 | `path_down_count`, `path_suspect_count` | `path_state` events with those states. |
+| `group_down_count` | `group_state` events with state `down`. |
 | `path_rescued_count` | `path_state` events with reason `rescued`: downs a confirming probe proved false. A rescue changes no choice by itself and is no decision; a balancer it brings back switches with `recovered`. |
 | `pending_closed_count` | Connections of outbounds found down ended by `pending_closed` events: those that had received nothing and, with `is_silent`, those that went silent after the decision. |
 | `idle_closed_count` | Connections of outbounds no balancer chooses ended by `idle_closed` events, so that the outbounds can sleep. Ending them changes no choice and is no decision. |
@@ -948,7 +999,8 @@ to this one. Reports of one run add up.
 | `memory_low_count` | `memory_low` events with `is_low`. |
 | `outbound_sleeps` | `outbound_sleep` events: outbounds that released what they held. A sleep changes no choice and is no decision. |
 | `active`, `is_balancer_exhausted`, `is_network_up`, `connectivity` | At the time of the report: the chosen outbound by balancer, whether a balancer is exhausted, and the network as in Status. |
-| `paths` | The first 16 outbounds by tag. `state` and `ttfb_p50_ms` (over the whole life of the outbound, 0 without samples) as they are now; `active_ms`, `bytes_up`, `bytes_down`, `conns_ok`, `conns_failed`, `probes` and `probe_bytes` grown since the previous report. An outbound forgotten and seen again counts from zero. |
+| `paths` | The first 64 outbounds by tag. `state` and `ttfb_p50_ms` (over the whole life of the outbound, 0 without samples) as they are now; `active_ms`, `bytes_up`, `bytes_down`, `conns_ok`, `conns_failed`, `probes` and `probe_bytes` grown since the previous report. An outbound forgotten and seen again counts from zero. |
+| `groups` | Current explicit-group summaries as described in Outbound groups. |
 
 ## Status
 

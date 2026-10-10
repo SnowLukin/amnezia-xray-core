@@ -32,9 +32,22 @@ type providerRequest struct {
 	IsMemoryLow   bool              `json:"isMemoryLow"`
 	Balancer      requestBalancer   `json:"balancer"`
 	Outbounds     []requestOutbound `json:"outbounds"`
+	Groups        []requestGroup    `json:"groups,omitempty"`
 
 	// The network as the host named it; it goes out hashed, see providerHash.
 	networkID string
+}
+
+type requestGroup struct {
+	Group          string `json:"group"`
+	State          string `json:"state"`
+	Members        int    `json:"members"`
+	Healthy        int    `json:"healthy"`
+	Quarantined    int    `json:"quarantined"`
+	ClientPosition int    `json:"clientPosition"`
+	Failed         int    `json:"failed"`
+	QuarantineMs   int64  `json:"quarantineMs"`
+	LastFailure    string `json:"lastFailure,omitempty"`
 }
 
 type requestFailure struct {
@@ -132,6 +145,32 @@ func (e *engine) providerRequest(p *provider, j *refreshJob, now time.Time) *pro
 		b.IsPinned = s.pinned != ""
 		if !s.activeSince.IsZero() {
 			b.HeldMs = now.Sub(s.activeSince).Milliseconds()
+		}
+	}
+	for _, v := range e.groupViews(now) {
+		if v.Balancer != p.cfg.balancer {
+			continue
+		}
+		g := e.selectors[v.Balancer].groups[v.Group]
+		own := 0
+		healthy := 0
+		quarantined := 0
+		for _, t := range g.members {
+			if !strings.HasPrefix(t, p.cfg.prefix) {
+				continue
+			}
+			own++
+			if q := e.paths[t]; q != nil {
+				if q.quarantined(now) {
+					quarantined++
+				}
+				if q.status == statusUp && !g.down && !e.expired[t] {
+					healthy++
+				}
+			}
+		}
+		if own > 0 {
+			r.Groups = append(r.Groups, requestGroup{Group: v.Group, State: v.State, Members: own, Healthy: healthy, Quarantined: quarantined, ClientPosition: v.ClientPosition, Failed: v.Failed, QuarantineMs: v.QuarantineMs, LastFailure: v.LastFailure})
 		}
 	}
 	for _, tag := range p.tags {

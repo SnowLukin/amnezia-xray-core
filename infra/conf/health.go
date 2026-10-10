@@ -604,7 +604,7 @@ type strategyLeastCostReturnToCheaperConfig struct {
 }
 
 type strategyCostGroupConfig struct {
-	FailedInRowToLeave int32 `json:"failedInRowToLeave"`
+	FailedInRowToLeave *int32 `json:"failedInRowToLeave"`
 }
 
 type strategyCostEntry struct {
@@ -645,6 +645,7 @@ func (v *strategyLeastCostConfig) Build() (proto.Message, error) {
 	if err := checkSelectors("lazyOutbounds", v.LazyOutbounds); err != nil {
 		return nil, err
 	}
+	groupMatches := map[string]bool{}
 	for _, c := range v.Costs {
 		// A zero value means "weight from the number in the tag" to the
 		// shared weight code, which here would make the outbound the most
@@ -652,6 +653,10 @@ func (v *strategyLeastCostConfig) Build() (proto.Message, error) {
 		if c == nil || c.Match == "" || c.Cost <= 0 {
 			return nil, errors.New("leastCost: every cost needs a match and a cost above zero")
 		}
+		if previous, exists := groupMatches[c.Match]; exists && (previous || c.Group != nil) {
+			return nil, errors.New("leastCost: costs.group match must be unique: ", c.Match)
+		}
+		groupMatches[c.Match] = c.Group != nil
 		if c.IsRegexp {
 			if _, err := regexp.Compile(c.Match); err != nil {
 				return nil, errors.New("leastCost: cost match ", c.Match).Base(err)
@@ -666,7 +671,14 @@ func (v *strategyLeastCostConfig) Build() (proto.Message, error) {
 		entry := &health.CostEntry{Match: c.Match, IsRegexp: c.IsRegexp, Cost: c.Cost}
 		entry.ReturnInterval = optionalDuration(c.ReturnInterval)
 		if c.Group != nil {
-			entry.Group = &health.CostGroupConfig{FailedInRowToLeave: c.Group.FailedInRowToLeave}
+			limit := int32(3)
+			if c.Group.FailedInRowToLeave != nil {
+				limit = *c.Group.FailedInRowToLeave
+			}
+			if limit < 1 || limit > 16 {
+				return nil, errors.New("leastCost: costs.group.failedInRowToLeave must be from 1 to 16")
+			}
+			entry.Group = &health.CostGroupConfig{FailedInRowToLeave: limit}
 		}
 		costs = append(costs, entry)
 	}

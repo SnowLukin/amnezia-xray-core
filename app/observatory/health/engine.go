@@ -6,6 +6,7 @@ import (
 	"math/rand"
 	"slices"
 	"sort"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -20,6 +21,7 @@ const (
 	reasonNetwork
 	reasonRemembered
 	reasonRecheck
+	reasonGroup
 	reasonReturnToCheaper
 	// Last: probes of the host give way to those of the observer.
 	reasonHost
@@ -39,6 +41,8 @@ func (r probeReason) String() string {
 		return "remembered"
 	case reasonRecheck:
 		return "recheck"
+	case reasonGroup:
+		return "group_recheck"
 	case reasonReturnToCheaper:
 		return "return"
 	case reasonHost:
@@ -85,6 +89,7 @@ const lowMemoryRecheck = 2 * time.Minute
 type engine struct {
 	s         *settings
 	rnd       *rand.Rand
+	run       string
 	paths     map[string]*path
 	selectors map[string]*selector
 	events    *eventLog
@@ -175,6 +180,7 @@ type engine struct {
 func newEngine(s *settings, seed int64) *engine {
 	e := &engine{
 		s:                s,
+		run:              strconv.FormatInt(seed, 10),
 		rnd:              rand.New(rand.NewSource(seed)),
 		paths:            map[string]*path{},
 		selectors:        map[string]*selector{},
@@ -340,6 +346,11 @@ func (e *engine) onSuccess(tag string, now time.Time) {
 	e.used(tag, now)
 	e.sawSuccess("traffic", now)
 	if p.status == statusDown && p.quarantined(now) {
+		for _, s := range e.selectors {
+			if g := s.groupFor(tag); g != nil {
+				g.failed = 0
+			}
+		}
 		// Old connections may still work on an address that refuses new ones.
 		return
 	}
@@ -349,6 +360,7 @@ func (e *engine) onSuccess(tag string, now time.Time) {
 		e.dropQueued(p.tag, reasonConfirm)
 		e.backOffWeakEvidence(p, now)
 	}
+	e.groupSuccess(tag, now)
 	p.success(now)
 	if p.status != statusUp {
 		p.quarantineLevel = 0
@@ -447,6 +459,7 @@ func (e *engine) markDown(p *path, reason string, strong bool, now time.Time) {
 	}
 	p.quarantineUntil = now.Add(rest)
 	p.setStatus(statusDown, reason, now)
+	e.groupFailure(p.tag, now)
 	p.failures = p.failures[:0]
 	delete(e.pendingSuspicion, p.tag)
 	e.emitPath(p, now)
@@ -519,8 +532,9 @@ func (e *engine) markUp(p *path, reason string, now time.Time) {
 // ---- selection --------------------------------------------------------------
 
 type selector struct {
-	tag string
-	cfg *selectorSettings
+	tag    string
+	cfg    *selectorSettings
+	groups map[string]*outboundGroup
 
 	candidates []string
 	snapshot   atomic.Pointer[[]string]
@@ -585,6 +599,7 @@ func (s *selector) hasCandidate(tag string) bool {
 func (e *engine) addSelector(tag string, cfg *selectorSettings) *selector {
 	if s, ok := e.selectors[tag]; ok {
 		s.cfg = cfg
+		e.syncGroups(s)
 		return s
 	}
 	s := &selector{tag: tag, cfg: cfg, penalty: map[string]float64{}}
@@ -597,6 +612,9 @@ func (e *engine) addSelector(tag string, cfg *selectorSettings) *selector {
 // whose lease ended last. Within one cost, outbounds known to work go first,
 // then candidate order.
 func (e *engine) ranked(s *selector, now time.Time, skip func(string) bool) []string {
+	if len(s.groups) > 0 {
+		return e.rankedGroups(s, now, skip)
+	}
 	type item struct {
 		tag     string
 		expired bool
@@ -652,6 +670,7 @@ func (e *engine) updateCandidates(s *selector, candidates []string, now time.Tim
 			s.candidates = append(s.candidates, c)
 		}
 	}
+	e.syncGroups(s)
 	snap := append([]string(nil), candidates...)
 	s.snapshot.Store(&snap)
 	lostProbe := false
@@ -870,8 +889,12 @@ func (e *engine) probeCandidates(s *selector, now time.Time, avoid map[string]bo
 		s.failoverProbing = map[string]bool{}
 	}
 	names := map[string]bool{}
+	groups := map[*outboundGroup]bool{}
 	for t := range s.failoverProbing {
 		names[e.serverName(t)] = true
+		if g := s.groupFor(t); g != nil {
+			groups[g] = true
+		}
 	}
 	open := math.Inf(1)
 	for _, t := range ranked {
@@ -887,6 +910,7 @@ func (e *engine) probeCandidates(s *selector, now time.Time, avoid map[string]bo
 				return true
 			}
 			continue
+		case s.groupFor(t) != nil && groups[s.groupFor(t)]:
 		case names[e.serverName(t)]:
 			// Its turn comes when the probe of its server name has answered.
 		case (s.cfg.isLazy(t) || e.expired[t]) && open < c:
@@ -896,6 +920,9 @@ func (e *engine) probeCandidates(s *selector, now time.Time, avoid map[string]bo
 			s.failoverTried[t] = true
 			s.failoverProbing[t] = true
 			names[e.serverName(t)] = true
+			if g := s.groupFor(t); g != nil {
+				groups[g] = true
+			}
 			e.enqueue(t, reasonFailover, s.tag, now)
 		}
 		open = math.Min(open, c)
@@ -907,13 +934,17 @@ func (e *engine) probeCandidates(s *selector, now time.Time, avoid map[string]bo
 // failover under way, unless a cheaper candidate is still open.
 func (e *engine) failoverChoice(s *selector, ranked []string) string {
 	open := math.Inf(1)
+	var openTag string
 	for _, t := range ranked {
 		c := e.rankCost(s, t)
 		switch {
 		case s.failoverProbing[t] || !s.failoverTried[t]:
 			open = math.Min(open, c)
+			if openTag == "" {
+				openTag = t
+			}
 		case e.path(t).status == statusUp:
-			if open < c {
+			if open < c || (openTag != "" && (s.groupFor(openTag) != nil || s.groupFor(t) != nil)) {
 				return ""
 			}
 			return t
@@ -989,7 +1020,14 @@ func (e *engine) hasCheaper(s *selector, cur string) bool {
 func (e *engine) returnToCheaperTargetFor(s *selector, now time.Time) string {
 	cur := s.current()
 	c := e.rankCost(s, cur)
-	for _, t := range e.ranked(s, now, func(t string) bool { return t == cur || s.cfg.isLazy(t) }) {
+	skip := func(t string) bool { return t == cur || s.cfg.isLazy(t) }
+	var ranked []string
+	if len(s.groups) > 0 {
+		ranked = e.groupOrder(s, now, skip, reasonReturnToCheaper)
+	} else {
+		ranked = e.ranked(s, now, skip)
+	}
+	for _, t := range ranked {
 		if e.rankCost(s, t) < c {
 			return t
 		}
@@ -1059,7 +1097,7 @@ func (e *engine) budgetWait(j *probeJob, now time.Time) time.Duration {
 	}
 	name := e.serverName(j.tag)
 	for _, r := range e.running {
-		if r.reason != reasonConnectivity && e.serverName(r.tag) == name {
+		if r.reason != reasonConnectivity && (e.serverName(r.tag) == name || e.sameGroup(r.tag, j.tag)) {
 			// Simultaneous handshakes to one server name are a censor signal.
 			return -1
 		}
@@ -1158,6 +1196,9 @@ func (e *engine) tick(now time.Time) ([]*probeJob, time.Time) {
 				delete(s.penalty, s.returnedTo)
 				s.returnedTo = ""
 			}
+			if !idle {
+				soonest(e.recheckGroups(s, now))
+			}
 			if s.exhausted && !idle {
 				soonest(e.recheckExhausted(s, now))
 			}
@@ -1179,6 +1220,9 @@ func (e *engine) tick(now time.Time) ([]*probeJob, time.Time) {
 	sort.SliceStable(e.queue, func(i, j int) bool { return e.queue[i].reason < e.queue[j].reason })
 	kept := e.queue[:0]
 	for _, j := range e.queue {
+		if j.reason == reasonGroup && !e.groupProbeClaimed(j) {
+			continue
+		}
 		if j.generation != e.generation && j.reason != reasonConnectivity {
 			continue
 		}
@@ -1258,6 +1302,9 @@ func (e *engine) putOff(j *probeJob, idle bool) bool {
 	switch j.reason {
 	case reasonNetwork, reasonRemembered:
 		return idle || e.memoryLow
+	case reasonGroup:
+		s := e.selectors[j.selector]
+		return idle || s == nil || s.pinned != "" || (e.memoryLow && !s.exhausted)
 	case reasonReturnToCheaper:
 		return e.memoryLow
 	}
@@ -1304,9 +1351,28 @@ func (e *engine) begin(j *probeJob, now time.Time) {
 
 func (e *engine) recheckExhausted(s *selector, now time.Time) time.Time {
 	var wake time.Time
-	for _, c := range e.ranked(s, time.Unix(1<<40, 0), nil) {
+	var ranked []string
+	if len(s.groups) > 0 {
+		ranked = e.groupOrder(s, time.Unix(1<<40, 0), nil, reasonRecheck)
+	} else {
+		ranked = e.ranked(s, time.Unix(1<<40, 0), nil)
+	}
+	for _, c := range ranked {
 		p := e.path(c)
-		if e.queued(c, reasonRecheck) {
+		reason := reasonRecheck
+		if g := s.groupFor(c); g != nil && g.down {
+			reason = reasonGroup
+			if now.Before(g.until) {
+				wake = soonestOf(wake, g.until)
+				continue
+			}
+			for _, t := range g.members {
+				if e.queued(t, reasonGroup) {
+					return time.Time{}
+				}
+			}
+		}
+		if e.queued(c, reason) {
 			return time.Time{}
 		}
 		if now.Before(p.quarantineUntil) {
@@ -1315,7 +1381,7 @@ func (e *engine) recheckExhausted(s *selector, now time.Time) time.Time {
 			}
 			continue
 		}
-		e.enqueue(c, reasonRecheck, s.tag, now)
+		e.enqueue(c, reason, s.tag, now)
 		return time.Time{}
 	}
 	return wake
@@ -1339,6 +1405,11 @@ func (e *engine) maybeReturnToCheaper(s *selector, now time.Time) time.Time {
 				if wake.IsZero() || p.quarantineUntil.Before(wake) {
 					wake = p.quarantineUntil
 				}
+			}
+		}
+		for _, g := range s.groups {
+			if g.down && g.until.After(now) {
+				wake = soonestOf(wake, g.until)
 			}
 		}
 		s.returnToCheaperAt = wake
@@ -1414,6 +1485,7 @@ func (e *engine) onProbeResult(j *probeJob, r probeResult, now time.Time) {
 	}
 	if r.ok {
 		e.sawSuccess("probe", now)
+		e.groupSuccess(j.tag, now)
 	} else if e.networkDown {
 		// Without a network the failure says nothing about the outbound.
 		if again := e.enqueue(j.tag, j.reason, j.selector, now); again != nil {
@@ -1472,6 +1544,8 @@ func (e *engine) onProbeResult(j *probeJob, r probeResult, now time.Time) {
 				}
 			}
 		}
+	case reasonGroup:
+		e.onGroupProbeResult(j, r, p, now)
 	case reasonRecheck:
 		if !r.ok {
 			e.markDown(p, "probe", false, now)
@@ -1679,6 +1753,18 @@ func (e *engine) connectivityPassed(now time.Time) {
 // restoreProvisional brings back outbounds ruled out while the check was
 // failing: it passes now, so the network was what failed.
 func (e *engine) restoreProvisional(now time.Time) {
+	for _, s := range e.sortedSelectors() {
+		for _, g := range s.groups {
+			if g.provisional {
+				g.down = false
+				g.provisional = false
+				g.failed = 0
+				g.lastFailed = ""
+				g.until = time.Time{}
+				e.emitGroup(s, g, now)
+			}
+		}
+	}
 	var tags []string
 	for tag, p := range e.paths {
 		if p.provisional {
@@ -1785,6 +1871,15 @@ func (e *engine) onNetworkChange(id string, now time.Time) {
 	}
 	e.queue = e.queue[:0]
 	for _, s := range e.sortedSelectors() {
+		for _, g := range s.groups {
+			g.down = false
+			g.provisional = false
+			g.failed = 0
+			g.level = 0
+			g.until = time.Time{}
+			g.lastFailed = ""
+			g.lastWorking = ""
+		}
 		s.failoverTried = nil
 		s.failoverProbing = nil
 		s.returnToCheaperTarget = ""

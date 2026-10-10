@@ -137,6 +137,7 @@ Fields with zero or empty values are left out, except those marked always.
 | `isMemoryLow` | Always. The host reported that memory is short: the core asks only when it must. |
 | `balancer` | Always. The balancer the provider feeds: `tag`, always; `current`, the outbound it chose without the prefix of the provider and only when it is one of this provider, which `isOwn`, always, tells; `cost`, the cost of the chosen outbound; `isExhausted` and `isPinned`, always; `heldMs`, how long it has held the chosen outbound. |
 | `outbounds` | Always, maybe empty. The set of the provider in the order of the answer, by tag without the prefix; before the first answer the outbounds of the config with the prefix of the provider. Outbounds that left the set are not listed, ones whose lease ended are. |
+| `groups` | Present for explicit groups with members owned by this provider. Each summary has `group`, `state` (`up` or `down`), `members`, `healthy`, `quarantined`, `clientPosition`, `failed`, `quarantineMs` and optional `lastFailure`. Counts cover only this provider's members; `healthy` counts proven working members with live leases and is zero while the group is down. `clientPosition` is the zero-based position in the full group. A down group contributes no usable members to `minHealthyOutbounds`; it introduces no new provider trigger. |
 
 Per outbound:
 

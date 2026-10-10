@@ -99,6 +99,7 @@ type statusView struct {
 	IsMemoryLow  bool                 `json:"is_memory_low"`
 	Queued       int                  `json:"probes_queued"`
 	Running      int                  `json:"probes_running"`
+	Groups       []groupStatusView    `json:"groups,omitempty"`
 	Paths        []pathStatusView     `json:"paths"`
 	Balancers    []balancerStatusView `json:"balancers"`
 	Providers    []providerStatusView `json:"providers,omitempty"`
@@ -108,6 +109,7 @@ type statusView struct {
 
 func (e *engine) status(now time.Time) statusView {
 	v := statusView{
+		Groups:       e.groupViews(now),
 		Network:      e.networkID,
 		IsNetworkUp:  !e.networkDown,
 		Connectivity: e.connectivityState(),

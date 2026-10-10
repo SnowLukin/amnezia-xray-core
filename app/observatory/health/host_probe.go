@@ -111,6 +111,7 @@ func (e *engine) requestProbe(balancer string, outbounds []string, now time.Time
 			tags = append(tags, t)
 		}
 	}
+	tags = s.groupRepresentatives(tags)
 	if len(tags) > limit {
 		return 0, nil, fmt.Errorf("too many outbounds: at most %d", limit)
 	}
@@ -123,7 +124,9 @@ func (e *engine) requestProbe(balancer string, outbounds []string, now time.Time
 		e.requests = append(e.requests, r)
 	}
 	for _, t := range tags {
-		if len(r.items) < limit && !slices.ContainsFunc(r.items, func(it probeItem) bool { return it.tag == t }) {
+		if len(r.items) < limit && !slices.ContainsFunc(r.items, func(it probeItem) bool {
+			return it.tag == t || (s.groupFor(t) != nil && s.groupFor(t) == s.groupFor(it.tag))
+		}) {
 			r.items = append(r.items, probeItem{tag: t, result: probePending})
 		}
 	}
@@ -149,11 +152,31 @@ func (e *engine) probePlan(s *selector, now time.Time) []string {
 		plan = append(plan, cur)
 	}
 	plan = append(plan, e.ranked(s, now, skip)...)
-	for _, t := range e.ranked(s, time.Unix(1<<40, 0), skip) {
-		if e.path(t).quarantined(now) {
+	var resting []string
+	if len(s.groups) == 0 {
+		resting = e.ranked(s, time.Unix(1<<40, 0), skip)
+	} else {
+		resting = e.groupOrder(s, time.Unix(1<<40, 0), skip, reasonHost)
+	}
+	representatives := map[*outboundGroup]string{}
+	for _, t := range resting {
+		if g := s.groupFor(t); g != nil && g.down {
+			previous := representatives[g]
+			if previous == "" || (e.path(previous).quarantined(now) && !e.path(t).quarantined(now)) {
+				representatives[g] = t
+			}
+		}
+	}
+	for _, t := range resting {
+		if g := s.groupFor(t); g != nil && g.down {
+			if representatives[g] == t {
+				plan = append(plan, t)
+			}
+		} else if e.path(t).quarantined(now) {
 			plan = append(plan, t)
 		}
 	}
+	plan = s.groupRepresentatives(plan)
 	return plan[:min(len(plan), e.s.schedule.hostProbes.maxOutbounds)]
 }
 
@@ -213,6 +236,9 @@ func (e *engine) serve(s *selector, r *probeRequest, now time.Time) bool {
 		}
 		p := e.path(it.tag)
 		switch {
+		case s.groupDown(it.tag) && now.Before(s.groupFor(it.tag).until):
+			g := s.groupFor(it.tag)
+			it.result, it.source, it.rest = probeDown, "group_quarantine", max(g.until.Sub(now), 0)
 		case p.quarantined(now):
 			it.result, it.source, it.rest = probeDown, "quarantine", p.quarantineUntil.Sub(now)
 		case p.status == statusUp && now.Sub(p.lastSuccess) < hp.reuse:

@@ -120,6 +120,7 @@ func newObserver(ctx context.Context, config *Config) *Observer {
 	var id [8]byte
 	_, _ = rand.Read(id[:])
 	o.run = hex.EncodeToString(id[:])
+	o.e.run = o.run
 	o.runCtx, o.stopRun = context.WithCancel(ctx)
 	o.newHandler = o.createHandler
 	o.e.report.begin(o.clock())

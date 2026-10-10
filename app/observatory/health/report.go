@@ -19,7 +19,7 @@ var startReasons = []string{"start", "start_pinned", "start_remembered", "start_
 
 const (
 	// A report lists at most this many paths, the first ones by tag.
-	reportPaths = 16
+	reportPaths = 64
 	// switch_path keeps this many of the latest switches.
 	reportSwitches = 10
 )
@@ -32,6 +32,7 @@ type reportCounts struct {
 	SwitchReasons           map[string]int64 `json:"switch_reasons"`
 	SwitchPath              []string         `json:"switch_path"`
 	Exhausted               int64            `json:"exhausted_count"`
+	GroupDown               int64            `json:"group_down_count"`
 	PathDown                int64            `json:"path_down_count"`
 	PathSuspect             int64            `json:"path_suspect_count"`
 	PathRescued             int64            `json:"path_rescued_count"`
@@ -88,6 +89,7 @@ type reportView struct {
 	IsBalancerExhausted bool                  `json:"is_balancer_exhausted"`
 	IsNetworkUp         bool                  `json:"is_network_up"`
 	Connectivity        string                `json:"connectivity,omitempty"`
+	Groups              []groupStatusView     `json:"groups,omitempty"`
 	Paths               map[string]reportPath `json:"paths"`
 }
 
@@ -148,6 +150,10 @@ func (r *report) count(typ string, f map[string]any) {
 	case "exhausted":
 		c.Exhausted++
 		r.decide()
+	case "group_state":
+		if f["state"] == "down" {
+			c.GroupDown++
+		}
 	case "path_state":
 		switch f["state"] {
 		case "down":
@@ -325,6 +331,7 @@ func (e *engine) reportView(reason string, now time.Time, take bool) *reportView
 	r := &e.report
 	wall := now.Round(0)
 	v := &reportView{
+		Groups:       e.groupViews(now),
 		Reason:       reason,
 		Index:        r.taken + 1,
 		WindowMs:     wholeMilliseconds(wall.Sub(r.windowStart)),

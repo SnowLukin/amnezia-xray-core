@@ -49,6 +49,10 @@ func foldReport(t *testing.T, raw []byte) (reportCounts, bool) {
 		case "exhausted":
 			c.Exhausted++
 			decided = true
+		case "group_state":
+			if f["state"] == "down" {
+				c.GroupDown++
+			}
 		case "path_state":
 			switch f["state"] {
 			case "down":
@@ -179,6 +183,7 @@ func TestReportAddsUpTheEvents(t *testing.T) {
 	}
 	te.run(t, at(16*time.Minute+2*time.Second), nil)
 	now := at(17 * time.Minute)
+	te.emit(now, "group_state", map[string]any{"balancer": "auto", "group": "a", "state": "down", "members": 3, "failed": 3, "quarantine_ms": int64(30000)})
 	te.emit(now, "pending_closed", map[string]any{"outbound": "a1", "connections": 3, "reason": "traffic"})
 	te.emit(now, "pinned_down", map[string]any{"balancer": "auto", "outbound": "a1"})
 	te.emit(now, "pinned_down", map[string]any{"balancer": "auto", "outbound": "a1", "is_start_pinned": true})
@@ -490,7 +495,7 @@ func TestReportPathsGrowSincePreviousReport(t *testing.T) {
 
 func TestReportListsTheFirstPaths(t *testing.T) {
 	te := newReportEngine(t, reportEvery(time.Second), nil, "a1", "b1")
-	for i := 0; i < 20; i++ {
+	for i := 0; i < reportPaths+4; i++ {
 		te.path(fmt.Sprintf("p%02d", i)).stats.connsOK = 1
 	}
 	failoverEvent(te, at(time.Second))
@@ -498,11 +503,11 @@ func TestReportListsTheFirstPaths(t *testing.T) {
 	if len(v.Paths) != reportPaths {
 		t.Fatalf("%d paths listed, want %d", len(v.Paths), reportPaths)
 	}
-	if _, ok := v.Paths["p13"]; !ok {
-		t.Fatal("p13 is among the first 16 tags and missing")
+	if _, ok := v.Paths[fmt.Sprintf("p%02d", reportPaths-3)]; !ok {
+		t.Fatal("last included path is missing")
 	}
-	if _, ok := v.Paths["p14"]; ok {
-		t.Fatal("p14 is beyond the first 16 tags and listed")
+	if _, ok := v.Paths[fmt.Sprintf("p%02d", reportPaths-2)]; ok {
+		t.Fatal("first excluded path is listed")
 	}
 	// A path left out still starts its growth anew, so dropping a tag later
 	// does not bring its whole history at once.
@@ -511,8 +516,8 @@ func TestReportListsTheFirstPaths(t *testing.T) {
 	}
 	failoverEvent(te, at(3*time.Second))
 	v = te.takeReport(false, at(4*time.Second))
-	if p := v.Paths["p19"]; p.ConnsOK != 0 {
-		t.Fatalf("p19 reports %d connections taken before the previous report", p.ConnsOK)
+	if p := v.Paths[fmt.Sprintf("p%02d", reportPaths+3)]; p.ConnsOK != 0 {
+		t.Fatalf("last path reports %d connections taken before the previous report", p.ConnsOK)
 	}
 }
 

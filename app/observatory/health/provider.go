@@ -394,7 +394,7 @@ func (e *engine) wantedRefresh(p *provider, now time.Time) ([triggerCount]bool, 
 func (e *engine) healthy(s *selector) int {
 	n := 0
 	for _, c := range s.candidates {
-		if e.expired[c] {
+		if e.expired[c] || s.groupDown(c) {
 			continue
 		}
 		p := e.paths[c]
@@ -685,6 +685,13 @@ func (e *engine) replacingTags(tags []string) {
 
 // resetPath forgets what was learned about an outbound whose settings changed.
 func (e *engine) resetPath(tag string, now time.Time) {
+	for _, s := range e.selectors {
+		if g := s.groupFor(tag); g != nil {
+			if g.lastWorking == tag {
+				g.lastWorking = ""
+			}
+		}
+	}
 	// The new settings may point to another server.
 	e.lastServer.Delete(tag)
 	p := e.paths[tag]
