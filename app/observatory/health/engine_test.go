@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"google.golang.org/protobuf/proto"
 )
 
 var t0 = time.Unix(1_800_000_000, 0)
@@ -42,15 +44,15 @@ func newSeededTestEngine(t *testing.T, seed int64, cfg *Config, sc *SelectorConf
 }
 
 func fixtureSelector(sc *SelectorConfig, candidates []string) *SelectorConfig {
-	copySC := *sc
+	copySC := proto.Clone(sc).(*SelectorConfig)
 	copySC.Paths = nil
 	for _, candidate := range candidates {
 		for _, spec := range sc.Paths {
 			if strings.Contains(candidate, spec.Tag) {
-				path := *spec
+				path := proto.Clone(spec).(*PathDefinition)
 				path.Tag = candidate
 				path.Balancer = "auto"
-				copySC.Paths = append(copySC.Paths, &path)
+				copySC.Paths = append(copySC.Paths, path)
 				break
 			}
 		}
@@ -58,7 +60,7 @@ func fixtureSelector(sc *SelectorConfig, candidates []string) *SelectorConfig {
 			copySC.Paths = append(copySC.Paths, &PathDefinition{Tag: candidate, Balancer: "auto", Cost: 1})
 		}
 	}
-	return &copySC
+	return copySC
 }
 
 // fail reports a failure of a new user connection.

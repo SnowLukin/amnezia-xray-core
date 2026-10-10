@@ -10,6 +10,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"google.golang.org/protobuf/proto"
 )
 
 type probeReason int
@@ -632,7 +634,7 @@ func (e *engine) addSelector(tag string, cfg *selectorSettings) *selector {
 	if len(e.providers) > 0 {
 		cfg.baseOrder = slices.Clone(e.s.baseOrder[tag])
 		if cfg.raw != nil {
-			base := *cfg.raw
+			base := proto.Clone(cfg.raw).(*SelectorConfig)
 			base.Paths, base.Groups = nil, nil
 			baseTags := map[string]bool{}
 			baseGroups := map[string]bool{}
@@ -650,7 +652,7 @@ func (e *engine) addSelector(tag string, cfg *selectorSettings) *selector {
 					base.Groups = append(base.Groups, group)
 				}
 			}
-			baseRaw = &base
+			baseRaw = base
 		}
 	} else {
 		cfg.baseOrder = slices.DeleteFunc(cfg.baseOrder, func(path string) bool { return providerTags[path] })
