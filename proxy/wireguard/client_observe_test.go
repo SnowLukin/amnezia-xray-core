@@ -154,12 +154,12 @@ func (r *testRelay) waitQuiet(t testing.TB, d time.Duration) {
 // suspect, so the observer ends no connection of the tests.
 func testPassive() *health.PassiveConfig {
 	return &health.PassiveConfig{
-		DialTimeout:      int64(8 * time.Second),
-		FirstByteTimeout: int64(10 * time.Second),
-		StallTimeout:     int64(10 * time.Second),
-		SuccessBytes:     testSuccessBytes,
-		SweepInterval:    int64(50 * time.Millisecond),
-		Failures:         100,
+		DialTimeout:       int64(8 * time.Second),
+		FirstByteTimeout:  int64(10 * time.Second),
+		StallTimeout:      int64(10 * time.Second),
+		SuccessBytes:      testSuccessBytes,
+		SweepInterval:     int64(50 * time.Millisecond),
+		FailuresToSuspect: 100,
 	}
 }
 
