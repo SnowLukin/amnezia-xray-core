@@ -41,7 +41,7 @@ func setEngine(t *testing.T) *testEngine {
 	t.Helper()
 	te := newProviderEngine(t, quietProvider(func(p *ProviderConfig) {
 		p.Limits.ExhaustedMinInterval = int64(time.Second)
-	}), &SelectorConfig{Costs: costs("p-x1", 1, "p-x2", 3, "p-x3", 5), SkipProbeBeforeSwitch: true},
+	}), &SelectorConfig{Paths: pathSpecs("p-x1", 1, "p-x2", 3, "p-x3", 5), SkipProbeBeforeSwitch: true},
 		"p-x1", "p-x2", "p-x3")
 	te.applyProviderSet(te.prov(), providerChange{tags: []string{"p-x2", "p-x1", "p-x3"}}, t0)
 	return te
@@ -133,7 +133,7 @@ func TestRequestProbeIsDatedByItsResult(t *testing.T) {
 // The balancer on an outbound of another provider or of the config is no
 // business of the backend: it learns only that its outbounds are not chosen.
 func TestRequestBodyHidesAPathOfOthers(t *testing.T) {
-	te := newProviderEngine(t, quietProvider(nil), &SelectorConfig{Costs: costs("a", 1, "p-", 5)}, "a1", "p-x1")
+	te := newProviderEngine(t, quietProvider(nil), &SelectorConfig{Paths: pathSpecs("a", 1, "p-", 5)}, "a1", "p-x1")
 	te.applyProviderSet(te.prov(), providerChange{tags: []string{"p-x1"}}, t0)
 	m, body, _ := requestOf(t, te, at(time.Second))
 	b := m["balancer"].(map[string]any)
@@ -228,7 +228,7 @@ func TestRequestBodyBounded(t *testing.T) {
 		tags = append(tags, "p-"+tag)
 		chosen += len(tag)
 	}
-	te := newProviderEngine(t, quietProvider(nil), &SelectorConfig{Costs: costs("p-", 1)}, tags...)
+	te := newProviderEngine(t, quietProvider(nil), &SelectorConfig{Paths: pathSpecs("p-", 1)}, tags...)
 	te.applyProviderSet(te.prov(), providerChange{tags: tags}, t0)
 	for _, tag := range tags {
 		p := te.path(tag)

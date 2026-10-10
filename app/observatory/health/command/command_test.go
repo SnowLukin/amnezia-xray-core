@@ -43,14 +43,14 @@ func service(t *testing.T, config string) (command.HealthServiceServer, *core.In
 
 func TestGetReport(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(`{"outbounds": [{"tag": "x1", "protocol": "freedom"}]}`))
+		_, _ = w.Write([]byte(`{"outbounds": [{"tag": "x1", "protocol": "freedom", "path":{"balancer":"auto","cost":1}}]}`))
 	}))
 	defer ts.Close()
 	s, inst := service(t, `{
 	  "log": {"loglevel": "none"},
 	  "outbounds": [{"tag": "direct", "protocol": "freedom"}, {"tag": "block", "protocol": "blackhole"}],
-	  "routing": {"balancers": [{"tag": "auto", "selector": ["p-"], "strategy": {"type": "leastCost"}, "fallbackTag": "block"}]},
-	  "healthObservatory": {"subjectSelector": ["p-"], "providers": [{
+	  "routing": {"balancers": [{"tag": "auto", "strategy": {"type": "leastCost"}, "fallbackTag": "block"}]},
+	  "healthObservatory": {"providers": [{
 	    "tag": "fresh", "url": "`+ts.URL+`", "via": ["direct"], "isPlainHttpAllowed": true,
 	    "triggers": {"interval": "0s", "minHealthyOutbounds": 0, "shouldRefreshWhenExhausted": false, "maxAge": "0s", "networkChangeMode": "never"},
 	    "apply": {"balancer": "auto", "tagPrefix": "p-", "allowedProtocols": ["freedom"]}}]}
@@ -122,12 +122,12 @@ func TestProbe(t *testing.T) {
 	}()
 	s, inst := service(t, `{
 	  "log": {"loglevel": "none"},
-	  "outbounds": [{"tag": "drop", "protocol": "blackhole"}, {"tag": "a1", "protocol": "freedom"},
-	    {"tag": "b1", "protocol": "freedom", "settings": {"redirect": "`+silent.Addr().String()+`"}}],
+	  "outbounds": [{"tag": "drop", "protocol": "blackhole"}, {"tag": "a1", "protocol": "freedom", "path":{"balancer":"auto","cost":1,"probe":"check"}},
+	    {"tag": "b1", "protocol": "freedom", "settings": {"redirect": "`+silent.Addr().String()+`"}, "path":{"balancer":"auto","cost":3,"probe":"check"}}],
 	  "routing": {"rules": [{"domain": ["full:a.test"], "balancerTag": "auto"}],
-	    "balancers": [{"tag": "auto", "selector": ["a", "b"], "strategy": {"type": "leastCost"}, "fallbackTag": "drop"}]},
-	  "healthObservatory": {"subjectSelector": ["a", "b"], "schedule": {"spacing": "10ms"},
-	    "probes": [{"destination": "`+ts.URL+`/204", "timeout": "3s", "progressTimeout": "1s"}]}
+	    "balancers": [{"tag": "auto", "strategy": {"type": "leastCost"}, "fallbackTag": "drop"}]},
+	  "healthObservatory": {"schedule": {"minProbeInterval": "10ms"},
+	    "probes": [{"name":"check","destination": "`+ts.URL+`/204", "timeout": "3s", "progressTimeout": "1s"}]}
 	}`)
 	r := inst.GetFeature(routing.RouterType()).(routing.Router)
 	if _, err := r.PickRoute(routing_session.AsRoutingContext(session.ContextWithOutbounds(context.Background(),
@@ -197,8 +197,8 @@ func TestSetProviderHeaders(t *testing.T) {
 	s, inst := service(t, `{
 	  "log": {"loglevel": "none"},
 	  "outbounds": [{"tag": "direct", "protocol": "freedom"}, {"tag": "block", "protocol": "blackhole"}],
-	  "routing": {"balancers": [{"tag": "auto", "selector": ["p-"], "strategy": {"type": "leastCost"}, "fallbackTag": "block"}]},
-	  "healthObservatory": {"subjectSelector": ["p-"], "providers": [{
+	  "routing": {"balancers": [{"tag": "auto", "strategy": {"type": "leastCost"}, "fallbackTag": "block"}]},
+	  "healthObservatory": {"providers": [{
 	    "tag": "fresh", "url": "https://provider.test/set", "headers": {"Authorization": "Bearer config"},
 	    "triggers": {"interval": "0s", "minHealthyOutbounds": 0, "shouldRefreshWhenExhausted": false, "maxAge": "0s", "networkChangeMode": "never"},
 	    "apply": {"balancer": "auto", "tagPrefix": "p-"}}]}
@@ -243,15 +243,15 @@ func TestSetProviderHeadersWithoutObservatory(t *testing.T) {
 
 func TestGetProviderSet(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(`{"version": "v1", "outbounds": [{"tag": "x1", "protocol": "freedom"}],
+		_, _ = w.Write([]byte(`{"version": "v1", "outbounds": [{"tag": "x1", "protocol": "freedom", "path":{"balancer":"auto","cost":1}}],
 		  "headers": {"Authorization": "Bearer t2"}}`))
 	}))
 	defer ts.Close()
 	s, inst := service(t, `{
 	  "log": {"loglevel": "none"},
 	  "outbounds": [{"tag": "direct", "protocol": "freedom"}, {"tag": "block", "protocol": "blackhole"}],
-	  "routing": {"balancers": [{"tag": "auto", "selector": ["p-"], "strategy": {"type": "leastCost"}, "fallbackTag": "block"}]},
-	  "healthObservatory": {"subjectSelector": ["p-"], "providers": [{
+	  "routing": {"balancers": [{"tag": "auto", "strategy": {"type": "leastCost"}, "fallbackTag": "block"}]},
+	  "healthObservatory": {"providers": [{
 	    "tag": "fresh", "url": "`+ts.URL+`", "via": ["direct"], "isPlainHttpAllowed": true,
 	    "triggers": {"interval": "0s", "minHealthyOutbounds": 0, "shouldRefreshWhenExhausted": false, "maxAge": "0s", "networkChangeMode": "never"},
 	    "apply": {"balancer": "auto", "tagPrefix": "p-", "allowedProtocols": ["freedom"]}}]}

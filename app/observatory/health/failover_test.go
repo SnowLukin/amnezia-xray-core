@@ -46,7 +46,7 @@ func jobOf(t *testing.T, jobs []*probeJob, tag string) *probeJob {
 // a1 is chosen and dies; a2 is as cheap, b1 dearer, each behind a server name of its own.
 func failoverOfThree(t *testing.T, concurrent int) (*testEngine, []*probeJob) {
 	t.Helper()
-	te := newTestEngine(t, parallelConfig(concurrent), &SelectorConfig{Costs: costs("a", 1, "b", 3)}, "a1", "a2", "b1")
+	te := newTestEngine(t, parallelConfig(concurrent), &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3)}, "a1", "a2", "b1")
 	te.serverNames(map[string]string{"a1": "a1.example", "a2": "a2.example", "b1": "b1.example"})
 	te.failN(3, "a1", failDial, at(0))
 	jobs, _ := te.tick(at(time.Second))
@@ -54,7 +54,7 @@ func failoverOfThree(t *testing.T, concurrent int) (*testEngine, []*probeJob) {
 }
 
 func TestFailoverProbesCandidatesOfDifferentServerNamesTogether(t *testing.T) {
-	te := newTestEngine(t, parallelConfig(2), &SelectorConfig{Costs: costs("a", 1, "b", 3, "c", 5)}, "a1", "a2", "b1", "c1")
+	te := newTestEngine(t, parallelConfig(2), &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3, "c", 5)}, "a1", "a2", "b1", "c1")
 	te.serverNames(map[string]string{"a1": "a1.example", "a2": "a2.example", "b1": "b1.example", "c1": "c1.example"})
 	te.failN(3, "a1", failDial, at(0))
 	te.events.drain()
@@ -82,7 +82,7 @@ func TestOneServerNameIsNeverProbedTwiceAtOnce(t *testing.T) {
 	cfg := parallelConfig(2)
 	// Room in the budget of the server name for the probes of the host too.
 	cfg.Schedule.ProbesPerServerNamePerMinute = 10
-	te := newTestEngine(t, cfg, &SelectorConfig{Costs: costs("a", 1, "b", 3)}, "a1", "a2", "a3", "b1")
+	te := newTestEngine(t, cfg, &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3)}, "a1", "a2", "a3", "b1")
 	te.serverNames(map[string]string{"a1": "r.example", "a2": "r.example", "a3": "r.example", "b1": "b.example"})
 	suspectWeak(te, "a1", 0)
 	jobs, _ := te.tick(at(3 * time.Second))
@@ -207,7 +207,7 @@ func TestOneProbeAtATimeTriesCandidatesInTurn(t *testing.T) {
 func TestOneProbeAtATimeKeepsTheTurnOfACandidateWaitingForItsBudget(t *testing.T) {
 	cfg := parallelConfig(1)
 	cfg.Schedule.ProbesPerServerNamePerMinute = 1
-	te := newTestEngine(t, cfg, &SelectorConfig{Costs: costs("a", 1, "b", 3)}, "a1", "a2", "b1")
+	te := newTestEngine(t, cfg, &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3)}, "a1", "a2", "b1")
 	te.serverNames(map[string]string{"a1": "r.example", "a2": "r.example", "b1": "b1.example"})
 	suspectWeak(te, "a1", 0)
 	jobs, _ := te.tick(at(3 * time.Second))
@@ -229,7 +229,8 @@ func TestOneProbeAtATimeKeepsTheTurnOfACandidateWaitingForItsBudget(t *testing.T
 }
 
 func TestLazyCandidateWaitsForEverythingCheaperInParallel(t *testing.T) {
-	sc := &SelectorConfig{Costs: costs("a", 1, "b", 3, "c", 50), LazyOutbounds: []string{"c"}}
+	sc := &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3, "c", 50)}
+	sc.Paths[2].IsLazy = true
 	te := newTestEngine(t, parallelConfig(3), sc, "a1", "a2", "b1", "c1")
 	te.serverNames(map[string]string{"a1": "a1.example", "a2": "a2.example", "b1": "b1.example", "c1": "c1.example"})
 	te.failN(3, "a1", failDial, at(0))
@@ -250,7 +251,7 @@ func TestLazyCandidateWaitsForEverythingCheaperInParallel(t *testing.T) {
 // The host pins the outbound the balancer is leaving while a candidate is
 // probed: the answer of that probe does not move the balancer off the pin.
 func TestPinDuringFailoverProbeHolds(t *testing.T) {
-	te := newTestEngine(t, nil, &SelectorConfig{Costs: costs("a", 1, "b", 3)}, "a1", "b1")
+	te := newTestEngine(t, nil, &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3)}, "a1", "b1")
 	te.failN(3, "a1", failDial, at(0))
 	jobs, _ := te.tick(at(time.Second))
 	if len(jobs) != 1 || jobs[0].tag != "b1" {
@@ -286,7 +287,7 @@ func TestPinDuringReturnProbeHolds(t *testing.T) {
 func TestPinDropsWaitingFailoverProbes(t *testing.T) {
 	cfg := parallelConfig(2)
 	cfg.Schedule.ProbesPerMinute = 1
-	te := newTestEngine(t, cfg, &SelectorConfig{Costs: costs("a", 1, "b", 3)}, "a1", "a2", "b1")
+	te := newTestEngine(t, cfg, &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3)}, "a1", "a2", "b1")
 	te.serverNames(map[string]string{"a1": "a1.example", "a2": "a2.example", "b1": "b1.example"})
 	te.failN(3, "a1", failDial, at(0))
 	if jobs, _ := te.tick(at(time.Second)); !slices.Equal(jobTags(jobs), []string{"a2"}) {
@@ -303,7 +304,7 @@ func TestPinDropsWaitingFailoverProbes(t *testing.T) {
 func TestWaitingCandidateIsDroppedAfterTheSwitch(t *testing.T) {
 	cfg := parallelConfig(2)
 	cfg.Schedule.ProbesPerMinute = 1
-	te := newTestEngine(t, cfg, &SelectorConfig{Costs: costs("a", 1, "b", 3)}, "a1", "a2", "b1")
+	te := newTestEngine(t, cfg, &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3)}, "a1", "a2", "b1")
 	te.serverNames(map[string]string{"a1": "a1.example", "a2": "a2.example", "b1": "b1.example"})
 	te.failN(3, "a1", failDial, at(0))
 	jobs, _ := te.tick(at(time.Second))
@@ -396,7 +397,7 @@ func brief(t *testing.T, te *testEngine) []string {
 // the balancer once its candidate passes, and the return to a1 comes soon
 // after minHoldTime.
 func TestConfirmingProbeThatPassesAfterTheDownRescuesThePath(t *testing.T) {
-	te := newTestEngine(t, connectivityConfig(), &SelectorConfig{Costs: costs("a", 1, "b", 3)}, "a1", "b1")
+	te := newTestEngine(t, connectivityConfig(), &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3)}, "a1", "b1")
 	confirm := confirmRunning(t, te)
 	decided := te.path("a1").lastProbe.Add(time.Second)
 	strongDown(t, te, decided)
@@ -450,7 +451,7 @@ func TestConfirmingProbeThatPassesAfterTheDownRescuesThePath(t *testing.T) {
 // proof against the down, even when it passes: the one waiting for its turn
 // is dropped, and one that starts later changes nothing.
 func TestProbeStartedAfterTheDownRescuesNothing(t *testing.T) {
-	te := newTestEngine(t, nil, &SelectorConfig{Costs: costs("a", 1, "b", 3)}, "a1", "b1")
+	te := newTestEngine(t, nil, &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3)}, "a1", "b1")
 	suspectWeak(te, "a1", 0)
 	if !te.queued("a1", reasonConfirm) {
 		t.Fatal("setup: no confirming probe queued")
@@ -476,7 +477,7 @@ func TestProbeStartedAfterTheDownRescuesNothing(t *testing.T) {
 
 // A confirming probe that fails after the down only agrees with it.
 func TestFailedConfirmingProbeAfterTheDownRescuesNothing(t *testing.T) {
-	te := newTestEngine(t, nil, &SelectorConfig{Costs: costs("a", 1, "b", 3)}, "a1", "b1")
+	te := newTestEngine(t, nil, &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3)}, "a1", "b1")
 	confirm := confirmRunning(t, te)
 	strongDown(t, te, at(3*time.Second))
 	until := te.path("a1").quarantineUntil
@@ -495,7 +496,7 @@ func TestFailedConfirmingProbeAfterTheDownRescuesNothing(t *testing.T) {
 // A confirming probe made in the previous network proves nothing about this
 // one, even when it passes after the outbound went down there.
 func TestConfirmingProbeOfThePreviousNetworkRescuesNothing(t *testing.T) {
-	te := newTestEngine(t, nil, &SelectorConfig{Costs: costs("a", 1, "b", 3)}, "a1", "b1")
+	te := newTestEngine(t, nil, &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3)}, "a1", "b1")
 	confirm := confirmRunning(t, te)
 	strongDown(t, te, at(3*time.Second))
 	te.onNetworkChange("lte", at(3500*time.Millisecond))
@@ -512,7 +513,7 @@ func TestConfirmingProbeOfThePreviousNetworkRescuesNothing(t *testing.T) {
 // A false down does not grow the next quarantine: the rescue puts the level
 // back where it was, and the next real down rests as long as this one did.
 func TestRescueRestoresTheQuarantineLevel(t *testing.T) {
-	te := newTestEngine(t, nil, &SelectorConfig{Costs: costs("a", 1, "b", 3)}, "a1", "b1")
+	te := newTestEngine(t, nil, &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3)}, "a1", "b1")
 	// a1 rested twice before and was chosen again; nothing proved it since.
 	te.path("a1").quarantineLevel = 2
 	confirm := confirmRunning(t, te)
@@ -592,7 +593,7 @@ func TestRescueLeavesTheBalancerWhereItMoved(t *testing.T) {
 func TestRescueBringsAnExhaustedBalancerBack(t *testing.T) {
 	for _, low := range []bool{false, true} {
 		t.Run(fmt.Sprintf("memory low %v", low), func(t *testing.T) {
-			te := newTestEngine(t, nil, &SelectorConfig{Costs: costs("a", 1)}, "a1")
+			te := newTestEngine(t, nil, &SelectorConfig{Paths: pathSpecs("a", 1)}, "a1")
 			te.setMemoryLow(low, t0)
 			confirm := confirmRunning(t, te)
 			strongDown(t, te, at(3*time.Second))
@@ -616,7 +617,7 @@ func TestRescueBringsAnExhaustedBalancerBack(t *testing.T) {
 // outbound that left its provider set comes up but is taken by no balancer.
 func TestRescueAndWhatHoldsTheOutbound(t *testing.T) {
 	t.Run("pinned", func(t *testing.T) {
-		te := newTestEngine(t, nil, &SelectorConfig{Costs: costs("a", 1, "b", 3)}, "a1", "b1")
+		te := newTestEngine(t, nil, &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3)}, "a1", "b1")
 		te.pin("auto", "a1", t0)
 		confirm := confirmRunning(t, te)
 		strongDown(t, te, at(3*time.Second))
@@ -629,7 +630,7 @@ func TestRescueAndWhatHoldsTheOutbound(t *testing.T) {
 		}
 	})
 	t.Run("provisional", func(t *testing.T) {
-		te := newTestEngine(t, connectivityConfig(), &SelectorConfig{Costs: costs("a", 1, "b", 3)}, "a1", "b1")
+		te := newTestEngine(t, connectivityConfig(), &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3)}, "a1", "b1")
 		te.doubt = true
 		confirm := confirmRunning(t, te)
 		strongDown(t, te, at(3*time.Second))
@@ -642,7 +643,7 @@ func TestRescueAndWhatHoldsTheOutbound(t *testing.T) {
 		}
 	})
 	t.Run("retired", func(t *testing.T) {
-		te := newTestEngine(t, nil, &SelectorConfig{Costs: costs("a", 1)}, "a1")
+		te := newTestEngine(t, nil, &SelectorConfig{Paths: pathSpecs("a", 1)}, "a1")
 		confirm := confirmRunning(t, te)
 		strongDown(t, te, at(3*time.Second))
 		if !te.sel.exhausted {
@@ -677,7 +678,7 @@ func TestReturnAfterARescueIsSpread(t *testing.T) {
 			waits := map[time.Duration]bool{}
 			const seeds = 8
 			for seed := int64(1); seed <= seeds; seed++ {
-				sc := &SelectorConfig{Costs: costs("a", 1, "b", 3), SkipProbeBeforeSwitch: tc.moved,
+				sc := &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3), SkipProbeBeforeSwitch: tc.moved,
 					ReturnToCheaper: &ReturnToCheaperConfig{SkipRandomPhase: tc.fixed}}
 				te := newSeededTestEngine(t, seed, nil, sc, "a1", "b1")
 				confirm := confirmRunning(t, te)

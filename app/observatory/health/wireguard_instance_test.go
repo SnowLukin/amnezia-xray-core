@@ -194,7 +194,11 @@ func startWireGuardWith(t *testing.T, ts *httptest.Server, passive, probe, more 
 	server := "127.0.0.1:" + strconv.Itoa(port)
 	f := &wireGuardFailover{w1: startUDPGate(t, server), w2: startUDPGate(t, server)}
 	outbound := func(tag, priv, addr, endpoint string) string {
-		return `{"tag": "` + tag + `", "protocol": "wireguard", "settings": {"secretKey": "` + priv + `",
+		cost := "1"
+		if tag == "w2" {
+			cost = "2"
+		}
+		return `{"tag": "` + tag + `", "protocol": "wireguard", "path": {"balancer": "auto", "cost": ` + cost + `, "probe": "wg"}, "settings": {"secretKey": "` + priv + `",
 		  "address": ["` + addr + `/32"], "noKernelTun": true,
 		  "peers": [{"publicKey": "` + serverPub + `", "endpoint": "` + endpoint + `", "allowedIPs": ["0.0.0.0/0"]}]}}`
 	}
@@ -213,12 +217,11 @@ func startWireGuardWith(t *testing.T, ts *httptest.Server, passive, probe, more 
 	  ],
 	  "routing": {"rules": [{"inboundTag": ["server"], "outboundTag": "behind"},
 	                        {"ip": ["10.10.0.0/24"], "balancerTag": "auto"}],
-	    "balancers": [{"tag": "auto", "selector": ["w"], "fallbackTag": "block",
-	      "strategy": {"type": "leastCost", "settings": {"costs": [{"match": "w1", "cost": 1}, {"match": "w2", "cost": 2}]}}}]},
+	    "balancers": [{"tag": "auto", "fallbackTag": "block",
+	      "strategy": {"type": "leastCost", "settings": {}}}]},
 	  "healthObservatory": {
-	    "subjectSelector": ["w"],
 	    "passive": `+passive+`,
-	    "probes": [`+probe+`],
+	    "probes": [`+strings.Replace(probe, `{`, `{"name":"wg",`, 1)+`],
 	    "schedule": {"minProbeInterval": "10ms", "suspectCooldown": "1s", "hostProbes": {"reuseWindow": "1ms"}}`+more+`
 	  }
 	}`))

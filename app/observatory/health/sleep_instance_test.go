@@ -23,7 +23,7 @@ func wireGuardCore(t *testing.T) *core.Instance {
 		"outbounds": [{"tag": "a1", "protocol": "freedom"},
 		  {"tag": "w1", "protocol": "wireguard", "settings": {"secretKey": "`+key+`", "address": ["10.0.0.2/32"],
 		    "noKernelTun": true, "peers": [{"publicKey": "`+key+`", "endpoint": "127.0.0.1:9"}]}}],
-		"healthObservatory": {"subjectSelector": ["a", "w"]}}`))
+		"healthObservatory": {}}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -54,10 +54,8 @@ func TestWireGuardOutboundsCanSleep(t *testing.T) {
 	}
 }
 
-// A connection routed straight at a WireGuard outbound, which no balancer
-// chooses and the observer sees no dial of, reaches the observer through
-// the handler: the outbound is in use from then on.
-func TestWireGuardConnectionReachesTheObserver(t *testing.T) {
+// A direct connection does not make an outbound without path observable.
+func TestWireGuardWithoutPathStaysOutsideTheObserver(t *testing.T) {
 	inst := wireGuardCore(t)
 	obs := health.FromInstance(inst)
 	seen := func() bool {
@@ -84,7 +82,7 @@ func TestWireGuardConnectionReachesTheObserver(t *testing.T) {
 	r, w := pipe.New()
 	ctx := session.ContextWithOutbounds(context.Background(), []*session.Outbound{{}})
 	inst.GetFeature(outbound.ManagerType()).(outbound.Manager).GetHandler("w1").Dispatch(ctx, &transport.Link{Reader: r, Writer: w})
-	if !seen() {
-		t.Fatal("a connection through w1 did not reach the observer")
+	if seen() {
+		t.Fatal("a connection through w1 made an outbound without path observable")
 	}
 }

@@ -6,8 +6,8 @@ of subnets A..F, relay-07..relay-12 the second, and so on. A relay address
 uses TCP/TLS and the same SNI as every other relay address. CDN uses WebSocket
 and another SNI. The proxy can block each address independently.
 
-BENCH_GROUPS=0 records the old behavior without group assertions or time
-limits. BENCH_GROUPS=1 adds a group cost entry and checks the spec's outcomes.
+BENCH_GROUPS=0 records independent paths. BENCH_GROUPS=1 groups relay
+addresses and checks the spec's outcomes.
 """
 
 import json
@@ -25,6 +25,7 @@ K = 3
 RELAY = [f"relay-{i:02d}" for i in range(1, RELAY_COUNT + 1)]
 CDN = "cdn-01"
 MEMBERS = [(tag, "tcp_tls", i) for i, tag in enumerate(RELAY)] + [(CDN, "ws", 0)]
+PATH_COSTS = {tag: 1 for tag in RELAY} | {CDN: 3}
 ALL = []
 
 
@@ -39,15 +40,18 @@ def check(name, value, ok, limit):
 
 def config():
     cfg = bench.client_config(
-        MEMBERS, {"relay-": 1, "cdn-": 3},
+        MEMBERS, PATH_COSTS,
         health={"schedule": {"quarantine": {"initialDelay": "12s", "jitterFraction": 0.0}}},
         strategy={"confirmWithProbe": "never", "minHoldTime": "1s", "returnToCheaper": {
             "interval": "3s", "hasRandomPhase": False,
             "probeInterval": "3s", "probesToReturn": 1}},
     )
     if GROUPS:
-        cfg["routing"]["balancers"][0]["strategy"]["settings"]["costs"][0]["group"] = {
-            "failedInRowToLeave": K}
+        cfg["routing"]["balancers"][0]["strategy"]["settings"]["groups"] = [
+            {"name": "relay", "cost": 1, "probe": "default", "failedInRowToLeave": K}]
+        for outbound in cfg["outbounds"]:
+            if outbound.get("tag") in RELAY:
+                outbound["path"] = {"balancer": "auto", "group": "relay"}
     return cfg
 
 
@@ -95,7 +99,7 @@ def first_switch(c, since, timeout):
 
 def group_events(events, since, state=None):
     return [e for e in events_between(events, "group_state", since)
-            if e["fields"].get("group") == "relay-"
+            if e["fields"].get("group") == "relay"
             and (state is None or e["fields"].get("state") == state)]
 
 
@@ -552,4 +556,37 @@ def group_spread(stand, xray, work, name):
     else:
         checks.append(check("baseline occupancy", f"{occupied} positions, max {maximum}", True,
                             "info; group hashing absent"))
+    return checks
+
+
+@scenario
+def group_declared_order(stand, xray, work, name):
+    if not GROUPS:
+        return [check("declared order applies in grouped run", "baseline", True, "info")]
+    checks = []
+    for label, order in (("ten-first", ["relay-10", "relay-1", "relay-2"]),
+                         ("two-first", ["relay-2", "relay-10", "relay-1"])):
+        stand.reset()
+        members = [(tag, "tcp_tls", i) for i, tag in enumerate(order)]
+        cfg = bench.client_config(members, {tag: 1 for tag in order}, strategy={
+            "startOutbound": order[0], "confirmWithProbe": "never", "minHoldTime": "0s",
+            "groups": [{"name": "relay", "cost": 1, "probe": "default", "failedInRowToLeave": 3}]})
+        for item in cfg["outbounds"]:
+            if item.get("tag") in order:
+                item["path"] = {"balancer": "auto", "group": "relay"}
+        with bench.Client(xray, cfg, work, f"{name}-{label}") as client:
+            traffic = bench.Traffic(rate=2, big=0)
+            traffic.start()
+            time.sleep(3)
+            initial = client.status()["balancers"][0]["active"]
+            mark = time.time()
+            bench.chaos(str(bench.address_port("tcp_tls", 0)), "blackhole")
+            switch = first_switch(client, mark, 20)
+            traffic.stop()
+        expected = order[1]
+        actual = switch["fields"].get("to") if switch else None
+        checks.extend([
+            check(f"{label}: starts at declared first", initial, initial == order[0], order[0]),
+            check(f"{label}: failover follows declared next", actual, actual == expected, expected),
+        ])
     return checks

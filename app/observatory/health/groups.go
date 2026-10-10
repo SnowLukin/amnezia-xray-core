@@ -24,21 +24,15 @@ type outboundGroup struct {
 }
 
 func (s *selectorSettings) groupEntry(tag string) *costEntrySettings {
-	for i := range s.costEntries {
-		c := &s.costEntries[i]
-		if c.matches(tag) {
-			if c.groupLimit > 0 {
-				return c
-			}
-			return nil
-		}
+	if c := s.paths[tag]; c != nil && c.groupLimit > 0 {
+		return c
 	}
 	return nil
 }
 
 func (s *selector) groupFor(tag string) *outboundGroup {
 	if c := s.cfg.groupEntry(tag); c != nil {
-		g := s.groups[c.match]
+		g := s.groups[c.groupName]
 		if g != nil && slices.Contains(g.members, tag) {
 			return g
 		}
@@ -53,25 +47,26 @@ func (s *selector) groupDown(tag string) bool {
 
 func (e *engine) syncGroups(s *selector) {
 	next := map[string]*outboundGroup{}
+	order := []string{}
 	for _, tag := range s.candidates {
 		c := s.cfg.groupEntry(tag)
 		if c == nil {
 			continue
 		}
-		g := next[c.match]
+		g := next[c.groupName]
 		if g == nil {
-			g = s.groups[c.match]
+			g = s.groups[c.groupName]
 			if g == nil || g.limit != c.groupLimit {
-				g = &outboundGroup{name: c.match, limit: c.groupLimit}
+				g = &outboundGroup{name: c.groupName, limit: c.groupLimit}
 			} else {
 				g.members = nil
 			}
-			next[c.match] = g
+			next[c.groupName] = g
+			order = append(order, c.groupName)
 		}
 		g.members = append(g.members, tag)
 	}
 	for _, g := range next {
-		sort.Strings(g.members)
 		g.members = slices.Compact(g.members)
 		sum := sha256.Sum256([]byte(e.run + "\x00" + g.name))
 		g.position = int(binary.BigEndian.Uint64(sum[:8]) % uint64(len(g.members)))
@@ -84,6 +79,7 @@ func (e *engine) syncGroups(s *selector) {
 		}
 	}
 	s.groups = next
+	s.groupOrder = order
 }
 
 func (g *outboundGroup) start(s *selector) int {
@@ -107,11 +103,12 @@ func (e *engine) rankedGroups(s *selector, now time.Time, skip func(string) bool
 
 func (e *engine) groupOrder(s *selector, now time.Time, skip func(string) bool, reason probeReason) []string {
 	type item struct {
-		tag, key     string
-		cost         float64
-		expired      bool
-		known, order int
+		tag, key               string
+		cost                   float64
+		expired                bool
+		pathOrder, memberOrder int
 	}
+	first := map[string]int{}
 	items := []item{}
 	for i, t := range s.candidates {
 		if skip != nil && skip(t) {
@@ -122,13 +119,13 @@ func (e *engine) groupOrder(s *selector, now time.Time, skip func(string) bool, 
 		if !p.usable(now) || (g != nil && g.down && reason != reasonRecheck && reason != reasonHost) {
 			continue
 		}
-		it := item{tag: t, key: t, cost: e.cost(s, t), expired: e.expired[t], known: 1, order: i}
-		if p.status == statusUp {
-			it.known = 0
-		}
+		it := item{tag: t, key: t, cost: e.cost(s, t), expired: e.expired[t], pathOrder: i}
 		if g != nil {
-			it.key = g.members[0]
-			it.known = 0
+			it.key = g.name
+			if _, ok := first[g.name]; !ok {
+				first[g.name] = i
+			}
+			it.pathOrder = first[g.name]
 			start := g.start(s)
 			if reason == reasonHost && g.down {
 				start = g.position
@@ -139,7 +136,7 @@ func (e *engine) groupOrder(s *selector, now time.Time, skip func(string) bool, 
 					start = i
 				}
 			}
-			it.order = (slices.Index(g.members, t) - start + len(g.members)) % len(g.members)
+			it.memberOrder = (slices.Index(g.members, t) - start + len(g.members)) % len(g.members)
 		}
 		items = append(items, it)
 	}
@@ -151,13 +148,10 @@ func (e *engine) groupOrder(s *selector, now time.Time, skip func(string) bool, 
 		if a.cost != b.cost {
 			return a.cost < b.cost
 		}
-		if a.known != b.known {
-			return a.known < b.known
+		if a.pathOrder != b.pathOrder {
+			return a.pathOrder < b.pathOrder
 		}
-		if a.key != b.key {
-			return a.key < b.key
-		}
-		return a.order < b.order
+		return a.memberOrder < b.memberOrder
 	})
 	out := make([]string, len(items))
 	for i, it := range items {
@@ -254,12 +248,7 @@ func (e *engine) recheckGroups(s *selector, now time.Time) time.Time {
 		return time.Time{}
 	}
 	var wake time.Time
-	names := make([]string, 0, len(s.groups))
-	for name := range s.groups {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	for _, name := range names {
+	for _, name := range s.groupOrder {
 		g := s.groups[name]
 		if !g.down {
 			continue
@@ -350,12 +339,7 @@ type groupStatusView struct {
 func (e *engine) groupViews(now time.Time) []groupStatusView {
 	var views []groupStatusView
 	for _, s := range e.sortedSelectors() {
-		names := make([]string, 0, len(s.groups))
-		for name := range s.groups {
-			names = append(names, name)
-		}
-		sort.Strings(names)
-		for _, name := range names {
+		for _, name := range s.groupOrder {
 			g := s.groups[name]
 			v := groupStatusView{Balancer: s.tag, Group: g.name, State: "up", Members: len(g.members), ClientPosition: g.position, Failed: g.failed, LastFailure: g.lastFailure}
 			if g.down {

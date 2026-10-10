@@ -251,6 +251,8 @@ def member(tag, kind, index=0, pin=None):
 def plain(cfg, outbound):
     """Turns a client config into one without the mechanism: all traffic to one outbound."""
     del cfg["healthObservatory"]
+    for item in cfg["outbounds"]:
+        item.pop("path", None)
     cfg["api"]["services"] = ["RoutingService", "StatsService"]
     cfg["routing"] = {"rules": [{"inboundTag": ["socks"], "outboundTag": outbound}]}
     return cfg
@@ -269,6 +271,18 @@ def provider_config(via, triggers=None, limits=None, apply=None):
     }
 
 
+def path_members(members, path_costs, balancer="auto"):
+    """Attach an explicitly priced path to each outbound."""
+    result = []
+    for tag, kind, index in members:
+        outbound = member(tag, kind, index, PIN)
+        if tag not in path_costs:
+            raise ValueError(f"bench outbound {tag} has no path cost")
+        outbound["path"] = {"balancer": balancer, "cost": path_costs[tag], "probe": "default"}
+        result.append(outbound)
+    return result
+
+
 def client_config(members, costs, health=None, strategy=None, burst=None, loglevel=LOGLEVEL, providers=None):
     """members: list of (tag, kind, address index)."""
     # direct comes first, so it is the default outbound: traffic that a
@@ -280,7 +294,7 @@ def client_config(members, costs, health=None, strategy=None, burst=None, loglev
     outbounds = [{"tag": "direct", "protocol": "freedom",
                   "settings": {"domainStrategy": "UseIPv4", "finalRules": [{"action": "allow"}]}},
                  {"tag": "net", "protocol": "freedom", "settings": {"finalRules": [{"action": "allow"}]}}]
-    outbounds += [member(t, k, i, PIN) for t, k, i in members]
+    outbounds += path_members(members, costs) if burst is None else [member(t, k, i, PIN) for t, k, i in members]
     outbounds += [{"tag": "block", "protocol": "blackhole"}]
     selectors = [t for t, _, _ in members]
     cfg = {
@@ -302,17 +316,13 @@ def client_config(members, costs, health=None, strategy=None, burst=None, loglev
                                             "fallbackTag": burst["fallback"]})
         cfg["burstObservatory"] = {"subjectSelector": burst["subjects"], "pingConfig": burst["ping"]}
         return cfg
-    settings = {"costs": [{"match": t, "cost": c} for t, c in costs.items()]}
+    settings = {}
     settings.update(strategy or {})
-    subjects = list(selectors)
-    if providers:
-        selectors = selectors + [p["apply"]["tagPrefix"] for p in providers]
-    cfg["routing"]["balancers"].append({"tag": "auto", "selector": selectors,
+    cfg["routing"]["balancers"].append({"tag": "auto",
                                         "strategy": {"type": "leastCost", "settings": settings},
                                         "fallbackTag": "block"})
     h = {
-        "subjectSelector": subjects,
-        "probes": [{"destination": f"http://probe.test:{TARGET_PORT}/bytes/32768", "minBytes": 32768,
+        "probes": [{"name": "default", "destination": f"http://probe.test:{TARGET_PORT}/bytes/32768", "minBytes": 32768,
                     "expectedStatuses": [200], "timeout": f"{PROBE_TIMEOUT}s", "progressTimeout": "3s"}],
         "connectivity": {"outbound": "net", "destination": f"http://{HOST}:{CONNECTIVITY_PORT}/204",
                          "timeout": "2s"},
@@ -326,6 +336,11 @@ def client_config(members, costs, health=None, strategy=None, burst=None, loglev
             h[k] = v
     if providers:
         h["providers"] = providers
+    for probe in h["probes"]:
+        probe.setdefault("name", "default")
+    for outbound in outbounds:
+        if "path" in outbound:
+            outbound["path"].setdefault("probe", "default")
     cfg["healthObservatory"] = h
     return cfg
 
@@ -371,7 +386,7 @@ class Stand:
         specs += [f"udp:{p}:{AWG_PORT}" for p in AWG_ADDRESSES]
         self.procs.append(subprocess.Popen(["python3", os.path.join(HERE, "chaos.py"), str(CHAOS_CONTROL)] + specs,
                                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
-        self.answer([("n1", "reality", 2)])
+        self.answer([("n1", "reality", 2)], {"n1": 1})
         open(self.provider_log, "w").close()
         open(self.provider_bodies_log, "w").close()
         self.procs.append(subprocess.Popen(
@@ -403,14 +418,14 @@ class Stand:
         open(self.provider_bodies_log, "w").close()
         provider_mode("ok")
 
-    def answer(self, members, costs=None, version=None, next_refresh=None, expires=None, server_time=None,
-               base_version=None):
+    def answer(self, members, costs, version=None, next_refresh=None, expires=None, server_time=None,
+               base_version=None, groups=None):
         """Sets what the provider serves: members as (tag, kind, address index).
         expires (by tag) and server_time take "@+Ns", the time of each
         request plus N seconds."""
-        body = {"outbounds": [member(t, k, i, PIN) for t, k, i in members]}
-        if costs:
-            body["costs"] = costs
+        body = {"outbounds": path_members(members, costs)}
+        if groups is not None:
+            body["groups"] = groups
         if version:
             body["version"] = version
         if next_refresh:

@@ -284,7 +284,7 @@ func TestAuthFailureHoldsAllButTheHost(t *testing.T) {
 // fleet refused by a mistake of the backend heals by itself. A lease asked
 // about by the refused refresh is asked about again then.
 func TestAuthRetryOnceAfterTheHold(t *testing.T) {
-	te := leaseEngine(t, nil, &SelectorConfig{Costs: costs("p-", 1)}, "p-x1")
+	te := leaseEngine(t, nil, &SelectorConfig{Paths: pathSpecs("p-", 1)}, "p-x1")
 	te.lease(t0, map[string]time.Duration{"p-x1": time.Minute}, "p-x1")
 	j := expectRefresh(t, te, at(time.Minute), "expiry")
 	if len(j.asked) != 1 {

@@ -142,8 +142,6 @@ type engine struct {
 	// observer is to end stallTimeout later, at most one per outbound.
 	silences []silenceCheck
 
-	// Costs that providers sent for their outbounds, by balancer and outbound.
-	costs map[string]map[string]float64
 	// Outbounds that left a provider set: they keep their connections but
 	// are no longer candidates.
 	retiring map[string]bool
@@ -190,7 +188,6 @@ func newEngine(s *settings, seed int64) *engine {
 		networks:         map[string]map[string]string{},
 		pendingSuspicion: map[string]verdict{},
 		serverNameFor:    func(tag string) string { return tag },
-		costs:            map[string]map[string]float64{},
 		retiring:         map[string]bool{},
 		replacing:        map[string]bool{},
 		expired:          map[string]bool{},
@@ -203,9 +200,6 @@ func newEngine(s *settings, seed int64) *engine {
 }
 
 func (e *engine) cost(s *selector, tag string) float64 {
-	if c, ok := e.costs[s.tag][tag]; ok {
-		return c
-	}
 	return s.cfg.cost(tag)
 }
 
@@ -532,9 +526,11 @@ func (e *engine) markUp(p *path, reason string, now time.Time) {
 // ---- selection --------------------------------------------------------------
 
 type selector struct {
-	tag    string
-	cfg    *selectorSettings
-	groups map[string]*outboundGroup
+	tag        string
+	cfg        *selectorSettings
+	baseRaw    *SelectorConfig
+	groups     map[string]*outboundGroup
+	groupOrder []string
 
 	candidates []string
 	snapshot   atomic.Pointer[[]string]
@@ -597,12 +593,69 @@ func (s *selector) hasCandidate(tag string) bool {
 }
 
 func (e *engine) addSelector(tag string, cfg *selectorSettings) *selector {
+	providerTags := map[string]bool{}
+	for _, p := range e.providers {
+		if p.cfg.balancer != tag {
+			continue
+		}
+		for _, path := range p.pathDefs {
+			providerTags[path.Tag] = true
+		}
+		providerCfg := newSelectorSettings(&SelectorConfig{Paths: p.pathDefs, Groups: p.groupDefs})
+		for pathTag, path := range providerCfg.paths {
+			cfg.paths[pathTag] = path
+		}
+	}
 	if s, ok := e.selectors[tag]; ok {
+		if len(e.providers) == 0 {
+			s.baseRaw = cfg.raw
+		} else {
+			cfg.baseOrder = nil
+			if s.baseRaw != nil {
+				for _, path := range s.baseRaw.Paths {
+					if !providerTags[path.Tag] {
+						cfg.baseOrder = append(cfg.baseOrder, path.Tag)
+					}
+				}
+			}
+		}
+		for pathTag := range e.retiring {
+			if cfg.paths[pathTag] == nil && s.cfg.paths[pathTag] != nil {
+				cfg.paths[pathTag] = s.cfg.paths[pathTag]
+			}
+		}
 		s.cfg = cfg
 		e.syncGroups(s)
 		return s
 	}
-	s := &selector{tag: tag, cfg: cfg, penalty: map[string]float64{}}
+	baseRaw := cfg.raw
+	if len(e.providers) > 0 {
+		cfg.baseOrder = slices.Clone(e.s.baseOrder[tag])
+		if cfg.raw != nil {
+			base := *cfg.raw
+			base.Paths, base.Groups = nil, nil
+			baseTags := map[string]bool{}
+			baseGroups := map[string]bool{}
+			for _, path := range cfg.baseOrder {
+				baseTags[path] = true
+			}
+			for _, path := range cfg.raw.Paths {
+				if baseTags[path.Tag] {
+					base.Paths = append(base.Paths, path)
+					baseGroups[path.Group] = true
+				}
+			}
+			for _, group := range cfg.raw.Groups {
+				if baseGroups[group.Name] {
+					base.Groups = append(base.Groups, group)
+				}
+			}
+			baseRaw = &base
+		}
+	} else {
+		cfg.baseOrder = slices.DeleteFunc(cfg.baseOrder, func(path string) bool { return providerTags[path] })
+	}
+	s := &selector{tag: tag, cfg: cfg, baseRaw: baseRaw, penalty: map[string]float64{}}
 	s.setActive("")
 	e.selectors[tag] = s
 	return s
@@ -631,11 +684,7 @@ func (e *engine) ranked(s *selector, now time.Time, skip func(string) bool) []st
 		if !p.usable(now) {
 			continue
 		}
-		known := 1
-		if p.status == statusUp {
-			known = 0
-		}
-		items = append(items, item{c, e.expired[c], e.cost(s, c), known, i})
+		items = append(items, item{c, e.expired[c], e.cost(s, c), 0, i})
 	}
 	sort.SliceStable(items, func(i, j int) bool {
 		if items[i].expired != items[j].expired {
@@ -643,9 +692,6 @@ func (e *engine) ranked(s *selector, now time.Time, skip func(string) bool) []st
 		}
 		if items[i].cost != items[j].cost {
 			return items[i].cost < items[j].cost
-		}
-		if items[i].known != items[j].known {
-			return items[i].known < items[j].known
 		}
 		return items[i].order < items[j].order
 	})
@@ -665,9 +711,28 @@ func (e *engine) updateCandidates(s *selector, candidates []string, now time.Tim
 		}
 	}
 	s.candidates = make([]string, 0, len(candidates))
+	// The router hands us an alphabetic prefix match. Restore the declaration
+	// order and discard outbounds that did not declare a path.
+	available := make(map[string]bool, len(candidates))
 	for _, c := range candidates {
-		if !e.retiring[c] {
+		available[c] = true
+	}
+	selected := map[string]bool{}
+	for _, c := range s.cfg.baseOrder {
+		if available[c] && !e.retiring[c] && !selected[c] {
 			s.candidates = append(s.candidates, c)
+			selected[c] = true
+		}
+	}
+	for _, p := range e.providers {
+		if p.cfg.balancer != s.tag {
+			continue
+		}
+		for _, c := range p.tags {
+			if available[c] && !e.retiring[c] && s.cfg.paths[c] != nil && !selected[c] {
+				s.candidates = append(s.candidates, c)
+				selected[c] = true
+			}
 		}
 	}
 	e.syncGroups(s)
@@ -2126,7 +2191,6 @@ func (e *engine) keepSelectors(keep map[string]bool) {
 		}
 		e.unpinned = e.unpinned || s.pinned != ""
 		delete(e.selectors, tag)
-		delete(e.costs, tag)
 		for id, m := range e.networks {
 			delete(m, tag)
 			if len(m) == 0 {

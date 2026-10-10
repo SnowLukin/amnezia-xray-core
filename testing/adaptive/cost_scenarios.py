@@ -13,7 +13,7 @@ def current(client):
 def cost_above_immediate(stand, xray, work, name):
     members = [("p-cheap1", "reality", 0), ("p-cheap2", "reality", 1),
                ("p-expensive", "tcp_tls", 0)]
-    costs = {"p-cheap": 1, "p-expensive": 50}
+    costs = {"p-cheap1": 1, "p-cheap2": 1, "p-expensive": 50}
     prov = bench.provider_config(
         ["net"], triggers={"whenCostAbove": {"cost": 10, "after": "0s"}},
         limits={"minInterval": "1h", "exhaustedMinInterval": "2s", "maxRefreshesPerHour": 0})

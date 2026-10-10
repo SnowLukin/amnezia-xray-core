@@ -3,7 +3,7 @@
 The health observatory judges outbounds by the connections users already
 make and chooses outbounds for balancers with the `leastCost` strategy. It
 probes only when there is a reason. The core knows nothing about what an
-outbound means to the product: everything is set by tags, costs and rules in
+outbound means to the product: paths, costs and rules are explicit in
 the config.
 
 ## How it decides
@@ -178,8 +178,17 @@ outputs. `nextRefreshIn` follows this table as well; a number is refused.
 
 ```json
 {
+  "outbounds": [
+    { "tag": "a1", "protocol": "vless", "settings": {}, "streamSettings": {},
+      "path": { "balancer": "auto", "cost": 1, "probe": "large" } },
+    { "tag": "b1", "protocol": "vless", "settings": {}, "streamSettings": {},
+      "path": { "balancer": "auto", "cost": 3, "probe": "large" } },
+    { "tag": "c1", "protocol": "vless", "settings": {}, "streamSettings": {},
+      "path": { "balancer": "auto", "cost": 50, "isLazy": true, "returnInterval": "10m" } },
+    { "tag": "direct", "protocol": "freedom" },
+    { "tag": "block", "protocol": "blackhole" }
+  ],
   "healthObservatory": {
-    "subjectSelector": ["a", "b", "c"],
     "passive": {
       "window": "60s", "dialTimeout": "6s", "firstByteTimeout": "5s", "stallTimeout": "8s",
       "failuresToSuspect": 3, "minDistinctTargets": 2, "successBytes": 24576, "sweepInterval": "500ms",
@@ -187,7 +196,7 @@ outputs. `nextRefreshIn` follows this table as well; a number is refused.
       "shouldKeepPendingOnDown": false, "shouldKeepSilentOnDown": false
     },
     "probes": [
-      { "selector": ["a", "b"], "destination": "https://example.com/bytes/32768", "method": "GET",
+      { "name": "large", "destination": "https://example.com/bytes/32768", "method": "GET",
         "expectedStatuses": [200], "minBytes": 32768, "timeout": "8s", "progressTimeout": "4s" }
     ],
     "connectivity": { "outbound": "direct", "destination": "https://example.com/204", "timeout": "4s",
@@ -208,11 +217,7 @@ outputs. `nextRefreshIn` follows this table as well; a number is refused.
   "routing": {
     "balancers": [{
       "tag": "auto",
-      "selector": ["a", "b", "c"],
       "strategy": { "type": "leastCost", "settings": {
-        "costs": [ { "match": "a", "cost": 1 }, { "match": "b", "cost": 3 }, { "match": "c", "cost": 50 } ],
-        "defaultCost": 0,
-        "lazyOutbounds": ["c"],
         "shouldProbeBeforeSwitch": true,
         "confirmWithProbe": "auto",
         "minHoldTime": "2m",
@@ -228,9 +233,8 @@ outputs. `nextRefreshIn` follows this table as well; a number is refused.
 }
 ```
 
-The values above are the defaults, except `subjectSelector`, `probes`,
-`connectivity`, `costs`, `lazyOutbounds`, `startPinnedOutbound` and `startOutbound`, which have none. Without a
-matching probe profile an outbound is probed with a GET of
+The values above are the defaults, except `outbounds[].path`, `probes`,
+`connectivity`, `startPinnedOutbound` and `startOutbound`, which have none. A path without `probe` uses the built-in GET of
 `https://www.gstatic.com/generate_204`.
 
 Values that size what the observatory keeps have ceilings, and a larger
@@ -240,14 +244,14 @@ value is taken as the ceiling: probe and network check timeouts 30 s,
 for `hostProbes` `probesPerMinute` half of `schedule.probesPerMinute`, `reuseWindow` 5 min,
 `maxOutbounds` 16 and `timeout` 10 min.
 
-- `costs` has its own entries: `match` is a substring of the tag, or a
-  regular expression when `isRegexp` is true; `cost` is above zero. The first
-  matching entry wins. Lower cost is preferred. Equal costs prefer
-  outbounds known to work, then tag order: the outbound manager hands the
-  candidates over sorted by tag.
-- Every `selector` of a `leastCost` balancer must be covered by
-  `subjectSelector` or by the `tagPrefix` of a provider: an outbound nobody
-  observes is never left.
+- A candidate carries `path.balancer` naming this `leastCost` balancer and
+  either a positive `path.cost` or `path.group` naming one of its groups.
+  An outbound without `path` is neither a candidate nor observed. Lower
+  cost is preferred. At equal cost, paths follow their first appearance
+  in `outbounds`; group members follow that array's order. The observer
+  follows paths, `connectivity.outbound` and explicit witnesses.
+  A `leastCost` balancer with `selector` is rejected. Stock strategies
+  keep their selectors.
 - A mux outbound counts one failure per connection to its server, however
   many user connections ride on it, so it is ruled out later than one
   without mux.
@@ -259,7 +263,7 @@ for `hostProbes` `probesPerMinute` half of `schedule.probesPerMinute`, `reuseWin
   vain, the tunnel repeats it at once, a single time. A probe that wakes the
   outbound thus gets through a lost packet within its `progressTimeout`,
   which is shorter than 5 s.
-- `lazyOutbounds` outbounds are never probed in the background and are only tried
+- Paths with `isLazy` are never probed in the background and are only tried
   when everything cheaper is down.
 - `confirmWithProbe`: `auto` probes only destination failures, `always` probes every
   suspicion, `never` trusts the evidence.
@@ -270,11 +274,9 @@ for `hostProbes` `probesPerMinute` half of `schedule.probesPerMinute`, `reuseWin
   not probed when traffic or a probe has already judged it there.
 - `returnToCheaper.interval` cannot be zero; a very long interval such as `8760h`
   leaves only returns after network changes.
-- Each `costs` entry may set `returnInterval`, a Go duration that replaces
-  `returnToCheaper.interval` while an outbound matched by that entry is chosen.
-  The first matching entry wins, including when it has no own interval;
-  provider prices do not change that match. Absence keeps the global interval.
-  `"0s"` disables periodic returns from that entry; returns caused by a
+- A single path or group may set `returnInterval`, a Go duration that replaces
+  `returnToCheaper.interval` while that path is chosen. Absence keeps the global interval.
+  `"0s"` disables periodic returns from that path; returns caused by a
   network change or a successful check remain possible and respect
   `minHoldTime`. The chosen interval also bounds the random first phase.
   When a return fails, the chosen interval and `minHoldTime` set the base
@@ -310,44 +312,58 @@ for `hostProbes` `probesPerMinute` half of `schedule.probesPerMinute`, `reuseWin
 
 ## Outbound groups
 
-An entry of `costs` may set `group: {"failedInRowToLeave": 3}`. Its `match`
-names the group; the first matching cost entry assigns an outbound to it.
-Its `match` must be unique among cost entries when any matching entry defines
-a group, including entries with a different `isRegexp` value.
-The limit defaults to 3 and accepts 1 through 16. Tags are sorted as
-strings, so a backend that numbers them uses leading zeroes and interleaves
-addresses from different failure domains. The initial position is
-the first eight bytes of SHA-256 of `run + "\x00" + match`, interpreted as a
-big-endian uint64, modulo its member count.
-An explicit start choice and a remembered working outbound take precedence.
+A group is a path with several ordered addresses. Declare it once in the
+`groups` list of a `leastCost` balancer and put only `balancer` and `group`
+in each member's `path`. A member cannot override the group's `cost`,
+`isLazy`, `returnInterval` or `probe`. The base config rejects duplicate or
+unused groups, unknown probes and missing members. A config needs no groups
+when all paths are single outbounds.
 
-After a chosen member fails, failover advances around the ring. A successful
-probe or `successBytes` clears consecutive failures. The chosen dead member
-and failed following probes count towards `failedInRowToLeave`; at the limit
-the group rests in `schedule.quarantine`, and unvisited members are skipped.
-Equal-priced groups follow the order of their first tags. Provider prices
-remain per member: lower-priced members come first, and equal prices retain
-their ring order. An outbound without an explicit group keeps its existing
-selection behavior.
+```json
+{
+  "outbounds": [
+    { "tag": "g-10", "protocol": "vless", "settings": {}, "streamSettings": {},
+      "path": { "balancer": "auto", "group": "g" } },
+    { "tag": "g-2", "protocol": "vless", "settings": {}, "streamSettings": {},
+      "path": { "balancer": "auto", "group": "g" } },
+    { "tag": "b-1", "protocol": "vless", "settings": {}, "streamSettings": {},
+      "path": { "balancer": "auto", "cost": 3 } }
+  ],
+  "routing": { "balancers": [{
+    "tag": "auto", "fallbackTag": "block",
+    "strategy": { "type": "leastCost", "settings": {
+      "groups": [{ "name": "g", "cost": 1, "probe": "large", "failedInRowToLeave": 3 }]
+    } }
+  }] },
+  "healthObservatory": { "probes": [{ "name": "large",
+    "destination": "https://example.com/bytes/32768", "minBytes": 32768 }] }
+}
+```
+
+Here `g-10` precedes `g-2` because it appears first in `outbounds`.
+The limit `failedInRowToLeave` defaults to 3 and accepts 1 through 16.
+A client's initial position is the first eight bytes of SHA-256 of
+`run + "\x00" + group name`, interpreted as a big-endian uint64 modulo the
+member count. `startOutbound` and the outbound remembered for the network
+take precedence. After a chosen member fails, failover advances around the
+array. A passed probe or `successBytes` clears consecutive failures; at the
+limit the group enters `schedule.quarantine` and unvisited members are skipped.
 
 After group quarantine, one following member is checked with reason
 `group_recheck`. A passed check makes the group available; other members
-keep their individual state, including unknown for members never checked,
-and individually quarantined members keep their rest. This
-check does not move a working balancer by itself or replace `probesToReturn`.
-It can restore group availability when `returnInterval` disables periodic
-returns. Idle, a lost network and a pin postpone it; low memory permits it
-only for an exhausted balancer. Lazy members and expired leases are not
-checked in the background, but remain exhausted reserves. The existing
-probe budgets and the one-probe-per-server-name rule still apply.
+keep their individual state, including unknown for members never checked.
+The check does not move a working balancer by itself or replace
+`probesToReturn`. Idle, a lost network and a pin postpone it; low memory
+permits it only for an exhausted balancer. Lazy members and expired leases
+are not checked in the background, but remain reserves. Probe budgets and
+the one-probe-per-server-name rule still apply.
 
-Status and reports include `groups` only for explicit groups. Each record
-has `balancer`, `group`, `state`, `members`, `healthy`, `quarantined`,
-`client_position`, `failed`, `quarantine_ms` and optional `last_failure`.
-`healthy` counts proven working members with live leases, and is zero while
-the group is down; `quarantined` counts individual member quarantines.
-`client_position` is the zero-based initial hash position. Provider requests
-use the same summary with camelCase names, omit `balancer`, and count only
+Status and reports retain the `groups` fields `balancer`, `group`, `state`,
+`members`, `healthy`, `quarantined`, `client_position`, `failed`,
+`quarantine_ms` and optional `last_failure`. The group name is the declared
+name for base paths and the prefixed name for provider paths.
+`client_position` indexes the declared member order. Provider requests use
+the same summary with camelCase names, omit `balancer`, and count only
 members owned by that provider; the position still belongs to the full ring.
 A down group contributes no usable members to `minHealthyOutbounds`.
 
@@ -363,7 +379,6 @@ request, the answer, the errors and what a backend has to do, for backends.
 ```json
 {
   "healthObservatory": {
-    "subjectSelector": ["a", "b"],
     "providers": [{
       "tag": "fresh",
       "url": "https://api.example.com/set",
@@ -435,7 +450,7 @@ leaves the device. A usual set takes a few kilobytes, the largest one some
 60 KB.
 
 **Answer.** An answer is a JSON object with `outbounds` and, optionally,
-`protocol`, `version`, `costs`, `nextRefreshIn`, `expiresAt`, `serverTime`,
+`protocol`, `version`, `groups`, `nextRefreshIn`, `expiresAt`, `serverTime`,
 `headers`, `baseVersion` and `routing`. It is read strictly. `protocol` is 1
 or left out; an answer of another protocol is refused for that, whatever
 keys it has. Any other key, a section of the config such as `dns`,
@@ -449,17 +464,21 @@ reason that quotes the answer, which the next request tells the backend.
 protocols must be in `apply.allowedProtocols`; by default `vless`, `vmess`,
 `trojan`, `shadowsocks`, `wireguard`, `hysteria`, `socks` and `http`, so an
 answer cannot send traffic straight out with `freedom`.
-`costs` are by those tags, above zero, and override the costs of the
-balancer for them.
+Each outbound must carry `path.balancer` equal to `apply.balancer` and
+either its own positive cost or a group declared in this answer. The answer
+may declare `groups` with raw names; the core prefixes each name and tag
+with `tagPrefix`. Members cannot join groups from the base config or another
+provider. A missing path or any conflicting group property rejects the
+whole answer. A provider answer may contain an empty group declaration.
 `nextRefreshIn` (a Go duration string) replaces `interval` until the next
 refresh. `"0s"` asks for an immediate refresh subject to the provider limits;
 omission uses `triggers.interval` again. `null` and numbers are refused. `version` names the set; without it the set is named by
-a hash of `outbounds`, `costs` and `routing`, so an answer that differs only
+a hash of `outbounds`, `groups` and `routing`, so an answer that differs only
 in `protocol`, `nextRefreshIn`, `expiresAt`, `serverTime`, `headers` or
 `baseVersion` is the same set. A set with the same name as the applied one
 changes no outbound; its leases, headers and base still apply. It is kept
 for `ProviderSet` all the same, so its outbounds are checked short of
-building them, their number, tags, protocols and costs, and an answer that
+building them, their number, tags, protocols and paths, and an answer that
 fails is refused.
 
 `routing` takes `rules`, `balancers` and `domainStrategy` in the format of
@@ -469,18 +488,17 @@ on; any other key in it refuses the answer. Rules refer to the final tags, `tagP
 The answer is refused when a rule or a fallback goes to an outbound or a
 balancer that does not exist (Xray would take its default outbound for it,
 which may be outside the tunnel), when the leastCost balancer of the
-provider is gone, when a leastCost balancer chooses outbounds nothing
-observes, or when a rule has a webhook, which would post every matching
+provider is gone, when a rule has a webhook, which would post every matching
 connection with its destination. Balancers the new routing no longer has are forgotten, with the
 outbounds they remembered per network. While `apply.isRoutingAccepted` is off the
 routing of an answer is ignored, which `provider_apply` tells with
 `is_routing_ignored`: taking routing from a provider is the choice of the
-client.
+client. Accepted routing may change strategy settings, but leastCost
+membership and order still come from the assembled outbound paths.
 
 **Apply.** Every outbound gets `tagPrefix` in front of its tag.
-`apply.balancer` has to be a `leastCost` balancer with a selector that
-matches that prefix, and the observatory observes such outbounds without
-listing them in `subjectSelector`. The provider owns every outbound whose
+`apply.balancer` has to be a `leastCost` balancer; every answer path must
+name it exactly. The provider owns every outbound whose
 tag starts with the prefix, also ones from the config; such an outbound
 should not be the first one, which the core takes as the default. A host
 that starts the core with the set it saved last time passes it as `initialAnswer`
@@ -676,9 +694,9 @@ every run, so the host matches the `run` of the ticket with the one in
 Status. The limits below are those of `schedule.hostProbes`.
 
 - Without outbounds a request covers the outbound the balancer uses, then
-  its candidates that are not `lazyOutbounds`: the usable ones from the cheapest, then
+  its candidates that are not lazy: the usable ones from the cheapest, then
   the ones in quarantine. Listed outbounds have to be candidates of the
-  balancer and are taken as they are, lazyOutbounds ones too. A request covers at most
+  balancer and are taken as they are, lazy ones too. A request covers at most
   `maxOutbounds`. Before the first connection through the balancer it has no
   candidates, and a request fails.
 - A request checks one representative of each explicit group, including
@@ -686,7 +704,8 @@ Status. The limits below are those of `schedule.hostProbes`.
   its representative is answered `down` with source `group_quarantine`.
   The default plan excludes lazy and expired members, and prefers a member
   outside individual quarantine. At equal price it starts at the hash position;
-  resting representatives follow their price and group first-tag order.
+  resting representatives follow their price and each group's first appearance
+  in the declared outbounds.
   An explicit list uses its first listed member of each group.
 - An outbound in quarantine is answered `down` without a probe: the request
   does not shorten its rest. An outbound that works and proved it within
@@ -877,7 +896,7 @@ when the core runs through a library that keeps the instance to itself:
 | `Release(balancer, run)` / `release` | Let the balancer choose again. |
 | `RequestRefresh(provider)` / `refresh [provider]` | Fetch the set of a provider, or of every provider when empty, as soon as the limits allow. False when there is no such provider. |
 | `SetProviderHeaders(provider, headers)` / `headers <provider>` | Put headers over those of the config for the requests of a provider, see Token; an empty value removes one. The command reads them as a JSON object from stdin, never from the arguments, which the process list shows, and prints `{"ok":true}`. Ends the pause after refused headers, not a pause the backend asked for nor the backoff, and starts no refresh. An error names the header, never its value: no such provider, a name that is not a token or belongs to the transport, a bad value, more than 8 headers in the call or in all. |
-| `ProviderSet(provider, after)` / `set <provider> [after]` | The last set the provider applied as JSON valid as its `initialAnswer`, with `seq`, a number that grows when the set, the end of a lease, the headers an answer or the host set or the base the answer names change. `seq` starts every run from the wall clock in milliseconds, so it grows across runs as well: a host may keep it with the set and ask with it after a restart. A clock set back between runs starts lower; a host that cannot rule that out asks with 0 once per run. The answer keeps its keys, with those headers in place of its own (the headers of the config stay out), `serverTime` the time its leases count from and `receivedAt`. Nil (`null`) when nothing was applied or nothing changed since `after`; then the call allocates nothing, so a host may ask next to `TakeReport`. The host keeps the set in safe storage, as it holds the token and the keys of the outbounds, and passes it as `initialAnswer` when it starts the core without a fresh answer. Over gRPC it goes to any client of the API, as outbounds do through `HandlerService`, so the API listens only where the host reaches it. |
+| `ProviderSet(provider, after)` / `set <provider> [after]` | The last set the provider applied as JSON valid as its `initialAnswer`, including its original `outbounds[].path` and `groups`, with `seq`, a number that grows when the set, the end of a lease, the headers an answer or the host set or the base the answer names change. `seq` starts every run from the wall clock in milliseconds, so it grows across runs as well: a host may keep it with the set and ask with it after a restart. A clock set back between runs starts lower; a host that cannot rule that out asks with 0 once per run. The answer keeps its keys, with those headers in place of its own (the headers of the config stay out), `serverTime` the time its leases count from and `receivedAt`. Nil (`null`) when nothing was applied or nothing changed since `after`; then the call allocates nothing, so a host may ask next to `TakeReport`. The host keeps the set in safe storage, as it holds the token and the keys of the outbounds, and passes it as `initialAnswer` when it starts the core without a fresh answer. Over gRPC it goes to any client of the API, as outbounds do through `HandlerService`, so the API listens only where the host reaches it. |
 | `RequestProbe(request)` / `probe <balancer> [outbound...]` | Probe outbounds of a balancer now, see Probes on request. Returns the ticket at once or an error: no such balancer, no candidates yet, not a candidate, too many outbounds. The command waits for the result up to its timeout (`-t`) and prints it; over gRPC `wait_ms` does the same. |
 | `ProbeResult(id)` | One request as in Status and whether it ended; nil when it is no longer kept. |
 | `Status()` / `status` | Current state as JSON, see below. |

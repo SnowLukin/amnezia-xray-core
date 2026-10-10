@@ -67,12 +67,13 @@ func hostConfig(hp *HostProbesConfig) *Config {
 // candidates from the cheapest and then the ones in quarantine; lazy ones
 // stay out. Quarantine and fresh proof answer without a probe.
 func TestHostProbePlan(t *testing.T) {
-	sc := &SelectorConfig{Costs: costs("a", 1, "b", 3, "c", 5), LazyOutbounds: []string{"c"}}
+	sc := &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3, "c", 5)}
+	sc.Paths[2].IsLazy = true
 	te := newTestEngine(t, hostConfig(nil), sc, "a1", "a2", "b1", "b2", "c1")
 	te.markDown(te.path("a2"), "probe", false, at(0))
 	te.onSuccess("b2", at(0))
 	r := te.ask(t, at(time.Second))
-	want := []string{"a1 pending/", "b2 ok/recent", "b1 pending/", "a2 down/quarantine"}
+	want := []string{"a1 pending/", "b1 pending/", "b2 ok/recent", "a2 down/quarantine"}
 	if got := answers(r); !slices.Equal(got, want) {
 		t.Fatalf("plan %v, want %v", got, want)
 	}
@@ -87,7 +88,8 @@ func TestHostProbePlan(t *testing.T) {
 }
 
 func TestHostProbeRequestChecks(t *testing.T) {
-	sc := &SelectorConfig{Costs: costs("a", 1, "b", 3, "c", 5), LazyOutbounds: []string{"c"}}
+	sc := &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3, "c", 5)}
+	sc.Paths[2].IsLazy = true
 	te := newTestEngine(t, hostConfig(&HostProbesConfig{MaxOutbounds: 2}), sc, "a1", "b1", "c1")
 	te.addSelector("other", newSelectorSettings(&SelectorConfig{}))
 	for _, tc := range []struct {
@@ -117,7 +119,7 @@ func TestHostProbeRequestChecks(t *testing.T) {
 // An outbound that proved to work within reuse is answered at once; later,
 // or while suspected, it is probed.
 func TestHostProbeReusesFreshProof(t *testing.T) {
-	te := newTestEngine(t, hostConfig(nil), &SelectorConfig{Costs: costs("a", 1, "b", 3)}, "a1", "b1")
+	te := newTestEngine(t, hostConfig(nil), &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3)}, "a1", "b1")
 	te.onSuccess("a1", at(0))
 	te.events.drain()
 	r := te.ask(t, at(10*time.Second), "a1")
@@ -136,7 +138,7 @@ func TestHostProbeReusesFreshProof(t *testing.T) {
 // A confirming probe that may start now answers the request: the host
 // gets no probe of its own.
 func TestHostProbeWaitsForAProbeOfTheObserver(t *testing.T) {
-	te := newTestEngine(t, parallelConfig(2), &SelectorConfig{Costs: costs("a", 1, "b", 3)}, "a1", "b1")
+	te := newTestEngine(t, parallelConfig(2), &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3)}, "a1", "b1")
 	suspectWeak(te, "a1", 0)
 	r := te.ask(t, at(3*time.Second), "a1")
 	jobs := te.run(t, at(3*time.Second), nil)
@@ -149,7 +151,7 @@ func TestHostProbeWaitsForAProbeOfTheObserver(t *testing.T) {
 // A probe of the observer queued later takes over the host probe that has
 // not started yet.
 func TestHostProbeGivesWayToTheObserver(t *testing.T) {
-	te := newTestEngine(t, hostConfig(nil), &SelectorConfig{Costs: costs("a", 1, "b", 3)}, "a1", "b1")
+	te := newTestEngine(t, hostConfig(nil), &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3)}, "a1", "b1")
 	r := te.ask(t, at(0), "b1")
 	te.failN(3, "a1", failDial, at(time.Second))
 	jobs := te.run(t, at(2*time.Second), nil)
@@ -163,7 +165,7 @@ func TestHostProbeGivesWayToTheObserver(t *testing.T) {
 
 // A second request for the balancer joins the open one.
 func TestHostProbeRequestsJoin(t *testing.T) {
-	te := newTestEngine(t, hostConfig(&HostProbesConfig{MaxOutbounds: 2}), &SelectorConfig{Costs: costs("a", 1, "b", 3)},
+	te := newTestEngine(t, hostConfig(&HostProbesConfig{MaxOutbounds: 2}), &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3, "c", 5)},
 		"a1", "b1", "c1")
 	r := te.ask(t, at(0), "a1")
 	id, tags, err := te.requestProbe("auto", []string{"b1", "a1"}, at(time.Second))
@@ -181,7 +183,7 @@ func TestHostProbeRequestsJoin(t *testing.T) {
 func TestHostProbeWaitsBehindTheObserver(t *testing.T) {
 	cfg := parallelConfig(2)
 	cfg.Schedule.ProbesPerServerNamePerMinute = 1
-	te := newTestEngine(t, cfg, &SelectorConfig{Costs: costs("a", 1, "c", 5)}, "a1", "a2", "c1")
+	te := newTestEngine(t, cfg, &SelectorConfig{Paths: pathSpecs("a", 1, "c", 5)}, "a1", "a2", "c1")
 	te.serverNames(map[string]string{"a1": "r.example", "a2": "r.example", "c1": "c.example"})
 	te.startsByName["r.example"] = []time.Time{at(0)}
 	te.enqueue("a2", reasonNetwork, "auto", at(time.Second))
@@ -197,7 +199,7 @@ func TestHostProbeWaitsBehindTheObserver(t *testing.T) {
 // Host probes start at most hostProbes.perMinute a minute, and at most half
 // of the probes of one server name.
 func TestHostProbeBudget(t *testing.T) {
-	te := newTestEngine(t, hostConfig(&HostProbesConfig{ProbesPerMinute: 2}), &SelectorConfig{Costs: costs("a", 1)},
+	te := newTestEngine(t, hostConfig(&HostProbesConfig{ProbesPerMinute: 2}), &SelectorConfig{Paths: pathSpecs("a", 1, "b", 1, "c", 1, "d", 1)},
 		"a1", "b1", "c1", "d1")
 	te.ask(t, at(0), "a1", "b1", "c1", "d1")
 	var started []time.Duration
@@ -212,7 +214,7 @@ func TestHostProbeBudget(t *testing.T) {
 		t.Fatalf("host probes started at %v, want two in the first minute and the rest after it", started)
 	}
 
-	te = newTestEngine(t, hostConfig(nil), &SelectorConfig{Costs: costs("a", 1)}, "a1", "a2")
+	te = newTestEngine(t, hostConfig(nil), &SelectorConfig{Paths: pathSpecs("a", 1)}, "a1", "a2")
 	te.serverNames(map[string]string{"a1": "r.example", "a2": "r.example"})
 	te.ask(t, at(0), "a1", "a2")
 	started = nil
@@ -231,7 +233,7 @@ func TestHostProbeBudget(t *testing.T) {
 
 // Without user traffic host probes still run; without a network they wait.
 func TestHostProbeIgnoresIdleButNotTheNetwork(t *testing.T) {
-	te := newTestEngine(t, nil, &SelectorConfig{Costs: costs("a", 1, "b", 3)}, "a1", "b1")
+	te := newTestEngine(t, nil, &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3)}, "a1", "b1")
 	now := at(10 * time.Minute)
 	if !te.idle(now) {
 		t.Fatal("setup: not idle")
@@ -252,7 +254,7 @@ func TestHostProbeIgnoresIdleButNotTheNetwork(t *testing.T) {
 // A failed host probe of the chosen outbound is evidence: the outbound is
 // ruled out and the balancer moves away.
 func TestHostProbeFailureFailsOver(t *testing.T) {
-	te := newTestEngine(t, hostConfig(nil), &SelectorConfig{Costs: costs("a", 1, "b", 3)}, "a1", "b1")
+	te := newTestEngine(t, hostConfig(nil), &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3)}, "a1", "b1")
 	r := te.ask(t, at(0))
 	te.run(t, at(time.Second), map[string]bool{"a1": false})
 	if te.sel.current() != "b1" {
@@ -286,7 +288,7 @@ func TestHostProbeFailureFailsOver(t *testing.T) {
 
 // A pinned balancer stays on its outbound.
 func TestHostProbeFailureKeepsThePin(t *testing.T) {
-	te := newTestEngine(t, hostConfig(nil), &SelectorConfig{Costs: costs("a", 1, "b", 3)}, "a1", "b1")
+	te := newTestEngine(t, hostConfig(nil), &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3)}, "a1", "b1")
 	te.pin("auto", "a1", at(0))
 	te.ask(t, at(0), "a1")
 	te.run(t, at(time.Second), map[string]bool{"a1": false})
@@ -299,7 +301,7 @@ func TestHostProbeFailureKeepsThePin(t *testing.T) {
 func TestHostProbeClearsASuspicion(t *testing.T) {
 	cfg := hostConfig(nil)
 	cfg.Schedule.SuspectCooldown = int64(time.Minute)
-	te := newTestEngine(t, cfg, &SelectorConfig{Costs: costs("a", 1, "b", 3)}, "a1", "b1")
+	te := newTestEngine(t, cfg, &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3)}, "a1", "b1")
 	te.ask(t, at(0), "a1")
 	jobs, _ := te.tick(at(0))
 	suspectWeak(te, "a1", time.Second)
@@ -319,7 +321,7 @@ func TestHostProbeClearsASuspicion(t *testing.T) {
 // working, here while no user traffic brings a recheck.
 func TestHostProbeRecoversAnExhaustedBalancer(t *testing.T) {
 	te := newTestEngine(t, &Config{Schedule: &ScheduleConfig{Quarantine: &Backoff{InitialDelay: int64(time.Minute)}}},
-		&SelectorConfig{Costs: costs("a", 1, "b", 3)}, "a1", "b1")
+		&SelectorConfig{Paths: pathSpecs("a", 1, "b", 3)}, "a1", "b1")
 	te.failN(3, "a1", failDial, at(0))
 	te.run(t, at(time.Second), map[string]bool{"b1": false})
 	if !te.sel.exhausted {
@@ -407,7 +409,7 @@ func TestHostProbeFailureAfterAReturnIsPenalized(t *testing.T) {
 func TestHostProbeFailureWaitsForTheNetworkCheck(t *testing.T) {
 	cfg := connectivityConfig()
 	cfg.Schedule = &ScheduleConfig{MaxConcurrentProbes: 2, IdleAfter: int64(time.Hour)}
-	te := newTestEngine(t, cfg, &SelectorConfig{Costs: costs("a", 1, "b", 3)}, "a1", "b1")
+	te := newTestEngine(t, cfg, &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3)}, "a1", "b1")
 	suspectWeak(te, "a1", 0)
 	te.ask(t, at(3*time.Second), "a1")
 	jobs, _ := te.tick(at(3 * time.Second))
@@ -424,7 +426,7 @@ func TestHostProbeFailureWaitsForTheNetworkCheck(t *testing.T) {
 // started are dropped.
 func TestHostProbeRequestTimesOut(t *testing.T) {
 	te := newTestEngine(t, hostConfig(&HostProbesConfig{ProbesPerMinute: 1, Timeout: int64(30 * time.Second)}),
-		&SelectorConfig{Costs: costs("a", 1, "b", 3)}, "a1", "b1")
+		&SelectorConfig{Paths: pathSpecs("a", 1, "b", 3)}, "a1", "b1")
 	r := te.ask(t, at(0), "a1", "b1")
 	jobs, _ := te.tick(at(0))
 	te.onProbeResult(jobs[0], probeResult{ok: true}, at(time.Second))
@@ -448,7 +450,7 @@ func TestHostProbeRequestTimesOut(t *testing.T) {
 // A network change ends the request; the late result of its probe tells
 // nothing about the new network.
 func TestHostProbeRequestEndsWithTheNetwork(t *testing.T) {
-	te := newTestEngine(t, hostConfig(nil), &SelectorConfig{Costs: costs("a", 1, "b", 3)}, "a1", "b1")
+	te := newTestEngine(t, hostConfig(nil), &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3)}, "a1", "b1")
 	r := te.ask(t, at(0), "b1")
 	jobs, _ := te.tick(at(0))
 	te.onNetworkChange("cafe", at(time.Second))
@@ -478,7 +480,7 @@ func TestHostProbeRequestEndsWithTheNetwork(t *testing.T) {
 // An outbound the balancer no longer offers is gone; so is a request of a
 // balancer the routing no longer has.
 func TestHostProbeRequestOfWhatIsGone(t *testing.T) {
-	te := newTestEngine(t, hostConfig(nil), &SelectorConfig{Costs: costs("a", 1, "b", 3)}, "a1", "b1")
+	te := newTestEngine(t, hostConfig(nil), &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3)}, "a1", "b1")
 	r := te.ask(t, at(0), "a1", "b1")
 	te.dropProviderOutbound("b1", at(time.Second))
 	te.serveRequests(at(time.Second))
@@ -495,14 +497,14 @@ func TestHostProbeRequestOfWhatIsGone(t *testing.T) {
 // While memory is low only outbounds a balancer uses are probed for the
 // host, and one closed request is kept.
 func TestHostProbeUnderLowMemory(t *testing.T) {
-	te := newTestEngine(t, hostConfig(nil), &SelectorConfig{Costs: costs("a", 1, "b", 3)}, "a1", "b1")
+	te := newTestEngine(t, hostConfig(nil), &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3)}, "a1", "b1")
 	te.setMemoryLow(true, at(0))
 	r := te.ask(t, at(time.Second))
 	if got := answers(r); !slices.Equal(got, []string{"a1 pending/", "b1 skipped/memory"}) {
 		t.Fatalf("answers %v while memory is low", got)
 	}
 
-	te = newTestEngine(t, hostConfig(nil), &SelectorConfig{Costs: costs("a", 1, "b", 3)}, "a1", "b1")
+	te = newTestEngine(t, hostConfig(nil), &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3)}, "a1", "b1")
 	r = te.ask(t, at(0))
 	te.setMemoryLow(true, at(time.Second))
 	if !slices.Equal(queued(te), []string{"host:a1"}) {
@@ -526,7 +528,7 @@ func TestHostProbeUnderLowMemory(t *testing.T) {
 
 // The observer keeps the open requests and the latest closed ones only.
 func TestHostProbeRequestsAreBounded(t *testing.T) {
-	te := newTestEngine(t, hostConfig(nil), &SelectorConfig{Costs: costs("a", 1, "b", 3)}, "a1", "b1")
+	te := newTestEngine(t, hostConfig(nil), &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3)}, "a1", "b1")
 	te.onSuccess("a1", at(0))
 	var last uint64
 	for i := 0; i < 10; i++ {

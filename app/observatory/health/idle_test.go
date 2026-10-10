@@ -32,7 +32,7 @@ type idleConn struct {
 func newIdleFixture(t *testing.T, after, closeIdle time.Duration) *idleFixture {
 	t.Helper()
 	cfg := &Config{Sleep: &SleepConfig{AfterLastUse: int64(after), CloseIdleAfter: int64(closeIdle)}}
-	sf := newSleepFixture(t, cfg, &SelectorConfig{Costs: costs("a", 1, "w", 3), SkipProbeBeforeSwitch: true}, "a1", "w1")
+	sf := newSleepFixture(t, cfg, &SelectorConfig{Paths: pathSpecs("a", 1, "w", 3), SkipProbeBeforeSwitch: true}, "a1", "w1")
 	sf.o.sweeping = true
 	f := &idleFixture{sleepFixture: sf, t: t, conns: map[string]*idleConn{}}
 	f.engine(func(e *engine) { e.switchTo(e.selectors["auto"], "w1", "failover", t0) })
@@ -307,7 +307,7 @@ func TestIdleCloseKeepsWhatIsHeld(t *testing.T) {
 			e.switchTo(s, "w1", "failover", now)
 		}},
 		{"pinned by another balancer", func(t *testing.T, e *engine, s *selector, now time.Time) {
-			other := e.addSelector("other", newSelectorSettings(&SelectorConfig{Costs: costs("a", 1, "w", 3)}))
+			other := e.addSelector("other", newSelectorSettings(&SelectorConfig{Paths: pathSpecs("a1", 1, "w1", 3)}))
 			e.updateCandidates(other, []string{"a1", "w1"}, now)
 			if !e.pin("other", "w1", now) {
 				t.Fatal("setup: pin refused")
@@ -560,7 +560,7 @@ func TestIdleCloseTakenAfterThePlan(t *testing.T) {
 // An outbound that cannot sleep keeps its connections.
 func TestIdleCloseOnlyForSleepers(t *testing.T) {
 	cfg := &Config{Sleep: &SleepConfig{AfterLastUse: int64(time.Minute), CloseIdleAfter: int64(time.Minute)}}
-	f := newSleepFixture(t, cfg, &SelectorConfig{Costs: costs("a", 1, "w", 3), SkipProbeBeforeSwitch: true}, "a1", "a2", "w1")
+	f := newSleepFixture(t, cfg, &SelectorConfig{Paths: pathSpecs("a", 1, "w", 3), SkipProbeBeforeSwitch: true}, "a1", "a2", "w1")
 	f.o.sweeping = true
 	f.engine(func(e *engine) { e.switchTo(e.selectors["auto"], "a2", "failover", t0) })
 	f.turn(t0)

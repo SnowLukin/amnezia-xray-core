@@ -15,7 +15,13 @@ func initialFixture(t *testing.T, initial string) (*applyFixture, time.Time) {
 	f := newApplyFixture(t, time.Minute)
 	now := time.Now()
 	f.o.clock = func() time.Time { return now }
-	f.rt.cfg.initial = []byte(initial)
+	s := f.o.e.selectors["auto"]
+	s.started = false
+	s.exhausted = false
+	s.setActive("")
+	f.o.e.report = report{}
+	f.o.e.report.begin(now)
+	f.rt.cfg.initial = fixtureAnswerBody([]byte(initial))
 	return f, now
 }
 
@@ -34,6 +40,7 @@ func stamp(t time.Time) string { return t.UTC().Format(time.RFC3339Nano) }
 func TestInitialZeroNextRefreshStaysImmediateInProviderSet(t *testing.T) {
 	f, now := initialFixture(t, `{"outbounds":[{"tag":"x1","protocol":"vless","v":1}],"nextRefreshIn":"0s"}`)
 	f.rt.cfg.jitter = 0
+	f.rt.cfg.initial = fixtureAnswerBody(f.rt.cfg.initial)
 	f.o.applyInitial()
 	if p := f.rt.p; !p.nextAt.Equal(now) || p.nextTrigger != triggerNextRefresh {
 		t.Fatalf("next refresh at %v with trigger %s, want immediate next_refresh", p.nextAt, p.nextTrigger)
@@ -62,6 +69,7 @@ func TestBrokenInitialKeepsTheCoreRunning(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f, _ := initialFixture(t, tc.initial)
+			f.rt.cfg.initial = fixtureAnswerBody(f.rt.cfg.initial)
 			f.o.applyInitial()
 			ev := f.lastApply(t)
 			if ev["trigger"] != "initial" || ev["is_ok"] != false || !strings.Contains(fmt.Sprint(ev["error"]), tc.want) {
@@ -108,6 +116,7 @@ func TestInitialLeaseClock(t *testing.T) {
 			f, _ := initialFixture(t, `{"outbounds": [{"tag": "x1", "protocol": "vless", "v": 1}], `+tc.initial+`}`)
 			f.o.clock = func() time.Time { return now }
 			f.rt.cfg.jitter = 0
+			f.rt.cfg.initial = fixtureAnswerBody(f.rt.cfg.initial)
 			f.o.applyInitial()
 			if ev := f.lastApply(t); ev["is_ok"] != true || ev["trigger"] != "initial" || ev["clock"] != tc.clock {
 				t.Fatalf("apply %v", ev)
@@ -144,6 +153,7 @@ func TestExpiredInitialRefreshesOnce(t *testing.T) {
 	f.rt.cfg.initial = []byte(fmt.Sprintf(`{"outbounds": [{"tag": "x1", "protocol": "vless", "v": 1}],
 		"serverTime": %q, "receivedAt": %q, "expiresAt": {"x1": %q}}`,
 		stamp(wall.Add(-10*time.Hour)), stamp(wall.Add(-10*time.Hour)), stamp(wall.Add(-2*time.Hour))))
+	f.rt.cfg.initial = fixtureAnswerBody(f.rt.cfg.initial)
 	f.o.applyInitial()
 	var ended []string
 	for _, e := range f.events(t) {
@@ -183,13 +193,14 @@ func TestExpiredInitialRefreshesUnderTheStartPin(t *testing.T) {
 	f.rt.cfg.initial = []byte(fmt.Sprintf(`{"outbounds": [{"tag": "x1", "protocol": "vless", "v": 1}],
 		"serverTime": %q, "receivedAt": %q, "expiresAt": {"x1": %q}}`,
 		stamp(wall.Add(-10*time.Hour)), stamp(wall.Add(-10*time.Hour)), stamp(wall.Add(-2*time.Hour))))
+	f.rt.cfg.initial = fixtureAnswerBody(f.rt.cfg.initial)
 	f.o.applyInitial()
 	f.o.mu.Lock()
 	defer f.o.mu.Unlock()
 	e := f.o.e
 	// The first connection through the balancer starts it on the pin.
 	delete(e.selectors, "auto")
-	s := e.addSelector("auto", newSelectorSettings(&SelectorConfig{Costs: costs("p-", 1), StartPinnedOutbound: "p-x1"}))
+	s := e.addSelector("auto", newSelectorSettings(&SelectorConfig{Paths: pathSpecs("p-", 1), StartPinnedOutbound: "p-x1"}))
 	e.updateCandidates(s, []string{"p-x1"}, now)
 	if s.pinned != "p-x1" {
 		t.Fatalf("setup: pinned %q", s.pinned)
@@ -216,6 +227,7 @@ func TestEndedLeaseOfAFreshInitialIsNotSaved(t *testing.T) {
 	f.rt.cfg.initial = []byte(fmt.Sprintf(`{"outbounds": [{"tag": "x1", "protocol": "vless", "v": 1}],
 		"serverTime": %q, "expiresAt": {"x1": %q}}`, stamp(wall), stamp(wall.Add(-time.Minute))))
 	f.o.e.report.begin(now)
+	f.rt.cfg.initial = fixtureAnswerBody(f.rt.cfg.initial)
 	f.o.applyInitial()
 	var ended []string
 	for _, e := range f.events(t) {
@@ -239,6 +251,7 @@ func TestEndedLeaseOfAFreshInitialIsNotSaved(t *testing.T) {
 // A refresh that brings the set of the initial one changes no outbound.
 func TestInitialThenSameVersionChangesNoHandler(t *testing.T) {
 	f, _ := initialFixture(t, `{"version": "v1", "outbounds": [{"tag": "x1", "protocol": "vless", "v": 1}]}`)
+	f.rt.cfg.initial = fixtureAnswerBody(f.rt.cfg.initial)
 	f.o.applyInitial()
 	if ev := f.lastApply(t); ev["is_ok"] != true || ev["is_changed"] != true || ev["added"] != 1.0 {
 		t.Fatalf("initial %v", ev)
@@ -266,6 +279,7 @@ func TestInitialHeadersOverrideConfig(t *testing.T) {
 		"headers": {"authorization": "Bearer saved", "X-Session": "s1"}}`
 	f, _ := initialFixture(t, initial)
 	f.rt.cfg.headers = map[string]string{"Authorization": "Bearer config", "X-Client": "core"}
+	f.rt.cfg.initial = fixtureAnswerBody(f.rt.cfg.initial)
 	f.o.applyInitial()
 	var by []string
 	for _, e := range f.events(t) {
@@ -284,6 +298,7 @@ func TestInitialHeadersOverrideConfig(t *testing.T) {
 	if err := f.o.SetProviderHeaders("fresh", map[string]string{"Authorization": "Bearer host"}); err != nil {
 		t.Fatal(err)
 	}
+	f.rt.cfg.initial = fixtureAnswerBody(f.rt.cfg.initial)
 	f.o.applyInitial()
 	if ev := f.lastApply(t); ev["is_ok"] != true || ev["is_headers_stale"] != true {
 		t.Fatalf("apply %v", ev)
@@ -304,6 +319,7 @@ func TestHostHeaderBeforeTheStartKeepsTheInitialToken(t *testing.T) {
 	if err := f.o.SetProviderHeaders("fresh", map[string]string{"X-Device": "d1"}); err != nil {
 		t.Fatal(err)
 	}
+	f.rt.cfg.initial = fixtureAnswerBody(f.rt.cfg.initial)
 	f.o.applyInitial()
 	if ev := f.lastApply(t); ev["is_ok"] != true || ev["is_headers_stale"] != nil || fmt.Sprint(ev["headers"]) != "[Authorization]" {
 		t.Fatalf("apply %v", ev)
@@ -320,6 +336,7 @@ func TestHostHeaderBeforeTheStartKeepsTheInitialToken(t *testing.T) {
 func TestInitialIsNoDecision(t *testing.T) {
 	f, now := initialFixture(t, `{"outbounds": [{"tag": "x1", "protocol": "vless", "v": 1}]}`)
 	f.o.e.report.begin(now)
+	f.rt.cfg.initial = fixtureAnswerBody(f.rt.cfg.initial)
 	f.o.applyInitial()
 	if raw := f.o.TakeReport(true); raw != nil {
 		t.Fatalf("a report after the initial set alone: %s", raw)
@@ -333,6 +350,7 @@ func TestSavedExpiredLeaseIsNoDecision(t *testing.T) {
 		"serverTime": %q, "receivedAt": %q, "expiresAt": {"x1": %q}}`,
 		stamp(wall.Add(-time.Hour)), stamp(wall.Add(-time.Hour)), stamp(wall.Add(-time.Minute))))
 	f.o.e.report.begin(now)
+	f.rt.cfg.initial = fixtureAnswerBody(f.rt.cfg.initial)
 	f.o.applyInitial()
 	f.o.mu.Lock()
 	v := f.o.e.takeReport(true, now)
@@ -345,6 +363,7 @@ func TestSavedExpiredLeaseIsNoDecision(t *testing.T) {
 func TestRejectedInitialIsADecision(t *testing.T) {
 	f, now := initialFixture(t, `{"protocol": 2, "outbounds": [{"tag": "x1", "protocol": "vless"}]}`)
 	f.o.e.report.begin(now)
+	f.rt.cfg.initial = fixtureAnswerBody(f.rt.cfg.initial)
 	f.o.applyInitial()
 	var r map[string]any
 	if err := json.Unmarshal(f.o.TakeReport(true), &r); err != nil || r["provider_rejected"] != 1.0 || r["provider_applied"] != 0.0 {
@@ -354,7 +373,7 @@ func TestRejectedInitialIsADecision(t *testing.T) {
 
 // The outbound the host passes to start with is no decision either.
 func TestStartWithIsNoDecision(t *testing.T) {
-	te := newReportEngine(t, nil, &SelectorConfig{Costs: costs("a", 1, "b", 3), StartOutbound: "b1"}, "a1", "b1")
+	te := newReportEngine(t, nil, &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3), StartOutbound: "b1"}, "a1", "b1")
 	if te.sel.current() != "b1" {
 		t.Fatalf("started on %s", te.sel.current())
 	}

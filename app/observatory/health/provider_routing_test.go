@@ -108,7 +108,7 @@ func routingAnswer(t *testing.T, routing string) *providerAnswer {
 }
 
 func TestApplyRoutingWithTheSet(t *testing.T) {
-	own := `{"tag": "auto", "selector": ["p-"], "strategy": "leastcost"}`
+	own := `{"tag": "auto", "strategy": "leastcost"}`
 	for _, tc := range []struct {
 		name, routing string
 		applied       bool
@@ -118,8 +118,8 @@ func TestApplyRoutingWithTheSet(t *testing.T) {
 		{"rule to an unknown outbound", `{"rules": [{"to": "nowhere"}], "balancers": [` + own + `]}`, false, "unknown outbound"},
 		{"rule to an unknown balancer", `{"rules": [{"via": "other"}], "balancers": [` + own + `]}`, false, "unknown balancer"},
 		{"balancer of the provider dropped", `{"rules": [{"to": "p-x1"}], "balancers": []}`, false, "drops"},
-		{"balancer choosing what nothing observes", `{"rules": [], "balancers": [` + own + `,
-			{"tag": "b", "selector": ["z"], "strategy": "leastcost"}]}`, false, "nothing observes"},
+		{"leastCost selector in routing", `{"rules": [], "balancers": [` + own + `,
+			{"tag": "b", "selector": ["z"], "strategy": "leastcost"}]}`, false, "selector is not supported"},
 		{"rule with a webhook", `{"rules": [{"via": "auto", "webhook": "https://hook.test/"}], "balancers": [` + own + `]}`,
 			false, "webhook"},
 	} {
@@ -175,7 +175,7 @@ func TestRoutingIgnoredWhenOff(t *testing.T) {
 
 // The strategy of the answer goes to the router only when the answer has one.
 func TestApplyRoutingTakesTheStrategyOfTheAnswer(t *testing.T) {
-	own := `{"tag": "auto", "selector": ["p-"], "strategy": "leastcost"}`
+	own := `{"tag": "auto", "strategy": "leastcost"}`
 	for _, tc := range []struct {
 		routing string
 		want    bool
@@ -197,7 +197,7 @@ func TestApplyRoutingTakesTheStrategyOfTheAnswer(t *testing.T) {
 // Balancers the new routing does not have stop being judged and forget what
 // they remembered per network.
 func TestRoutingForgetsBalancersItNoLongerHas(t *testing.T) {
-	own := `{"tag": "auto", "selector": ["p-"], "strategy": "leastcost"}`
+	own := `{"tag": "auto", "strategy": "leastcost"}`
 	for _, refused := range []bool{false, true} {
 		f := newApplyFixture(t, time.Minute)
 		f.rt.cfg.routing = true

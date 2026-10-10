@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"net/url"
-	"regexp"
 	"strings"
 	"time"
 
@@ -51,13 +50,25 @@ type HealthPassiveConfig struct {
 }
 
 type HealthProbeConfig struct {
-	Selector         StringList         `json:"selector"`
+	Name             string             `json:"name"`
 	Destination      string             `json:"destination"`
 	Method           string             `json:"method"`
 	ExpectedStatuses []int32            `json:"expectedStatuses"`
 	MinBytes         int64              `json:"minBytes"`
 	Timeout          *duration.Duration `json:"timeout"`
 	ProgressTimeout  *duration.Duration `json:"progressTimeout"`
+}
+
+func (p *HealthProbeConfig) UnmarshalJSON(raw []byte) error {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return err
+	}
+	if _, old := fields["selector"]; old {
+		return errors.New("healthObservatory: probes[].selector is not supported")
+	}
+	type plain HealthProbeConfig
+	return json.Unmarshal(raw, (*plain)(p))
 }
 
 type HealthConnectivityConfig struct {
@@ -382,16 +393,28 @@ func (c *HealthProviderConfig) build() (*health.ProviderConfig, error) {
 
 // HealthObservatoryConfig is the "healthObservatory" section.
 type HealthObservatoryConfig struct {
-	SubjectSelector StringList                `json:"subjectSelector"`
-	Passive         *HealthPassiveConfig      `json:"passive"`
-	Probes          []*HealthProbeConfig      `json:"probes"`
-	Connectivity    *HealthConnectivityConfig `json:"connectivity"`
-	Schedule        *HealthScheduleConfig     `json:"schedule"`
-	Events          *HealthEventsConfig       `json:"events"`
-	Network         *HealthNetworkConfig      `json:"network"`
-	Providers       []*HealthProviderConfig   `json:"providers"`
-	Report          *HealthReportConfig       `json:"report"`
-	Sleep           *HealthSleepConfig        `json:"sleep"`
+	Paths        []*health.PathDefinition  `json:"-"`
+	Passive      *HealthPassiveConfig      `json:"passive"`
+	Probes       []*HealthProbeConfig      `json:"probes"`
+	Connectivity *HealthConnectivityConfig `json:"connectivity"`
+	Schedule     *HealthScheduleConfig     `json:"schedule"`
+	Events       *HealthEventsConfig       `json:"events"`
+	Network      *HealthNetworkConfig      `json:"network"`
+	Providers    []*HealthProviderConfig   `json:"providers"`
+	Report       *HealthReportConfig       `json:"report"`
+	Sleep        *HealthSleepConfig        `json:"sleep"`
+}
+
+func (c *HealthObservatoryConfig) UnmarshalJSON(raw []byte) error {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return err
+	}
+	if _, old := fields["subjectSelector"]; old {
+		return errors.New("healthObservatory: subjectSelector is not supported; put path on outbounds")
+	}
+	type plain HealthObservatoryConfig
+	return json.Unmarshal(raw, (*plain)(c))
 }
 
 func checkSelectors(name string, selectors []string) error {
@@ -415,13 +438,7 @@ func checkProbeURL(where, dest string) error {
 }
 
 func (c *HealthObservatoryConfig) Build() (proto.Message, error) {
-	if len(c.SubjectSelector) == 0 {
-		return nil, errors.New("healthObservatory: subjectSelector is empty")
-	}
-	if err := checkSelectors("subjectSelector", c.SubjectSelector); err != nil {
-		return nil, err
-	}
-	out := &health.Config{SubjectSelector: c.SubjectSelector}
+	out := &health.Config{Paths: c.Paths}
 	if p := c.Passive; p != nil {
 		for _, field := range []struct {
 			name  string
@@ -449,9 +466,10 @@ func (c *HealthObservatoryConfig) Build() (proto.Message, error) {
 			ShouldKeepSilentOnDown:    p.ShouldKeepSilentOnDown,
 		}
 	}
+	probeNames := map[string]bool{}
 	for _, p := range c.Probes {
 		if p == nil {
-			continue
+			return nil, errors.New("healthObservatory: probes[].name must be nonempty and unique")
 		}
 		for _, field := range []struct {
 			name  string
@@ -464,9 +482,10 @@ func (c *HealthObservatoryConfig) Build() (proto.Message, error) {
 		if err := checkProbeURL("probe destination", p.Destination); err != nil {
 			return nil, err
 		}
-		if err := checkSelectors("probe selector", p.Selector); err != nil {
-			return nil, err
+		if p.Name == "" || probeNames[p.Name] {
+			return nil, errors.New("healthObservatory: probes[].name must be nonempty and unique: ", p.Name)
 		}
+		probeNames[p.Name] = true
 		switch strings.ToUpper(p.Method) {
 		case "", "GET":
 		case "HEAD":
@@ -477,7 +496,7 @@ func (c *HealthObservatoryConfig) Build() (proto.Message, error) {
 			return nil, errors.New("healthObservatory: probe method must be GET or HEAD")
 		}
 		out.Probes = append(out.Probes, &health.ProbeProfile{
-			Selector:         p.Selector,
+			Name:             p.Name,
 			Destination:      p.Destination,
 			Method:           p.Method,
 			ExpectedStatuses: p.ExpectedStatuses,
@@ -603,22 +622,53 @@ type strategyLeastCostReturnToCheaperConfig struct {
 	IsUnknownNetworksOnly    *bool              `json:"isUnknownNetworksOnly"`
 }
 
-type strategyCostGroupConfig struct {
-	FailedInRowToLeave *int32 `json:"failedInRowToLeave"`
+type strategyPathGroupConfig struct {
+	Name               string             `json:"name"`
+	Cost               *float32           `json:"cost"`
+	IsLazy             *bool              `json:"isLazy"`
+	ReturnInterval     *duration.Duration `json:"returnInterval"`
+	Probe              *string            `json:"probe"`
+	FailedInRowToLeave *int32             `json:"failedInRowToLeave"`
 }
 
-type strategyCostEntry struct {
-	Match          string                   `json:"match"`
-	IsRegexp       bool                     `json:"isRegexp"`
-	Cost           float32                  `json:"cost"`
-	ReturnInterval *duration.Duration       `json:"returnInterval"`
-	Group          *strategyCostGroupConfig `json:"group"`
+func rejectNullFields(raw []byte, where string, allowed map[string]bool) error {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil || fields == nil {
+		return errors.New(where, " must be an object")
+	}
+	for key, value := range fields {
+		if !allowed[key] {
+			return errors.New(where, ": unknown key ", key)
+		}
+		if bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
+			return errors.New(where, ".", key, " must not be null")
+		}
+	}
+	return nil
+}
+
+func (p *OutboundPathConfig) UnmarshalJSON(raw []byte) error {
+	if err := rejectNullFields(raw, "path", map[string]bool{"balancer": true, "group": true, "cost": true, "isLazy": true, "returnInterval": true, "probe": true}); err != nil {
+		return err
+	}
+	var fields map[string]json.RawMessage
+	_ = json.Unmarshal(raw, &fields)
+	_, p.groupPresent = fields["group"]
+	type plain OutboundPathConfig
+	return json.Unmarshal(raw, (*plain)(p))
+}
+
+func (g *strategyPathGroupConfig) UnmarshalJSON(raw []byte) error {
+	if err := rejectNullFields(raw, "group", map[string]bool{"name": true, "cost": true, "isLazy": true, "returnInterval": true, "probe": true, "failedInRowToLeave": true}); err != nil {
+		return err
+	}
+	type plain strategyPathGroupConfig
+	return json.Unmarshal(raw, (*plain)(g))
 }
 
 type strategyLeastCostConfig struct {
-	Costs                   []*strategyCostEntry                    `json:"costs"`
-	DefaultCost             float32                                 `json:"defaultCost"`
-	LazyOutbounds           StringList                              `json:"lazyOutbounds"`
+	Paths                   []*health.PathDefinition                `json:"paths"`
+	Groups                  []*strategyPathGroupConfig              `json:"groups"`
 	ShouldProbeBeforeSwitch *bool                                   `json:"shouldProbeBeforeSwitch"`
 	ConfirmWithProbe        string                                  `json:"confirmWithProbe"`
 	MinHoldTime             *duration.Duration                      `json:"minHoldTime"`
@@ -629,8 +679,28 @@ type strategyLeastCostConfig struct {
 	NetworkChangeAction     string                                  `json:"networkChangeAction"`
 }
 
+func (v *strategyLeastCostConfig) UnmarshalJSON(raw []byte) error {
+	if err := rejectNullFields(raw, "leastCost settings", map[string]bool{
+		"paths": true, "groups": true, "shouldProbeBeforeSwitch": true,
+		"confirmWithProbe": true, "minHoldTime": true, "returnToCheaper": true,
+		"startPinnedOutbound": true, "startPinTimeout": true, "startOutbound": true,
+		"networkChangeAction": true,
+	}); err != nil {
+		return err
+	}
+	type plain strategyLeastCostConfig
+	return json.Unmarshal(raw, (*plain)(v))
+}
+
 // isFalse is true only for an explicit false; the JSON defaults of these
 // options are true.
+func derefString(v *string) string {
+	if v != nil {
+		return *v
+	}
+	return ""
+}
+
 func isFalse(v *bool) bool {
 	return v != nil && !*v
 }
@@ -642,50 +712,25 @@ func (v *strategyLeastCostConfig) Build() (proto.Message, error) {
 			return nil, err
 		}
 	}
-	if err := checkSelectors("lazyOutbounds", v.LazyOutbounds); err != nil {
-		return nil, err
-	}
-	groupMatches := map[string]bool{}
-	for _, c := range v.Costs {
-		// A zero value means "weight from the number in the tag" to the
-		// shared weight code, which here would make the outbound the most
-		// expensive one.
-		if c == nil || c.Match == "" || c.Cost <= 0 {
-			return nil, errors.New("leastCost: every cost needs a match and a cost above zero")
+	groups := make([]*health.PathGroup, 0, len(v.Groups))
+	for _, g := range v.Groups {
+		if g == nil || g.Name == "" || g.Cost == nil || *g.Cost <= 0 {
+			return nil, errors.New("leastCost: each group needs name and cost above zero")
 		}
-		if previous, exists := groupMatches[c.Match]; exists && (previous || c.Group != nil) {
-			return nil, errors.New("leastCost: costs.group match must be unique: ", c.Match)
+		limit := int32(3)
+		if g.FailedInRowToLeave != nil {
+			limit = *g.FailedInRowToLeave
 		}
-		groupMatches[c.Match] = c.Group != nil
-		if c.IsRegexp {
-			if _, err := regexp.Compile(c.Match); err != nil {
-				return nil, errors.New("leastCost: cost match ", c.Match).Base(err)
-			}
+		if limit < 1 || limit > 16 {
+			return nil, errors.New("leastCost: groups[].failedInRowToLeave must be from 1 to 16")
 		}
-		if c.ReturnInterval != nil && *c.ReturnInterval < 0 {
-			return nil, errors.New("leastCost: costs.returnInterval must not be negative")
-		}
-	}
-	costs := make([]*health.CostEntry, 0, len(v.Costs))
-	for _, c := range v.Costs {
-		entry := &health.CostEntry{Match: c.Match, IsRegexp: c.IsRegexp, Cost: c.Cost}
-		entry.ReturnInterval = optionalDuration(c.ReturnInterval)
-		if c.Group != nil {
-			limit := int32(3)
-			if c.Group.FailedInRowToLeave != nil {
-				limit = *c.Group.FailedInRowToLeave
-			}
-			if limit < 1 || limit > 16 {
-				return nil, errors.New("leastCost: costs.group.failedInRowToLeave must be from 1 to 16")
-			}
-			entry.Group = &health.CostGroupConfig{FailedInRowToLeave: limit}
-		}
-		costs = append(costs, entry)
+		groups = append(groups, &health.PathGroup{Name: g.Name, Cost: *g.Cost,
+			IsLazy: g.IsLazy != nil && *g.IsLazy, ReturnInterval: optionalDuration(g.ReturnInterval),
+			Probe: derefString(g.Probe), FailedInRowToLeave: limit})
 	}
 	out := &health.SelectorConfig{
-		Costs:                 costs,
-		DefaultCost:           v.DefaultCost,
-		LazyOutbounds:         v.LazyOutbounds,
+		Paths:                 v.Paths,
+		Groups:                groups,
 		SkipProbeBeforeSwitch: isFalse(v.ShouldProbeBeforeSwitch),
 		MinHoldTime:           optionalDuration(v.MinHoldTime),
 		StartPinnedOutbound:   v.StartPinnedOutbound,
@@ -728,74 +773,222 @@ func (v *strategyLeastCostConfig) Build() (proto.Message, error) {
 	return out, nil
 }
 
-// checkLeastCost makes sure every outbound a leastCost balancer may choose is
-// observed: the balancer only moves away from an outbound on evidence.
-// Outbounds of providers are observed without being listed as subjects.
-func checkLeastCost(routing *RouterConfig, h *HealthObservatoryConfig) error {
-	var balancers []*BalancingRule
-	if routing != nil {
-		balancers = routing.Balancers
+func (b *BalancingRule) UnmarshalJSON(raw []byte) error {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return err
 	}
-	var observed []string
-	if h != nil {
-		observed = append(observed, h.SubjectSelector...)
-		for _, p := range h.Providers {
+	var strategy struct {
+		Type string `json:"type"`
+	}
+	if len(fields["strategy"]) > 0 && string(fields["strategy"]) != "null" {
+		if err := json.Unmarshal(fields["strategy"], &strategy); err != nil {
+			return err
+		}
+	}
+	if strings.EqualFold(strategy.Type, strategyLeastCost) {
+		if _, present := fields["selector"]; present {
+			var tag string
+			_ = json.Unmarshal(fields["tag"], &tag)
+			return errors.New("balancer ", tag, ": leastCost selector is not supported; use outbound path")
+		}
+	}
+	type plain BalancingRule
+	return json.Unmarshal(raw, (*plain)(b))
+}
+
+type OutboundPathConfig struct {
+	Balancer       string             `json:"balancer"`
+	Group          string             `json:"group"`
+	Cost           *float32           `json:"cost"`
+	IsLazy         *bool              `json:"isLazy"`
+	ReturnInterval *duration.Duration `json:"returnInterval"`
+	Probe          *string            `json:"probe"`
+	groupPresent   bool
+}
+
+func checkLeastCost(c *Config) error {
+	if c.HealthObservatory != nil {
+		c.HealthObservatory.Paths = nil
+	}
+	balancers := map[string]*BalancingRule{}
+	groupNames := map[string]map[string]*strategyPathGroupConfig{}
+	pathsByBalancer := map[string][]*health.PathDefinition{}
+	providersByBalancer := map[string][]*HealthProviderConfig{}
+	if c.HealthObservatory != nil {
+		for _, p := range c.HealthObservatory.Providers {
 			if p != nil && p.Apply != nil {
-				observed = append(observed, p.Apply.TagPrefix)
+				providersByBalancer[p.Apply.Balancer] = append(providersByBalancer[p.Apply.Balancer], p)
 			}
 		}
 	}
-	for _, b := range balancers {
-		if b == nil || !strings.EqualFold(b.Strategy.Type, strategyLeastCost) {
+	if c.RouterConfig != nil {
+		for _, b := range c.RouterConfig.Balancers {
+			if b == nil {
+				continue
+			}
+			balancers[b.Tag] = b
+			if !strings.EqualFold(b.Strategy.Type, strategyLeastCost) {
+				continue
+			}
+			if c.HealthObservatory == nil {
+				return errors.New("balancer ", b.Tag, ": leastCost needs healthObservatory")
+			}
+			if b.Selectors != nil {
+				return errors.New("balancer ", b.Tag, ": leastCost selector is not supported; use outbound path")
+			}
+			settings := map[string]json.RawMessage{}
+			if b.Strategy.Settings != nil {
+				if err := json.Unmarshal(*b.Strategy.Settings, &settings); err != nil {
+					return errors.New("balancer ", b.Tag, ": settings: ", err)
+				}
+			}
+			for _, old := range []string{"costs", "defaultCost", "lazyOutbounds", "paths"} {
+				if _, exists := settings[old]; exists {
+					return errors.New("balancer ", b.Tag, ": ", old, " is not supported")
+				}
+			}
+			var parsed strategyLeastCostConfig
+			if b.Strategy.Settings != nil {
+				if err := json.Unmarshal(*b.Strategy.Settings, &parsed); err != nil {
+					return errors.New("balancer ", b.Tag, ": settings: ", err)
+				}
+			}
+			groups := map[string]*strategyPathGroupConfig{}
+			for _, g := range parsed.Groups {
+				if g == nil || g.Name == "" {
+					return errors.New("balancer ", b.Tag, ": group needs nonempty name")
+				}
+				if groups[g.Name] != nil {
+					return errors.New("balancer ", b.Tag, ": duplicate group ", g.Name)
+				}
+				if g.Cost == nil || *g.Cost <= 0 {
+					return errors.New("balancer ", b.Tag, ": group ", g.Name, " needs cost above zero")
+				}
+				if g.Probe != nil && !probeExists(c.HealthObservatory, *g.Probe) {
+					return errors.New("balancer ", b.Tag, ": group ", g.Name, ": unknown probe ", *g.Probe)
+				}
+				if g.ReturnInterval != nil && *g.ReturnInterval < 0 {
+					return errors.New("balancer ", b.Tag, ": group ", g.Name, ": negative returnInterval")
+				}
+				if g.FailedInRowToLeave != nil && (*g.FailedInRowToLeave < 1 || *g.FailedInRowToLeave > 16) {
+					return errors.New("balancer ", b.Tag, ": group ", g.Name, ": failedInRowToLeave must be from 1 to 16")
+				}
+				groups[g.Name] = g
+			}
+			groupNames[b.Tag] = groups
+		}
+	}
+	for i := range c.OutboundConfigs {
+		o := &c.OutboundConfigs[i]
+		p := o.Path
+		if p == nil {
 			continue
 		}
-		if h == nil {
-			return errors.New("balancer ", b.Tag, ": leastCost needs healthObservatory")
+		b := balancers[p.Balancer]
+		if b == nil || !strings.EqualFold(b.Strategy.Type, strategyLeastCost) {
+			return errors.New("outbound ", o.Tag, ": path.balancer ", p.Balancer, " must name a leastCost balancer")
 		}
-		for _, sel := range b.Selectors {
-			covered := false
-			for _, subject := range observed {
-				if strings.HasPrefix(sel, subject) {
-					covered = true
+		if o.Tag == "" {
+			return errors.New("outbound with path needs a tag")
+		}
+		if p.groupPresent && p.Group == "" {
+			return errors.New("outbound ", o.Tag, ": group needs nonempty name")
+		}
+		if p.Group != "" {
+			if groupNames[p.Balancer][p.Group] == nil {
+				return errors.New("outbound ", o.Tag, ": unknown group ", p.Group)
+			}
+			for _, field := range []struct {
+				name    string
+				present bool
+			}{
+				{"cost", p.Cost != nil}, {"isLazy", p.IsLazy != nil}, {"returnInterval", p.ReturnInterval != nil}, {"probe", p.Probe != nil},
+			} {
+				if field.present {
+					return errors.New("outbound ", o.Tag, ": ", field.name, " is set by group ", p.Group)
+				}
+			}
+		} else {
+			if p.Cost == nil || *p.Cost <= 0 {
+				return errors.New("outbound ", o.Tag, ": path needs cost above zero")
+			}
+			if p.Probe != nil && !probeExists(c.HealthObservatory, *p.Probe) {
+				return errors.New("outbound ", o.Tag, ": unknown probe ", *p.Probe)
+			}
+			if p.ReturnInterval != nil && *p.ReturnInterval < 0 {
+				return errors.New("outbound ", o.Tag, ": negative returnInterval")
+			}
+		}
+		def := &health.PathDefinition{Tag: o.Tag, Balancer: p.Balancer, Group: p.Group, IsLazy: p.IsLazy != nil && *p.IsLazy,
+			ReturnInterval: optionalDuration(p.ReturnInterval), Probe: derefString(p.Probe)}
+		if p.Cost != nil {
+			def.Cost = *p.Cost
+		}
+		if p.Group != "" {
+			def.Probe = derefString(groupNames[p.Balancer][p.Group].Probe)
+		}
+		pathsByBalancer[p.Balancer] = append(pathsByBalancer[p.Balancer], def)
+		c.HealthObservatory.Paths = append(c.HealthObservatory.Paths, def)
+	}
+	for tag, groups := range groupNames {
+		b := balancers[tag]
+		if len(pathsByBalancer[tag]) == 0 && len(providersByBalancer[tag]) == 0 {
+			return errors.New("balancer ", tag, ": leastCost has no paths and no provider")
+		}
+		for name := range groups {
+			used := false
+			for _, p := range pathsByBalancer[tag] {
+				if p.Group == name {
+					used = true
 					break
 				}
 			}
-			if !covered {
-				return errors.New("balancer ", b.Tag, ": selector ", sel, " is not covered by healthObservatory.subjectSelector")
+			if !used {
+				return errors.New("balancer ", tag, ": group ", name, " has no outbounds")
 			}
 		}
-	}
-	if h == nil {
-		return nil
-	}
-	for _, p := range h.Providers {
-		if p == nil || p.Apply == nil {
-			continue
+		for _, p := range pathsByBalancer[tag] {
+			b.Selectors = append(b.Selectors, p.Tag)
 		}
-		if err := checkProviderBalancer(p, balancers); err != nil {
-			return err
+		for _, p := range providersByBalancer[tag] {
+			b.Selectors = append(b.Selectors, p.Apply.TagPrefix)
+		}
+		settings := map[string]json.RawMessage{}
+		if b.Strategy.Settings != nil {
+			_ = json.Unmarshal(*b.Strategy.Settings, &settings)
+		}
+		defs := pathsByBalancer[tag]
+		if defs == nil {
+			defs = []*health.PathDefinition{}
+		}
+		raw, _ := json.Marshal(defs)
+		settings["paths"] = raw
+		raw, _ = json.Marshal(settings)
+		b.Strategy.Settings = (*json.RawMessage)(&raw)
+	}
+	if c.HealthObservatory != nil {
+		for _, p := range c.HealthObservatory.Providers {
+			if p == nil || p.Apply == nil {
+				continue
+			}
+			b := balancers[p.Apply.Balancer]
+			if b == nil || !strings.EqualFold(b.Strategy.Type, strategyLeastCost) {
+				return errors.New("healthObservatory: provider ", p.Tag, ": balancer ", p.Apply.Balancer, " must use leastCost")
+			}
 		}
 	}
 	return nil
 }
 
-// checkProviderBalancer makes sure the balancer a provider feeds exists and
-// picks up the outbounds it adds.
-func checkProviderBalancer(p *HealthProviderConfig, balancers []*BalancingRule) error {
-	a := p.Apply
-	for _, b := range balancers {
-		if b == nil || b.Tag != a.Balancer {
-			continue
-		}
-		if !strings.EqualFold(b.Strategy.Type, strategyLeastCost) {
-			return errors.New("healthObservatory: provider ", p.Tag, ": balancer ", a.Balancer, " must use leastCost")
-		}
-		for _, sel := range b.Selectors {
-			if strings.HasPrefix(a.TagPrefix, sel) {
-				return nil
-			}
-		}
-		return errors.New("healthObservatory: provider ", p.Tag, ": no selector of balancer ", a.Balancer, " matches tagPrefix ", a.TagPrefix)
+func probeExists(c *HealthObservatoryConfig, name string) bool {
+	if c == nil || name == "" {
+		return false
 	}
-	return errors.New("healthObservatory: provider ", p.Tag, ": no balancer ", a.Balancer)
+	for _, p := range c.Probes {
+		if p != nil && p.Name == name {
+			return true
+		}
+	}
+	return false
 }

@@ -25,8 +25,9 @@ func probeInstance(t *testing.T) *health.Observer {
 	t.Helper()
 	cfg, err := serial.LoadJSONConfig(strings.NewReader(`{
 		"log": {"loglevel": "none"},
-		"outbounds": [{"tag": "a1", "protocol": "freedom", "settings": {"finalRules": [{"action": "allow"}]}}],
-		"healthObservatory": {"subjectSelector": ["a"]}
+		"outbounds": [{"tag": "a1", "protocol": "freedom", "settings": {"finalRules": [{"action": "allow"}]}, "path":{"balancer":"auto","cost":1}}],
+		"routing": {"balancers":[{"tag":"auto","strategy":{"type":"leastCost"}}]},
+		"healthObservatory": {}
 	}`))
 	if err != nil {
 		t.Fatal(err)
@@ -177,9 +178,10 @@ func TestCloseEndsRunningProbesWithoutCountingThem(t *testing.T) {
 	}()
 	cfg, err := serial.LoadJSONConfig(strings.NewReader(`{
 		"log": {"loglevel": "none"},
-		"outbounds": [{"tag": "a1", "protocol": "freedom", "settings": {"finalRules": [{"action": "allow"}]}}],
-		"healthObservatory": {"subjectSelector": ["a"],
-			"probes": [{"destination": "http://` + ln.Addr().String() + `/silent", "timeout": "3s", "progressTimeout": "3s"}]}
+		"outbounds": [{"tag": "a1", "protocol": "freedom", "settings": {"finalRules": [{"action": "allow"}]}, "path":{"balancer":"auto","cost":1,"probe":"silent"}}],
+		"routing": {"balancers":[{"tag":"auto","strategy":{"type":"leastCost"}}]},
+		"healthObservatory": {
+			"probes": [{"name":"silent","destination": "http://` + ln.Addr().String() + `/silent", "timeout": "3s", "progressTimeout": "3s"}]}
 	}`))
 	if err != nil {
 		t.Fatal(err)

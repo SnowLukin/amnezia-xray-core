@@ -8,7 +8,7 @@ import (
 )
 
 func groupConfig() *SelectorConfig {
-	return &SelectorConfig{Costs: []*CostEntry{{Match: "a", Cost: 1, Group: &CostGroupConfig{FailedInRowToLeave: 3}}, {Match: "b", Cost: 2}}, StartOutbound: "a2"}
+	return &SelectorConfig{Paths: []*PathDefinition{{Tag: "a", Group: "a"}, {Tag: "b", Cost: 2}}, Groups: []*PathGroup{{Name: "a", Cost: 1, FailedInRowToLeave: 3}}, StartOutbound: "a2"}
 }
 
 func TestGroupStopsAfterConsecutiveFailures(t *testing.T) {
@@ -139,15 +139,16 @@ func TestGroupSuccessResetsFailures(t *testing.T) {
 
 func TestGroupSamePriceBeforeExpensiveAndProviderCostKeepsMembership(t *testing.T) {
 	cfg := groupConfig()
-	cfg.Costs[0].Group.FailedInRowToLeave = 1
-	cfg.Costs = append(cfg.Costs, &CostEntry{Match: "c", Cost: 1, Group: &CostGroupConfig{FailedInRowToLeave: 3}})
+	cfg.Groups[0].FailedInRowToLeave = 1
+	cfg.Paths = append(cfg.Paths, &PathDefinition{Tag: "c", Group: "c"})
+	cfg.Groups = append(cfg.Groups, &PathGroup{Name: "c", Cost: 1, FailedInRowToLeave: 3})
 	te := newTestEngine(t, nil, cfg, "a1", "a2", "b1", "c1", "c2")
 	te.markDown(te.path("a2"), "traffic", true, t0)
 	jobs, _ := te.tick(t0)
 	if len(jobs) != 1 || jobs[0].tag[0] != 'c' {
 		t.Fatalf("same-price group not first: %v", jobs)
 	}
-	te.costs[te.sel.tag] = map[string]float64{"c1": 9, "c2": 8}
+	te.sel.cfg.paths["c1"].cost, te.sel.cfg.paths["c2"].cost = 9, 8
 	if te.sel.groupFor("c1") != te.sel.groupFor("c2") {
 		t.Fatal("price split the group")
 	}
@@ -210,7 +211,11 @@ func TestGroupRecoveryWaitsForLifecycleGates(t *testing.T) {
 			case "pin":
 				te.sel.pinned = "b1"
 			case "lazy":
-				te.sel.cfg.lazy = []string{"a"}
+				for _, p := range te.sel.cfg.paths {
+					if p.groupName == "a" {
+						p.lazy = true
+					}
+				}
 			case "network":
 				te.networkDown = true
 			}
@@ -229,7 +234,11 @@ func TestGroupRecoveryWaitsForLifecycleGates(t *testing.T) {
 			case "pin":
 				te.sel.pinned = ""
 			case "lazy":
-				te.sel.cfg.lazy = nil
+				for _, p := range te.sel.cfg.paths {
+					if p.groupName == "a" {
+						p.lazy = false
+					}
+				}
 			case "network":
 				te.networkDown = false
 			}
@@ -301,7 +310,7 @@ func TestGroupViewsAndReportCount(t *testing.T) {
 }
 
 func TestGroupProviderSummaryUsesOwnMembersAndCamelCase(t *testing.T) {
-	cfg := &SelectorConfig{Costs: []*CostEntry{{Match: "x", Cost: 1, Group: &CostGroupConfig{FailedInRowToLeave: 1}}}, StartOutbound: "p-x1"}
+	cfg := &SelectorConfig{Paths: []*PathDefinition{{Tag: "x", Group: "x"}}, Groups: []*PathGroup{{Name: "x", Cost: 1, FailedInRowToLeave: 1}}, StartOutbound: "p-x1"}
 	te := newProviderEngine(t, quietProvider(nil), cfg, "p-x1", "p-x2", "other-x3")
 	te.markDown(te.path("p-x1"), "traffic", true, t0)
 	body, _, _ := requestOf(t, te, t0)
@@ -398,7 +407,11 @@ func TestGroupProvisionalRestEndsWithNetworkRecovery(t *testing.T) {
 func TestGroupHostCanCheckAfterGroupQuarantine(t *testing.T) {
 	te := readyGroupEngine(t)
 	abandonGroup(t, te)
-	te.sel.cfg.lazy = []string{"a"}
+	for _, p := range te.sel.cfg.paths {
+		if p.groupName == "a" {
+			p.lazy = true
+		}
+	}
 	_, tags, err := te.requestProbe(te.sel.tag, []string{"a1", "a5"}, at(time.Minute))
 	if err != nil || len(tags) != 1 {
 		t.Fatal(tags, err)
@@ -417,7 +430,7 @@ func TestGroupBoundedAcrossCandidateAndSelectorChanges(t *testing.T) {
 	te := readyGroupEngine(t)
 	for i := range 100 {
 		tag := fmt.Sprintf("new%d", i)
-		cfg := &SelectorConfig{Costs: []*CostEntry{{Match: tag, Cost: 1, Group: &CostGroupConfig{}}}}
+		cfg := &SelectorConfig{Paths: []*PathDefinition{{Tag: tag, Group: tag}}, Groups: []*PathGroup{{Name: tag, Cost: 1}}}
 		te.addSelector(te.sel.tag, newSelectorSettings(cfg))
 		te.updateCandidates(te.sel, []string{tag}, t0)
 		if len(te.sel.groups) != 1 || len(te.sel.groups[tag].members) != 1 {
@@ -466,7 +479,7 @@ func TestGroupRingWrapsAndQuarantineCancelsQueuedReturn(t *testing.T) {
 	}
 	te = readyGroupEngine(t)
 	te.sel.groups["a"].limit = 1
-	te.costs[te.sel.tag] = map[string]float64{"a2": 10}
+	te.sel.cfg.paths["a2"].cost = 10
 	te.sel.returnToCheaperTarget = "a1"
 	te.enqueue("a1", reasonReturnToCheaper, te.sel.tag, t0)
 	te.markDown(te.path("a2"), "traffic", true, t0)
@@ -477,7 +490,7 @@ func TestGroupRingWrapsAndQuarantineCancelsQueuedReturn(t *testing.T) {
 }
 
 func TestGroupExhaustedRecoveryPrefersLiveLeaseAndCheaperGroup(t *testing.T) {
-	cfg := &SelectorConfig{Costs: []*CostEntry{{Match: "a", Cost: 9, Group: &CostGroupConfig{FailedInRowToLeave: 1}}, {Match: "c", Cost: 1, Group: &CostGroupConfig{FailedInRowToLeave: 1}}, {Match: "b", Cost: 2}}, StartOutbound: "a1"}
+	cfg := &SelectorConfig{Paths: []*PathDefinition{{Tag: "a", Group: "a"}, {Tag: "c", Group: "c"}, {Tag: "b", Cost: 2}}, Groups: []*PathGroup{{Name: "a", Cost: 9, FailedInRowToLeave: 1}, {Name: "c", Cost: 1, FailedInRowToLeave: 1}}, StartOutbound: "a1"}
 	te := newTestEngine(t, nil, cfg, "a1", "a2", "b1", "c1", "c2")
 	te.sel.groups["a"].down = true
 	te.sel.groups["c"].down = true
@@ -523,7 +536,7 @@ func TestGroupDownHostSkipsExpiredRepresentative(t *testing.T) {
 }
 
 func TestGroupDownHostOrdering(t *testing.T) {
-	cfg := &SelectorConfig{Costs: []*CostEntry{{Match: "a", Cost: 1, Group: &CostGroupConfig{}}, {Match: "c", Cost: 2, Group: &CostGroupConfig{}}, {Match: "b", Cost: 9}}, StartOutbound: "b1"}
+	cfg := &SelectorConfig{Paths: []*PathDefinition{{Tag: "a", Group: "a"}, {Tag: "c", Group: "c"}, {Tag: "b", Cost: 9}}, Groups: []*PathGroup{{Name: "a", Cost: 1}, {Name: "c", Cost: 2}}, StartOutbound: "b1"}
 	te := newTestEngine(t, nil, cfg, "a1", "a2", "b1", "c1", "c2")
 	te.s.schedule.hostProbes.maxOutbounds = 2
 	for _, g := range te.sel.groups {
@@ -542,7 +555,7 @@ func TestGroupDownHostSkipsLazyRepresentative(t *testing.T) {
 	te := readyGroupEngine(t)
 	abandonGroup(t, te)
 	g := te.sel.groups["a"]
-	te.sel.cfg.lazy = []string{g.members[g.position]}
+	te.sel.cfg.paths[g.members[g.position]].lazy = true
 	_, tags, err := te.requestProbe(te.sel.tag, nil, at(30*time.Second))
 	if err != nil {
 		t.Fatal(err)
@@ -591,7 +604,7 @@ func TestGroupDownHostQuarantineThenActualProbe(t *testing.T) {
 }
 
 func TestGroupDownHostPreservesUsablePriorityAndActualPrices(t *testing.T) {
-	cfg := &SelectorConfig{Costs: []*CostEntry{{Match: "a", Cost: 1, Group: &CostGroupConfig{}}, {Match: "c", Cost: 2, Group: &CostGroupConfig{}}, {Match: "b", Cost: 9}, {Match: "d", Cost: 12}}, StartOutbound: "b1"}
+	cfg := &SelectorConfig{Paths: []*PathDefinition{{Tag: "a", Group: "a"}, {Tag: "c", Group: "c"}, {Tag: "b", Cost: 9}, {Tag: "d", Cost: 12}}, Groups: []*PathGroup{{Name: "a", Cost: 1}, {Name: "c", Cost: 2}}, StartOutbound: "b1"}
 	te := newTestEngine(t, nil, cfg, "a1", "a2", "b1", "c1", "c2", "d1")
 	te.s.schedule.hostProbes.maxOutbounds = 3
 	for _, g := range te.sel.groups {
@@ -609,7 +622,9 @@ func TestGroupDownHostPreservesUsablePriorityAndActualPrices(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			te.costs[te.sel.tag] = tc.prices
+			for tag, price := range tc.prices {
+				te.sel.cfg.paths[tag].cost = price
+			}
 			for range 30 {
 				tags := te.probePlan(te.sel, t0)
 				if len(tags) != 3 || tags[0] != "b1" || tags[1] != "d1" || te.sel.groupFor(tags[2]) != te.sel.groups[tc.want] {

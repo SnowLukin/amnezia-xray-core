@@ -17,7 +17,7 @@ func TestHealthObservatoryConfig(t *testing.T) {
 	runMultiTestCase(t, []TestCase{
 		{
 			Input: `{
-				"subjectSelector": ["a", "b"],
+
 				"passive": {"dialTimeout": "6s", "failuresToSuspect": 3, "shouldKeepPendingOnDown": true, "shouldKeepSilentOnDown": true},
 				"connectivity": {"outbound": "direct", "destination": "https://example.com/204",
 				                 "timeout": "4s", "maxPause": "90s",
@@ -25,7 +25,7 @@ func TestHealthObservatoryConfig(t *testing.T) {
 			}`,
 			Parser: loadJSON(creator),
 			Output: &health.Config{
-				SubjectSelector: []string{"a", "b"},
+
 				Passive: &health.PassiveConfig{DialTimeout: int64(6 * time.Second), FailuresToSuspect: 3,
 					ShouldKeepPendingOnDown: true, ShouldKeepSilentOnDown: true},
 				Connectivity: &health.ConnectivityConfig{
@@ -41,31 +41,37 @@ func TestHealthObservatoryConfig(t *testing.T) {
 }
 
 func leastCostConfig(health, settings string, selector ...string) string {
-	sel, _ := json.Marshal(selector)
+	sel := ""
+	if len(selector) > 0 {
+		raw, _ := json.Marshal(selector)
+		sel = `,"selector":` + string(raw)
+	}
 	return `{
-		"outbounds": [{"tag": "a1", "protocol": "freedom"}, {"tag": "b1", "protocol": "freedom"}],
-		"routing": {"balancers": [{"tag": "auto", "selector": ` + string(sel) + `,
+		"outbounds": [{"tag": "a1", "protocol": "freedom", "path":{"balancer":"auto","cost":1}},
+		              {"tag": "b1", "protocol": "freedom", "path":{"balancer":"auto","cost":3}}],
+		"routing": {"balancers": [{"tag": "auto"` + sel + `,
 			"strategy": {"type": "leastCost", "settings": ` + settings + `}}]}` + health + `
 	}`
 }
 
 func TestLeastCostConfigChecks(t *testing.T) {
-	observed := `, "healthObservatory": {"subjectSelector": ["a", "b"]}`
+	observed := `, "healthObservatory": {}`
 	for _, tc := range []struct {
 		name, input string
 		ok          bool
 	}{
-		{"valid", leastCostConfig(observed, `{"costs": [{"match": "a", "cost": 1}]}`, "a", "b"), true},
-		{"no observatory", leastCostConfig("", `{}`, "a"), false},
-		{"selector not observed", leastCostConfig(`, "healthObservatory": {"subjectSelector": ["a"]}`, `{}`, "a", "b"), false},
-		{"zero cost", leastCostConfig(observed, `{"costs": [{"match": "a", "cost": 0}]}`, "a"), false},
-		{"broken regexp", leastCostConfig(observed, `{"costs": [{"isRegexp": true, "match": "a(", "cost": 1}]}`, "a"), false},
+		{"valid", leastCostConfig(observed, `{}`), true},
+		{"no observatory", leastCostConfig("", `{}`), false},
+		{"explicit selector", leastCostConfig(observed, `{}`, "a"), false},
+		{"removed costs", leastCostConfig(observed, `{"costs":[{"match":"a","cost":1}]}`), false},
+		{"removed defaultCost", leastCostConfig(observed, `{"defaultCost":1}`), false},
+		{"removed lazyOutbounds", leastCostConfig(observed, `{"lazyOutbounds":["a"]}`), false},
 	} {
 		c := new(Config)
-		if err := json.Unmarshal([]byte(tc.input), c); err != nil {
-			t.Fatalf("%s: %v", tc.name, err)
+		err := json.Unmarshal([]byte(tc.input), c)
+		if err == nil {
+			_, err = c.Build()
 		}
-		_, err := c.Build()
 		if (err == nil) != tc.ok {
 			t.Errorf("%s: build error %v, want ok %v", tc.name, err, tc.ok)
 		}
@@ -74,19 +80,20 @@ func TestLeastCostConfigChecks(t *testing.T) {
 
 func TestHealthObservatoryConfigRejects(t *testing.T) {
 	for _, input := range []string{
-		`{}`,
-		`{"subjectSelector": ["a"], "connectivity": {"outbound": "direct"}}`,
-		`{"subjectSelector": ["a"], "connectivity": {"outbound": "direct", "destination": "ftp://x/"}}`,
-		`{"subjectSelector": ["a"], "probes": [{"destination": "https://x/", "method": "POST"}]}`,
-		`{"subjectSelector": ["a"], "probes": [{"destination": "https://x/", "method": "HEAD", "minBytes": 1}]}`,
-		`{"subjectSelector": ["a"], "connectivity": {"outbound": "direct", "destination": "https://x/", "witnesses": [""]}}`,
-		`{"subjectSelector": ["a"], "schedule": {"probeJitterFraction": 1}}`,
+		`{"subjectSelector":[]}`,
+		`{ "connectivity": {"outbound": "direct"}}`,
+		`{ "connectivity": {"outbound": "direct", "destination": "ftp://x/"}}`,
+		`{ "probes": [{"destination": "https://x/", "method": "POST"}]}`,
+		`{ "probes": [{"destination": "https://x/", "method": "HEAD", "minBytes": 1}]}`,
+		`{ "connectivity": {"outbound": "direct", "destination": "https://x/", "witnesses": [""]}}`,
+		`{ "schedule": {"probeJitterFraction": 1}}`,
 	} {
 		c := new(HealthObservatoryConfig)
-		if err := json.Unmarshal([]byte(input), c); err != nil {
-			t.Fatalf("%s: %v", input, err)
+		err := json.Unmarshal([]byte(input), c)
+		if err == nil {
+			_, err = c.Build()
 		}
-		if _, err := c.Build(); err == nil {
+		if err == nil {
 			t.Fatalf("accepted %s", input)
 		}
 	}
@@ -106,7 +113,7 @@ func buildHealth(t *testing.T, raw string) (*health.Config, error) {
 }
 
 func TestHealthHostProbesConfig(t *testing.T) {
-	cfg, err := buildHealth(t, `{"subjectSelector": ["a"], "schedule": {"hostProbes": {"probesPerMinute": 2, "reuseWindow": "30s",
+	cfg, err := buildHealth(t, `{ "schedule": {"hostProbes": {"probesPerMinute": 2, "reuseWindow": "30s",
 		"maxOutbounds": 4, "timeout": "1m"}}}`)
 	if err != nil {
 		t.Fatal(err)
@@ -119,9 +126,9 @@ func TestHealthHostProbesConfig(t *testing.T) {
 
 func TestHealthReportInterval(t *testing.T) {
 	for raw, want := range map[string]int64{
-		`{"subjectSelector": ["a"], "report": {}}`:                  0,
-		`{"subjectSelector": ["a"], "report": {"interval": "0s"}}`:  -1,
-		`{"subjectSelector": ["a"], "report": {"interval": "90m"}}`: int64(90 * time.Minute),
+		`{ "report": {}}`:                  0,
+		`{ "report": {"interval": "0s"}}`:  -1,
+		`{ "report": {"interval": "90m"}}`: int64(90 * time.Minute),
 	} {
 		cfg, err := buildHealth(t, raw)
 		if err != nil {
@@ -140,10 +147,10 @@ func TestHealthDurationPresence(t *testing.T) {
 		get  func(*health.Config) int64
 		want int64
 	}{
-		{"missing window", `{"subjectSelector":["a"],"passive":{}}`, func(c *health.Config) int64 { return c.GetPassive().GetWindow() }, 0},
-		{"zero window", `{"subjectSelector":["a"],"passive":{"window":"0s"}}`, func(c *health.Config) int64 { return c.GetPassive().GetWindow() }, -1},
-		{"missing cost delay", `{"subjectSelector":["a"],"providers":[{"tag":"p","url":"https://x.test/","apply":{"balancer":"b","tagPrefix":"p-"},"triggers":{"whenCostAbove":{"cost":2}}}]}`, func(c *health.Config) int64 { return c.GetProviders()[0].GetTriggers().GetWhenCostAbove().GetAfter() }, 0},
-		{"zero cost delay", `{"subjectSelector":["a"],"providers":[{"tag":"p","url":"https://x.test/","apply":{"balancer":"b","tagPrefix":"p-"},"triggers":{"whenCostAbove":{"cost":2,"after":"0s"}}}]}`, func(c *health.Config) int64 { return c.GetProviders()[0].GetTriggers().GetWhenCostAbove().GetAfter() }, -1},
+		{"missing window", `{"passive":{}}`, func(c *health.Config) int64 { return c.GetPassive().GetWindow() }, 0},
+		{"zero window", `{"passive":{"window":"0s"}}`, func(c *health.Config) int64 { return c.GetPassive().GetWindow() }, -1},
+		{"missing cost delay", `{"providers":[{"tag":"p","url":"https://x.test/","apply":{"balancer":"b","tagPrefix":"p-"},"triggers":{"whenCostAbove":{"cost":2}}}]}`, func(c *health.Config) int64 { return c.GetProviders()[0].GetTriggers().GetWhenCostAbove().GetAfter() }, 0},
+		{"zero cost delay", `{"providers":[{"tag":"p","url":"https://x.test/","apply":{"balancer":"b","tagPrefix":"p-"},"triggers":{"whenCostAbove":{"cost":2,"after":"0s"}}}]}`, func(c *health.Config) int64 { return c.GetProviders()[0].GetTriggers().GetWhenCostAbove().GetAfter() }, -1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got, err := buildHealth(t, tc.raw)
@@ -156,17 +163,17 @@ func TestHealthDurationPresence(t *testing.T) {
 		})
 	}
 	for key, raw := range map[string]string{
-		"passive.dialTimeout":         `{"subjectSelector":["a"],"passive":{"dialTimeout":"0s"}}`,
-		"probes[].timeout":            `{"subjectSelector":["a"],"probes":[{"timeout":"0s"}]}`,
-		"connectivity.timeout":        `{"subjectSelector":["a"],"connectivity":{"outbound":"direct","destination":"https://x.test/","timeout":"0s"}}`,
-		"schedule.hostProbes.timeout": `{"subjectSelector":["a"],"schedule":{"hostProbes":{"timeout":"0s"}}}`,
-		"provider p timeout":          `{"subjectSelector":["a"],"providers":[{"tag":"p","url":"https://x.test/","timeout":"0s","apply":{"balancer":"b","tagPrefix":"p-"}}]}`,
+		"passive.dialTimeout":         `{"passive":{"dialTimeout":"0s"}}`,
+		"probes[].timeout":            `{"probes":[{"timeout":"0s"}]}`,
+		"connectivity.timeout":        `{"connectivity":{"outbound":"direct","destination":"https://x.test/","timeout":"0s"}}`,
+		"schedule.hostProbes.timeout": `{"schedule":{"hostProbes":{"timeout":"0s"}}}`,
+		"provider p timeout":          `{"providers":[{"tag":"p","url":"https://x.test/","timeout":"0s","apply":{"balancer":"b","tagPrefix":"p-"}}]}`,
 	} {
 		if _, err := buildHealth(t, raw); err == nil || !strings.Contains(err.Error(), key) {
 			t.Errorf("%s: error %v must name %s", raw, err, key)
 		}
 	}
-	config := leastCostConfig(`, "healthObservatory": {"subjectSelector": ["a"]}`, `{"returnToCheaper":{"interval":"0s"}}`, "a")
+	config := leastCostConfig(`, "healthObservatory": {}`, `{"returnToCheaper":{"interval":"0s"}}`)
 	c := new(Config)
 	if err := json.Unmarshal([]byte(config), c); err != nil {
 		t.Fatal(err)
@@ -178,11 +185,11 @@ func TestHealthDurationPresence(t *testing.T) {
 
 func TestHealthSleepAfter(t *testing.T) {
 	for raw, want := range map[string]int64{
-		`{"subjectSelector": ["a"]}`:                                   0,
-		`{"subjectSelector": ["a"], "sleep": {}}`:                      0,
-		`{"subjectSelector": ["a"], "sleep": {"afterLastUse": "0s"}}`:  -1,
-		`{"subjectSelector": ["a"], "sleep": {"afterLastUse": "10s"}}`: int64(10 * time.Second),
-		`{"subjectSelector": ["a"], "sleep": {"afterLastUse": "15m"}}`: int64(15 * time.Minute),
+		`{}`:                                  0,
+		`{ "sleep": {}}`:                      0,
+		`{ "sleep": {"afterLastUse": "0s"}}`:  -1,
+		`{ "sleep": {"afterLastUse": "10s"}}`: int64(10 * time.Second),
+		`{ "sleep": {"afterLastUse": "15m"}}`: int64(15 * time.Minute),
 	} {
 		cfg, err := buildHealth(t, raw)
 		if err != nil {
@@ -193,8 +200,8 @@ func TestHealthSleepAfter(t *testing.T) {
 		}
 	}
 	for _, raw := range []string{
-		`{"subjectSelector": ["a"], "sleep": {"afterLastUse": "5s"}}`,
-		`{"subjectSelector": ["a"], "sleep": {"afterLastUse": "-1m"}}`,
+		`{ "sleep": {"afterLastUse": "5s"}}`,
+		`{ "sleep": {"afterLastUse": "-1m"}}`,
 	} {
 		if _, err := buildHealth(t, raw); err == nil {
 			t.Errorf("accepted %s", raw)
@@ -205,12 +212,12 @@ func TestHealthSleepAfter(t *testing.T) {
 // sleep.closeIdleAfter is off unless set: missing and "0s" leave zero.
 func TestHealthSleepCloseIdleAfter(t *testing.T) {
 	for raw, want := range map[string]int64{
-		`{"subjectSelector": ["a"]}`:                                     0,
-		`{"subjectSelector": ["a"], "sleep": {"afterLastUse": "1m"}}`:    0,
-		`{"subjectSelector": ["a"], "sleep": {"closeIdleAfter": "0s"}}`:  0,
-		`{"subjectSelector": ["a"], "sleep": {"closeIdleAfter": "10s"}}`: int64(10 * time.Second),
-		`{"subjectSelector": ["a"], "sleep": {"closeIdleAfter": "2m"}}`:  int64(2 * time.Minute),
-		`{"subjectSelector": ["a"], "sleep": {"closeIdleAfter": "10m"}}`: int64(10 * time.Minute),
+		`{}`:                                    0,
+		`{ "sleep": {"afterLastUse": "1m"}}`:    0,
+		`{ "sleep": {"closeIdleAfter": "0s"}}`:  0,
+		`{ "sleep": {"closeIdleAfter": "10s"}}`: int64(10 * time.Second),
+		`{ "sleep": {"closeIdleAfter": "2m"}}`:  int64(2 * time.Minute),
+		`{ "sleep": {"closeIdleAfter": "10m"}}`: int64(10 * time.Minute),
 	} {
 		cfg, err := buildHealth(t, raw)
 		if err != nil {
@@ -221,9 +228,9 @@ func TestHealthSleepCloseIdleAfter(t *testing.T) {
 		}
 	}
 	for _, raw := range []string{
-		`{"subjectSelector": ["a"], "sleep": {"closeIdleAfter": "9s"}}`,
-		`{"subjectSelector": ["a"], "sleep": {"closeIdleAfter": "11m"}}`,
-		`{"subjectSelector": ["a"], "sleep": {"closeIdleAfter": "-1m"}}`,
+		`{ "sleep": {"closeIdleAfter": "9s"}}`,
+		`{ "sleep": {"closeIdleAfter": "11m"}}`,
+		`{ "sleep": {"closeIdleAfter": "-1m"}}`,
 	} {
 		if _, err := buildHealth(t, raw); err == nil {
 			t.Errorf("accepted %s", raw)
@@ -233,7 +240,7 @@ func TestHealthSleepCloseIdleAfter(t *testing.T) {
 
 func TestHealthProvidersBuild(t *testing.T) {
 	cfg, err := buildHealth(t, `{
-	  "subjectSelector": ["a"],
+
 	  "providers": [{
 	    "tag": "fresh", "url": "https://api.example/set", "headers": {"Authorization": "Bearer x"},
 	    "via": ["auto", "direct"], "timeout": "5s",
@@ -266,7 +273,7 @@ func TestHealthProvidersBuild(t *testing.T) {
 // observatory takes for POST.
 func TestHealthProviderMethod(t *testing.T) {
 	for method, want := range map[string]string{`"get"`: "GET", `"Post"`: "POST", `""`: ""} {
-		cfg, err := buildHealth(t, `{"subjectSelector": ["a"], "providers": [{"tag": "a", "url": "https://x.test/",
+		cfg, err := buildHealth(t, `{ "providers": [{"tag": "a", "url": "https://x.test/",
 		  "method": `+method+`, "apply": {"balancer": "auto", "tagPrefix": "p-"}}]}`)
 		if err != nil || cfg.Providers[0].Method != want {
 			t.Errorf("method %s: %v, %+v; want %q", method, err, cfg, want)
@@ -285,7 +292,7 @@ func TestHealthProviderExpiry(t *testing.T) {
 		`, "expiry": {"renewAtFraction": 0, "urgentAtFraction": 0.3}`:                          "&{-1 0.3 0}",
 		`, "expiry": {"urgentAtFraction": 0.95}`:                                               "&{0 0.95 0}",
 	} {
-		cfg, err := buildHealth(t, `{"subjectSelector": ["a"], "providers": [{"tag": "a", "url": "https://x.test/",
+		cfg, err := buildHealth(t, `{ "providers": [{"tag": "a", "url": "https://x.test/",
 		  "triggers": {"interval": "1h"`+expiry+`}, "apply": {"balancer": "auto", "tagPrefix": "p-"}}]}`)
 		if err != nil {
 			t.Errorf("%s: %v", expiry, err)
@@ -312,7 +319,7 @@ func TestHealthProviderHeadersAndAuthRetry(t *testing.T) {
 		{`, "acceptedHeaders": ["Authorization", "x-api-key"]`, `, "limits": {"authRetryDelay": "2h"}`,
 			fmt.Sprint("[Authorization x-api-key] false ", int64(2*time.Hour))},
 	} {
-		cfg, err := buildHealth(t, `{"subjectSelector": ["a"], "providers": [{"tag": "a", "url": "https://x.test/"`+tc.limits+`,
+		cfg, err := buildHealth(t, `{ "providers": [{"tag": "a", "url": "https://x.test/"`+tc.limits+`,
 		  "apply": {"balancer": "auto", "tagPrefix": "p-"`+tc.apply+`}}]}`)
 		if err != nil {
 			t.Errorf("%s %s: %v", tc.apply, tc.limits, err)
@@ -329,7 +336,7 @@ func TestHealthProviderHeadersAndAuthRetry(t *testing.T) {
 // from starting, so the observatory checks all of it and reports it.
 func TestHealthProviderInitial(t *testing.T) {
 	provider := func(initial string) string {
-		return `{"subjectSelector": ["a"], "providers": [{"tag": "a", "url": "https://x.test/",
+		return `{ "providers": [{"tag": "a", "url": "https://x.test/",
 		  "apply": {"balancer": "auto", "tagPrefix": "p-"}` + initial + `}]}`
 	}
 	for initial, want := range map[string]string{
@@ -354,7 +361,7 @@ func TestHealthProviderInitial(t *testing.T) {
 
 func TestHealthProviderBaseVersion(t *testing.T) {
 	provider := func(base string) string {
-		return `{"subjectSelector": ["a"], "providers": [{"tag": "a", "url": "https://x.test/",
+		return `{ "providers": [{"tag": "a", "url": "https://x.test/",
 		  "apply": {"balancer": "auto", "tagPrefix": "p-"}, "baseVersion": "` + base + `"}]}`
 	}
 	for _, base := range []string{"", "cfg-12", strings.Repeat("b", 256)} {
@@ -406,7 +413,7 @@ func TestHealthProvidersReject(t *testing.T) {
 		            "limits": {"authRetryDelay": "25h"}}`,
 	}
 	for name, providers := range cases {
-		if _, err := buildHealth(t, `{"subjectSelector": ["a"], "providers": [`+providers+`]}`); err == nil {
+		if _, err := buildHealth(t, `{ "providers": [`+providers+`]}`); err == nil {
 			t.Errorf("%s: accepted", name)
 		} else if !strings.Contains(err.Error(), "healthObservatory") {
 			t.Errorf("%s: error %v does not name the section", name, err)
@@ -416,7 +423,7 @@ func TestHealthProvidersReject(t *testing.T) {
 
 func TestHealthProvidersNeedTheirBalancer(t *testing.T) {
 	provider := func(balancer, prefix string) string {
-		return `, "healthObservatory": {"subjectSelector": ["a"], "providers": [{"tag": "fresh",
+		return `, "healthObservatory": { "providers": [{"tag": "fresh",
 			"url": "https://x.test/", "apply": {"balancer": "` + balancer + `", "tagPrefix": "` + prefix + `"}}]}`
 	}
 	random := `{
@@ -427,17 +434,17 @@ func TestHealthProvidersNeedTheirBalancer(t *testing.T) {
 		name, input string
 		ok          bool
 	}{
-		{"prefix observed and picked up", leastCostConfig(provider("auto", "p-"), `{}`, "a", "p-"), true},
-		{"selector wider than the observed prefix", leastCostConfig(provider("auto", "p-x"), `{}`, "a", "p-"), false},
-		{"no such balancer", leastCostConfig(provider("main", "p-"), `{}`, "a", "p-"), false},
-		{"balancer misses the prefix", leastCostConfig(provider("auto", "p-"), `{}`, "a", "p-x"), false},
+		{"provider picked up", leastCostConfig(provider("auto", "p-"), `{}`), true},
+		{"prefix does not choose membership", leastCostConfig(provider("auto", "p-x"), `{}`), true},
+		{"no such balancer", leastCostConfig(provider("main", "p-"), `{}`), false},
+		{"explicit leastCost selector", leastCostConfig(provider("auto", "p-"), `{}`, "a", "p-x"), false},
 		{"balancer without leastCost", random, false},
 	} {
 		c := new(Config)
-		if err := json.Unmarshal([]byte(tc.input), c); err != nil {
-			t.Fatalf("%s: %v", tc.name, err)
+		err := json.Unmarshal([]byte(tc.input), c)
+		if err == nil {
+			_, err = c.Build()
 		}
-		_, err := c.Build()
 		if (err == nil) != tc.ok {
 			t.Errorf("%s: build error %v, want ok %v", tc.name, err, tc.ok)
 		}

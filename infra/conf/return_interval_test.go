@@ -5,33 +5,36 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/xtls/xray-core/app/observatory/health"
 )
 
 func TestLeastCostReturnIntervalPresence(t *testing.T) {
-	var cfg strategyLeastCostConfig
-	if err := json.Unmarshal([]byte(`{"costs":[{"match":"a","cost":1},{"match":"b","cost":3,"returnInterval":"0s"},{"match":"c","cost":5,"returnInterval":"90s"}]}`), &cfg); err != nil {
-		t.Fatal(err)
-	}
-	message, err := cfg.Build()
-	if err != nil {
-		t.Fatal(err)
-	}
-	entries := message.(*health.SelectorConfig).GetCosts()
-	for i, want := range []int64{0, -1, int64(90 * time.Second)} {
-		if got := entries[i].GetReturnInterval(); got != want {
-			t.Errorf("entry %d return interval = %d, want %d", i, got, want)
+	for _, tc := range []struct {
+		value string
+		want  int64
+	}{
+		{``, 0}, {`,"returnInterval":"0s"`, -1}, {`,"returnInterval":"90s"`, int64(90 * time.Second)},
+	} {
+		var c Config
+		raw := `{"outbounds":[{"tag":"a","protocol":"freedom","path":{"balancer":"auto","cost":1` + tc.value + `}}],"routing":{"balancers":[{"tag":"auto","strategy":{"type":"leastCost","settings":{}}}]},"healthObservatory":{}}`
+		if err := json.Unmarshal([]byte(raw), &c); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := c.Build(); err != nil {
+			t.Fatal(err)
+		}
+		if got := c.HealthObservatory.Paths[0].ReturnInterval; got != tc.want {
+			t.Errorf("interval %d, want %d", got, tc.want)
 		}
 	}
 }
 
 func TestLeastCostRejectsNegativeReturnInterval(t *testing.T) {
-	var cfg strategyLeastCostConfig
-	if err := json.Unmarshal([]byte(`{"costs":[{"match":"a","cost":1,"returnInterval":"-1s"}]}`), &cfg); err != nil {
+	var c Config
+	raw := `{"outbounds":[{"tag":"a","protocol":"freedom","path":{"balancer":"auto","cost":1,"returnInterval":"-1s"}}],"routing":{"balancers":[{"tag":"auto","strategy":{"type":"leastCost","settings":{}}}]},"healthObservatory":{}}`
+	if err := json.Unmarshal([]byte(raw), &c); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := cfg.Build(); err == nil || !strings.Contains(err.Error(), "returnInterval") {
-		t.Fatalf("negative returnInterval error = %v", err)
+	if _, err := c.Build(); err == nil || !strings.Contains(err.Error(), "returnInterval") {
+		t.Fatal(err)
 	}
 }

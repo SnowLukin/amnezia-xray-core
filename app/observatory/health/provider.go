@@ -100,6 +100,8 @@ type provider struct {
 	// Every outbound of the set by its full tag, in the order of the answer;
 	// before the first answer the outbounds of the config with the prefix.
 	tags      []string
+	pathDefs  []*PathDefinition
+	groupDefs []*PathGroup
 	draining  int
 	lastError string
 	refreshes int64
@@ -625,10 +627,10 @@ func (e *engine) resolveVia(via string, now time.Time) (string, string) {
 
 // providerChange is an applied set as the balancers see it.
 type providerChange struct {
-	// Every outbound of the set, in the order of the answer, and the costs
-	// the provider sent for them.
-	tags  []string
-	costs map[string]float64
+	// Every outbound of the set, in the order of the answer.
+	tags   []string
+	paths  []*PathDefinition
+	groups []*PathGroup
 	// New tags, tags that left the set, tags that came back before their
 	// drain ended, and tags whose settings changed.
 	added, retire, revive, reset []string
@@ -638,18 +640,42 @@ type providerChange struct {
 // outbounds.
 func (e *engine) applyProviderSet(p *provider, c providerChange, now time.Time) {
 	clear(e.replacing)
-	m := e.costs[p.cfg.balancer]
-	if m == nil {
-		m = map[string]float64{}
-		e.costs[p.cfg.balancer] = m
-	}
-	for _, tag := range c.tags {
-		if v, ok := c.costs[tag]; ok {
-			m[tag] = v
-		} else {
-			delete(m, tag)
+	if s := e.selectors[p.cfg.balancer]; s != nil {
+		newTags := map[string]bool{}
+		for _, tag := range c.tags {
+			newTags[tag] = true
+		}
+		for _, tag := range p.tags {
+			if newTags[tag] {
+				delete(s.cfg.paths, tag)
+			}
+		}
+		providerCfg := newSelectorSettings(&SelectorConfig{Paths: c.paths, Groups: c.groups})
+		for tag, path := range providerCfg.paths {
+			s.cfg.paths[tag] = path
 		}
 	}
+	newTags := map[string]bool{}
+	for _, tag := range c.tags {
+		newTags[tag] = true
+	}
+	for _, tag := range p.tags {
+		if newTags[tag] {
+			e.s.paths.Delete(tag)
+		}
+	}
+	groups := map[string]*PathGroup{}
+	for _, g := range c.groups {
+		groups[g.Name] = g
+	}
+	for _, path := range c.paths {
+		probe := path.Probe
+		if g := groups[path.Group]; g != nil {
+			probe = g.Probe
+		}
+		e.s.paths.Store(path.Tag, probe)
+	}
+	p.pathDefs, p.groupDefs = c.paths, c.groups
 	for _, tag := range c.retire {
 		e.retiring[tag] = true
 	}
@@ -720,8 +746,9 @@ func (e *engine) resetPath(tag string, now time.Time) {
 // balancers stop offering it before the next connection asks.
 func (e *engine) dropProviderOutbound(tag string, now time.Time) {
 	delete(e.retiring, tag)
-	for _, m := range e.costs {
-		delete(m, tag)
+	e.s.paths.Delete(tag)
+	for _, s := range e.selectors {
+		delete(s.cfg.paths, tag)
 	}
 	for _, p := range e.providers {
 		e.dropLease(p, tag)

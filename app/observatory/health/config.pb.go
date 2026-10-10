@@ -179,11 +179,9 @@ func (RefreshOnNetwork) EnumDescriptor() ([]byte, []int) {
 
 // Config of the health observatory. All durations are int64 nanoseconds.
 type Config struct {
-	state protoimpl.MessageState `protogen:"open.v1"`
-	// Outbounds whose connections are observed, matched by tag prefix.
-	SubjectSelector []string       `protobuf:"bytes,1,rep,name=subject_selector,json=subjectSelector,proto3" json:"subject_selector,omitempty"`
-	Passive         *PassiveConfig `protobuf:"bytes,2,opt,name=passive,proto3" json:"passive,omitempty"`
-	// The first profile whose selector matches a tag is used to probe it.
+	state   protoimpl.MessageState `protogen:"open.v1"`
+	Passive *PassiveConfig         `protobuf:"bytes,2,opt,name=passive,proto3" json:"passive,omitempty"`
+	// A path names its probe profile; without one it uses the built-in probe.
 	Probes       []*ProbeProfile     `protobuf:"bytes,3,rep,name=probes,proto3" json:"probes,omitempty"`
 	Connectivity *ConnectivityConfig `protobuf:"bytes,4,opt,name=connectivity,proto3" json:"connectivity,omitempty"`
 	Schedule     *ScheduleConfig     `protobuf:"bytes,5,opt,name=schedule,proto3" json:"schedule,omitempty"`
@@ -193,6 +191,7 @@ type Config struct {
 	Providers     []*ProviderConfig `protobuf:"bytes,8,rep,name=providers,proto3" json:"providers,omitempty"`
 	Report        *ReportConfig     `protobuf:"bytes,9,opt,name=report,proto3" json:"report,omitempty"`
 	Sleep         *SleepConfig      `protobuf:"bytes,10,opt,name=sleep,proto3" json:"sleep,omitempty"`
+	Paths         []*PathDefinition `protobuf:"bytes,11,rep,name=paths,proto3" json:"paths,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -225,13 +224,6 @@ func (x *Config) ProtoReflect() protoreflect.Message {
 // Deprecated: Use Config.ProtoReflect.Descriptor instead.
 func (*Config) Descriptor() ([]byte, []int) {
 	return file_app_observatory_health_config_proto_rawDescGZIP(), []int{0}
-}
-
-func (x *Config) GetSubjectSelector() []string {
-	if x != nil {
-		return x.SubjectSelector
-	}
-	return nil
 }
 
 func (x *Config) GetPassive() *PassiveConfig {
@@ -293,6 +285,13 @@ func (x *Config) GetReport() *ReportConfig {
 func (x *Config) GetSleep() *SleepConfig {
 	if x != nil {
 		return x.Sleep
+	}
+	return nil
+}
+
+func (x *Config) GetPaths() []*PathDefinition {
+	if x != nil {
+		return x.Paths
 	}
 	return nil
 }
@@ -483,7 +482,7 @@ func (x *PassiveConfig) GetShouldKeepSilentOnDown() bool {
 
 type ProbeProfile struct {
 	state       protoimpl.MessageState `protogen:"open.v1"`
-	Selector    []string               `protobuf:"bytes,1,rep,name=selector,proto3" json:"selector,omitempty"`
+	Name        string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
 	Destination string                 `protobuf:"bytes,2,opt,name=destination,proto3" json:"destination,omitempty"`
 	Method      string                 `protobuf:"bytes,3,opt,name=method,proto3" json:"method,omitempty"`
 	// Accepted status codes. Empty accepts 200-299.
@@ -527,11 +526,11 @@ func (*ProbeProfile) Descriptor() ([]byte, []int) {
 	return file_app_observatory_health_config_proto_rawDescGZIP(), []int{2}
 }
 
-func (x *ProbeProfile) GetSelector() []string {
+func (x *ProbeProfile) GetName() string {
 	if x != nil {
-		return x.Selector
+		return x.Name
 	}
-	return nil
+	return ""
 }
 
 func (x *ProbeProfile) GetDestination() string {
@@ -1152,77 +1151,34 @@ func (x *NetworkConfig) GetMaxNetworks() int32 {
 	return 0
 }
 
-// SelectorConfig configures the leastCost balancer strategy.
-type CostGroupConfig struct {
-	state              protoimpl.MessageState `protogen:"open.v1"`
-	FailedInRowToLeave int32                  `protobuf:"varint,1,opt,name=failed_in_row_to_leave,json=failedInRowToLeave,proto3" json:"failed_in_row_to_leave,omitempty"`
-	unknownFields      protoimpl.UnknownFields
-	sizeCache          protoimpl.SizeCache
-}
-
-func (x *CostGroupConfig) Reset() {
-	*x = CostGroupConfig{}
-	mi := &file_app_observatory_health_config_proto_msgTypes[11]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *CostGroupConfig) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*CostGroupConfig) ProtoMessage() {}
-
-func (x *CostGroupConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_app_observatory_health_config_proto_msgTypes[11]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use CostGroupConfig.ProtoReflect.Descriptor instead.
-func (*CostGroupConfig) Descriptor() ([]byte, []int) {
-	return file_app_observatory_health_config_proto_rawDescGZIP(), []int{11}
-}
-
-func (x *CostGroupConfig) GetFailedInRowToLeave() int32 {
-	if x != nil {
-		return x.FailedInRowToLeave
-	}
-	return 0
-}
-
-type CostEntry struct {
+type PathDefinition struct {
 	state          protoimpl.MessageState `protogen:"open.v1"`
-	Match          string                 `protobuf:"bytes,1,opt,name=match,proto3" json:"match,omitempty"`
-	IsRegexp       bool                   `protobuf:"varint,2,opt,name=is_regexp,json=isRegexp,proto3" json:"is_regexp,omitempty"`
-	Cost           float32                `protobuf:"fixed32,3,opt,name=cost,proto3" json:"cost,omitempty"`
-	ReturnInterval int64                  `protobuf:"varint,4,opt,name=return_interval,json=returnInterval,proto3" json:"return_interval,omitempty"`
-	Group          *CostGroupConfig       `protobuf:"bytes,5,opt,name=group,proto3" json:"group,omitempty"`
+	Tag            string                 `protobuf:"bytes,1,opt,name=tag,proto3" json:"tag,omitempty"`
+	Balancer       string                 `protobuf:"bytes,2,opt,name=balancer,proto3" json:"balancer,omitempty"`
+	Group          string                 `protobuf:"bytes,3,opt,name=group,proto3" json:"group,omitempty"`
+	Cost           float32                `protobuf:"fixed32,4,opt,name=cost,proto3" json:"cost,omitempty"`
+	IsLazy         bool                   `protobuf:"varint,5,opt,name=is_lazy,json=isLazy,proto3" json:"is_lazy,omitempty"`
+	ReturnInterval int64                  `protobuf:"varint,6,opt,name=return_interval,json=returnInterval,proto3" json:"return_interval,omitempty"`
+	Probe          string                 `protobuf:"bytes,7,opt,name=probe,proto3" json:"probe,omitempty"`
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }
 
-func (x *CostEntry) Reset() {
-	*x = CostEntry{}
-	mi := &file_app_observatory_health_config_proto_msgTypes[12]
+func (x *PathDefinition) Reset() {
+	*x = PathDefinition{}
+	mi := &file_app_observatory_health_config_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *CostEntry) String() string {
+func (x *PathDefinition) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*CostEntry) ProtoMessage() {}
+func (*PathDefinition) ProtoMessage() {}
 
-func (x *CostEntry) ProtoReflect() protoreflect.Message {
-	mi := &file_app_observatory_health_config_proto_msgTypes[12]
+func (x *PathDefinition) ProtoReflect() protoreflect.Message {
+	mi := &file_app_observatory_health_config_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1233,56 +1189,148 @@ func (x *CostEntry) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use CostEntry.ProtoReflect.Descriptor instead.
-func (*CostEntry) Descriptor() ([]byte, []int) {
-	return file_app_observatory_health_config_proto_rawDescGZIP(), []int{12}
+// Deprecated: Use PathDefinition.ProtoReflect.Descriptor instead.
+func (*PathDefinition) Descriptor() ([]byte, []int) {
+	return file_app_observatory_health_config_proto_rawDescGZIP(), []int{11}
 }
 
-func (x *CostEntry) GetMatch() string {
+func (x *PathDefinition) GetTag() string {
 	if x != nil {
-		return x.Match
+		return x.Tag
 	}
 	return ""
 }
 
-func (x *CostEntry) GetIsRegexp() bool {
+func (x *PathDefinition) GetBalancer() string {
 	if x != nil {
-		return x.IsRegexp
+		return x.Balancer
 	}
-	return false
+	return ""
 }
 
-func (x *CostEntry) GetCost() float32 {
+func (x *PathDefinition) GetGroup() string {
+	if x != nil {
+		return x.Group
+	}
+	return ""
+}
+
+func (x *PathDefinition) GetCost() float32 {
 	if x != nil {
 		return x.Cost
 	}
 	return 0
 }
 
-func (x *CostEntry) GetReturnInterval() int64 {
+func (x *PathDefinition) GetIsLazy() bool {
+	if x != nil {
+		return x.IsLazy
+	}
+	return false
+}
+
+func (x *PathDefinition) GetReturnInterval() int64 {
 	if x != nil {
 		return x.ReturnInterval
 	}
 	return 0
 }
 
-func (x *CostEntry) GetGroup() *CostGroupConfig {
+func (x *PathDefinition) GetProbe() string {
 	if x != nil {
-		return x.Group
+		return x.Probe
 	}
-	return nil
+	return ""
+}
+
+type PathGroup struct {
+	state              protoimpl.MessageState `protogen:"open.v1"`
+	Name               string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	Cost               float32                `protobuf:"fixed32,2,opt,name=cost,proto3" json:"cost,omitempty"`
+	IsLazy             bool                   `protobuf:"varint,3,opt,name=is_lazy,json=isLazy,proto3" json:"is_lazy,omitempty"`
+	ReturnInterval     int64                  `protobuf:"varint,4,opt,name=return_interval,json=returnInterval,proto3" json:"return_interval,omitempty"`
+	Probe              string                 `protobuf:"bytes,5,opt,name=probe,proto3" json:"probe,omitempty"`
+	FailedInRowToLeave int32                  `protobuf:"varint,6,opt,name=failed_in_row_to_leave,json=failedInRowToLeave,proto3" json:"failed_in_row_to_leave,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
+}
+
+func (x *PathGroup) Reset() {
+	*x = PathGroup{}
+	mi := &file_app_observatory_health_config_proto_msgTypes[12]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PathGroup) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PathGroup) ProtoMessage() {}
+
+func (x *PathGroup) ProtoReflect() protoreflect.Message {
+	mi := &file_app_observatory_health_config_proto_msgTypes[12]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PathGroup.ProtoReflect.Descriptor instead.
+func (*PathGroup) Descriptor() ([]byte, []int) {
+	return file_app_observatory_health_config_proto_rawDescGZIP(), []int{12}
+}
+
+func (x *PathGroup) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *PathGroup) GetCost() float32 {
+	if x != nil {
+		return x.Cost
+	}
+	return 0
+}
+
+func (x *PathGroup) GetIsLazy() bool {
+	if x != nil {
+		return x.IsLazy
+	}
+	return false
+}
+
+func (x *PathGroup) GetReturnInterval() int64 {
+	if x != nil {
+		return x.ReturnInterval
+	}
+	return 0
+}
+
+func (x *PathGroup) GetProbe() string {
+	if x != nil {
+		return x.Probe
+	}
+	return ""
+}
+
+func (x *PathGroup) GetFailedInRowToLeave() int32 {
+	if x != nil {
+		return x.FailedInRowToLeave
+	}
+	return 0
 }
 
 type SelectorConfig struct {
-	state protoimpl.MessageState `protogen:"open.v1"`
-	// Cost per matching tag. Lower is preferred.
-	Costs []*CostEntry `protobuf:"bytes,1,rep,name=costs,proto3" json:"costs,omitempty"`
-	// Cost of tags without a matching entry. Zero means the highest cost in
-	// costs, so an unexpected outbound is the last resort.
-	DefaultCost float32 `protobuf:"fixed32,2,opt,name=default_cost,json=defaultCost,proto3" json:"default_cost,omitempty"`
-	// Tags matched by these prefixes are never probed in the background and
-	// are only tried when everything cheaper is down.
-	LazyOutbounds []string `protobuf:"bytes,3,rep,name=lazy_outbounds,json=lazyOutbounds,proto3" json:"lazy_outbounds,omitempty"`
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	Paths  []*PathDefinition      `protobuf:"bytes,1,rep,name=paths,proto3" json:"paths,omitempty"`
+	Groups []*PathGroup           `protobuf:"bytes,2,rep,name=groups,proto3" json:"groups,omitempty"`
 	// Move traffic to the next candidate without probing it first.
 	SkipProbeBeforeSwitch bool `protobuf:"varint,4,opt,name=skip_probe_before_switch,json=skipProbeBeforeSwitch,proto3" json:"skip_probe_before_switch,omitempty"`
 	// When to probe the current outbound before leaving it.
@@ -1335,23 +1383,16 @@ func (*SelectorConfig) Descriptor() ([]byte, []int) {
 	return file_app_observatory_health_config_proto_rawDescGZIP(), []int{13}
 }
 
-func (x *SelectorConfig) GetCosts() []*CostEntry {
+func (x *SelectorConfig) GetPaths() []*PathDefinition {
 	if x != nil {
-		return x.Costs
+		return x.Paths
 	}
 	return nil
 }
 
-func (x *SelectorConfig) GetDefaultCost() float32 {
+func (x *SelectorConfig) GetGroups() []*PathGroup {
 	if x != nil {
-		return x.DefaultCost
-	}
-	return 0
-}
-
-func (x *SelectorConfig) GetLazyOutbounds() []string {
-	if x != nil {
-		return x.LazyOutbounds
+		return x.Groups
 	}
 	return nil
 }
@@ -2120,9 +2161,8 @@ var File_app_observatory_health_config_proto protoreflect.FileDescriptor
 
 const file_app_observatory_health_config_proto_rawDesc = "" +
 	"\n" +
-	"#app/observatory/health/config.proto\x12 xray.core.app.observatory.health\"\xde\x05\n" +
-	"\x06Config\x12)\n" +
-	"\x10subject_selector\x18\x01 \x03(\tR\x0fsubjectSelector\x12I\n" +
+	"#app/observatory/health/config.proto\x12 xray.core.app.observatory.health\"\x81\x06\n" +
+	"\x06Config\x12I\n" +
 	"\apassive\x18\x02 \x01(\v2/.xray.core.app.observatory.health.PassiveConfigR\apassive\x12F\n" +
 	"\x06probes\x18\x03 \x03(\v2..xray.core.app.observatory.health.ProbeProfileR\x06probes\x12X\n" +
 	"\fconnectivity\x18\x04 \x01(\v24.xray.core.app.observatory.health.ConnectivityConfigR\fconnectivity\x12L\n" +
@@ -2132,7 +2172,8 @@ const file_app_observatory_health_config_proto_rawDesc = "" +
 	"\tproviders\x18\b \x03(\v20.xray.core.app.observatory.health.ProviderConfigR\tproviders\x12F\n" +
 	"\x06report\x18\t \x01(\v2..xray.core.app.observatory.health.ReportConfigR\x06report\x12C\n" +
 	"\x05sleep\x18\n" +
-	" \x01(\v2-.xray.core.app.observatory.health.SleepConfigR\x05sleep\"\xc5\x05\n" +
+	" \x01(\v2-.xray.core.app.observatory.health.SleepConfigR\x05sleep\x12F\n" +
+	"\x05paths\x18\v \x03(\v20.xray.core.app.observatory.health.PathDefinitionR\x05pathsJ\x04\b\x01\x10\x02\"\xc5\x05\n" +
 	"\rPassiveConfig\x12\x16\n" +
 	"\x06window\x18\x01 \x01(\x03R\x06window\x12!\n" +
 	"\fdial_timeout\x18\x02 \x01(\x03R\vdialTimeout\x12,\n" +
@@ -2150,9 +2191,9 @@ const file_app_observatory_health_config_proto_rawDesc = "" +
 	"\x15stall_min_write_bytes\x18\f \x01(\x03R\x12stallMinWriteBytes\x125\n" +
 	"\x17partial_stall_min_bytes\x18\r \x01(\x03R\x14partialStallMinBytes\x12<\n" +
 	"\x1bshould_keep_pending_on_down\x18\x0e \x01(\bR\x17shouldKeepPendingOnDown\x12:\n" +
-	"\x1ashould_keep_silent_on_down\x18\x0f \x01(\bR\x16shouldKeepSilentOnDown\"\xf3\x01\n" +
-	"\fProbeProfile\x12\x1a\n" +
-	"\bselector\x18\x01 \x03(\tR\bselector\x12 \n" +
+	"\x1ashould_keep_silent_on_down\x18\x0f \x01(\bR\x16shouldKeepSilentOnDown\"\xeb\x01\n" +
+	"\fProbeProfile\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12 \n" +
 	"\vdestination\x18\x02 \x01(\tR\vdestination\x12\x16\n" +
 	"\x06method\x18\x03 \x01(\tR\x06method\x12+\n" +
 	"\x11expected_statuses\x18\x04 \x03(\x05R\x10expectedStatuses\x12\x1b\n" +
@@ -2203,19 +2244,25 @@ const file_app_observatory_health_config_proto_rawDesc = "" +
 	"\x10close_idle_after\x18\x02 \x01(\x03R\x0ecloseIdleAfter\"O\n" +
 	"\rNetworkConfig\x12\x1b\n" +
 	"\tno_memory\x18\x01 \x01(\bR\bnoMemory\x12!\n" +
-	"\fmax_networks\x18\x02 \x01(\x05R\vmaxNetworks\"E\n" +
-	"\x0fCostGroupConfig\x122\n" +
-	"\x16failed_in_row_to_leave\x18\x01 \x01(\x05R\x12failedInRowToLeave\"\xc4\x01\n" +
-	"\tCostEntry\x12\x14\n" +
-	"\x05match\x18\x01 \x01(\tR\x05match\x12\x1b\n" +
-	"\tis_regexp\x18\x02 \x01(\bR\bisRegexp\x12\x12\n" +
-	"\x04cost\x18\x03 \x01(\x02R\x04cost\x12'\n" +
-	"\x0freturn_interval\x18\x04 \x01(\x03R\x0ereturnInterval\x12G\n" +
-	"\x05group\x18\x05 \x01(\v21.xray.core.app.observatory.health.CostGroupConfigR\x05group\"\xac\x05\n" +
-	"\x0eSelectorConfig\x12A\n" +
-	"\x05costs\x18\x01 \x03(\v2+.xray.core.app.observatory.health.CostEntryR\x05costs\x12!\n" +
-	"\fdefault_cost\x18\x02 \x01(\x02R\vdefaultCost\x12%\n" +
-	"\x0elazy_outbounds\x18\x03 \x03(\tR\rlazyOutbounds\x127\n" +
+	"\fmax_networks\x18\x02 \x01(\x05R\vmaxNetworks\"\xc0\x01\n" +
+	"\x0ePathDefinition\x12\x10\n" +
+	"\x03tag\x18\x01 \x01(\tR\x03tag\x12\x1a\n" +
+	"\bbalancer\x18\x02 \x01(\tR\bbalancer\x12\x14\n" +
+	"\x05group\x18\x03 \x01(\tR\x05group\x12\x12\n" +
+	"\x04cost\x18\x04 \x01(\x02R\x04cost\x12\x17\n" +
+	"\ais_lazy\x18\x05 \x01(\bR\x06isLazy\x12'\n" +
+	"\x0freturn_interval\x18\x06 \x01(\x03R\x0ereturnInterval\x12\x14\n" +
+	"\x05probe\x18\a \x01(\tR\x05probe\"\xbf\x01\n" +
+	"\tPathGroup\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12\x12\n" +
+	"\x04cost\x18\x02 \x01(\x02R\x04cost\x12\x17\n" +
+	"\ais_lazy\x18\x03 \x01(\bR\x06isLazy\x12'\n" +
+	"\x0freturn_interval\x18\x04 \x01(\x03R\x0ereturnInterval\x12\x14\n" +
+	"\x05probe\x18\x05 \x01(\tR\x05probe\x122\n" +
+	"\x16failed_in_row_to_leave\x18\x06 \x01(\x05R\x12failedInRowToLeave\"\xb2\x05\n" +
+	"\x0eSelectorConfig\x12F\n" +
+	"\x05paths\x18\x01 \x03(\v20.xray.core.app.observatory.health.PathDefinitionR\x05paths\x12C\n" +
+	"\x06groups\x18\x02 \x03(\v2+.xray.core.app.observatory.health.PathGroupR\x06groups\x127\n" +
 	"\x18skip_probe_before_switch\x18\x04 \x01(\bR\x15skipProbeBeforeSwitch\x12[\n" +
 	"\x12confirm_with_probe\x18\x05 \x01(\x0e2-.xray.core.app.observatory.health.ConfirmModeR\x10confirmWithProbe\x12\"\n" +
 	"\rmin_hold_time\x18\x06 \x01(\x03R\vminHoldTime\x12c\n" +
@@ -2224,7 +2271,7 @@ const file_app_observatory_health_config_proto_rawDesc = "" +
 	"\x15network_change_action\x18\t \x01(\x0e23.xray.core.app.observatory.health.NetworkChangeModeR\x13networkChangeAction\x12%\n" +
 	"\x0estart_outbound\x18\n" +
 	" \x01(\tR\rstartOutbound\x12*\n" +
-	"\x11start_pin_timeout\x18\v \x01(\x03R\x0fstartPinTimeout\"\x9d\x03\n" +
+	"\x11start_pin_timeout\x18\v \x01(\x03R\x0fstartPinTimeoutJ\x04\b\x03\x10\x04\"\x9d\x03\n" +
 	"\x15ReturnToCheaperConfig\x12\x1a\n" +
 	"\binterval\x18\x01 \x01(\x03R\binterval\x12*\n" +
 	"\x11skip_random_phase\x18\x02 \x01(\bR\x0fskipRandomPhase\x12(\n" +
@@ -2332,8 +2379,8 @@ var file_app_observatory_health_config_proto_goTypes = []any{
 	(*ReportConfig)(nil),          // 11: xray.core.app.observatory.health.ReportConfig
 	(*SleepConfig)(nil),           // 12: xray.core.app.observatory.health.SleepConfig
 	(*NetworkConfig)(nil),         // 13: xray.core.app.observatory.health.NetworkConfig
-	(*CostGroupConfig)(nil),       // 14: xray.core.app.observatory.health.CostGroupConfig
-	(*CostEntry)(nil),             // 15: xray.core.app.observatory.health.CostEntry
+	(*PathDefinition)(nil),        // 14: xray.core.app.observatory.health.PathDefinition
+	(*PathGroup)(nil),             // 15: xray.core.app.observatory.health.PathGroup
 	(*SelectorConfig)(nil),        // 16: xray.core.app.observatory.health.SelectorConfig
 	(*ReturnToCheaperConfig)(nil), // 17: xray.core.app.observatory.health.ReturnToCheaperConfig
 	(*ProviderConfig)(nil),        // 18: xray.core.app.observatory.health.ProviderConfig
@@ -2354,27 +2401,28 @@ var file_app_observatory_health_config_proto_depIdxs = []int32{
 	18, // 6: xray.core.app.observatory.health.Config.providers:type_name -> xray.core.app.observatory.health.ProviderConfig
 	11, // 7: xray.core.app.observatory.health.Config.report:type_name -> xray.core.app.observatory.health.ReportConfig
 	12, // 8: xray.core.app.observatory.health.Config.sleep:type_name -> xray.core.app.observatory.health.SleepConfig
-	7,  // 9: xray.core.app.observatory.health.ConnectivityConfig.recheck_backoff:type_name -> xray.core.app.observatory.health.Backoff
-	7,  // 10: xray.core.app.observatory.health.ScheduleConfig.quarantine:type_name -> xray.core.app.observatory.health.Backoff
-	9,  // 11: xray.core.app.observatory.health.ScheduleConfig.host_probes:type_name -> xray.core.app.observatory.health.HostProbesConfig
-	14, // 12: xray.core.app.observatory.health.CostEntry.group:type_name -> xray.core.app.observatory.health.CostGroupConfig
-	15, // 13: xray.core.app.observatory.health.SelectorConfig.costs:type_name -> xray.core.app.observatory.health.CostEntry
-	0,  // 14: xray.core.app.observatory.health.SelectorConfig.confirm_with_probe:type_name -> xray.core.app.observatory.health.ConfirmMode
-	17, // 15: xray.core.app.observatory.health.SelectorConfig.return_to_cheaper:type_name -> xray.core.app.observatory.health.ReturnToCheaperConfig
-	1,  // 16: xray.core.app.observatory.health.SelectorConfig.network_change_action:type_name -> xray.core.app.observatory.health.NetworkChangeMode
-	24, // 17: xray.core.app.observatory.health.ProviderConfig.headers:type_name -> xray.core.app.observatory.health.ProviderConfig.HeadersEntry
-	19, // 18: xray.core.app.observatory.health.ProviderConfig.triggers:type_name -> xray.core.app.observatory.health.ProviderTriggers
-	22, // 19: xray.core.app.observatory.health.ProviderConfig.limits:type_name -> xray.core.app.observatory.health.ProviderLimits
-	23, // 20: xray.core.app.observatory.health.ProviderConfig.apply:type_name -> xray.core.app.observatory.health.ProviderApply
-	21, // 21: xray.core.app.observatory.health.ProviderTriggers.when_cost_above:type_name -> xray.core.app.observatory.health.CostTrigger
-	2,  // 22: xray.core.app.observatory.health.ProviderTriggers.network_change_mode:type_name -> xray.core.app.observatory.health.RefreshOnNetwork
-	20, // 23: xray.core.app.observatory.health.ProviderTriggers.expiry:type_name -> xray.core.app.observatory.health.ExpiryTrigger
-	7,  // 24: xray.core.app.observatory.health.ProviderLimits.backoff:type_name -> xray.core.app.observatory.health.Backoff
-	25, // [25:25] is the sub-list for method output_type
-	25, // [25:25] is the sub-list for method input_type
-	25, // [25:25] is the sub-list for extension type_name
-	25, // [25:25] is the sub-list for extension extendee
-	0,  // [0:25] is the sub-list for field type_name
+	14, // 9: xray.core.app.observatory.health.Config.paths:type_name -> xray.core.app.observatory.health.PathDefinition
+	7,  // 10: xray.core.app.observatory.health.ConnectivityConfig.recheck_backoff:type_name -> xray.core.app.observatory.health.Backoff
+	7,  // 11: xray.core.app.observatory.health.ScheduleConfig.quarantine:type_name -> xray.core.app.observatory.health.Backoff
+	9,  // 12: xray.core.app.observatory.health.ScheduleConfig.host_probes:type_name -> xray.core.app.observatory.health.HostProbesConfig
+	14, // 13: xray.core.app.observatory.health.SelectorConfig.paths:type_name -> xray.core.app.observatory.health.PathDefinition
+	15, // 14: xray.core.app.observatory.health.SelectorConfig.groups:type_name -> xray.core.app.observatory.health.PathGroup
+	0,  // 15: xray.core.app.observatory.health.SelectorConfig.confirm_with_probe:type_name -> xray.core.app.observatory.health.ConfirmMode
+	17, // 16: xray.core.app.observatory.health.SelectorConfig.return_to_cheaper:type_name -> xray.core.app.observatory.health.ReturnToCheaperConfig
+	1,  // 17: xray.core.app.observatory.health.SelectorConfig.network_change_action:type_name -> xray.core.app.observatory.health.NetworkChangeMode
+	24, // 18: xray.core.app.observatory.health.ProviderConfig.headers:type_name -> xray.core.app.observatory.health.ProviderConfig.HeadersEntry
+	19, // 19: xray.core.app.observatory.health.ProviderConfig.triggers:type_name -> xray.core.app.observatory.health.ProviderTriggers
+	22, // 20: xray.core.app.observatory.health.ProviderConfig.limits:type_name -> xray.core.app.observatory.health.ProviderLimits
+	23, // 21: xray.core.app.observatory.health.ProviderConfig.apply:type_name -> xray.core.app.observatory.health.ProviderApply
+	21, // 22: xray.core.app.observatory.health.ProviderTriggers.when_cost_above:type_name -> xray.core.app.observatory.health.CostTrigger
+	2,  // 23: xray.core.app.observatory.health.ProviderTriggers.network_change_mode:type_name -> xray.core.app.observatory.health.RefreshOnNetwork
+	20, // 24: xray.core.app.observatory.health.ProviderTriggers.expiry:type_name -> xray.core.app.observatory.health.ExpiryTrigger
+	7,  // 25: xray.core.app.observatory.health.ProviderLimits.backoff:type_name -> xray.core.app.observatory.health.Backoff
+	26, // [26:26] is the sub-list for method output_type
+	26, // [26:26] is the sub-list for method input_type
+	26, // [26:26] is the sub-list for extension type_name
+	26, // [26:26] is the sub-list for extension extendee
+	0,  // [0:26] is the sub-list for field type_name
 }
 
 func init() { file_app_observatory_health_config_proto_init() }

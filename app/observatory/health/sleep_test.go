@@ -96,12 +96,12 @@ func newSleepFixture(t *testing.T, cfg *Config, sc *SelectorConfig, candidates .
 	if cfg == nil {
 		cfg = &Config{}
 	}
-	cfg.SubjectSelector = append(cfg.SubjectSelector, "a", "w")
+	cfg.Paths = append(cfg.Paths, observed(candidates...)...)
 	if cfg.Schedule == nil {
 		cfg.Schedule = &ScheduleConfig{IdleAfter: int64(time.Hour)}
 	}
 	if sc == nil {
-		sc = &SelectorConfig{Costs: costs("a", 1, "w", 3)}
+		sc = &SelectorConfig{Paths: pathSpecs("a", 1, "w", 3)}
 	}
 	f := &sleepFixture{m: newFakeManager(), now: t0, handlers: map[string]*fakeHandler{}, proxies: map[string]*sleepyProxy{}}
 	f.o = newObserver(context.Background(), cfg)
@@ -112,7 +112,7 @@ func newSleepFixture(t *testing.T, cfg *Config, sc *SelectorConfig, candidates .
 		f.add(tag)
 	}
 	f.o.mu.Lock()
-	s := f.o.e.addSelector("auto", newSelectorSettings(sc))
+	s := f.o.e.addSelector("auto", newSelectorSettings(fixtureSelector(sc, candidates)))
 	f.o.e.noteDemand(t0)
 	f.o.e.updateCandidates(s, candidates, t0)
 	f.o.mu.Unlock()
@@ -258,7 +258,7 @@ func TestNeverSleepsChosenPinnedTargetProbedQueuedOrFetchVia(t *testing.T) {
 			e.switchTo(s, "w1", "failover", now)
 		}},
 		{"pinned by another balancer", func(t *testing.T, e *engine, s *selector, now time.Time) {
-			other := e.addSelector("other", newSelectorSettings(&SelectorConfig{Costs: costs("a", 1, "w", 3)}))
+			other := e.addSelector("other", newSelectorSettings(&SelectorConfig{Paths: pathSpecs("a1", 1, "w1", 3)}))
 			e.updateCandidates(other, []string{"a1", "w1"}, now)
 			if !e.pin("other", "w1", now) {
 				t.Fatal("setup: pin refused")
@@ -514,7 +514,7 @@ func TestSleepsAtOnceUnderLowMemory(t *testing.T) {
 // without a probe: nothing returns to w1, and no probe holds it, afterwards.
 func newDownFixture(t *testing.T) *sleepFixture {
 	t.Helper()
-	f := newSleepFixture(t, nil, &SelectorConfig{Costs: costs("a", 1, "w", 3), SkipProbeBeforeSwitch: true}, "a1", "w1")
+	f := newSleepFixture(t, nil, &SelectorConfig{Paths: pathSpecs("a", 1, "w", 3), SkipProbeBeforeSwitch: true}, "a1", "w1")
 	f.engine(func(e *engine) { e.switchTo(e.selectors["auto"], "w1", "failover", t0) })
 	f.turn(t0)
 	return f
@@ -756,7 +756,7 @@ func TestBusySleepRetriesDoublingUpTo30m(t *testing.T) {
 // A handler has Sleep whatever its proxy; one whose proxy holds nothing is
 // looked at once and never asked to sleep, and costs no wake.
 func TestNonSleeperAskedOnce(t *testing.T) {
-	f := newSleepFixture(t, nil, &SelectorConfig{Costs: costs("a", 1, "w", 3), SkipProbeBeforeSwitch: true}, "a1", "a2", "w1")
+	f := newSleepFixture(t, nil, &SelectorConfig{Paths: pathSpecs("a", 1, "w", 3), SkipProbeBeforeSwitch: true}, "a1", "a2", "w1")
 	f.turn(t0)
 	f.engine(func(e *engine) { e.switchTo(e.selectors["auto"], "a2", "failover", at(time.Second)) })
 	if wake := f.turn(at(time.Second)); !wake.IsZero() {

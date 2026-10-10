@@ -2,6 +2,7 @@ package health
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 )
@@ -28,14 +29,36 @@ func newSeededTestEngine(t *testing.T, seed int64, cfg *Config, sc *SelectorConf
 	if cfg == nil {
 		cfg = &Config{}
 	}
-	e := newEngine(newSettings(cfg), seed)
 	if sc == nil {
 		sc = &SelectorConfig{}
 	}
-	s := e.addSelector("auto", newSelectorSettings(sc))
+	copySC := fixtureSelector(sc, candidates)
+	cfg.Paths = append(cfg.Paths, copySC.Paths...)
+	e := newEngine(newSettings(cfg), seed)
+	s := e.addSelector("auto", newSelectorSettings(copySC))
 	e.noteDemand(t0)
 	e.updateCandidates(s, candidates, t0)
 	return &testEngine{engine: e, sel: s}
+}
+
+func fixtureSelector(sc *SelectorConfig, candidates []string) *SelectorConfig {
+	copySC := *sc
+	copySC.Paths = nil
+	for _, candidate := range candidates {
+		for _, spec := range sc.Paths {
+			if strings.Contains(candidate, spec.Tag) {
+				path := *spec
+				path.Tag = candidate
+				path.Balancer = "auto"
+				copySC.Paths = append(copySC.Paths, &path)
+				break
+			}
+		}
+		if len(sc.Paths) == 0 {
+			copySC.Paths = append(copySC.Paths, &PathDefinition{Tag: candidate, Balancer: "auto", Cost: 1})
+		}
+	}
+	return &copySC
 }
 
 // fail reports a failure of a new user connection.
@@ -50,10 +73,18 @@ func (te *testEngine) failN(n int, tag string, kind failureKind, now time.Time) 
 	}
 }
 
-func costs(pairs ...any) []*CostEntry {
-	var out []*CostEntry
+func pathSpecs(pairs ...any) []*PathDefinition {
+	var out []*PathDefinition
 	for i := 0; i < len(pairs); i += 2 {
-		out = append(out, &CostEntry{Match: pairs[i].(string), Cost: float32(pairs[i+1].(int))})
+		out = append(out, &PathDefinition{Tag: pairs[i].(string), Cost: float32(pairs[i+1].(int))})
+	}
+	return out
+}
+
+func observed(tags ...string) []*PathDefinition {
+	out := make([]*PathDefinition, 0, len(tags))
+	for _, tag := range tags {
+		out = append(out, &PathDefinition{Tag: tag, Cost: 1})
 	}
 	return out
 }
@@ -110,7 +141,7 @@ func (te *testEngine) eventTypes() []string {
 }
 
 func TestStartPicksCheapestWithoutProbing(t *testing.T) {
-	te := newTestEngine(t, nil, &SelectorConfig{Costs: costs("b", 3, "a", 1)}, "b1", "a1", "a2")
+	te := newTestEngine(t, nil, &SelectorConfig{Paths: pathSpecs("b", 3, "a", 1)}, "b1", "a1", "a2")
 	if got := te.sel.current(); got != "a1" {
 		t.Fatalf("start picked %q, want a1", got)
 	}
@@ -120,24 +151,24 @@ func TestStartPicksCheapestWithoutProbing(t *testing.T) {
 }
 
 func TestStartWithPassedOutbound(t *testing.T) {
-	te := newTestEngine(t, nil, &SelectorConfig{Costs: costs("a", 1, "b", 3), StartOutbound: "b1"}, "a1", "b1")
+	te := newTestEngine(t, nil, &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3), StartOutbound: "b1"}, "a1", "b1")
 	if te.sel.current() != "b1" || te.sel.pinned != "" {
 		t.Fatalf("start %q pinned %q, want b1 unpinned", te.sel.current(), te.sel.pinned)
 	}
 }
 
 func TestUnmatchedTagCostsTheMost(t *testing.T) {
-	te := newTestEngine(t, nil, &SelectorConfig{Costs: costs("a", 1, "b", 3)}, "x1", "b1", "a1")
+	te := newTestEngine(t, nil, &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3)}, "x1", "b1", "a1")
 	if te.sel.current() != "a1" {
 		t.Fatalf("start picked %q, want a1", te.sel.current())
 	}
-	if c := te.sel.cfg.cost("x1"); c != 3 {
-		t.Fatalf("unmatched cost %v, want the highest configured 3", c)
+	if te.sel.hasCandidate("x1") {
+		t.Fatal("outbound without path became a candidate")
 	}
 }
 
 func TestPathLevelFailuresSwitchAfterProbingCandidate(t *testing.T) {
-	te := newTestEngine(t, nil, &SelectorConfig{Costs: costs("a", 1, "b", 3)}, "a1", "a2", "b1")
+	te := newTestEngine(t, nil, &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3)}, "a1", "a2", "b1")
 	for i := 0; i < 3; i++ {
 		te.fail("a1", failDialTimeout, "", at(time.Duration(i)*time.Second))
 	}
@@ -157,7 +188,7 @@ func TestPathLevelFailuresSwitchAfterProbingCandidate(t *testing.T) {
 }
 
 func TestDialRetriesOfOneConnectionCountOnce(t *testing.T) {
-	te := newTestEngine(t, nil, &SelectorConfig{Costs: costs("a", 1, "b", 3)}, "a1", "b1")
+	te := newTestEngine(t, nil, &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3)}, "a1", "b1")
 	for i := 0; i < 5; i++ {
 		te.onFailure("a1", failDial, "", 7, at(time.Duration(i)*200*time.Millisecond))
 	}
@@ -172,7 +203,7 @@ func TestDialRetriesOfOneConnectionCountOnce(t *testing.T) {
 }
 
 func TestFailedCandidateMovesToNext(t *testing.T) {
-	te := newTestEngine(t, nil, &SelectorConfig{Costs: costs("a", 1, "b", 3)}, "a1", "a2", "b1")
+	te := newTestEngine(t, nil, &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3)}, "a1", "a2", "b1")
 	te.failN(3, "a1", failDial, at(0))
 	te.run(t, at(time.Second), map[string]bool{"a2": false})
 	if te.sel.current() != "b1" {
@@ -184,7 +215,7 @@ func TestFailedCandidateMovesToNext(t *testing.T) {
 }
 
 func TestOneTargetDoesNotMakeSuspect(t *testing.T) {
-	te := newTestEngine(t, nil, &SelectorConfig{Costs: costs("a", 1)}, "a1", "a2")
+	te := newTestEngine(t, nil, &SelectorConfig{Paths: pathSpecs("a", 1)}, "a1", "a2")
 	for i := 0; i < 10; i++ {
 		te.fail("a1", failNoResponse, "dead.test", at(time.Duration(i)*time.Second))
 	}
@@ -201,7 +232,7 @@ func suspectWeak(te *testEngine, tag string, base time.Duration) {
 
 func TestWeakEvidenceIsConfirmedAndFalseAlarmBacksOff(t *testing.T) {
 	cfg := &Config{Schedule: &ScheduleConfig{SuspectCooldown: int64(time.Minute)}}
-	te := newTestEngine(t, cfg, &SelectorConfig{Costs: costs("a", 1)}, "a1", "a2")
+	te := newTestEngine(t, cfg, &SelectorConfig{Paths: pathSpecs("a", 1)}, "a1", "a2")
 	suspectWeak(te, "a1", 0)
 	jobs := te.run(t, at(3*time.Second), nil)
 	if len(jobs) != 1 || jobs[0].reason != reasonConfirm {
@@ -225,7 +256,7 @@ func TestWeakEvidenceIsConfirmedAndFalseAlarmBacksOff(t *testing.T) {
 
 func TestTrafficThatAnswersASuspectIsAFalseAlarm(t *testing.T) {
 	cfg := &Config{Schedule: &ScheduleConfig{SuspectCooldown: int64(time.Minute)}}
-	te := newTestEngine(t, cfg, &SelectorConfig{Costs: costs("a", 1)}, "a1", "a2")
+	te := newTestEngine(t, cfg, &SelectorConfig{Paths: pathSpecs("a", 1)}, "a1", "a2")
 	suspectWeak(te, "a1", 0)
 	te.onSuccess("a1", at(2500*time.Millisecond))
 	if jobs := te.run(t, at(3*time.Second), nil); len(jobs) != 0 {
@@ -241,7 +272,7 @@ func TestTrafficThatAnswersASuspectIsAFalseAlarm(t *testing.T) {
 }
 
 func TestDownOutboundAsksToEndWaitingConnections(t *testing.T) {
-	te := newTestEngine(t, nil, &SelectorConfig{Costs: costs("a", 1, "b", 3)}, "a1", "b1")
+	te := newTestEngine(t, nil, &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3)}, "a1", "b1")
 	te.failN(3, "a1", failDial, at(0))
 	downs := te.takeDowns()
 	if len(downs) != 1 || downs[0].tag != "a1" || !downs[0].at.Equal(at(0)) {
@@ -257,7 +288,7 @@ func TestDownOutboundAsksToEndWaitingConnections(t *testing.T) {
 
 func TestWaitingConnectionsAreKeptWhenAskedOrWhenTheNetworkIsInDoubt(t *testing.T) {
 	cfg := &Config{Passive: &PassiveConfig{ShouldKeepPendingOnDown: true}}
-	te := newTestEngine(t, cfg, &SelectorConfig{Costs: costs("a", 1, "b", 3)}, "a1", "b1")
+	te := newTestEngine(t, cfg, &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3)}, "a1", "b1")
 	te.failN(3, "a1", failDial, at(0))
 	te.run(t, at(time.Second), nil)
 	for _, d := range te.takeDowns() {
@@ -265,7 +296,7 @@ func TestWaitingConnectionsAreKeptWhenAskedOrWhenTheNetworkIsInDoubt(t *testing.
 			t.Fatalf("keepPendingOnDown still marked %+v", d)
 		}
 	}
-	te = newTestEngine(t, nil, &SelectorConfig{Costs: costs("a", 1, "b", 3)}, "a1", "b1")
+	te = newTestEngine(t, nil, &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3)}, "a1", "b1")
 	te.doubt = true
 	te.failN(3, "a1", failDial, at(0))
 	if downs := te.takeDowns(); len(downs) != 0 {
@@ -274,7 +305,7 @@ func TestWaitingConnectionsAreKeptWhenAskedOrWhenTheNetworkIsInDoubt(t *testing.
 }
 
 func TestStrongEvidenceIgnoresFalseAlarmCooldown(t *testing.T) {
-	te := newTestEngine(t, nil, &SelectorConfig{Costs: costs("a", 1, "b", 3)}, "a1", "b1")
+	te := newTestEngine(t, nil, &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3)}, "a1", "b1")
 	te.path("a1").cooldownUntil = at(time.Hour)
 	te.path("a1").falseAlarms = 7
 	te.failN(3, "a1", failDial, at(time.Minute))
@@ -284,7 +315,7 @@ func TestStrongEvidenceIgnoresFalseAlarmCooldown(t *testing.T) {
 }
 
 func TestSuccessForgetsFailures(t *testing.T) {
-	te := newTestEngine(t, nil, &SelectorConfig{Costs: costs("a", 1)}, "a1", "a2")
+	te := newTestEngine(t, nil, &SelectorConfig{Paths: pathSpecs("a", 1)}, "a1", "a2")
 	te.fail("a1", failDial, "", at(0))
 	te.fail("a1", failDial, "", at(time.Second))
 	te.onSuccess("a1", at(2*time.Second))
@@ -296,7 +327,7 @@ func TestSuccessForgetsFailures(t *testing.T) {
 
 func TestFailuresOutsideWindowAreForgotten(t *testing.T) {
 	cfg := &Config{Passive: &PassiveConfig{Window: int64(10 * time.Second)}}
-	te := newTestEngine(t, cfg, &SelectorConfig{Costs: costs("a", 1)}, "a1", "a2")
+	te := newTestEngine(t, cfg, &SelectorConfig{Paths: pathSpecs("a", 1)}, "a1", "a2")
 	te.fail("a1", failDial, "", at(0))
 	te.fail("a1", failDial, "", at(5*time.Second))
 	te.fail("a1", failDial, "", at(20*time.Second))
@@ -306,7 +337,7 @@ func TestFailuresOutsideWindowAreForgotten(t *testing.T) {
 }
 
 func TestWeakEvidenceOnOutboundNotChosenIsDropped(t *testing.T) {
-	te := newTestEngine(t, nil, &SelectorConfig{Costs: costs("a", 1, "b", 3)}, "a1", "b1")
+	te := newTestEngine(t, nil, &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3)}, "a1", "b1")
 	suspectWeak(te, "b1", 0)
 	if te.path("b1").status == statusSuspect || len(te.path("b1").failures) != 0 {
 		t.Fatalf("old connections left b1 %v with %d failures", te.path("b1").status, len(te.path("b1").failures))
@@ -318,7 +349,7 @@ func TestWeakEvidenceOnOutboundNotChosenIsDropped(t *testing.T) {
 
 func TestChosenAgainAfterQuarantineIsJudgedAgain(t *testing.T) {
 	cfg := &Config{Schedule: quarantine(30 * time.Second)}
-	te := newTestEngine(t, cfg, &SelectorConfig{Costs: costs("a", 1, "b", 3), SkipProbeBeforeSwitch: true}, "a1", "b1")
+	te := newTestEngine(t, cfg, &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3), SkipProbeBeforeSwitch: true}, "a1", "b1")
 	te.failN(3, "a1", failDial, at(0))
 	if te.sel.current() != "b1" {
 		t.Fatalf("setup: want b1, got %q", te.sel.current())
@@ -335,7 +366,7 @@ func TestChosenAgainAfterQuarantineIsJudgedAgain(t *testing.T) {
 
 func TestSharedCandidateAnswersEveryBalancer(t *testing.T) {
 	e := newEngine(newSettings(&Config{}), 1)
-	sc := &SelectorConfig{Costs: costs("a", 1, "b", 3)}
+	sc := &SelectorConfig{Paths: pathSpecs("a1", 1, "b1", 3)}
 	s1 := e.addSelector("s1", newSelectorSettings(sc))
 	s2 := e.addSelector("s2", newSelectorSettings(sc))
 	e.noteDemand(t0)
@@ -358,7 +389,7 @@ func TestSharedCandidateAnswersEveryBalancer(t *testing.T) {
 
 func TestExhaustedThenRecheckRecovers(t *testing.T) {
 	cfg := &Config{Schedule: &ScheduleConfig{Quarantine: &Backoff{InitialDelay: int64(30 * time.Second), Multiplier: 2, MaxDelay: int64(time.Hour)}}}
-	te := newTestEngine(t, cfg, &SelectorConfig{Costs: costs("a", 1, "b", 3)}, "a1", "b1")
+	te := newTestEngine(t, cfg, &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3)}, "a1", "b1")
 	te.failN(3, "a1", failDial, at(0))
 	te.run(t, at(time.Second), map[string]bool{"b1": false})
 	if !te.sel.exhausted || te.sel.current() != "" {
@@ -382,7 +413,7 @@ func TestExhaustedThenRecheckRecovers(t *testing.T) {
 
 func TestIdleExhaustedDoesNotProbe(t *testing.T) {
 	cfg := &Config{Schedule: &ScheduleConfig{IdleAfter: int64(time.Minute), Quarantine: &Backoff{InitialDelay: int64(10 * time.Second)}}}
-	te := newTestEngine(t, cfg, &SelectorConfig{Costs: costs("a", 1)}, "a1")
+	te := newTestEngine(t, cfg, &SelectorConfig{Paths: pathSpecs("a", 1)}, "a1")
 	te.failN(3, "a1", failDial, at(0))
 	if jobs, _ := te.tick(at(2 * time.Hour)); len(jobs) != 0 {
 		t.Fatalf("idle engine probed")
@@ -391,7 +422,7 @@ func TestIdleExhaustedDoesNotProbe(t *testing.T) {
 
 func returnToCheaperConfig() *SelectorConfig {
 	return &SelectorConfig{
-		Costs:       costs("a", 1, "b", 3),
+		Paths:       pathSpecs("a", 1, "b", 3),
 		MinHoldTime: int64(time.Minute),
 		ReturnToCheaper: &ReturnToCheaperConfig{
 			Interval:          int64(5 * time.Minute),
@@ -511,7 +542,7 @@ func TestReturnToCheaperTargetLeavingCandidatesIsDropped(t *testing.T) {
 }
 
 func TestNetworkChangeForgetsAndRemembersPerNetwork(t *testing.T) {
-	te := newTestEngine(t, nil, &SelectorConfig{Costs: costs("a", 1, "b", 3)}, "a1", "b1")
+	te := newTestEngine(t, nil, &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3)}, "a1", "b1")
 	te.onNetworkChange("home", at(0))
 	te.run(t, at(time.Second), nil)
 	te.onSuccess("a1", at(2*time.Second))
@@ -538,7 +569,7 @@ func TestNetworkChangeForgetsAndRemembersPerNetwork(t *testing.T) {
 }
 
 func TestUnknownNetworkSchedulesReturnToCheaperKnownDoesNot(t *testing.T) {
-	sc := &SelectorConfig{Costs: costs("a", 1, "b", 3), MinHoldTime: int64(time.Second),
+	sc := &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3), MinHoldTime: int64(time.Second),
 		ReturnToCheaper: &ReturnToCheaperConfig{ProbesToReturn: 1}}
 	te := newTestEngine(t, nil, sc, "a1", "b1")
 	failoverToB(t, te, at(0))
@@ -560,6 +591,7 @@ func TestUnknownNetworkSchedulesReturnToCheaperKnownDoesNot(t *testing.T) {
 		t.Fatalf("known network lost the regular returnToCheaper timer")
 	}
 	sc.ReturnToCheaper.TryOnAllNetworks = true
+	sc.Paths = pathSpecs("a1", 1, "b1", 3)
 	te.addSelector("auto", newSelectorSettings(sc))
 	te.onNetworkChange("cafe", at(4*time.Minute))
 	if !soon(at(4 * time.Minute)) {
@@ -568,7 +600,7 @@ func TestUnknownNetworkSchedulesReturnToCheaperKnownDoesNot(t *testing.T) {
 }
 
 func TestIgnoreNetworkChangeKeepsState(t *testing.T) {
-	te := newTestEngine(t, nil, &SelectorConfig{Costs: costs("a", 1, "b", 3), NetworkChangeAction: NetworkChangeMode_IGNORE}, "a1", "b1")
+	te := newTestEngine(t, nil, &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3), NetworkChangeAction: NetworkChangeMode_IGNORE}, "a1", "b1")
 	te.failN(3, "b1", failDial, at(0))
 	te.onNetworkChange("x", at(time.Second))
 	if te.path("b1").status != statusDown {
@@ -577,7 +609,7 @@ func TestIgnoreNetworkChangeKeepsState(t *testing.T) {
 }
 
 func TestIgnoreNetworkChangeKeepsProbesInFlight(t *testing.T) {
-	te := newTestEngine(t, nil, &SelectorConfig{Costs: costs("a", 1, "b", 3), NetworkChangeAction: NetworkChangeMode_IGNORE}, "a1", "b1")
+	te := newTestEngine(t, nil, &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3), NetworkChangeAction: NetworkChangeMode_IGNORE}, "a1", "b1")
 	suspectWeak(te, "a1", 0)
 	jobs, _ := te.tick(at(3 * time.Second))
 	if len(jobs) != 1 || jobs[0].reason != reasonConfirm {
@@ -633,7 +665,7 @@ func TestProbeBudget(t *testing.T) {
 }
 
 func TestPinnedStaysUntilRelease(t *testing.T) {
-	te := newTestEngine(t, nil, &SelectorConfig{Costs: costs("a", 1, "b", 3), StartPinnedOutbound: "a1"}, "a1", "b1")
+	te := newTestEngine(t, nil, &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3), StartPinnedOutbound: "a1"}, "a1", "b1")
 	te.failN(3, "a1", failDial, at(0))
 	te.run(t, at(time.Second), nil)
 	if te.sel.current() != "a1" {
@@ -647,7 +679,7 @@ func TestPinnedStaysUntilRelease(t *testing.T) {
 }
 
 func TestStartPinReleasesItselfAfterItsTime(t *testing.T) {
-	sc := &SelectorConfig{Costs: costs("a", 1, "b", 3), StartPinnedOutbound: "a1", StartPinTimeout: int64(30 * time.Second)}
+	sc := &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3), StartPinnedOutbound: "a1", StartPinTimeout: int64(30 * time.Second)}
 	te := newTestEngine(t, nil, sc, "a1", "b1")
 	te.failN(3, "a1", failDial, at(time.Second))
 	te.run(t, at(10*time.Second), nil)
@@ -673,7 +705,7 @@ func connectivityConfig() *Config {
 }
 
 func TestConnectivityFailurePausesDecisions(t *testing.T) {
-	te := newTestEngine(t, connectivityConfig(), &SelectorConfig{Costs: costs("a", 1, "b", 3)}, "a1", "b1")
+	te := newTestEngine(t, connectivityConfig(), &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3)}, "a1", "b1")
 	te.failN(3, "a1", failDialTimeout, at(0))
 	jobs, _ := te.tick(at(time.Second))
 	if len(jobs) != 1 || jobs[0].reason != reasonConnectivity {
@@ -691,7 +723,7 @@ func TestConnectivityFailurePausesDecisions(t *testing.T) {
 }
 
 func TestUnreachableConnectivityCheckIsIgnoredAfterRepeatedFailures(t *testing.T) {
-	te := newTestEngine(t, connectivityConfig(), &SelectorConfig{Costs: costs("a", 1, "b", 3)}, "a1", "b1")
+	te := newTestEngine(t, connectivityConfig(), &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3)}, "a1", "b1")
 	te.failN(3, "a1", failDial, at(0))
 	now := at(time.Second)
 	for i := 0; i < 10 && te.sel.current() == "a1"; i++ {
@@ -711,7 +743,7 @@ func TestUnreachableConnectivityCheckIsIgnoredAfterRepeatedFailures(t *testing.T
 }
 
 func TestTrafficSuccessEndsNetworkDown(t *testing.T) {
-	te := newTestEngine(t, connectivityConfig(), &SelectorConfig{Costs: costs("a", 1, "b", 3)}, "a1", "b1")
+	te := newTestEngine(t, connectivityConfig(), &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3)}, "a1", "b1")
 	te.failN(3, "a1", failDial, at(0))
 	jobs, _ := te.tick(at(time.Second))
 	te.onProbeResult(jobs[0], probeResult{ok: false}, at(2*time.Second))
@@ -722,7 +754,7 @@ func TestTrafficSuccessEndsNetworkDown(t *testing.T) {
 }
 
 func TestNetworkProbeSuccessIsNotAFalseAlarm(t *testing.T) {
-	te := newTestEngine(t, connectivityConfig(), &SelectorConfig{Costs: costs("a", 1, "b", 3)}, "a1", "b1")
+	te := newTestEngine(t, connectivityConfig(), &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3)}, "a1", "b1")
 	for i := 0; i < 5; i++ {
 		base := time.Duration(i) * 10 * time.Minute
 		te.failN(3, "a1", failDial, at(base))
@@ -778,7 +810,7 @@ func countEvents(types []string, typ string) int {
 }
 
 func TestShortOutageKeepsThePath(t *testing.T) {
-	te := newTestEngine(t, connectivityConfig(), &SelectorConfig{Costs: costs("a", 1, "b", 3)}, "a1", "a2", "b1")
+	te := newTestEngine(t, connectivityConfig(), &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3)}, "a1", "a2", "b1")
 	var probes []*probeJob
 	for s := 0; s < 40; s++ {
 		probes = append(probes, te.second(at(time.Duration(s)*time.Second), false, nil)...)
@@ -802,7 +834,7 @@ func TestShortOutageKeepsThePath(t *testing.T) {
 }
 
 func TestLongOutageRulesOutboundsOutProvisionally(t *testing.T) {
-	te := newTestEngine(t, connectivityConfig(), &SelectorConfig{Costs: costs("a", 1, "b", 3)}, "a1", "a2", "b1")
+	te := newTestEngine(t, connectivityConfig(), &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3)}, "a1", "a2", "b1")
 	var probes []*probeJob
 	for s := 0; s < 180; s++ {
 		probes = append(probes, te.second(at(time.Duration(s)*time.Second), false, nil)...)
@@ -836,7 +868,7 @@ func TestLongOutageRulesOutboundsOutProvisionally(t *testing.T) {
 }
 
 func TestWorkingOutboundProvesTheCheckWrong(t *testing.T) {
-	te := newTestEngine(t, connectivityConfig(), &SelectorConfig{Costs: costs("a", 1, "b", 3)}, "a1", "b1")
+	te := newTestEngine(t, connectivityConfig(), &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3)}, "a1", "b1")
 	works := map[string]bool{"b1": true}
 	for s := 0; s < 120 && te.connectivityState() != "ignored"; s++ {
 		te.second(at(time.Duration(s)*time.Second), false, works)
@@ -852,7 +884,7 @@ func TestWorkingOutboundProvesTheCheckWrong(t *testing.T) {
 func TestNoPauseStillRulesOutADeadOutbound(t *testing.T) {
 	cfg := connectivityConfig()
 	cfg.Connectivity.MaxPause = 1
-	te := newTestEngine(t, cfg, &SelectorConfig{Costs: costs("a", 1, "b", 3)}, "a1", "b1")
+	te := newTestEngine(t, cfg, &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3)}, "a1", "b1")
 	works := map[string]bool{"b1": true}
 	for s := 0; s < 30 && te.sel.current() != "b1"; s++ {
 		te.second(at(time.Duration(s)*time.Second), false, works)
@@ -863,7 +895,7 @@ func TestNoPauseStillRulesOutADeadOutbound(t *testing.T) {
 }
 
 func TestWitnessTrafficProvesTheCheckWrong(t *testing.T) {
-	te := newTestEngine(t, connectivityConfig(), &SelectorConfig{Costs: costs("a", 1, "b", 3)}, "a1", "b1")
+	te := newTestEngine(t, connectivityConfig(), &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3)}, "a1", "b1")
 	works := map[string]bool{"b1": true}
 	switched := -1
 	for s := 0; s < 60 && switched < 0; s++ {
@@ -883,7 +915,7 @@ func TestWitnessTrafficProvesTheCheckWrong(t *testing.T) {
 }
 
 func TestStaleProbeResultIsIgnored(t *testing.T) {
-	te := newTestEngine(t, nil, &SelectorConfig{Costs: costs("a", 1, "b", 3)}, "a1", "b1")
+	te := newTestEngine(t, nil, &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3)}, "a1", "b1")
 	suspectWeak(te, "a1", 0)
 	jobs, _ := te.tick(at(3 * time.Second))
 	if len(jobs) != 1 || jobs[0].reason != reasonConfirm {
@@ -898,7 +930,7 @@ func TestStaleProbeResultIsIgnored(t *testing.T) {
 }
 
 func TestGCForgetsOutboundsNoLongerOffered(t *testing.T) {
-	te := newTestEngine(t, nil, &SelectorConfig{Costs: costs("a", 1)}, "a1", "a2")
+	te := newTestEngine(t, nil, &SelectorConfig{Paths: pathSpecs("a", 1)}, "a1", "a2")
 	te.updateCandidates(te.sel, []string{"a1"}, at(time.Second))
 	te.tick(at(time.Hour))
 	if _, ok := te.paths["a2"]; ok {
@@ -976,7 +1008,7 @@ func TestHistogramQuantiles(t *testing.T) {
 }
 
 func TestStatusIsJSON(t *testing.T) {
-	te := newTestEngine(t, nil, &SelectorConfig{Costs: costs("a", 1)}, "a1")
+	te := newTestEngine(t, nil, &SelectorConfig{Paths: pathSpecs("a", 1)}, "a1")
 	if _, err := json.Marshal(te.status(at(time.Second))); err != nil {
 		t.Fatal(err)
 	}

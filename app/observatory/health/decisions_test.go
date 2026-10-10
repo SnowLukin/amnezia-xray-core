@@ -61,7 +61,7 @@ func TestReturnToCheaperSurvivesNetworkChangeDuringItsProbe(t *testing.T) {
 // The same with a failover probe (onNetworkChange: forget): the balancer
 // waits for a probe that never answers and stays on a dead outbound.
 func TestFailoverSurvivesNetworkChangeDuringItsProbe(t *testing.T) {
-	sc := &SelectorConfig{Costs: costs("a", 1, "b", 3), NetworkChangeAction: NetworkChangeMode_FORGET}
+	sc := &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3), NetworkChangeAction: NetworkChangeMode_FORGET}
 	te := newTestEngine(t, nil, sc, "a1", "a2", "b1")
 	te.failN(3, "a1", failDial, at(0))
 	jobs, _ := te.tick(at(time.Second))
@@ -88,7 +88,7 @@ func TestFailoverSurvivesNetworkChangeDuringItsProbe(t *testing.T) {
 // The default recheck mode: Wi-Fi dies, the failover probe of a2 hangs,
 // the host reports LTE where a1 is blocked and a2 works.
 func TestFailoverAfterNetworkChangeInRecheckMode(t *testing.T) {
-	te := newTestEngine(t, nil, &SelectorConfig{Costs: costs("a", 1, "b", 3)}, "a1", "a2", "b1")
+	te := newTestEngine(t, nil, &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3)}, "a1", "a2", "b1")
 	te.failN(3, "a1", failDial, at(0))
 	jobs, _ := te.tick(at(time.Second))
 	if len(jobs) != 1 || jobs[0].tag != "a2" || jobs[0].reason != reasonFailover {
@@ -114,7 +114,7 @@ func TestFailoverAfterNetworkChangeInRecheckMode(t *testing.T) {
 // gc after half an hour without new connections drops the only balancer
 // and then every path with its statistics.
 func TestLongSilenceKeepsBalancerAndPathStats(t *testing.T) {
-	te := newTestEngine(t, nil, &SelectorConfig{Costs: costs("a", 1)}, "a1")
+	te := newTestEngine(t, nil, &SelectorConfig{Paths: pathSpecs("a", 1)}, "a1")
 	te.path("a1").stats.bytesDown = 50 << 20
 	te.tick(at(time.Second))
 	te.tick(at(31 * time.Minute))
@@ -128,7 +128,7 @@ func TestLongSilenceKeepsBalancerAndPathStats(t *testing.T) {
 // restarts failover: the in-flight probe of the cheaper candidate is
 // abandoned and the outbound's quarantine level is bumped twice.
 func TestSecondRuleOutKeepsCandidateProbe(t *testing.T) {
-	te := newTestEngine(t, nil, &SelectorConfig{Costs: costs("a", 1, "b", 3)}, "a1", "a2", "b1")
+	te := newTestEngine(t, nil, &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3)}, "a1", "a2", "b1")
 	te.onNetworkChange("lte", at(0))
 	jobs, _ := te.tick(at(0))
 	if len(jobs) != 1 || jobs[0].reason != reasonNetwork || jobs[0].tag != "a1" {
@@ -148,7 +148,7 @@ func TestSecondRuleOutKeepsCandidateProbe(t *testing.T) {
 
 // A network change while nobody uses the tunnel starts probes at once.
 func TestNoProbesWhileIdleOnNetworkChange(t *testing.T) {
-	te := newTestEngine(t, nil, &SelectorConfig{Costs: costs("a", 1, "b", 3)}, "a1", "b1")
+	te := newTestEngine(t, nil, &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3)}, "a1", "b1")
 	te.onNetworkChange("lte", at(time.Hour))
 	jobs, _ := te.tick(at(time.Hour))
 	if len(jobs) != 0 {
@@ -160,6 +160,8 @@ func TestNoProbesWhileIdleOnNetworkChange(t *testing.T) {
 // tried: returnToCheaperAt was zero because nothing was cheaper at the last switch.
 func TestCheaperCandidateAddedLaterIsUsed(t *testing.T) {
 	te := newTestEngine(t, &Config{Schedule: quarantine(30 * time.Second)}, returnToCheaperConfig(), "b1")
+	te.sel.cfg.paths["a1"] = &costEntrySettings{cost: 1}
+	te.sel.cfg.baseOrder = append([]string{"a1"}, te.sel.cfg.baseOrder...)
 	te.updateCandidates(te.sel, []string{"a1", "b1"}, at(time.Second))
 	drive(te.engine, at(2*time.Second), at(2*time.Hour), time.Second,
 		func(now time.Time) { te.noteDemand(now) }, nil, func() bool { return te.sel.current() == "a1" })
@@ -171,7 +173,7 @@ func TestCheaperCandidateAddedLaterIsUsed(t *testing.T) {
 // The failover candidate leaves the candidates while its probe is in
 // flight: failoverProbing is cleared and nothing moves the balancer on.
 func TestFailoverCandidateRemovedDuringItsProbe(t *testing.T) {
-	te := newTestEngine(t, nil, &SelectorConfig{Costs: costs("a", 1, "b", 3)}, "a1", "a2", "b1")
+	te := newTestEngine(t, nil, &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3)}, "a1", "a2", "b1")
 	te.failN(3, "a1", failDial, at(0))
 	jobs, _ := te.tick(at(time.Second))
 	if len(jobs) != 1 || jobs[0].tag != "a2" {
@@ -285,7 +287,7 @@ func TestPenaltyIsNotSkippedAfterSwitch(t *testing.T) {
 // Probe results while the host reported no network still take outbounds
 // down and walk the whole failover chain.
 func TestNetworkLostPausesFailover(t *testing.T) {
-	te := newTestEngine(t, nil, &SelectorConfig{Costs: costs("a", 1, "b", 3)}, "a1", "a2", "b1")
+	te := newTestEngine(t, nil, &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3)}, "a1", "a2", "b1")
 	te.failN(3, "a1", failDial, at(0))
 	te.onNetworkLost(at(500 * time.Millisecond))
 	drive(te.engine, at(time.Second), at(30*time.Second), time.Second,

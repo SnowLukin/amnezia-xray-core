@@ -97,7 +97,7 @@ func expectNoRefresh(t *testing.T, te *testEngine, now time.Time) {
 }
 
 func TestQuietProviderNeverRefreshes(t *testing.T) {
-	te := newProviderEngine(t, quietProvider(nil), &SelectorConfig{Costs: costs("a", 1, "d", 50)}, "a1", "d1")
+	te := newProviderEngine(t, quietProvider(nil), &SelectorConfig{Paths: pathSpecs("a", 1, "d", 50)}, "a1", "d1")
 	for h := 0; h < 48; h++ {
 		now := at(time.Duration(h) * time.Hour)
 		if h == 10 {
@@ -176,7 +176,7 @@ func TestRefreshWaitsForThePinButNotTheHost(t *testing.T) {
 			name = "start pin"
 		}
 		t.Run(name, func(t *testing.T) {
-			sc := &SelectorConfig{Costs: costs("a", 1, "b", 3)}
+			sc := &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3)}
 			if start {
 				sc.StartPinnedOutbound = "a1"
 			}
@@ -219,7 +219,7 @@ func TestRefreshWaitsForThePinButNotTheHost(t *testing.T) {
 // for the release, also once the lease ended.
 func TestRenewalWaitsForThePinUntilUrgent(t *testing.T) {
 	te := leaseEngine(t, renewing(func(x *ExpiryTrigger) { x.JitterFraction = -1 }),
-		&SelectorConfig{Costs: costs("p-", 1)}, "p-x1", "p-x2")
+		&SelectorConfig{Paths: pathSpecs("p-", 1)}, "p-x1", "p-x2")
 	te.lease(t0, map[string]time.Duration{"p-x1": time.Minute}, "p-x1", "p-x2")
 	te.pin("auto", "p-x1", at(time.Second))
 	if jobs, _ := te.tickProviders(at(40 * time.Second)); len(jobs) != 0 {
@@ -251,7 +251,7 @@ func TestRenewalWaitsForThePinUntilUrgent(t *testing.T) {
 // the urgent renewal goes, and the answer renews the lease.
 func TestLongPinKeepsTheLeaseOfThePinnedOutbound(t *testing.T) {
 	te := leaseEngine(t, renewing(func(x *ExpiryTrigger) { x.JitterFraction = -1 }),
-		&SelectorConfig{Costs: costs("p-", 1)}, "p-x1", "p-x2")
+		&SelectorConfig{Paths: pathSpecs("p-", 1)}, "p-x1", "p-x2")
 	te.lease(t0, map[string]time.Duration{"p-x1": time.Hour, "p-x2": time.Hour}, "p-x1", "p-x2")
 	te.pin("auto", "p-x1", at(time.Second))
 	var started []time.Duration
@@ -279,7 +279,7 @@ func TestMinHealthyFiresOnceBelowThreshold(t *testing.T) {
 	te := newProviderEngine(t, quietProvider(func(p *ProviderConfig) {
 		p.Triggers.MinHealthyOutbounds = 2
 		p.Limits.MinInterval = int64(time.Minute)
-	}), &SelectorConfig{Costs: costs("a", 1)}, "a1", "a2", "a3")
+	}), &SelectorConfig{Paths: pathSpecs("a", 1)}, "a1", "a2", "a3")
 	expectNoRefresh(t, te, t0)
 	te.path("a3").status = statusDown
 	expectNoRefresh(t, te, at(time.Second))
@@ -332,13 +332,17 @@ func TestExhaustedRefreshesAtOnceWhileNetworkIsUp(t *testing.T) {
 func TestExhaustedWaitsUntilTheBalancerSawTheNewSet(t *testing.T) {
 	te := newProviderEngine(t, quietProvider(func(p *ProviderConfig) {
 		p.Triggers.SkipRefreshWhenExhausted = false
-	}), &SelectorConfig{Costs: costs("a", 1, "p-", 2)}, "a1")
+	}), &SelectorConfig{Paths: pathSpecs("a", 1, "p-", 2)}, "a1")
 	te.failN(3, "a1", failDial, t0)
 	if !te.sel.exhausted {
 		t.Fatalf("setup: active %q, want exhausted", te.sel.current())
 	}
 	j := expectRefresh(t, te, t0, "exhausted")
-	te.applyProviderSet(te.prov(), providerChange{tags: []string{"p-n1"}, added: []string{"p-n1"}}, at(time.Second))
+	te.applyProviderSet(te.prov(), providerChange{
+		tags:  []string{"p-n1"},
+		paths: []*PathDefinition{{Tag: "p-n1", Balancer: "auto", Cost: 2}},
+		added: []string{"p-n1"},
+	}, at(time.Second))
 	te.onRefreshDone(j, refreshOutcome{ok: true, changed: true}, at(time.Second))
 	// No connection through the balancer since the apply: it is exhausted
 	// only by the old set.
@@ -363,7 +367,7 @@ func TestSameSetWhileExhaustedBacksOff(t *testing.T) {
 	now := t0
 	var gaps []time.Duration
 	last := now
-	for len(gaps) < 4 {
+	for len(gaps) < 4 && now.Before(t0.Add(2*time.Hour)) {
 		jobs, _ := te.refreshAt(now)
 		if len(jobs) == 1 {
 			if now != t0 {
@@ -374,6 +378,10 @@ func TestSameSetWhileExhaustedBacksOff(t *testing.T) {
 		}
 		now = now.Add(time.Second)
 	}
+	if len(gaps) < 4 {
+		t.Fatalf("four refresh gaps did not arrive: gaps %v, candidates %v, fetching %v",
+			gaps, te.sel.candidates, te.prov().fetching)
+	}
 	for i := 1; i < len(gaps); i++ {
 		if gaps[i] <= gaps[i-1] {
 			t.Fatalf("gaps between refreshes of the same dead set do not grow: %v", gaps)
@@ -381,10 +389,20 @@ func TestSameSetWhileExhaustedBacksOff(t *testing.T) {
 	}
 }
 
+func TestProviderFixtureStartsWithDeclaredBasePath(t *testing.T) {
+	te := newProviderEngine(t, quietProvider(func(p *ProviderConfig) {
+		p.Triggers.SkipRefreshWhenExhausted = false
+	}), nil, "a1")
+	if !te.sel.hasCandidate("a1") || te.sel.exhausted || te.prov().fetching {
+		t.Fatalf("fixture lost a1: candidates %v, exhausted %v, fetching %v",
+			te.sel.candidates, te.sel.exhausted, te.prov().fetching)
+	}
+}
+
 func TestCostAboveFiresAfterTimeOnExpensive(t *testing.T) {
 	te := newProviderEngine(t, quietProvider(func(p *ProviderConfig) {
 		p.Triggers.WhenCostAbove = &CostTrigger{Cost: 10, After: int64(15 * time.Minute)}
-	}), &SelectorConfig{Costs: costs("a", 1, "d", 50)}, "a1", "d1")
+	}), &SelectorConfig{Paths: pathSpecs("a", 1, "d", 50)}, "a1", "d1")
 	expectNoRefresh(t, te, at(30*time.Minute))
 	te.switchTo(te.sel, "d1", "failover", at(time.Hour))
 	_, wake := te.refreshAt(at(time.Hour))
@@ -402,7 +420,7 @@ func TestCostAboveFiresAfterTimeOnExpensive(t *testing.T) {
 func TestCostAboveForgetsTimeOnCheapPath(t *testing.T) {
 	te := newProviderEngine(t, quietProvider(func(p *ProviderConfig) {
 		p.Triggers.WhenCostAbove = &CostTrigger{Cost: 10, After: int64(15 * time.Minute)}
-	}), &SelectorConfig{Costs: costs("a", 1, "d", 50)}, "a1", "d1")
+	}), &SelectorConfig{Paths: pathSpecs("a", 1, "d", 50)}, "a1", "d1")
 	te.switchTo(te.sel, "d1", "failover", t0)
 	expectNoRefresh(t, te, at(10*time.Minute))
 	te.switchTo(te.sel, "a1", "return", at(11*time.Minute))
@@ -417,7 +435,7 @@ func TestCostAboveZeroAfterStartsInTheSwitchTurnAndUsesShortLimit(t *testing.T) 
 		p.Triggers.WhenCostAbove = &CostTrigger{Cost: 10, After: -1}
 		p.Limits.MinInterval = int64(5 * time.Minute)
 		p.Limits.ExhaustedMinInterval = int64(30 * time.Second)
-	}), &SelectorConfig{Costs: costs("a", 1, "d", 10)}, "a1", "d1")
+	}), &SelectorConfig{Paths: pathSpecs("a", 1, "d", 10)}, "a1", "d1")
 	if te.prov().cfg.costAboveAfter != 0 {
 		t.Fatalf("explicit zero after became %v", te.prov().cfg.costAboveAfter)
 	}
@@ -436,7 +454,7 @@ func TestCostAbovePositiveAfterKeepsNormalLimit(t *testing.T) {
 		p.Triggers.WhenCostAbove = &CostTrigger{Cost: 10, After: int64(15 * time.Second)}
 		p.Limits.MinInterval = int64(5 * time.Minute)
 		p.Limits.ExhaustedMinInterval = int64(time.Second)
-	}), &SelectorConfig{Costs: costs("a", 1, "d", 10)}, "a1", "d1")
+	}), &SelectorConfig{Paths: pathSpecs("a", 1, "d", 10)}, "a1", "d1")
 	te.requestRefresh("fresh")
 	j := expectRefresh(t, te, t0, "host")
 	te.onRefreshDone(j, refreshOutcome{ok: true, changed: true}, t0)
@@ -463,7 +481,7 @@ func TestCostAboveZeroAfterKeepsBackoffRetryAfterAndHourlyLimit(t *testing.T) {
 				p.Limits.MinInterval = int64(5 * time.Minute)
 				p.Limits.ExhaustedMinInterval = int64(time.Second)
 				p.Limits.Backoff = &Backoff{InitialDelay: int64(tc.wait), MaxDelay: int64(tc.wait), JitterFraction: -1}
-			}), &SelectorConfig{Costs: costs("a", 1, "d", 10)}, "a1", "d1")
+			}), &SelectorConfig{Paths: pathSpecs("a", 1, "d", 10)}, "a1", "d1")
 			te.switchTo(te.sel, "d1", "failover", at(time.Second))
 			j := expectRefresh(t, te, at(time.Second), "cost_above")
 			te.onRefreshDone(j, tc.first, at(time.Second))
@@ -485,7 +503,7 @@ func TestCostAboveZeroAfterKeepsBackoffRetryAfterAndHourlyLimit(t *testing.T) {
 		p.Limits.MinInterval = int64(5 * time.Minute)
 		p.Limits.ExhaustedMinInterval = int64(time.Second)
 		p.Limits.MaxRefreshesPerHour = 1
-	}), &SelectorConfig{Costs: costs("a", 1, "d", 10)}, "a1", "d1")
+	}), &SelectorConfig{Paths: pathSpecs("a", 1, "d", 10)}, "a1", "d1")
 	te.switchTo(te.sel, "d1", "failover", at(time.Second))
 	j := expectRefresh(t, te, at(time.Second), "cost_above")
 	te.onRefreshDone(j, refreshOutcome{ok: true, changed: true}, at(time.Second))
@@ -512,7 +530,7 @@ func TestCostAboveZeroAfterRespectsOtherGates(t *testing.T) {
 			te := newProviderEngine(t, quietProvider(func(p *ProviderConfig) {
 				p.Triggers.WhenCostAbove = &CostTrigger{Cost: 10, After: -1}
 				p.Limits.ExhaustedMinInterval = int64(time.Second)
-			}), &SelectorConfig{Costs: costs("a", 1, "d", 10)}, "a1", "d1")
+			}), &SelectorConfig{Paths: pathSpecs("a", 1, "d", 10)}, "a1", "d1")
 			now := at(2 * time.Second)
 			te.switchTo(te.sel, "d1", "failover", now)
 			tc.gate(te, now)
@@ -529,7 +547,7 @@ func TestCostAboveZeroAfterIsNotMaskedByMinHealthy(t *testing.T) {
 		p.Triggers.MinHealthyOutbounds = 2
 		p.Limits.MinInterval = int64(5 * time.Minute)
 		p.Limits.ExhaustedMinInterval = int64(30 * time.Second)
-	}), &SelectorConfig{Costs: costs("a", 1, "d", 10)}, "a1", "d1")
+	}), &SelectorConfig{Paths: pathSpecs("a", 1, "d", 10)}, "a1", "d1")
 	te.requestRefresh("fresh")
 	j := expectRefresh(t, te, t0, "host")
 	te.onRefreshDone(j, refreshOutcome{ok: true, changed: true}, t0)
@@ -545,7 +563,7 @@ func TestCostAboveZeroAfterIsNotMaskedByRenewal(t *testing.T) {
 		p.Triggers.Expiry = &ExpiryTrigger{RenewAtFraction: 0.5, UrgentAtFraction: 0.8, JitterFraction: -1}
 		p.Limits.MinInterval = int64(5 * time.Minute)
 		p.Limits.ExhaustedMinInterval = int64(30 * time.Second)
-	}), &SelectorConfig{Costs: costs("a", 1, "d", 10)}, "a1", "d1")
+	}), &SelectorConfig{Paths: pathSpecs("a", 1, "d", 10)}, "a1", "d1")
 	te.requestRefresh("fresh")
 	j := expectRefresh(t, te, t0, "host")
 	te.onRefreshDone(j, refreshOutcome{ok: true, changed: true}, t0)
@@ -578,7 +596,7 @@ func TestCostAboveZeroAfterDoesNotBypassSharedLimits(t *testing.T) {
 				if tc.limit != nil {
 					tc.limit(p)
 				}
-			}), &SelectorConfig{Costs: costs("a", 1, "d", 10)}, "a1", "d1")
+			}), &SelectorConfig{Paths: pathSpecs("a", 1, "d", 10)}, "a1", "d1")
 			te.requestRefresh("fresh")
 			j := expectRefresh(t, te, t0, "host")
 			te.onRefreshDone(j, tc.result, t0)
@@ -691,7 +709,7 @@ func TestNetworkChangeTriggerModes(t *testing.T) {
 			te := newProviderEngine(t, quietProvider(func(p *ProviderConfig) {
 				p.Triggers.NetworkChangeMode = c.mode
 				p.Triggers.NetworkSettleDelay = int64(30 * time.Second)
-			}), &SelectorConfig{Costs: costs("a", 1, "b", 3), NetworkChangeAction: NetworkChangeMode_FORGET}, "a1", "b1")
+			}), &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3), NetworkChangeAction: NetworkChangeMode_FORGET}, "a1", "b1")
 			if c.known {
 				te.networks["cafe"] = map[string]string{"auto": "a1"}
 			}
@@ -730,7 +748,7 @@ func TestNetworkTriggerInANetworkSeenUnderAPin(t *testing.T) {
 			te := newProviderEngine(t, quietProvider(func(p *ProviderConfig) {
 				p.Triggers.NetworkChangeMode = RefreshOnNetwork_REFRESH_UNKNOWN_NOT_CHEAPEST
 				p.Triggers.NetworkSettleDelay = int64(30 * time.Second)
-			}), &SelectorConfig{Costs: costs("a", 1, "b", 3), NetworkChangeAction: NetworkChangeMode_FORGET}, "a1", "b1")
+			}), &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3), NetworkChangeAction: NetworkChangeMode_FORGET}, "a1", "b1")
 			te.onNetworkChange("home", at(time.Minute))
 			if tc.learned {
 				te.onSuccess("a1", at(time.Minute+time.Second))
@@ -782,7 +800,7 @@ func TestNetworkTriggerAfterAPinOnTheCheapestThatFailed(t *testing.T) {
 			te := newProviderEngine(t, quietProvider(func(p *ProviderConfig) {
 				p.Triggers.NetworkChangeMode = RefreshOnNetwork_REFRESH_UNKNOWN_NOT_CHEAPEST
 				p.Triggers.NetworkSettleDelay = int64(30 * time.Second)
-			}), &SelectorConfig{Costs: costs("a", 1, "b", 3), NetworkChangeAction: NetworkChangeMode_FORGET,
+			}), &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3), NetworkChangeAction: NetworkChangeMode_FORGET,
 				SkipProbeBeforeSwitch: !probe}, "a1", "b1")
 			te.pin("auto", "a1", at(time.Minute))
 			back := at(10 * time.Minute)
@@ -974,13 +992,13 @@ func TestRefreshesOfManyClientsSpreadOut(t *testing.T) {
 }
 
 func TestProviderCostsRankCandidates(t *testing.T) {
-	te := newProviderEngine(t, quietProvider(nil), &SelectorConfig{Costs: costs("a", 1, "p-", 5)}, "a1")
+	te := newProviderEngine(t, quietProvider(nil), &SelectorConfig{Paths: pathSpecs("a", 1, "p-", 5)}, "a1")
 	te.failN(3, "a1", failDial, t0)
 	te.run(t, at(time.Second), nil)
 	if !te.sel.exhausted {
 		t.Fatalf("setup: want exhausted, active %q", te.sel.current())
 	}
-	te.applyProviderSet(te.prov(), providerChange{tags: []string{"p-x", "p-y"}, costs: map[string]float64{"p-y": 2},
+	te.applyProviderSet(te.prov(), providerChange{tags: []string{"p-x", "p-y"}, paths: []*PathDefinition{{Tag: "p-x", Cost: 5}, {Tag: "p-y", Cost: 2}},
 		added: []string{"p-x", "p-y"}}, at(2*time.Second))
 	te.updateCandidates(te.sel, []string{"a1", "p-x", "p-y"}, at(2*time.Second))
 	if te.sel.current() != "p-y" {
@@ -992,7 +1010,7 @@ func TestProviderCostsRankCandidates(t *testing.T) {
 }
 
 func TestRetiredOutboundHandsOverAfterProbe(t *testing.T) {
-	te := newProviderEngine(t, quietProvider(nil), &SelectorConfig{Costs: costs("p-x", 1, "p-y", 2)}, "p-x", "p-y")
+	te := newProviderEngine(t, quietProvider(nil), &SelectorConfig{Paths: pathSpecs("p-x", 1, "p-y", 2)}, "p-x", "p-y")
 	if te.sel.current() != "p-x" {
 		t.Fatalf("setup: active %q", te.sel.current())
 	}
@@ -1023,7 +1041,7 @@ func TestRetiredOutboundHandsOverAfterProbe(t *testing.T) {
 // the outbound failed meanwhile, as it did before leases; only an expired
 // one that failed is left as a failover.
 func TestRetiredOutboundThatFailedIsLeftAsRetired(t *testing.T) {
-	te := newProviderEngine(t, quietProvider(nil), &SelectorConfig{Costs: costs("p-x", 1, "p-y", 2)}, "p-x", "p-y")
+	te := newProviderEngine(t, quietProvider(nil), &SelectorConfig{Paths: pathSpecs("p-x", 1, "p-y", 2)}, "p-x", "p-y")
 	te.failN(3, "p-x", failDial, t0)
 	te.applyProviderSet(te.prov(), providerChange{tags: []string{"p-y"}, retire: []string{"p-x"}}, at(time.Second))
 	if te.path("p-x").status != statusDown || te.sel.current() != "p-x" {
@@ -1037,7 +1055,7 @@ func TestRetiredOutboundThatFailedIsLeftAsRetired(t *testing.T) {
 }
 
 func TestRetiredOutboundStaysWhenNothingElseWorks(t *testing.T) {
-	te := newProviderEngine(t, quietProvider(nil), &SelectorConfig{Costs: costs("p-", 1)}, "p-x", "p-y")
+	te := newProviderEngine(t, quietProvider(nil), &SelectorConfig{Paths: pathSpecs("p-", 1)}, "p-x", "p-y")
 	te.applyProviderSet(te.prov(), providerChange{retire: []string{"p-x"}}, at(time.Second))
 	te.run(t, at(2*time.Second), map[string]bool{"p-y": false})
 	if te.sel.current() != "p-x" || te.sel.exhausted {
@@ -1051,7 +1069,7 @@ func TestRetiredOutboundStaysWhenNothingElseWorks(t *testing.T) {
 }
 
 func TestDrainEndsAfterTheFailedCandidateRested(t *testing.T) {
-	te := newProviderEngine(t, quietProvider(nil), &SelectorConfig{Costs: costs("p-", 1)}, "p-x", "p-y")
+	te := newProviderEngine(t, quietProvider(nil), &SelectorConfig{Paths: pathSpecs("p-", 1)}, "p-x", "p-y")
 	te.applyProviderSet(te.prov(), providerChange{retire: []string{"p-x"}}, at(time.Second))
 	te.run(t, at(2*time.Second), map[string]bool{"p-y": false})
 	// p-y rested its quarantine before the drain of p-x ended: the failover
@@ -1065,7 +1083,7 @@ func TestDrainEndsAfterTheFailedCandidateRested(t *testing.T) {
 }
 
 func TestRevivedOutboundIsACandidateAgain(t *testing.T) {
-	te := newProviderEngine(t, quietProvider(nil), &SelectorConfig{Costs: costs("p-x", 1, "p-y", 2)}, "p-x", "p-y")
+	te := newProviderEngine(t, quietProvider(nil), &SelectorConfig{Paths: pathSpecs("p-x", 1, "p-y", 2)}, "p-x", "p-y")
 	te.applyProviderSet(te.prov(), providerChange{tags: []string{"p-y"}, retire: []string{"p-x"}}, at(time.Second))
 	te.run(t, at(2*time.Second), nil)
 	if te.sel.current() != "p-y" {
@@ -1078,7 +1096,7 @@ func TestRevivedOutboundIsACandidateAgain(t *testing.T) {
 }
 
 func TestReplacedOutboundIsJudgedAfresh(t *testing.T) {
-	te := newProviderEngine(t, quietProvider(nil), &SelectorConfig{Costs: costs("p-x", 1, "p-y", 2)}, "p-x", "p-y")
+	te := newProviderEngine(t, quietProvider(nil), &SelectorConfig{Paths: pathSpecs("p-x", 1, "p-y", 2)}, "p-x", "p-y")
 	te.failN(3, "p-x", failDial, t0)
 	if te.path("p-x").status != statusDown {
 		t.Fatalf("setup: p-x %v", te.path("p-x").status)
@@ -1090,7 +1108,7 @@ func TestReplacedOutboundIsJudgedAfresh(t *testing.T) {
 }
 
 func TestSwappedHandlerDoesNotMoveTheBalancer(t *testing.T) {
-	te := newProviderEngine(t, quietProvider(nil), &SelectorConfig{Costs: costs("p-x", 1, "p-y", 2)}, "p-x", "p-y")
+	te := newProviderEngine(t, quietProvider(nil), &SelectorConfig{Paths: pathSpecs("p-x", 1, "p-y", 2)}, "p-x", "p-y")
 	te.replacingTags([]string{"p-x"})
 	// A connection between the removal of the old handler and the
 	// registration of the new one sees p-x missing.
@@ -1107,7 +1125,7 @@ func TestSwappedHandlerDoesNotMoveTheBalancer(t *testing.T) {
 }
 
 func TestReleaseLeavesARetiredPinnedOutbound(t *testing.T) {
-	te := newProviderEngine(t, quietProvider(nil), &SelectorConfig{Costs: costs("p-", 1), StartPinnedOutbound: "p-x"}, "p-x", "p-y")
+	te := newProviderEngine(t, quietProvider(nil), &SelectorConfig{Paths: pathSpecs("p-", 1), StartPinnedOutbound: "p-x"}, "p-x", "p-y")
 	te.applyProviderSet(te.prov(), providerChange{tags: []string{"p-y"}, retire: []string{"p-x"}}, at(time.Second))
 	te.run(t, at(2*time.Second), nil)
 	if te.sel.current() != "p-x" {
@@ -1122,7 +1140,7 @@ func TestReleaseLeavesARetiredPinnedOutbound(t *testing.T) {
 }
 
 func TestReleaseKeepsARetiredPinnedOutboundWhenNothingElseWorks(t *testing.T) {
-	te := newProviderEngine(t, quietProvider(nil), &SelectorConfig{Costs: costs("p-", 1), StartPinnedOutbound: "p-x"}, "p-x", "p-y")
+	te := newProviderEngine(t, quietProvider(nil), &SelectorConfig{Paths: pathSpecs("p-", 1), StartPinnedOutbound: "p-x"}, "p-x", "p-y")
 	te.applyProviderSet(te.prov(), providerChange{tags: []string{"p-y"}, retire: []string{"p-x"}}, at(time.Second))
 	te.failN(3, "p-y", failDial, at(30*time.Second))
 	if te.path("p-y").status != statusDown {
@@ -1136,7 +1154,7 @@ func TestReleaseKeepsARetiredPinnedOutboundWhenNothingElseWorks(t *testing.T) {
 }
 
 func TestResolveVia(t *testing.T) {
-	te := newProviderEngine(t, quietProvider(nil), &SelectorConfig{Costs: costs("a", 1)}, "a1", "a2")
+	te := newProviderEngine(t, quietProvider(nil), &SelectorConfig{Paths: pathSpecs("a", 1)}, "a1", "a2")
 	if tag, skip := te.resolveVia("auto", t0); tag != "a1" || skip != "" {
 		t.Fatalf("balancer resolved to %q %q", tag, skip)
 	}
@@ -1170,9 +1188,13 @@ func TestProviderDefaultsAndOff(t *testing.T) {
 	if off.interval != 0 || off.jitter != 0 || off.minHealthy != 0 || off.whenExhausted || off.maxAge != 0 || off.maxPerHour != 0 {
 		t.Fatalf("off %+v", off)
 	}
-	s := newSettings(&Config{SubjectSelector: []string{"a"}, Providers: []*ProviderConfig{quietProvider(nil)}})
+	s := newSettings(&Config{Paths: observed("a"), Providers: []*ProviderConfig{quietProvider(nil)}})
+	if s.observes("p-x1") {
+		t.Fatal("unannounced provider outbound is observed")
+	}
+	s.paths.Store("p-x1", "")
 	if !s.observes("p-x1") {
-		t.Fatal("outbounds of a provider are not observed")
+		t.Fatal("declared provider outbound is not observed")
 	}
 }
 

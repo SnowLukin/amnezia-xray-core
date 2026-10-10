@@ -2,12 +2,10 @@ package health
 
 import (
 	"net/http"
-	"regexp"
 	"slices"
 	"strings"
+	"sync"
 	"time"
-
-	"github.com/xtls/xray-core/app/router"
 )
 
 // Defaults apply to every zero value of the protobuf config. Boolean fields
@@ -204,7 +202,7 @@ type passiveSettings struct {
 }
 
 type probeSettings struct {
-	selector        []string
+	name            string
 	destination     string
 	method          string
 	expectStatus    []int32
@@ -254,7 +252,8 @@ type hostProbeSettings struct {
 }
 
 type settings struct {
-	subjects     []string
+	paths        sync.Map
+	baseOrder    map[string][]string
 	passive      passiveSettings
 	probes       []probeSettings
 	connectivity *connectivitySettings
@@ -462,7 +461,11 @@ func toBackoff(b *Backoff, def backoff) backoff {
 }
 
 func newSettings(c *Config) *settings {
-	s := &settings{subjects: append([]string(nil), c.GetSubjectSelector()...)}
+	s := &settings{baseOrder: map[string][]string{}}
+	for _, p := range c.GetPaths() {
+		s.paths.Store(p.Tag, p.Probe)
+		s.baseOrder[p.Balancer] = append(s.baseOrder[p.Balancer], p.Tag)
+	}
 	p := c.GetPassive()
 	s.passive = passiveSettings{
 		window:             dur(p.GetWindow(), defaultWindow),
@@ -485,7 +488,7 @@ func newSettings(c *Config) *settings {
 	}
 	for _, pp := range c.GetProbes() {
 		s.probes = append(s.probes, probeSettings{
-			selector:        pp.GetSelector(),
+			name:            pp.GetName(),
 			destination:     stringOr(pp.GetDestination(), defaultProbeDestination),
 			method:          strings.ToUpper(stringOr(pp.GetMethod(), "GET")),
 			expectStatus:    pp.GetExpectedStatuses(),
@@ -540,16 +543,13 @@ func newSettings(c *Config) *settings {
 	for _, pc := range c.GetProviders() {
 		ps := newProviderSettings(pc)
 		s.providers = append(s.providers, ps)
-		// Outbounds a provider brings are observed like the configured ones.
-		if ps.prefix != "" && !matchesAny(ps.prefix, s.subjects) {
-			s.subjects = append(s.subjects, ps.prefix)
-		}
 	}
 	return s
 }
 
 func (s *settings) observes(tag string) bool {
-	return matchesAny(tag, s.subjects)
+	_, ok := s.paths.Load(tag)
+	return ok
 }
 
 func (s *settings) witness(tag string) bool {
@@ -557,9 +557,12 @@ func (s *settings) witness(tag string) bool {
 }
 
 func (s *settings) probeFor(tag string) *probeSettings {
-	for i := range s.probes {
-		if len(s.probes[i].selector) == 0 || matchesAny(tag, s.probes[i].selector) {
-			return &s.probes[i]
+	name, _ := s.paths.Load(tag)
+	if name != "" {
+		for i := range s.probes {
+			if s.probes[i].name == name {
+				return &s.probes[i]
+			}
 		}
 	}
 	return &probeSettings{
@@ -572,9 +575,9 @@ func (s *settings) probeFor(tag string) *probeSettings {
 }
 
 type selectorSettings struct {
-	weights          *router.WeightManager
-	costEntries      []costEntrySettings
-	lazy             []string
+	raw              *SelectorConfig
+	paths            map[string]*costEntrySettings
+	baseOrder        []string
 	switchAfterProbe bool
 	confirm          ConfirmMode
 	minHoldTime      time.Duration
@@ -586,18 +589,12 @@ type selectorSettings struct {
 }
 
 type costEntrySettings struct {
+	groupName      string
 	groupLimit     int
-	match          string
-	pattern        *regexp.Regexp
-	isRegexp       bool
+	cost           float64
+	lazy           bool
 	returnInterval int64
-}
-
-func (e costEntrySettings) matches(tag string) bool {
-	if e.isRegexp {
-		return e.pattern != nil && e.pattern.FindString(tag) != ""
-	}
-	return e.match != "" && strings.Contains(tag, e.match)
+	probe          string
 }
 
 type returnToCheaperSettings struct {
@@ -614,31 +611,29 @@ type returnToCheaperSettings struct {
 
 func newSelectorSettings(c *SelectorConfig) *selectorSettings {
 	u := c.GetReturnToCheaper()
-	defaultCost := float64(c.GetDefaultCost())
-	if defaultCost == 0 {
-		for _, w := range c.GetCosts() {
-			if float64(w.GetCost()) > defaultCost {
-				defaultCost = float64(w.GetCost())
-			}
-		}
+	groups := map[string]*PathGroup{}
+	for _, g := range c.GetGroups() {
+		groups[g.Name] = g
 	}
-	weights := make([]*router.StrategyWeight, 0, len(c.GetCosts()))
-	costEntries := make([]costEntrySettings, 0, len(c.GetCosts()))
-	for _, entry := range c.GetCosts() {
-		weights = append(weights, &router.StrategyWeight{Match: entry.GetMatch(), Regexp: entry.GetIsRegexp(), Value: entry.GetCost()})
-		cost := costEntrySettings{match: entry.GetMatch(), isRegexp: entry.GetIsRegexp(), returnInterval: entry.GetReturnInterval()}
-		if entry.Group != nil {
-			cost.groupLimit = min(max(num(entry.Group.FailedInRowToLeave, 3), 1), 16)
+	paths := map[string]*costEntrySettings{}
+	order := make([]string, 0, len(c.GetPaths()))
+	for _, p := range c.GetPaths() {
+		entry := &costEntrySettings{cost: float64(p.Cost), lazy: p.IsLazy, returnInterval: p.ReturnInterval, probe: p.Probe}
+		if g := groups[p.Group]; g != nil && p.Group != "" {
+			entry.groupName = g.Name
+			entry.groupLimit = min(max(num(g.FailedInRowToLeave, 3), 1), 16)
+			entry.cost = float64(g.Cost)
+			entry.lazy = g.IsLazy
+			entry.returnInterval = g.ReturnInterval
+			entry.probe = g.Probe
 		}
-		if cost.isRegexp {
-			cost.pattern, _ = regexp.Compile(cost.match)
-		}
-		costEntries = append(costEntries, cost)
+		paths[p.Tag] = entry
+		order = append(order, p.Tag)
 	}
 	return &selectorSettings{
-		weights:          router.NewWeightManager(weights, defaultCost, func(v, w float64) float64 { return v * w }),
-		costEntries:      costEntries,
-		lazy:             c.GetLazyOutbounds(),
+		raw:              c,
+		paths:            paths,
+		baseOrder:        order,
 		switchAfterProbe: !c.GetSkipProbeBeforeSwitch(),
 		confirm:          c.GetConfirmWithProbe(),
 		minHoldTime:      dur(c.GetMinHoldTime(), defaultMinHoldTime),
@@ -661,14 +656,15 @@ func newSelectorSettings(c *SelectorConfig) *selectorSettings {
 }
 
 func (s *selectorSettings) cost(tag string) float64 {
-	return s.weights.Get(tag)
+	if p := s.paths[tag]; p != nil {
+		return p.cost
+	}
+	return 0
 }
 
 func (s *selectorSettings) returnInterval(tag string) time.Duration {
-	for _, entry := range s.costEntries {
-		if entry.matches(tag) {
-			return optional(entry.returnInterval, s.returnToCheaper.interval)
-		}
+	if p := s.paths[tag]; p != nil {
+		return optional(p.returnInterval, s.returnToCheaper.interval)
 	}
 	return s.returnToCheaper.interval
 }
@@ -677,7 +673,7 @@ func (s *selectorSettings) returnInterval(tag string) time.Duration {
 // shortest possible base to keep its multiplier finite without losing delay.
 func (s *selectorSettings) penaltyLimit() float64 {
 	base := maxDuration(s.returnToCheaper.interval, s.minHoldTime)
-	for _, entry := range s.costEntries {
+	for _, entry := range s.paths {
 		interval := optional(entry.returnInterval, s.returnToCheaper.interval)
 		base = min(base, maxDuration(interval, s.minHoldTime))
 	}
@@ -688,7 +684,7 @@ func (s *selectorSettings) penaltyLimit() float64 {
 }
 
 func (s *selectorSettings) isLazy(tag string) bool {
-	return matchesAny(tag, s.lazy)
+	return s.paths[tag] != nil && s.paths[tag].lazy
 }
 
 func matchesAny(tag string, prefixes []string) bool {

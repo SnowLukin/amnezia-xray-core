@@ -94,11 +94,11 @@ func (w *eventWaiter) since(from int, typ string) []health.Event {
 
 // Outbounds that need real settings to build: an unchanged one must be
 // recognized as unchanged although its config is built anew from JSON.
-const vlessOutbounds = `{"tag": "x6", "protocol": "vless", "settings": {"vnext": [{"address": "127.0.0.1", "port": 1,
+const vlessOutbounds = `{"tag": "x6", "path": {"balancer": "auto", "cost": 1}, "protocol": "vless", "settings": {"vnext": [{"address": "127.0.0.1", "port": 1,
 	  "users": [{"id": "5f88c4df-2a2d-4b68-9b27-5d21339abb60", "encryption": "none", "flow": "xtls-rprx-vision"}]}]},
 	  "streamSettings": {"network": "tcp", "security": "reality", "realitySettings": {"serverName": "example.com",
 	    "password": "SFQq-6EUyhY12O_zOjI9pVdY1b7y3aVaevZJg8JDaEw", "shortId": "", "fingerprint": "chrome"}}},
-	{"tag": "x7", "protocol": "vless", "settings": {"vnext": [{"address": "127.0.0.1", "port": 2,
+	{"tag": "x7", "path": {"balancer": "auto", "cost": 1}, "protocol": "vless", "settings": {"vnext": [{"address": "127.0.0.1", "port": 2,
 	  "users": [{"id": "5f88c4df-2a2d-4b68-9b27-5d21339abb60", "encryption": "none"}]}]},
 	  "streamSettings": {"network": "xhttp", "security": "tls", "tlsSettings": {"serverName": "x.example.com", "alpn": ["h2"]},
 	    "xhttpSettings": {"path": "/x", "mode": "auto"}}}`
@@ -115,10 +115,9 @@ func TestProviderRefreshInRunningCore(t *testing.T) {
 	    {"tag": "dead", "protocol": "blackhole"},
 	    {"tag": "block", "protocol": "blackhole"}
 	  ],
-	  "routing": {"balancers": [{"tag": "auto", "selector": ["p-"],
+	  "routing": {"balancers": [{"tag": "auto",
 	    "strategy": {"type": "leastCost", "settings": {}}, "fallbackTag": "block"}]},
 	  "healthObservatory": {
-	    "subjectSelector": ["p-"],
 	    "providers": [{
 	      "tag": "fresh", "url": "` + ts.URL + `/set", "headers": {"Authorization": "Bearer t0k"},
 	      "via": ["missing", "dead", "direct"], "timeout": "3s",
@@ -146,10 +145,9 @@ func TestProviderRefreshInRunningCore(t *testing.T) {
 	ohm := inst.GetFeature(outbound.ManagerType()).(outbound.Manager)
 	w := &eventWaiter{t: t, o: obs}
 
-	srv.set(`{"outbounds": [{"tag": "x1", "protocol": "freedom"},
-	                        {"tag": "x2", "protocol": "freedom", "settings": {"domainStrategy": "UseIP"}}, ` +
-		vlessOutbounds + `],
-	          "costs": {"x2": 1}}`)
+	srv.set(`{"outbounds": [{"tag": "x1", "path": {"balancer": "auto", "cost": 1}, "protocol": "freedom"},
+	                        {"tag": "x2", "path": {"balancer": "auto", "cost": 1}, "protocol": "freedom", "settings": {"domainStrategy": "UseIP"}}, ` +
+		vlessOutbounds + `]}`)
 	if !obs.RequestRefresh("fresh") {
 		t.Fatal("provider not found")
 	}
@@ -178,8 +176,8 @@ func TestProviderRefreshInRunningCore(t *testing.T) {
 	// x1 leaves, x2, x6 and x7 stay as they are, x3 is new.
 	x2, x6, x7 := ohm.GetHandler("p-x2"), ohm.GetHandler("p-x6"), ohm.GetHandler("p-x7")
 	from := len(w.all)
-	srv.set(`{"outbounds": [{"tag": "x2", "protocol": "freedom", "settings": {"domainStrategy": "UseIP"}},
-	                        {"tag": "x3", "protocol": "blackhole"}, ` + vlessOutbounds + `]}`)
+	srv.set(`{"outbounds": [{"tag": "x2", "path": {"balancer": "auto", "cost": 1}, "protocol": "freedom", "settings": {"domainStrategy": "UseIP"}},
+	                        {"tag": "x3", "path": {"balancer": "auto", "cost": 1}, "protocol": "blackhole"}, ` + vlessOutbounds + `]}`)
 	obs.RequestRefresh("")
 	ev = w.until("provider_apply", nil)
 	if ev.Fields["added"] != 1.0 || ev.Fields["removed"] != 1.0 || ev.Fields["unchanged"] != 3.0 {
@@ -206,7 +204,7 @@ func TestProviderRefreshInRunningCore(t *testing.T) {
 	}
 	// A set that does not build changes nothing either. The failed host
 	// request is retried after the backoff without another request.
-	srv.set(`{"outbounds": [{"tag": "x4", "protocol": "freedom"}, {"tag": "x5", "protocol": "nosuch"}]}`)
+	srv.set(`{"outbounds": [{"tag": "x4", "path": {"balancer": "auto", "cost": 1}, "protocol": "freedom"}, {"tag": "x5", "path": {"balancer": "auto", "cost": 1}, "protocol": "nosuch"}]}`)
 	ev = w.until("provider_apply", nil)
 	if ev.Fields["is_ok"] != false || !strings.Contains(ev.Fields["error"].(string), "build") {
 		t.Fatalf("apply of a set that does not build %v", ev.Fields)
@@ -232,7 +230,7 @@ func TestProviderRefreshInRunningCore(t *testing.T) {
 // backoff brings the next attempt.
 func TestRefreshUnderLowMemoryTriesOneVia(t *testing.T) {
 	srv := &setServer{}
-	srv.set(`{"outbounds": [{"tag": "x1", "protocol": "freedom"}]}`)
+	srv.set(`{"outbounds": [{"tag": "x1", "path": {"balancer": "auto", "cost": 1}, "protocol": "freedom"}]}`)
 	ts := httptest.NewServer(srv)
 	defer ts.Close()
 	cfg, err := core.LoadConfig("json", strings.NewReader(`{
@@ -241,9 +239,8 @@ func TestRefreshUnderLowMemoryTriesOneVia(t *testing.T) {
 	    {"tag": "direct", "protocol": "freedom", "settings": {"finalRules": [{"action": "allow"}]}},
 	    {"tag": "dead", "protocol": "blackhole"}
 	  ],
-	  "routing": {"balancers": [{"tag": "auto", "selector": ["p-"], "strategy": {"type": "leastCost", "settings": {}}}]},
+	  "routing": {"balancers": [{"tag": "auto", "strategy": {"type": "leastCost", "settings": {}}}]},
 	  "healthObservatory": {
-	    "subjectSelector": ["p-"],
 	    "providers": [{
 	      "tag": "fresh", "url": "`+ts.URL+`/set", "isPlainHttpAllowed": true,
 	      "via": ["missing", "dead", "direct"], "timeout": "500ms",
@@ -309,12 +306,11 @@ func twoViaCore(t *testing.T, url string, more ...string) *health.Observer {
 	  "outbounds": [
 	    {"tag": "direct", "protocol": "freedom", "settings": {"finalRules": [{"action": "allow"}]}},
 	    {"tag": "direct2", "protocol": "freedom", "settings": {"finalRules": [{"action": "allow"}]}},
-	    {"tag": "p-b", "protocol": "blackhole"},
-	    {"tag": "p-a", "protocol": "blackhole"}
+	    {"tag": "p-b", "protocol": "blackhole", "path": {"balancer": "auto", "cost": 1}},
+	    {"tag": "p-a", "protocol": "blackhole", "path": {"balancer": "auto", "cost": 1}}
 	  ],
-	  "routing": {"balancers": [{"tag": "auto", "selector": ["p-"], "strategy": {"type": "leastCost", "settings": {}}}]},
+	  "routing": {"balancers": [{"tag": "auto", "strategy": {"type": "leastCost", "settings": {}}}]},
 	  "healthObservatory": {
-	    "subjectSelector": ["p-"],
 	    "providers": [{
 	      "tag": "fresh", "url": "`+url+`", "isPlainHttpAllowed": true, "via": ["direct", "direct2"], "timeout": "3s",
 	      "triggers": {"interval": "0s", "minHealthyOutbounds": 0, "shouldRefreshWhenExhausted": false, "maxAge": "0s", "networkChangeMode": "never"},
@@ -348,7 +344,7 @@ func (s *setServer) requests() int {
 // the report counts the answer once, as rejected.
 func TestSchemaErrorEndsTheAttempts(t *testing.T) {
 	srv := &setServer{}
-	srv.set(`{"protocol": 1, "outbounds": [{"tag": "x1", "protocol": "freedom"}], "dns": {"servers": ["1.1.1.1"]}}`)
+	srv.set(`{"protocol": 1, "outbounds": [{"tag": "x1", "path": {"balancer": "auto", "cost": 1}, "protocol": "freedom"}], "dns": {"servers": ["1.1.1.1"]}}`)
 	ts := httptest.NewServer(srv)
 	defer ts.Close()
 	obs := twoViaCore(t, ts.URL+"/set")
@@ -507,7 +503,7 @@ func TestEndlessErrorBodyMovesOnSoon(t *testing.T) {
 		first := n == 1
 		mu.Unlock()
 		if !first {
-			_, _ = w.Write([]byte(`{"outbounds": [{"tag": "x1", "protocol": "freedom"}]}`))
+			_, _ = w.Write([]byte(`{"outbounds": [{"tag": "x1", "path": {"balancer": "auto", "cost": 1}, "protocol": "freedom"}]}`))
 			return
 		}
 		w.WriteHeader(http.StatusServiceUnavailable)
@@ -548,7 +544,7 @@ func TestSkippedViaKeepsTheFailureBeforeIt(t *testing.T) {
 			w.WriteHeader(http.StatusBadGateway)
 			return
 		}
-		_, _ = w.Write([]byte(`{"outbounds": [{"tag": "x1", "protocol": "freedom"}]}`))
+		_, _ = w.Write([]byte(`{"outbounds": [{"tag": "x1", "path": {"balancer": "auto", "cost": 1}, "protocol": "freedom"}]}`))
 	}))
 	defer ts.Close()
 	// The failed host request is retried after the short backoff.
@@ -579,7 +575,7 @@ func TestSkippedViaKeepsTheFailureBeforeIt(t *testing.T) {
 // sent again from a new one by run and refresh.
 func TestSameBodyThroughEveryVia(t *testing.T) {
 	srv := &setServer{first: []string{`{"outbounds": [`}}
-	srv.set(`{"protocol": 1, "outbounds": [{"tag": "x1", "protocol": "freedom"}]}`)
+	srv.set(`{"protocol": 1, "outbounds": [{"tag": "x1", "path": {"balancer": "auto", "cost": 1}, "protocol": "freedom"}]}`)
 	ts := httptest.NewServer(srv)
 	defer ts.Close()
 	obs := twoViaCore(t, ts.URL+"/set")
@@ -612,7 +608,7 @@ func TestSameBodyThroughEveryVia(t *testing.T) {
 // A static file on a web server is asked for with a GET without a body.
 func TestGetSendsNoBody(t *testing.T) {
 	srv := &setServer{}
-	srv.set(`{"outbounds": [{"tag": "x1", "protocol": "freedom"}]}`)
+	srv.set(`{"outbounds": [{"tag": "x1", "path": {"balancer": "auto", "cost": 1}, "protocol": "freedom"}]}`)
 	ts := httptest.NewServer(srv)
 	defer ts.Close()
 	obs := twoViaCore(t, ts.URL+"/set", `, "method": "GET"`)
@@ -632,7 +628,7 @@ func TestGetSendsNoBody(t *testing.T) {
 // its prefix, and the first request already tells the backend about them.
 func TestRequestBodyListsConfigOutboundsBeforeTheFirstAnswer(t *testing.T) {
 	srv := &setServer{}
-	srv.set(`{"outbounds": [{"tag": "x1", "protocol": "freedom"}]}`)
+	srv.set(`{"outbounds": [{"tag": "x1", "path": {"balancer": "auto", "cost": 1}, "protocol": "freedom"}]}`)
 	ts := httptest.NewServer(srv)
 	defer ts.Close()
 	obs := twoViaCore(t, ts.URL+"/set")
@@ -671,7 +667,7 @@ func TestLeaseCountsFromDatePlusAgeOfACachedAnswer(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Date", now.Add(-10*time.Minute).Format(http.TimeFormat))
 		w.Header().Set("Age", "600")
-		_, _ = fmt.Fprintf(w, `{"outbounds": [{"tag": "x1", "protocol": "freedom"}], "serverTime": %q, "expiresAt": {"x1": %q}}`,
+		_, _ = fmt.Fprintf(w, `{"outbounds": [{"tag": "x1", "path": {"balancer": "auto", "cost": 1}, "protocol": "freedom"}], "serverTime": %q, "expiresAt": {"x1": %q}}`,
 			now.Add(-time.Hour).Format(time.RFC3339), now.Add(time.Hour).Format(time.RFC3339))
 	}))
 	defer ts.Close()
@@ -720,7 +716,7 @@ func TestOne401Or403WithoutBodyIsNoAuthFailure(t *testing.T) {
 				w.WriteHeader(http.StatusUnauthorized)
 				return
 			}
-			_, _ = w.Write([]byte(`{"outbounds": [{"tag": "x1", "protocol": "freedom"}]}`))
+			_, _ = w.Write([]byte(`{"outbounds": [{"tag": "x1", "path": {"balancer": "auto", "cost": 1}, "protocol": "freedom"}]}`))
 		}), 2, true, ""},
 		{"403 on every via", &replyServer{status: 403}, 2, false, ""},
 		{"401 unauthorized", &replyServer{status: 401, body: refusal("unauthorized")}, 1, false, "unauthorized"},
@@ -787,10 +783,10 @@ func TestTokenNeverInEventsStatusReportOrBody(t *testing.T) {
 		mu.Unlock()
 		switch auth {
 		case "Bearer host-secret":
-			_, _ = w.Write([]byte(`{"protocol": 1, "outbounds": [{"tag": "x1", "protocol": "freedom"}],
+			_, _ = w.Write([]byte(`{"protocol": 1, "outbounds": [{"tag": "x1", "path": {"balancer": "auto", "cost": 1}, "protocol": "freedom"}],
 			  "headers": {"authorization": "Bearer answer-secret"}}`))
 		case "Bearer answer-secret":
-			_, _ = w.Write([]byte(`{"protocol": 1, "outbounds": [{"tag": "x1", "protocol": "freedom"}]}`))
+			_, _ = w.Write([]byte(`{"protocol": 1, "outbounds": [{"tag": "x1", "path": {"balancer": "auto", "cost": 1}, "protocol": "freedom"}]}`))
 		default:
 			w.WriteHeader(http.StatusUnauthorized)
 			_, _ = w.Write([]byte(`{"protocol": 1, "code": "unauthorized", "message": "Bearer config-secret is dead"}`))
@@ -850,7 +846,7 @@ func TestTokenNeverInEventsStatusReportOrBody(t *testing.T) {
 // takes, still starts the core: the observatory refuses the set, reports
 // it and goes on with the outbounds of the config.
 func TestBadInitialInTheConfigStartsTheCore(t *testing.T) {
-	for _, initial := range []string{`[]`, `"{}"`, `{"outbounds": [{"tag": "x1", "protocol": "freedom", "pad": "` +
+	for _, initial := range []string{`[]`, `"{}"`, `{"outbounds": [{"tag": "x1", "path": {"balancer": "auto", "cost": 1}, "protocol": "freedom", "pad": "` +
 		strings.Repeat("x", 2<<20) + `"}]}`} {
 		obs := twoViaCore(t, "https://unused.test/set", `, "initialAnswer": `+initial)
 		w := &eventWaiter{t: t, o: obs}
@@ -867,21 +863,20 @@ func TestBadInitialInTheConfigStartsTheCore(t *testing.T) {
 // outbound of the config.
 func TestInitialAppliedBeforeTheFirstConnection(t *testing.T) {
 	srv := &setServer{}
-	srv.set(`{"outbounds": [{"tag": "x9", "protocol": "freedom"}]}`)
+	srv.set(`{"outbounds": [{"tag": "x9", "path": {"balancer": "auto", "cost": 1}, "protocol": "freedom"}]}`)
 	ts := httptest.NewServer(srv)
 	defer ts.Close()
 	cfg, err := core.LoadConfig("json", strings.NewReader(`{
 	  "log": {"loglevel": "none"},
-	  "outbounds": [{"tag": "direct", "protocol": "freedom"}, {"tag": "p-old", "protocol": "blackhole"}],
-	  "routing": {"balancers": [{"tag": "auto", "selector": ["p-"], "strategy": {"type": "leastCost", "settings": {}}}]},
+	  "outbounds": [{"tag": "direct", "protocol": "freedom"}, {"tag": "p-old", "protocol": "blackhole", "path": {"balancer": "auto", "cost": 1}}],
+	  "routing": {"balancers": [{"tag": "auto", "strategy": {"type": "leastCost", "settings": {}}}]},
 	  "healthObservatory": {
-	    "subjectSelector": ["p-"],
 	    "providers": [{
 	      "tag": "fresh", "url": "`+ts.URL+`/set", "isPlainHttpAllowed": true, "via": ["direct"],
 	      "triggers": {"interval": "1h", "minHealthyOutbounds": 0, "shouldRefreshWhenExhausted": false, "maxAge": "0s", "networkChangeMode": "never"},
 	      "apply": {"balancer": "auto", "tagPrefix": "p-", "allowedProtocols": ["freedom"]},
-	      "initialAnswer": {"protocol": 1, "version": "v1", "outbounds": [{"tag": "x1", "protocol": "freedom"},
-	        {"tag": "x2", "protocol": "freedom"}], "headers": {"Authorization": "Bearer saved"}}
+	      "initialAnswer": {"protocol": 1, "version": "v1", "outbounds": [{"tag": "x1", "path": {"balancer": "auto", "cost": 1}, "protocol": "freedom"},
+	        {"tag": "x2", "path": {"balancer": "auto", "cost": 1}, "protocol": "freedom"}], "headers": {"Authorization": "Bearer saved"}}
 	    }]
 	  }
 	}`))

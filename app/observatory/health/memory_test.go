@@ -64,7 +64,7 @@ func TestMemoryLowHoldsAReturnUnderWay(t *testing.T) {
 // Probes after a network change, of the chosen outbound or of the one
 // remembered for the network, wait while memory is low.
 func TestMemoryLowHoldsNetworkChangeProbes(t *testing.T) {
-	te := newTestEngine(t, nil, &SelectorConfig{Costs: costs("a", 1, "b", 3)}, "a1", "b1")
+	te := newTestEngine(t, nil, &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3)}, "a1", "b1")
 	te.onNetworkChange("home", at(0))
 	te.run(t, at(time.Second), nil)
 	te.switchTo(te.sel, "b1", "pin", at(2*time.Second))
@@ -89,7 +89,7 @@ func TestMemoryLowHoldsNetworkChangeProbes(t *testing.T) {
 // Finding failures is not put off: a dead outbound is still confirmed,
 // failed over and rechecked once everything is down.
 func TestMemoryLowKeepsFailureDetection(t *testing.T) {
-	te := newTestEngine(t, connectivityConfig(), &SelectorConfig{Costs: costs("a", 1, "b", 3)}, "a1", "b1")
+	te := newTestEngine(t, connectivityConfig(), &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3)}, "a1", "b1")
 	te.setMemoryLow(true, at(0))
 	te.failN(3, "a1", failDial, at(0))
 	jobs, _ := te.tick(at(time.Second))
@@ -115,7 +115,7 @@ func TestMemoryLowKeepsFailureDetection(t *testing.T) {
 }
 
 func TestMemoryLowStretchesDoubtfulNetworkChecks(t *testing.T) {
-	te := newTestEngine(t, connectivityConfig(), &SelectorConfig{Costs: costs("a", 1, "b", 3)}, "a1", "b1")
+	te := newTestEngine(t, connectivityConfig(), &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3)}, "a1", "b1")
 	now := at(0)
 	for !te.doubt && now.Before(at(5*time.Minute)) {
 		te.second(now, false, nil)
@@ -150,7 +150,7 @@ func TestMemoryLowSkipsTimedRefreshes(t *testing.T) {
 		p.Triggers.Interval = int64(time.Hour)
 		p.Triggers.JitterFraction = -1
 		p.Triggers.SkipRefreshWhenExhausted = false
-	}), &SelectorConfig{Costs: costs("a", 1)}, "a1", "a2")
+	}), &SelectorConfig{Paths: pathSpecs("a", 1)}, "a1", "a2")
 	te.setMemoryLow(true, at(time.Minute))
 	expectNoRefresh(t, te, at(2*time.Hour))
 	if skips := te.eventsOf(t, "provider_skip"); len(skips) != 1 || skips[0].Fields["reason"] != "memory" {
@@ -171,7 +171,7 @@ func TestMemoryLowSkipsTimedRefreshes(t *testing.T) {
 // Low memory postpones work, not what a host can see: the event log keeps its
 // limits and every event is written.
 func TestMemoryLowKeepsTheEventLog(t *testing.T) {
-	te := newTestEngine(t, nil, &SelectorConfig{Costs: costs("a", 1, "b", 3)}, "a1", "b1")
+	te := newTestEngine(t, nil, &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3)}, "a1", "b1")
 	for i := 0; i < 200; i++ {
 		te.emit(at(0), "filler", map[string]any{"i": i, "pad": strings.Repeat("x", 40)})
 	}
@@ -199,7 +199,7 @@ func TestMemoryLowKeepsTheEventLog(t *testing.T) {
 
 // What no balancer offers is forgotten at once, not half an hour later.
 func TestMemoryLowCollectsAtOnce(t *testing.T) {
-	te := newTestEngine(t, nil, &SelectorConfig{Costs: costs("a", 1)}, "a1", "a2")
+	te := newTestEngine(t, nil, &SelectorConfig{Paths: pathSpecs("a", 1)}, "a1", "a2")
 	te.path("a2").setStatus(statusUp, "traffic", at(time.Second))
 	te.updateCandidates(te.sel, []string{"a1"}, at(2*time.Second))
 	te.setMemoryLow(true, at(3*time.Second))
@@ -212,7 +212,7 @@ func TestMemoryLowCollectsAtOnce(t *testing.T) {
 }
 
 func TestSetMemoryLow(t *testing.T) {
-	o := newObserver(context.Background(), &Config{SubjectSelector: []string{"a"}})
+	o := newObserver(context.Background(), &Config{Paths: observed("a")})
 	defer o.Close()
 	o.SetMemoryLow(true)
 	o.SetMemoryLow(true)

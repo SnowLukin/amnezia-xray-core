@@ -11,7 +11,7 @@ import (
 func TestNetworkChangeUnderPinIsRecheckedOnRelease(t *testing.T) {
 	for _, by := range []string{"host", "timer"} {
 		t.Run(by, func(t *testing.T) {
-			sc := &SelectorConfig{Costs: costs("a", 1, "b", 3), StartPinnedOutbound: "a1", StartPinTimeout: int64(30 * time.Second)}
+			sc := &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3), StartPinnedOutbound: "a1", StartPinTimeout: int64(30 * time.Second)}
 			te := newTestEngine(t, nil, sc, "a1", "b1")
 			te.onNetworkChange("cafe", at(10*time.Second))
 			te.noteDemand(at(10 * time.Second))
@@ -39,7 +39,7 @@ func TestNetworkChangeUnderPinIsRecheckedOnRelease(t *testing.T) {
 // A release probes nothing when traffic or a probe has already shown that the
 // pinned outbound works in the new network.
 func TestReleaseSkipsTheRecheckOfAnOutboundSeenWorking(t *testing.T) {
-	sc := &SelectorConfig{Costs: costs("a", 1, "b", 3), StartPinnedOutbound: "a1", StartPinTimeout: int64(30 * time.Second)}
+	sc := &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3), StartPinnedOutbound: "a1", StartPinTimeout: int64(30 * time.Second)}
 	for _, how := range []string{"traffic", "host probe"} {
 		t.Run(how, func(t *testing.T) {
 			te := newTestEngine(t, nil, sc, "a1", "b1")
@@ -64,7 +64,7 @@ func TestReleaseSkipsTheRecheckOfAnOutboundSeenWorking(t *testing.T) {
 // after a change before the pin, and after a recheck an earlier release
 // already made.
 func TestReleaseWithoutNetworkChangeUnderPinProbesNothing(t *testing.T) {
-	sc := &SelectorConfig{Costs: costs("a", 1, "b", 3), StartPinnedOutbound: "a1", StartPinTimeout: int64(30 * time.Second)}
+	sc := &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3), StartPinnedOutbound: "a1", StartPinTimeout: int64(30 * time.Second)}
 	te := newTestEngine(t, nil, sc, "a1", "b1")
 	te.noteDemand(at(10 * time.Second))
 	if jobs := te.run(t, at(31*time.Second), nil); len(jobs) != 0 || te.sel.pinned != "" {
@@ -99,8 +99,8 @@ func TestReleaseWithoutNetworkChangeUnderPinProbesNothing(t *testing.T) {
 // A pin holds back the recheck of its own balancer only, and its release
 // rechecks nothing else.
 func TestPinHoldsTheRecheckOfItsBalancerOnly(t *testing.T) {
-	te := newTestEngine(t, nil, &SelectorConfig{Costs: costs("a", 1, "b", 3)}, "a1", "b1")
-	other := te.addSelector("other", newSelectorSettings(&SelectorConfig{Costs: costs("c", 1, "d", 3)}))
+	te := newTestEngine(t, nil, &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3)}, "a1", "b1")
+	other := te.addSelector("other", newSelectorSettings(&SelectorConfig{Paths: pathSpecs("c1", 1, "d1", 3)}))
 	te.updateCandidates(other, []string{"c1", "d1"}, t0)
 	te.pin("other", "c1", at(time.Second))
 	te.onNetworkChange("cafe", at(10*time.Second))
@@ -124,7 +124,7 @@ func TestPinHoldsTheRecheckOfItsBalancerOnly(t *testing.T) {
 // outbound remembered for the network goes first, and it waits while memory
 // is low.
 func TestRecheckOnReleaseRemembersNetworksAndWaitsForMemory(t *testing.T) {
-	te := newTestEngine(t, nil, &SelectorConfig{Costs: costs("a", 1, "b", 3)}, "a1", "b1")
+	te := newTestEngine(t, nil, &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3)}, "a1", "b1")
 	te.onNetworkChange("home", at(0))
 	te.run(t, at(time.Second), nil)
 	te.switchTo(te.sel, "b1", "pin", at(2*time.Second))
@@ -152,7 +152,7 @@ func TestRecheckOnReleaseRemembersNetworksAndWaitsForMemory(t *testing.T) {
 // The host chose the pinned outbound, so traffic on it does not replace the
 // outbound remembered for the network, and the release goes back to that one.
 func TestPinnedOutboundIsNotRememberedForTheNetwork(t *testing.T) {
-	te := newTestEngine(t, nil, &SelectorConfig{Costs: costs("a", 1, "b", 3)}, "a1", "b1")
+	te := newTestEngine(t, nil, &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3)}, "a1", "b1")
 	te.onNetworkChange("home", at(0))
 	te.run(t, at(time.Second), nil)
 	te.pin("auto", "b1", at(time.Minute))
@@ -171,7 +171,7 @@ func TestPinnedOutboundIsNotRememberedForTheNetwork(t *testing.T) {
 // A release after a change to a network the core does not know starts a
 // return to a cheaper outbound as soon as the change would have.
 func TestReleaseInUnknownNetworkReturnsSoon(t *testing.T) {
-	sc := &SelectorConfig{Costs: costs("a", 1, "b", 3), StartPinnedOutbound: "b1", MinHoldTime: int64(time.Second),
+	sc := &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3), StartPinnedOutbound: "b1", MinHoldTime: int64(time.Second),
 		ReturnToCheaper: &ReturnToCheaperConfig{ProbesToReturn: 1, SkipRandomPhase: true}}
 	for _, tc := range []struct {
 		name     string

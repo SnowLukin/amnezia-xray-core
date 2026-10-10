@@ -166,6 +166,7 @@ func TestSavedInitialDoesNotMoveTheBase(t *testing.T) {
 		f, now := baseFixture(t, tc.config)
 		f.rt.cfg.initial = []byte(fmt.Sprintf(`{"version": "v1", "baseVersion": "b2", "receivedAt": %q,
 			"outbounds": [{"tag": "x1", "protocol": "vless", "v": 1}]}`, stamp(now.Add(-time.Hour))))
+		f.rt.cfg.initial = fixtureAnswerBody(f.rt.cfg.initial)
 		f.o.applyInitial()
 		told, named := f.baseEvents(t)
 		st := f.providerStatus()
@@ -188,6 +189,7 @@ func TestSavedInitialDoesNotMoveTheBase(t *testing.T) {
 func TestFreshInitialGivesTheBase(t *testing.T) {
 	f, _ := baseFixture(t, "")
 	f.rt.cfg.initial = []byte(`{"version": "v1", "baseVersion": "b2", "outbounds": [{"tag": "x1", "protocol": "vless", "v": 1}]}`)
+	f.rt.cfg.initial = fixtureAnswerBody(f.rt.cfg.initial)
 	f.o.applyInitial()
 	if told, _ := f.baseEvents(t); told != nil {
 		t.Fatalf("told %v at the start", told)
@@ -204,6 +206,7 @@ func TestFreshInitialGivesTheBase(t *testing.T) {
 
 	f, _ = baseFixture(t, "b1")
 	f.rt.cfg.initial = []byte(`{"version": "v1", "baseVersion": "b2", "outbounds": [{"tag": "x1", "protocol": "vless", "v": 1}]}`)
+	f.rt.cfg.initial = fixtureAnswerBody(f.rt.cfg.initial)
 	f.o.applyInitial()
 	if told, _ := f.baseEvents(t); fmt.Sprint(told) != "[b1>b2]" {
 		t.Fatalf("with a base in the config: told %v", told)
@@ -219,6 +222,7 @@ func TestFreshInitialGivesTheBase(t *testing.T) {
 func TestFreshInitialThatDoesNotBuildGivesTheBase(t *testing.T) {
 	f, _ := baseFixture(t, "")
 	f.rt.cfg.initial = []byte(`{"version": "v1", "baseVersion": "b2", "outbounds": [{"tag": "x1", "protocol": "vless", "bad": true}]}`)
+	f.rt.cfg.initial = fixtureAnswerBody(f.rt.cfg.initial)
 	f.o.applyInitial()
 	if ev := f.lastApply(t); ev["is_ok"] != false || ev["trigger"] != "initial" {
 		t.Fatalf("apply %v", ev)

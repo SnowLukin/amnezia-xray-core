@@ -26,9 +26,8 @@ func TestProviderRoutingAppliesInRunningCore(t *testing.T) {
 	    {"tag": "direct", "protocol": "freedom"}
 	  ],
 	  "routing": {"rules": [{"domain": ["full:a.test"], "balancerTag": "auto"}],
-	    "balancers": [{"tag": "auto", "selector": ["p-"], "strategy": {"type": "leastCost", "settings": {}}, "fallbackTag": "block"}]},
+	    "balancers": [{"tag": "auto", "strategy": {"type": "leastCost", "settings": {}}, "fallbackTag": "block"}]},
 	  "healthObservatory": {
-	    "subjectSelector": ["p-"],
 	    "providers": [{
 	      "tag": "fresh", "url": "`+ts.URL+`/set", "isPlainHttpAllowed": true, "via": ["direct"],
 	      "triggers": {"interval": "0s", "minHealthyOutbounds": 0, "shouldRefreshWhenExhausted": false, "maxAge": "0s", "networkChangeMode": "never"},
@@ -70,9 +69,9 @@ func TestProviderRoutingAppliesInRunningCore(t *testing.T) {
 	    "rules": [{"domain": ["full:blocked.test"], "outboundTag": "block"},
 	              {"ip": ["10.1.2.0/24"], "outboundTag": "block"},
 	              {"domain": ["full:a.test"], "balancerTag": "auto"}],
-	    "balancers": [{"tag": "auto", "selector": ["p-"], "strategy": {"type": "leastCost", "settings": {}}, "fallbackTag": "block"}]}`
+	    "balancers": [{"tag": "auto", "strategy": {"type": "leastCost", "settings": {}}, "fallbackTag": "block"}]}`
 	}
-	srv.set(`{"protocol": 1, "outbounds": [{"tag": "x1", "protocol": "freedom"}], ` + routingWith("IPIfNonMatch") + `}`)
+	srv.set(`{"protocol": 1, "outbounds": [{"tag": "x1", "protocol": "freedom", "path": {"balancer": "auto", "cost": 1}}], ` + routingWith("IPIfNonMatch") + `}`)
 	obs.RequestRefresh("fresh")
 	ev := w.until("provider_apply", nil)
 	if ev.Fields["is_ok"] != true || ev.Fields["rules"] != 3.0 {
@@ -92,7 +91,7 @@ func TestProviderRoutingAppliesInRunningCore(t *testing.T) {
 
 	// A section the core reads only at start refuses the whole answer.
 	from := len(w.all)
-	srv.set(`{"protocol": 1, "outbounds": [{"tag": "x2", "protocol": "freedom"}], ` + routingWith("AsIs") + `,
+	srv.set(`{"protocol": 1, "outbounds": [{"tag": "x2", "protocol": "freedom", "path": {"balancer": "auto", "cost": 1}}], ` + routingWith("AsIs") + `,
 	  "dns": {"servers": ["1.1.1.1"]}}`)
 	obs.RequestRefresh("fresh")
 	ev = w.until("provider_apply", nil)
@@ -106,9 +105,9 @@ func TestProviderRoutingAppliesInRunningCore(t *testing.T) {
 		t.Fatalf("a refused answer changed the routing: lan.test to %q, a.test to %q", got, pick("a.test"))
 	}
 
-	srv.set(`{"outbounds": [{"tag": "x1", "protocol": "freedom"}],
+	srv.set(`{"outbounds": [{"tag": "x1", "protocol": "freedom", "path": {"balancer": "auto", "cost": 1}}],
 	  "routing": {"rules": [{"domain": ["full:a.test"], "outboundTag": "nowhere"}],
-	    "balancers": [{"tag": "auto", "selector": ["p-"], "strategy": {"type": "leastCost", "settings": {}}}]}}`)
+	    "balancers": [{"tag": "auto", "strategy": {"type": "leastCost", "settings": {}}}]}}`)
 	obs.RequestRefresh("fresh")
 	// The refused answer with dns is asked for again after the short
 	// backoff, and its refusal may come first: the apply of this answer is

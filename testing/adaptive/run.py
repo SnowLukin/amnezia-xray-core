@@ -14,6 +14,7 @@ import bench
 import scenarios
 import cost_scenarios
 import return_interval_scenarios
+import path_scenarios
 
 
 def main():

@@ -11,10 +11,10 @@ def event(when, kind, **fields):
 
 def valid_events():
     return [
-        event(119, "group_state", group="relay-", state="down", failed=3, quarantine_ms=12000),
+        event(119, "group_state", group="relay", state="down", failed=3, quarantine_ms=12000),
         event(131.5, "probe_start", outbound="relay-04", reason="group_recheck"),
         event(131.9, "probe_result", outbound="relay-04", reason="group_recheck", is_ok=True),
-        event(132, "group_state", group="relay-", state="up"),
+        event(132, "group_state", group="relay", state="up"),
         event(132.2, "probe_start", outbound="relay-04", reason="return"),
         event(132.5, "probe_result", outbound="relay-04", reason="return", is_ok=True),
         event(132.6, "switch", to="relay-04"),

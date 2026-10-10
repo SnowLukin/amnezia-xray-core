@@ -211,14 +211,15 @@ func (c *InboundDetourConfig) Build() (*core.InboundHandlerConfig, error) {
 }
 
 type OutboundDetourConfig struct {
-	Protocol       string           `json:"protocol"`
-	SendThrough    *string          `json:"sendThrough"`
-	Tag            string           `json:"tag"`
-	Settings       *json.RawMessage `json:"settings"`
-	StreamSetting  *StreamConfig    `json:"streamSettings"`
-	ProxySettings  *ProxyConfig     `json:"proxySettings"`
-	MuxSettings    *MuxConfig       `json:"mux"`
-	TargetStrategy string           `json:"targetStrategy"`
+	Protocol       string              `json:"protocol"`
+	SendThrough    *string             `json:"sendThrough"`
+	Tag            string              `json:"tag"`
+	Settings       *json.RawMessage    `json:"settings"`
+	StreamSetting  *StreamConfig       `json:"streamSettings"`
+	ProxySettings  *ProxyConfig        `json:"proxySettings"`
+	MuxSettings    *MuxConfig          `json:"mux"`
+	TargetStrategy string              `json:"targetStrategy"`
+	Path           *OutboundPathConfig `json:"path"`
 }
 
 func (c *OutboundDetourConfig) checkChainProxyConfig() error {
@@ -586,6 +587,9 @@ func (c *Config) Build() (*core.Config, error) {
 	// so that other modules could print log during initiating
 	config.App = append([]*serial.TypedMessage{logConfMsg}, config.App...)
 
+	if err := checkLeastCost(c); err != nil {
+		return nil, err
+	}
 	if c.RouterConfig != nil {
 		routerConfig, err := c.RouterConfig.Build()
 		if err != nil {
@@ -643,9 +647,6 @@ func (c *Config) Build() (*core.Config, error) {
 		config.App = append(config.App, serial.ToTypedMessage(r))
 	}
 
-	if err := checkLeastCost(c.RouterConfig, c.HealthObservatory); err != nil {
-		return nil, err
-	}
 	if c.HealthObservatory != nil {
 		if c.Observatory != nil || c.BurstObservatory != nil {
 			return nil, errors.New("healthObservatory cannot be used together with observatory or burstObservatory")

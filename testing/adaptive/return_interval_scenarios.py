@@ -10,13 +10,14 @@ def return_interval_by_cost(stand, xray, work, name):
     for selected, cost, expected in [("expensive", 50, 5), ("cdn", 3, 30)]:
         stand.reset()
         members = [("cheap", "reality", 2), (selected, "tcp_tls", 0)]
-        entries = [{"match": "cheap", "cost": 1}, {"match": "cdn", "cost": 3},
-                   {"match": "expensive", "cost": 50, "returnInterval": "5s"}]
         cfg = bench.client_config(
             members, {"cheap": 1, selected: cost},
-            strategy={"costs": entries, "startOutbound": selected, "minHoldTime": "0s",
+            strategy={"startOutbound": selected, "minHoldTime": "0s",
                       "returnToCheaper": {"interval": "30s", "hasRandomPhase": False,
                                           "probesToReturn": 1, "probeInterval": "0s"}})
+        if selected == "expensive":
+            chosen = next(outbound for outbound in cfg["outbounds"] if outbound.get("tag") == selected)
+            chosen["path"]["returnInterval"] = "5s"
         with bench.Client(xray, cfg, work, f"{name}-{selected}") as c:
             run_timeline(bench.Traffic(rate=2, big=0.5), [], 37)
         started = first_event(c.events, "switch", to=selected, reason="start_with")

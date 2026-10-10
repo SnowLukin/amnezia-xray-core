@@ -42,15 +42,14 @@ func TestRequestProbeInRunningCore(t *testing.T) {
 	  "log": {"loglevel": "none"},
 	  "outbounds": [
 	    {"tag": "drop", "protocol": "blackhole"},
-	    {"tag": "a1", "protocol": "freedom"},
-	    {"tag": "b1", "protocol": "blackhole"}
+	    {"tag": "a1", "protocol": "freedom", "path": {"balancer": "auto", "cost": 1, "probe": "host"}},
+	    {"tag": "b1", "protocol": "blackhole", "path": {"balancer": "auto", "cost": 3, "probe": "host"}}
 	  ],
 	  "routing": {"rules": [{"domain": ["full:a.test"], "balancerTag": "auto"}],
-	    "balancers": [{"tag": "auto", "selector": ["a", "b"], "fallbackTag": "drop",
-	      "strategy": {"type": "leastCost", "settings": {"costs": [{"match": "a", "cost": 1}, {"match": "b", "cost": 3}]}}}]},
+	    "balancers": [{"tag": "auto", "fallbackTag": "drop",
+	      "strategy": {"type": "leastCost", "settings": {}}}]},
 	  "healthObservatory": {
-	    "subjectSelector": ["a", "b"],
-	    "probes": [{"destination": "`+ts.URL+`/204", "timeout": "2s", "progressTimeout": "500ms"}],
+	    "probes": [{"name": "host", "destination": "`+ts.URL+`/204", "timeout": "2s", "progressTimeout": "500ms"}],
 	    "schedule": {"minProbeInterval": "10ms"}
 	  }
 	}`))

@@ -166,13 +166,13 @@ func testPassive() *health.PassiveConfig {
 const testSuccessBytes = 4000
 
 // newObservedInstance runs a core whose health observatory follows the
-// outbounds tagged wg*.
+// outbound tagged wg.
 func newObservedInstance(t testing.TB, passive *health.PassiveConfig, apps ...*serial.TypedMessage) (*core.Instance, *health.Observer) {
 	t.Helper()
 	inst, err := core.New(&core.Config{App: append([]*serial.TypedMessage{
 		serial.ToTypedMessage(&dispatcher.Config{}),
 		serial.ToTypedMessage(&proxyman.OutboundConfig{}),
-		serial.ToTypedMessage(&health.Config{SubjectSelector: []string{"wg"}, Passive: passive}),
+		serial.ToTypedMessage(&health.Config{Paths: []*health.PathDefinition{{Tag: "wg", Cost: 1}}, Passive: passive}),
 	}, apps...)})
 	if err != nil {
 		t.Fatal(err)

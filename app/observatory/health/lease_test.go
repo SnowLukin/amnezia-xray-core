@@ -74,7 +74,7 @@ func TestLeaseCountsFromTheLaterOfServerTimeAndDate(t *testing.T) {
 			if !ref.Equal(tc.wantRef) || clock != tc.wantClock {
 				t.Fatalf("ref %v by %s, want %v by %s", ref.Sub(wall), clock, tc.wantRef.Sub(wall), tc.wantClock)
 			}
-			te := leaseEngine(t, nil, &SelectorConfig{Costs: costs("p-", 1)}, "p-x1")
+			te := leaseEngine(t, nil, &SelectorConfig{Paths: pathSpecs("p-", 1)}, "p-x1")
 			end := wall.Add(3 * time.Hour)
 			te.acceptLeases(te.prov(), []string{"p-x1"},
 				leaseAnswer{ends: map[string]time.Time{"p-x1": end}, serverTime: tc.serverTime, date: tc.date, at: wall}, wall)
@@ -87,7 +87,7 @@ func TestLeaseCountsFromTheLaterOfServerTimeAndDate(t *testing.T) {
 }
 
 func TestLeaseFallsBackToTheDeviceClock(t *testing.T) {
-	te := leaseEngine(t, nil, &SelectorConfig{Costs: costs("p-", 1)}, "p-x1")
+	te := leaseEngine(t, nil, &SelectorConfig{Paths: pathSpecs("p-", 1)}, "p-x1")
 	c, _ := te.acceptLeases(te.prov(), []string{"p-x1"},
 		leaseAnswer{ends: map[string]time.Time{"p-x1": at(time.Hour)}, at: at(time.Minute)}, at(time.Minute))
 	if l := te.prov().leases["p-x1"]; c.leases != 1 || l.left(at(time.Minute)) != 59*time.Minute ||
@@ -99,7 +99,7 @@ func TestLeaseFallsBackToTheDeviceClock(t *testing.T) {
 // Status tells the clock of the last answer as provider_apply does: one
 // that names no lease tells none, however it was dated.
 func TestClockOnlyOfAnAnswerWithLeases(t *testing.T) {
-	te := leaseEngine(t, nil, &SelectorConfig{Costs: costs("p-", 1)}, "p-x1")
+	te := leaseEngine(t, nil, &SelectorConfig{Paths: pathSpecs("p-", 1)}, "p-x1")
 	tags := []string{"p-x1"}
 	clockOf := func() string {
 		pv := te.status(at(time.Minute)).Providers[0]
@@ -120,7 +120,7 @@ func TestClockOnlyOfAnAnswerWithLeases(t *testing.T) {
 }
 
 func TestLeaseCappedAt30Days(t *testing.T) {
-	te := leaseEngine(t, nil, &SelectorConfig{Costs: costs("p-", 1)}, "p-x1")
+	te := leaseEngine(t, nil, &SelectorConfig{Paths: pathSpecs("p-", 1)}, "p-x1")
 	te.acceptLeases(te.prov(), []string{"p-x1"},
 		leaseAnswer{ends: map[string]time.Time{"p-x1": t0.AddDate(5, 0, 0)}, serverTime: t0}, t0)
 	if l := te.prov().leases["p-x1"]; l.left(t0) != maxLease {
@@ -132,7 +132,7 @@ func TestLeaseCappedAt30Days(t *testing.T) {
 // long after the first one it comes: the end names the lease, and the fresh
 // clock of the server only tells how much is left of it.
 func TestSameEndDoesNotExtendTheLease(t *testing.T) {
-	te := leaseEngine(t, nil, &SelectorConfig{Costs: costs("p-", 1)}, "p-x1")
+	te := leaseEngine(t, nil, &SelectorConfig{Paths: pathSpecs("p-", 1)}, "p-x1")
 	te.lease(t0, map[string]time.Duration{"p-x1": 2 * time.Hour}, "p-x1")
 	if c := te.sameSet(at(time.Hour), map[string]time.Time{"p-x1": at(2 * time.Hour)}); c.renewed != 0 {
 		t.Fatalf("the same end counted as renewed: %+v", c)
@@ -202,7 +202,7 @@ func TestLeaseElapsedTakesTheLongerClock(t *testing.T) {
 // A device whose clock is a day behind the backend still ends a lease of
 // 40 seconds 40 seconds after the answer.
 func TestServerClockADayAheadStillEndsOnTime(t *testing.T) {
-	te := leaseEngine(t, nil, &SelectorConfig{Costs: costs("p-", 1)}, "p-x1")
+	te := leaseEngine(t, nil, &SelectorConfig{Paths: pathSpecs("p-", 1)}, "p-x1")
 	server := at(24 * time.Hour)
 	c, _ := te.acceptLeases(te.prov(), []string{"p-x1"},
 		leaseAnswer{ends: map[string]time.Time{"p-x1": server.Add(40 * time.Second)}, serverTime: server}, t0)
@@ -223,7 +223,7 @@ func TestServerClockADayAheadStillEndsOnTime(t *testing.T) {
 // probe of the live one. The outbound is not probed, not quarantined and
 // its state does not change: it may well work.
 func TestExpiredOutboundGetsNoNewConnections(t *testing.T) {
-	te := leaseEngine(t, nil, &SelectorConfig{Costs: costs("p-x1", 1, "p-x2", 2)}, "p-x1", "p-x2")
+	te := leaseEngine(t, nil, &SelectorConfig{Paths: pathSpecs("p-x1", 1, "p-x2", 2)}, "p-x1", "p-x2")
 	te.lease(t0, map[string]time.Duration{"p-x1": time.Minute, "p-x2": time.Hour}, "p-x1", "p-x2")
 	te.onSuccess("p-x1", at(time.Second))
 	te.eventsOf(t, "")
@@ -251,7 +251,7 @@ func TestExpiredOutboundGetsNoNewConnections(t *testing.T) {
 // The turn of the loop in which a lease ends starts the probe of the
 // outbound to move to, not a later turn whatever wakes it.
 func TestLeaseEndStartsTheProbeInTheSameTurn(t *testing.T) {
-	te := leaseEngine(t, nil, &SelectorConfig{Costs: costs("p-x1", 1, "p-x2", 2)}, "p-x1", "p-x2")
+	te := leaseEngine(t, nil, &SelectorConfig{Paths: pathSpecs("p-x1", 1, "p-x2", 2)}, "p-x1", "p-x2")
 	te.lease(t0, map[string]time.Duration{"p-x1": time.Minute, "p-x2": time.Hour}, "p-x1", "p-x2")
 	te.traffic(at(50 * time.Second))
 	if jobs, _, wake := te.step(at(50 * time.Second)); len(jobs) != 0 || wake != at(time.Minute) {
@@ -269,7 +269,7 @@ func TestLeaseEndStartsTheProbeInTheSameTurn(t *testing.T) {
 // answered the renewal without one, so no refresh comes either. The turn
 // in which the lease ends must give the wake of that return.
 func TestLeaseEndGivesTheWakeOfTheReturn(t *testing.T) {
-	te := leaseEngine(t, renewing(nil), &SelectorConfig{Costs: costs("p-x1", 1, "a", 2)}, "p-x1", "a1")
+	te := leaseEngine(t, renewing(nil), &SelectorConfig{Paths: pathSpecs("p-x1", 1, "a", 2)}, "p-x1", "a1")
 	te.lease(t0, map[string]time.Duration{"p-x1": time.Minute}, "p-x1")
 	te.failN(3, "a1", failDial, at(time.Second))
 	rested := te.path("a1").quarantineUntil
@@ -309,7 +309,7 @@ func TestExpiryEventTellsWhyThereWasNoRenewal(t *testing.T) {
 		{-1, "[p-x1 true off p-x2 false off]"},
 	} {
 		te := leaseEngine(t, func(p *ProviderConfig) { p.Triggers.Expiry.RenewAtFraction = tc.renewAt },
-			&SelectorConfig{Costs: costs("p-x1", 1, "p-x2", 2)}, "p-x1", "p-x2")
+			&SelectorConfig{Paths: pathSpecs("p-x1", 1, "p-x2", 2)}, "p-x1", "p-x2")
 		te.lease(t0, map[string]time.Duration{"p-x1": time.Minute, "p-x2": time.Minute}, "p-x1", "p-x2")
 		te.eventsOf(t, "")
 		// The first tick after the lease ended: no refresh asked meanwhile.
@@ -338,7 +338,7 @@ func TestExpiryEventAfterARenewalRequest(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			te := leaseEngine(t, renewing(func(e *ExpiryTrigger) { e.JitterFraction = -1 }),
-				&SelectorConfig{Costs: costs("p-x1", 1, "p-x2", 2)}, "p-x1", "p-x2")
+				&SelectorConfig{Paths: pathSpecs("p-x1", 1, "p-x2", 2)}, "p-x1", "p-x2")
 			te.lease(t0, map[string]time.Duration{"p-x1": time.Minute}, "p-x1", "p-x2")
 			j := expectRefresh(t, te, at(30*time.Second), "expiry")
 			if tc.done != nil {
@@ -356,7 +356,7 @@ func TestExpiryEventAfterARenewalRequest(t *testing.T) {
 // Leaving an expired outbound never ends on another one: the balancer stays
 // where it is.
 func TestLeavingNeverMovesToAnotherExpired(t *testing.T) {
-	te := leaseEngine(t, nil, &SelectorConfig{Costs: costs("p-x1", 1, "p-x2", 2, "a", 3)}, "p-x1", "p-x2", "a1")
+	te := leaseEngine(t, nil, &SelectorConfig{Paths: pathSpecs("p-x1", 1, "p-x2", 2, "a", 3)}, "p-x1", "p-x2", "a1")
 	te.lease(t0, map[string]time.Duration{"p-x1": time.Minute, "p-x2": time.Minute}, "p-x1", "p-x2")
 	te.failN(3, "a1", failDial, at(time.Second))
 	te.eventsOf(t, "")
@@ -389,7 +389,7 @@ func TestFailoverTakesExpiredAsLastResort(t *testing.T) {
 		{"nothing live works", false, "p-x1", "[b1 p-x1]"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			te := leaseEngine(t, nil, &SelectorConfig{Costs: costs("p-x1", 1, "a", 2, "b", 3)}, "p-x1", "a1", "b1")
+			te := leaseEngine(t, nil, &SelectorConfig{Paths: pathSpecs("p-x1", 1, "a", 2, "b", 3)}, "p-x1", "a1", "b1")
 			te.lease(t0, map[string]time.Duration{"p-x1": time.Minute}, "p-x1")
 			te.refreshAt(at(time.Minute))
 			te.run(t, at(time.Minute), nil)
@@ -418,7 +418,7 @@ func TestAllExpiredStaysOffBlock(t *testing.T) {
 	te := leaseEngine(t, func(p *ProviderConfig) {
 		p.Limits.MaxRefreshesPerHour = -1
 		p.Limits.Backoff = &Backoff{InitialDelay: int64(30 * time.Second), Multiplier: 2, MaxDelay: int64(time.Hour), JitterFraction: 0.1}
-	}, &SelectorConfig{Costs: costs("p-", 1)}, "p-x1")
+	}, &SelectorConfig{Paths: pathSpecs("p-", 1)}, "p-x1")
 	te.lease(t0, map[string]time.Duration{"p-x1": time.Minute}, "p-x1")
 	var starts []time.Time
 	for now := at(time.Minute); now.Before(at(20 * time.Minute)); now = now.Add(time.Second) {
@@ -450,7 +450,7 @@ func TestAllExpiredStaysOffBlock(t *testing.T) {
 // it fails, and the balancer moves on, to another expired one if that is
 // all there is.
 func TestChosenExpiredStillFailsOver(t *testing.T) {
-	te := leaseEngine(t, nil, &SelectorConfig{Costs: costs("p-x1", 1, "p-x2", 2)}, "p-x1", "p-x2")
+	te := leaseEngine(t, nil, &SelectorConfig{Paths: pathSpecs("p-x1", 1, "p-x2", 2)}, "p-x1", "p-x2")
 	te.lease(t0, map[string]time.Duration{"p-x1": time.Minute, "p-x2": time.Minute}, "p-x1", "p-x2")
 	te.refreshAt(at(time.Minute))
 	te.eventsOf(t, "")
@@ -467,7 +467,7 @@ func TestChosenExpiredStillFailsOver(t *testing.T) {
 // Old connections of an outbound whose lease ended fail as the backend
 // revokes it: no balancer chooses it, so that is no evidence.
 func TestEvidenceOfAnIdleExpiredIgnored(t *testing.T) {
-	te := leaseEngine(t, nil, &SelectorConfig{Costs: costs("p-x1", 1, "p-x2", 2)}, "p-x1", "p-x2")
+	te := leaseEngine(t, nil, &SelectorConfig{Paths: pathSpecs("p-x1", 1, "p-x2", 2)}, "p-x1", "p-x2")
 	te.lease(t0, map[string]time.Duration{"p-x1": time.Minute}, "p-x1", "p-x2")
 	te.refreshAt(at(time.Minute))
 	te.run(t, at(time.Minute), nil)
@@ -484,7 +484,7 @@ func TestEvidenceOfAnIdleExpiredIgnored(t *testing.T) {
 // A pinned balancer stays on its pin when the lease ends; a release lets it
 // go.
 func TestPinnedExpiredStays(t *testing.T) {
-	te := leaseEngine(t, nil, &SelectorConfig{Costs: costs("p-x1", 1, "p-x2", 2), StartPinnedOutbound: "p-x1"}, "p-x1", "p-x2")
+	te := leaseEngine(t, nil, &SelectorConfig{Paths: pathSpecs("p-x1", 1, "p-x2", 2), StartPinnedOutbound: "p-x1"}, "p-x1", "p-x2")
 	te.lease(t0, map[string]time.Duration{"p-x1": time.Minute}, "p-x1", "p-x2")
 	te.refreshAt(at(time.Minute))
 	if jobs := te.run(t, at(time.Minute), nil); len(jobs) != 0 || te.sel.current() != "p-x1" {
@@ -498,7 +498,7 @@ func TestPinnedExpiredStays(t *testing.T) {
 }
 
 func TestExpiredNeitherRememberedNorReturnToCheaperTargetNorInHostPlan(t *testing.T) {
-	te := leaseEngine(t, nil, &SelectorConfig{Costs: costs("p-x1", 1, "p-x2", 2, "a", 3)}, "p-x1", "p-x2", "a1")
+	te := leaseEngine(t, nil, &SelectorConfig{Paths: pathSpecs("p-x1", 1, "p-x2", 2, "a", 3)}, "p-x1", "p-x2", "a1")
 	te.lease(t0, map[string]time.Duration{"p-x1": time.Minute}, "p-x1", "p-x2")
 	te.refreshAt(at(time.Minute))
 	te.run(t, at(time.Minute), nil)
@@ -521,18 +521,25 @@ func TestExpiredNeitherRememberedNorReturnToCheaperTargetNorInHostPlan(t *testin
 			t.Fatal("the expired outbound remembered for the network is probed")
 		}
 	}
-	// A balancer that starts now takes neither the remembered nor the
-	// passed outbound.
-	s := te.addSelector("other", newSelectorSettings(&SelectorConfig{Costs: costs("p-x1", 1, "p-x2", 2), StartOutbound: "p-x1"}))
-	te.networks["home"]["other"] = "p-x1"
-	te.updateCandidates(s, []string{"p-x1", "p-x2"}, at(3*time.Minute))
-	if s.current() != "p-x2" {
+}
+
+func TestNewBalancerIgnoresExpiredRememberedOutbound(t *testing.T) {
+	paths := []*PathDefinition{
+		{Tag: "x1", Balancer: "other", Cost: 1},
+		{Tag: "x2", Balancer: "other", Cost: 2},
+	}
+	e := newEngine(newSettings(&Config{Paths: paths}), 1)
+	s := e.addSelector("other", newSelectorSettings(&SelectorConfig{Paths: paths, StartOutbound: "x1"}))
+	e.expired["x1"] = true
+	e.networks["home"] = map[string]string{"other": "x1"}
+	e.updateCandidates(s, []string{"x1", "x2"}, at(3*time.Minute))
+	if s.current() != "x2" {
 		t.Fatalf("a new balancer started on %q", s.current())
 	}
 }
 
 func TestMinHealthyCountsExpiredAsGone(t *testing.T) {
-	te := leaseEngine(t, func(p *ProviderConfig) { p.Triggers.MinHealthyOutbounds = 3 }, &SelectorConfig{Costs: costs("p-", 1)},
+	te := leaseEngine(t, func(p *ProviderConfig) { p.Triggers.MinHealthyOutbounds = 3 }, &SelectorConfig{Paths: pathSpecs("p-", 1)},
 		"p-x1", "p-x2", "p-x3")
 	te.lease(t0, map[string]time.Duration{"p-x3": time.Hour}, "p-x1", "p-x2", "p-x3")
 	expectNoRefresh(t, te, at(30*time.Second))
@@ -547,7 +554,7 @@ func TestMinHealthyCountsExpiredAsGone(t *testing.T) {
 // A backend that answers without renewing an expired lease is not asked
 // about it again: one request per value of a lease.
 func TestExpiryRefreshOncePerLeaseValue(t *testing.T) {
-	te := leaseEngine(t, nil, &SelectorConfig{Costs: costs("p-", 1)}, "p-x1", "p-x2")
+	te := leaseEngine(t, nil, &SelectorConfig{Paths: pathSpecs("p-", 1)}, "p-x1", "p-x2")
 	te.lease(t0, map[string]time.Duration{"p-x1": time.Minute}, "p-x1", "p-x2")
 	expectNoRefresh(t, te, at(59*time.Second))
 	j := expectRefresh(t, te, at(time.Minute), "expiry")
@@ -568,7 +575,7 @@ func TestExpiryRefreshOncePerLeaseValue(t *testing.T) {
 }
 
 func TestExpiryRearmedAfterAFailedRefresh(t *testing.T) {
-	te := leaseEngine(t, nil, &SelectorConfig{Costs: costs("p-", 1)}, "p-x1")
+	te := leaseEngine(t, nil, &SelectorConfig{Paths: pathSpecs("p-", 1)}, "p-x1")
 	te.lease(t0, map[string]time.Duration{"p-x1": time.Minute}, "p-x1")
 	j := expectRefresh(t, te, at(time.Minute), "expiry")
 	te.onRefreshDone(j, refreshOutcome{err: "status 503", retryAfter: 20 * time.Second}, at(time.Minute))
@@ -595,7 +602,7 @@ func TestExpiryRearmedAfterAFailedRefresh(t *testing.T) {
 func TestFailedExpiryRetryWaitsForTrafficWhenIdle(t *testing.T) {
 	te := leaseEngine(t, func(p *ProviderConfig) {
 		p.Limits.Backoff = &Backoff{InitialDelay: int64(30 * time.Second), JitterFraction: -1}
-	}, &SelectorConfig{Costs: costs("p-", 1)}, "p-x1")
+	}, &SelectorConfig{Paths: pathSpecs("p-", 1)}, "p-x1")
 	te.s.schedule.idleAfter = 2 * time.Minute
 	te.lease(t0, map[string]time.Duration{"p-x1": time.Hour}, "p-x1")
 	// Idle since t0, yet the end of the lease wakes the observer.
@@ -621,7 +628,7 @@ func TestFailedExpiryRetryWaitsForTrafficWhenIdle(t *testing.T) {
 // urgent point: the one wake left is the end of the lease, or a dead
 // backend would wake a sleeping device at the urgent point of every lease.
 func TestFailedRenewalAddsNoUrgentWakeWhenIdle(t *testing.T) {
-	te := leaseEngine(t, renewing(func(e *ExpiryTrigger) { e.JitterFraction = -1 }), &SelectorConfig{Costs: costs("p-", 1)}, "p-x1")
+	te := leaseEngine(t, renewing(func(e *ExpiryTrigger) { e.JitterFraction = -1 }), &SelectorConfig{Paths: pathSpecs("p-", 1)}, "p-x1")
 	te.s.schedule.idleAfter = 2 * time.Minute
 	te.lease(t0, map[string]time.Duration{"p-x1": time.Hour}, "p-x1")
 	jobs, _ := te.tickProviders(at(30 * time.Minute))
@@ -643,7 +650,7 @@ func TestFailedRenewalAddsNoUrgentWakeWhenIdle(t *testing.T) {
 // An answer that brings a lease ended already gives no more: no refresh is
 // asked for it, which with a wrong clock would be a loop.
 func TestExpiredOnArrivalStartsNoRefresh(t *testing.T) {
-	te := leaseEngine(t, nil, &SelectorConfig{Costs: costs("p-x1", 1, "p-x2", 2)}, "p-x1", "p-x2")
+	te := leaseEngine(t, nil, &SelectorConfig{Paths: pathSpecs("p-x1", 1, "p-x2", 2)}, "p-x1", "p-x2")
 	te.eventsOf(t, "")
 	c := te.lease(at(time.Minute), map[string]time.Duration{"p-x1": -time.Second, "p-x2": time.Hour}, "p-x1", "p-x2")
 	if c.leases != 2 || c.expired != 1 || !te.expired["p-x1"] {
@@ -662,7 +669,7 @@ func TestExpiredOnArrivalStartsNoRefresh(t *testing.T) {
 // had not ended ends once. A backend whose ends trail its clock adds no
 // renewal and no decision to the report on every answer.
 func TestLaterEndThatPassedRenewsNothing(t *testing.T) {
-	te := leaseEngine(t, nil, &SelectorConfig{Costs: costs("p-x1", 1, "p-x2", 2)}, "p-x1", "p-x2")
+	te := leaseEngine(t, nil, &SelectorConfig{Paths: pathSpecs("p-x1", 1, "p-x2", 2)}, "p-x1", "p-x2")
 	te.lease(t0, map[string]time.Duration{"p-x1": time.Minute, "p-x2": time.Hour}, "p-x1", "p-x2")
 	te.refreshAt(at(time.Minute))
 	if !te.expired["p-x1"] {
@@ -702,7 +709,7 @@ func TestLeaseEndCenturiesOffEndsOnArrival(t *testing.T) {
 		{"server time in 9999", at(time.Hour), time.Date(9999, 12, 31, 0, 0, 0, 0, time.UTC)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			te := leaseEngine(t, nil, &SelectorConfig{Costs: costs("p-x1", 1, "p-x2", 2)}, "p-x1", "p-x2")
+			te := leaseEngine(t, nil, &SelectorConfig{Paths: pathSpecs("p-x1", 1, "p-x2", 2)}, "p-x1", "p-x2")
 			te.eventsOf(t, "")
 			now := at(time.Minute)
 			tags := []string{"p-x1", "p-x2"}
@@ -733,7 +740,7 @@ func TestExpiryRefreshUsesExhaustedMinIntervalAndRunsUnderLowMemory(t *testing.T
 	te := leaseEngine(t, func(p *ProviderConfig) {
 		p.Limits.MinInterval = int64(5 * time.Minute)
 		p.Limits.ExhaustedMinInterval = int64(30 * time.Second)
-	}, &SelectorConfig{Costs: costs("p-", 1)}, "p-x1")
+	}, &SelectorConfig{Paths: pathSpecs("p-", 1)}, "p-x1")
 	te.lease(t0, map[string]time.Duration{"p-x1": 10 * time.Second}, "p-x1")
 	te.requestRefresh("fresh")
 	j := expectRefresh(t, te, t0, "host")
@@ -747,7 +754,7 @@ func TestExpiryRefreshUsesExhaustedMinIntervalAndRunsUnderLowMemory(t *testing.T
 // first must not hide the second.
 func TestIdleExhaustedDoesNotHideExpiry(t *testing.T) {
 	te := leaseEngine(t, func(p *ProviderConfig) { p.Triggers.SkipRefreshWhenExhausted = false },
-		&SelectorConfig{Costs: costs("p-", 1), SkipProbeBeforeSwitch: true}, "p-x1", "p-x2")
+		&SelectorConfig{Paths: pathSpecs("p-", 1), SkipProbeBeforeSwitch: true}, "p-x1", "p-x2")
 	te.s.schedule.idleAfter = 2 * time.Minute
 	te.s.schedule.quarantine = backoff{initial: 2 * time.Hour, multiplier: 2, max: 4 * time.Hour}
 	te.lease(t0, map[string]time.Duration{"p-x1": time.Hour}, "p-x1", "p-x2")
@@ -770,7 +777,7 @@ func TestIdleExhaustedDoesNotHideExpiry(t *testing.T) {
 // A renewed lease makes the outbound a live candidate again, and the
 // balancer returns to it the usual way.
 func TestRenewedIsACandidateAgain(t *testing.T) {
-	te := leaseEngine(t, nil, &SelectorConfig{Costs: costs("p-x1", 1, "p-x2", 2)}, "p-x1", "p-x2")
+	te := leaseEngine(t, nil, &SelectorConfig{Paths: pathSpecs("p-x1", 1, "p-x2", 2)}, "p-x1", "p-x2")
 	te.lease(t0, map[string]time.Duration{"p-x1": time.Minute}, "p-x1", "p-x2")
 	te.refreshAt(at(time.Minute))
 	te.run(t, at(time.Minute), nil)
@@ -794,7 +801,7 @@ func TestRenewedIsACandidateAgain(t *testing.T) {
 }
 
 func TestNetworkChangeKeepsLeases(t *testing.T) {
-	te := leaseEngine(t, nil, &SelectorConfig{Costs: costs("p-x1", 1, "p-x2", 2)}, "p-x1", "p-x2")
+	te := leaseEngine(t, nil, &SelectorConfig{Paths: pathSpecs("p-x1", 1, "p-x2", 2)}, "p-x1", "p-x2")
 	te.lease(t0, map[string]time.Duration{"p-x1": time.Minute, "p-x2": time.Hour}, "p-x1", "p-x2")
 	te.refreshAt(at(time.Minute))
 	te.onNetworkChange("cafe", at(2*time.Minute))
@@ -806,7 +813,7 @@ func TestNetworkChangeKeepsLeases(t *testing.T) {
 // A lease goes with its outbound: out of the set, after the drain, and when
 // an answer stops naming an end.
 func TestLeaseGoesWithTheOutbound(t *testing.T) {
-	te := leaseEngine(t, nil, &SelectorConfig{Costs: costs("p-x1", 1, "p-x2", 2, "p-x3", 3)}, "p-x1", "p-x2", "p-x3")
+	te := leaseEngine(t, nil, &SelectorConfig{Paths: pathSpecs("p-x1", 1, "p-x2", 2, "p-x3", 3)}, "p-x1", "p-x2", "p-x3")
 	te.lease(t0, map[string]time.Duration{"p-x1": time.Minute, "p-x2": time.Minute, "p-x3": time.Minute}, "p-x1", "p-x2", "p-x3")
 	te.refreshAt(at(time.Minute))
 	if len(te.expired) != 3 {
@@ -828,7 +835,7 @@ func TestLeaseGoesWithTheOutbound(t *testing.T) {
 // A refresh for any trigger asks about the leases that ended: a failed one
 // puts them back to be asked about, an answer settles them.
 func TestAnyRefreshAsksAboutEndedLeases(t *testing.T) {
-	te := leaseEngine(t, nil, &SelectorConfig{Costs: costs("p-", 1)}, "p-x1", "p-x2")
+	te := leaseEngine(t, nil, &SelectorConfig{Paths: pathSpecs("p-", 1)}, "p-x1", "p-x2")
 	te.lease(t0, map[string]time.Duration{"p-x1": time.Minute, "p-x2": time.Hour}, "p-x1", "p-x2")
 	te.prov().fetching = true
 	te.refreshAt(at(time.Minute))
@@ -843,7 +850,7 @@ func TestAnyRefreshAsksAboutEndedLeases(t *testing.T) {
 }
 
 func TestLeaseInStatusAndBody(t *testing.T) {
-	te := leaseEngine(t, nil, &SelectorConfig{Costs: costs("p-x1", 1, "p-x2", 2)}, "p-x1", "p-x2", "p-x3")
+	te := leaseEngine(t, nil, &SelectorConfig{Paths: pathSpecs("p-x1", 1, "p-x2", 2)}, "p-x1", "p-x2", "p-x3")
 	server := at(time.Hour)
 	te.acceptLeases(te.prov(), []string{"p-x1", "p-x2", "p-x3"}, leaseAnswer{
 		ends: map[string]time.Time{"p-x1": server.Add(time.Minute), "p-x2": server.Add(time.Hour)}, serverTime: server}, t0)
@@ -877,7 +884,7 @@ func TestLeaseInStatusAndBody(t *testing.T) {
 // Leases do not grow with answers: one per outbound of the set at most,
 // however tags rotate.
 func TestLeasesStayWithinTheSet(t *testing.T) {
-	te := leaseEngine(t, nil, &SelectorConfig{Costs: costs("p-", 1)}, "p-x0")
+	te := leaseEngine(t, nil, &SelectorConfig{Paths: pathSpecs("p-", 1)}, "p-x0")
 	limit := te.prov().cfg.maxOutbounds
 	for i := 0; i < 10_000; i++ {
 		now := at(time.Duration(i) * time.Second)
@@ -896,7 +903,7 @@ func TestLeasesStayWithinTheSet(t *testing.T) {
 }
 
 func leaseBody(version string, ends map[string]time.Time, server time.Time) []byte {
-	body := map[string]any{"outbounds": []fakeOutbound{{Tag: "x1", Protocol: "vless", V: 1}, {Tag: "x2", Protocol: "vless", V: 1}},
+	body := map[string]any{"outbounds": []fakeOutbound{{Tag: "x1", Protocol: "vless", V: 1, Path: json.RawMessage(`{"balancer":"auto","cost":1}`)}, {Tag: "x2", Protocol: "vless", V: 1, Path: json.RawMessage(`{"balancer":"auto","cost":1}`)}},
 		"version": version, "serverTime": server.UTC().Format(time.RFC3339)}
 	exp := map[string]string{}
 	for tag, end := range ends {
@@ -1011,7 +1018,7 @@ func (te *testEngine) firstRefresh(t *testing.T, from, until time.Time) (*refres
 }
 
 func TestRenewalAtShareOfShortestLease(t *testing.T) {
-	te := leaseEngine(t, renewing(nil), &SelectorConfig{Costs: costs("p-", 1)}, "p-x1", "p-x2")
+	te := leaseEngine(t, renewing(nil), &SelectorConfig{Paths: pathSpecs("p-", 1)}, "p-x1", "p-x2")
 	te.lease(t0, map[string]time.Duration{"p-x1": time.Hour, "p-x2": 2 * time.Hour}, "p-x1", "p-x2")
 	if in := te.status(at(time.Minute)).Providers[0].RenewInMs; in == nil ||
 		*in != (te.prov().leases["p-x1"].renewIn-time.Minute).Milliseconds() {
@@ -1034,7 +1041,7 @@ func TestRenewalAtShareOfShortestLease(t *testing.T) {
 // A lease is renewed without user traffic: a sleeping device would lose its
 // outbounds otherwise. It waits for the network.
 func TestRenewalIgnoresIdleWaitsForNetwork(t *testing.T) {
-	te := leaseEngine(t, renewing(nil), &SelectorConfig{Costs: costs("p-", 1)}, "p-x1")
+	te := leaseEngine(t, renewing(nil), &SelectorConfig{Paths: pathSpecs("p-", 1)}, "p-x1")
 	te.s.schedule.idleAfter = 2 * time.Minute
 	te.lease(t0, map[string]time.Duration{"p-x1": time.Hour}, "p-x1")
 	renew := t0.Add(te.prov().leases["p-x1"].renewIn)
@@ -1057,7 +1064,7 @@ func TestRenewalIgnoresIdleWaitsForNetwork(t *testing.T) {
 
 // While memory is low a planned renewal waits, and goes once it is urgent.
 func TestRenewalWaitsForMemoryUntilUrgent(t *testing.T) {
-	te := leaseEngine(t, renewing(nil), &SelectorConfig{Costs: costs("p-", 1)}, "p-x1")
+	te := leaseEngine(t, renewing(nil), &SelectorConfig{Paths: pathSpecs("p-", 1)}, "p-x1")
 	te.lease(t0, map[string]time.Duration{"p-x1": time.Hour}, "p-x1")
 	te.setMemoryLow(true, at(time.Minute))
 	l := te.prov().leases["p-x1"]
@@ -1079,7 +1086,7 @@ func TestRenewalWaitsForMemoryUntilUrgent(t *testing.T) {
 // A backend that does not renew a lease gets one request for it, not one
 // at the renewal and more until the end.
 func TestRenewalOncePerLeaseValue(t *testing.T) {
-	te := leaseEngine(t, renewing(nil), &SelectorConfig{Costs: costs("p-", 1)}, "p-x1")
+	te := leaseEngine(t, renewing(nil), &SelectorConfig{Paths: pathSpecs("p-", 1)}, "p-x1")
 	te.lease(t0, map[string]time.Duration{"p-x1": time.Hour}, "p-x1")
 	starts := 0
 	for now := t0; now.Before(at(3 * time.Hour)); now = now.Add(10 * time.Second) {
@@ -1098,7 +1105,7 @@ func TestRenewalOncePerLeaseValue(t *testing.T) {
 // An answer for another trigger with the same end leaves the renewal where
 // it was; repeated answers do not put it off.
 func TestSameEndKeepsTheRenewalPoint(t *testing.T) {
-	te := leaseEngine(t, renewing(nil), &SelectorConfig{Costs: costs("p-", 1)}, "p-x1")
+	te := leaseEngine(t, renewing(nil), &SelectorConfig{Paths: pathSpecs("p-", 1)}, "p-x1")
 	te.lease(t0, map[string]time.Duration{"p-x1": time.Hour}, "p-x1")
 	renew := t0.Add(te.prov().leases["p-x1"].renewIn)
 	for now := at(5 * time.Minute); now.Before(renew.Add(-time.Minute)); now = now.Add(5 * time.Minute) {
@@ -1114,7 +1121,7 @@ func TestSameEndKeepsTheRenewalPoint(t *testing.T) {
 // later answer that extends it past that end, though not past the end it
 // had before, renews it.
 func TestShorterEndIsTheValueALaterAnswerRenews(t *testing.T) {
-	te := leaseEngine(t, renewing(func(e *ExpiryTrigger) { e.JitterFraction = -1 }), &SelectorConfig{Costs: costs("p-", 1)}, "p-x1")
+	te := leaseEngine(t, renewing(func(e *ExpiryTrigger) { e.JitterFraction = -1 }), &SelectorConfig{Paths: pathSpecs("p-", 1)}, "p-x1")
 	te.lease(t0, map[string]time.Duration{"p-x1": 10 * time.Hour}, "p-x1")
 	j := expectRefresh(t, te, at(5*time.Hour), "expiry")
 	c := te.sameSet(at(5*time.Hour), map[string]time.Time{"p-x1": at(6 * time.Hour)})
@@ -1140,7 +1147,7 @@ func TestShorterEndIsTheValueALaterAnswerRenews(t *testing.T) {
 // Any answer renews what it names, and a refresh of any trigger asks about
 // the leases due: no separate renewal follows.
 func TestAnyRefreshRenews(t *testing.T) {
-	te := leaseEngine(t, renewing(nil), &SelectorConfig{Costs: costs("p-", 1)}, "p-x1", "p-x2")
+	te := leaseEngine(t, renewing(nil), &SelectorConfig{Paths: pathSpecs("p-", 1)}, "p-x1", "p-x2")
 	te.lease(t0, map[string]time.Duration{"p-x1": time.Hour, "p-x2": time.Hour}, "p-x1", "p-x2")
 	// An answer before the renewal point with a later end is a new value.
 	te.requestRefresh("fresh")
@@ -1172,7 +1179,7 @@ func TestUrgentRenewalWaitsOnlyForTheShorterInterval(t *testing.T) {
 	te := leaseEngine(t, func(p *ProviderConfig) {
 		renewing(nil)(p)
 		p.Limits.MinInterval = int64(30 * time.Minute)
-	}, &SelectorConfig{Costs: costs("p-", 1)}, "p-x1")
+	}, &SelectorConfig{Paths: pathSpecs("p-", 1)}, "p-x1")
 	te.lease(t0, map[string]time.Duration{"p-x1": time.Hour}, "p-x1")
 	te.requestRefresh("fresh")
 	j := expectRefresh(t, te, at(26*time.Minute), "host")
@@ -1185,7 +1192,7 @@ func TestUrgentRenewalWaitsOnlyForTheShorterInterval(t *testing.T) {
 }
 
 func TestRenewAtZeroTurnsRenewalOffButNotExpiry(t *testing.T) {
-	te := leaseEngine(t, renewing(func(e *ExpiryTrigger) { e.RenewAtFraction = -1 }), &SelectorConfig{Costs: costs("p-", 1)}, "p-x1")
+	te := leaseEngine(t, renewing(func(e *ExpiryTrigger) { e.RenewAtFraction = -1 }), &SelectorConfig{Paths: pathSpecs("p-", 1)}, "p-x1")
 	te.lease(t0, map[string]time.Duration{"p-x1": time.Hour}, "p-x1")
 	for now := t0; now.Before(at(time.Hour)); now = now.Add(time.Minute) {
 		expectNoRefresh(t, te, now)

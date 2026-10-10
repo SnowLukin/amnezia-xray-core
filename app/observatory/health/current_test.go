@@ -10,7 +10,7 @@ import (
 
 func TestCurrentIsTheRunningObservatory(t *testing.T) {
 	cfg, err := core.LoadConfig("json", strings.NewReader(`{"log": {"loglevel": "none"},
-		"outbounds": [{"tag": "a1", "protocol": "freedom"}], "healthObservatory": {"subjectSelector": ["a"]}}`))
+		"outbounds": [{"tag": "a1", "protocol": "freedom", "path":{"balancer":"auto","cost":1}}], "routing":{"balancers":[{"tag":"auto","strategy":{"type":"leastCost"}}]}, "healthObservatory": {}}`))
 	if err != nil {
 		t.Fatal(err)
 	}

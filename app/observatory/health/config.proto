@@ -9,10 +9,9 @@ option java_multiple_files = true;
 
 // Config of the health observatory. All durations are int64 nanoseconds.
 message Config {
-  // Outbounds whose connections are observed, matched by tag prefix.
-  repeated string subject_selector = 1;
+  reserved 1;
   PassiveConfig passive = 2;
-  // The first profile whose selector matches a tag is used to probe it.
+  // A path names its probe profile; without one it uses the built-in probe.
   repeated ProbeProfile probes = 3;
   ConnectivityConfig connectivity = 4;
   ScheduleConfig schedule = 5;
@@ -22,6 +21,7 @@ message Config {
   repeated ProviderConfig providers = 8;
   ReportConfig report = 9;
   SleepConfig sleep = 10;
+  repeated PathDefinition paths = 11;
 }
 
 // PassiveConfig decides when user traffic makes an outbound suspect.
@@ -71,7 +71,7 @@ message PassiveConfig {
 }
 
 message ProbeProfile {
-  repeated string selector = 1;
+  string name = 1;
   string destination = 2;
   string method = 3;
   // Accepted status codes. Empty accepts 200-299.
@@ -185,28 +185,29 @@ message NetworkConfig {
   int32 max_networks = 2;
 }
 
-// SelectorConfig configures the leastCost balancer strategy.
-message CostGroupConfig {
-  int32 failed_in_row_to_leave = 1;
+message PathDefinition {
+  string tag = 1;
+  string balancer = 2;
+  string group = 3;
+  float cost = 4;
+  bool is_lazy = 5;
+  int64 return_interval = 6;
+  string probe = 7;
 }
 
-message CostEntry {
-  string match = 1;
-  bool is_regexp = 2;
-  float cost = 3;
+message PathGroup {
+  string name = 1;
+  float cost = 2;
+  bool is_lazy = 3;
   int64 return_interval = 4;
-  CostGroupConfig group = 5;
+  string probe = 5;
+  int32 failed_in_row_to_leave = 6;
 }
 
 message SelectorConfig {
-  // Cost per matching tag. Lower is preferred.
-  repeated CostEntry costs = 1;
-  // Cost of tags without a matching entry. Zero means the highest cost in
-  // costs, so an unexpected outbound is the last resort.
-  float default_cost = 2;
-  // Tags matched by these prefixes are never probed in the background and
-  // are only tried when everything cheaper is down.
-  repeated string lazy_outbounds = 3;
+  repeated PathDefinition paths = 1;
+  repeated PathGroup groups = 2;
+  reserved 3;
   // Move traffic to the next candidate without probing it first.
   bool skip_probe_before_switch = 4;
   // When to probe the current outbound before leaving it.

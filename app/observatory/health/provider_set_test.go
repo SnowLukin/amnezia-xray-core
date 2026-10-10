@@ -32,6 +32,27 @@ type fakeHandler struct {
 	slept  int
 }
 
+func TestLoadOutboundsAcceptsPathMetadata(t *testing.T) {
+	for _, keys := range []string{
+		`"path":{"balancer":"auto","cost":1}`,
+		`"Path":{"balancer":"auto","cost":1}`,
+		`"PATH":{"balancer":"auto","cost":1}`,
+		`"pAtH":{"balancer":"auto","cost":1}`,
+		`"path":{"balancer":"auto","cost":1},"PATH":{"balancer":"auto","cost":1}`,
+	} {
+		t.Run(keys, func(t *testing.T) {
+			raw := json.RawMessage(`[{"tag":"x1","protocol":"freedom",` + keys + `}]`)
+			outbounds, err := loadOutbounds(raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(outbounds) != 1 || outbounds[0].Tag != "x1" {
+				t.Fatalf("outbounds: %+v", outbounds)
+			}
+		})
+	}
+}
+
 func (h *fakeHandler) Start() error { return nil }
 func (h *fakeHandler) Close() error {
 	h.mu.Lock()
@@ -119,10 +140,11 @@ func sortedCopy(s []string) []string {
 
 // fakeOutbound is {"tag": "x1", "v": 1}; v stands for the settings.
 type fakeOutbound struct {
-	Tag      string `json:"tag"`
-	Protocol string `json:"protocol"`
-	V        int64  `json:"v"`
-	Bad      bool   `json:"bad"`
+	Tag      string          `json:"tag"`
+	Protocol string          `json:"protocol"`
+	V        int64           `json:"v"`
+	Bad      bool            `json:"bad"`
+	Path     json.RawMessage `json:"path,omitempty"`
 }
 
 func fakeSettings(v int64) *serial.TypedMessage {
@@ -176,7 +198,7 @@ func newApplyFixture(t *testing.T, drain time.Duration, mods ...func(*ProviderCo
 		f.created = append(f.created, h)
 		return h, nil
 	}
-	s := o.e.addSelector("auto", newSelectorSettings(&SelectorConfig{Costs: costs("p-", 1)}))
+	s := o.e.addSelector("auto", newSelectorSettings(&SelectorConfig{Paths: pathSpecs("p-", 1)}))
 	o.e.noteDemand(time.Now())
 	o.e.updateCandidates(s, []string{"p-x1"}, time.Now())
 	return f
@@ -188,6 +210,9 @@ func answer(t *testing.T, outbounds ...fakeOutbound) *providerAnswer {
 		if outbounds[i].Protocol == "" {
 			outbounds[i].Protocol = "vless"
 		}
+		if outbounds[i].Path == nil {
+			outbounds[i].Path = json.RawMessage(`{"balancer":"auto","cost":1}`)
+		}
 	}
 	body, _ := json.Marshal(map[string]any{"outbounds": outbounds})
 	a, err := parseAnswer(body)
@@ -197,8 +222,57 @@ func answer(t *testing.T, outbounds ...fakeOutbound) *providerAnswer {
 	return a
 }
 
+func fixtureAnswerBody(raw []byte) []byte {
+	var body map[string]json.RawMessage
+	if json.Unmarshal(raw, &body) != nil || body == nil {
+		return raw
+	}
+	var outbounds []map[string]json.RawMessage
+	if json.Unmarshal(body["outbounds"], &outbounds) != nil || outbounds == nil {
+		return raw
+	}
+	changed := false
+	for _, outbound := range outbounds {
+		if _, exists := outbound["path"]; exists {
+			continue
+		}
+		path, _ := json.Marshal(map[string]any{"balancer": "auto", "cost": 1})
+		outbound["path"] = path
+		changed = true
+	}
+	if !changed {
+		return raw
+	}
+	updated, err := json.Marshal(outbounds)
+	if err != nil {
+		return raw
+	}
+	body["outbounds"] = updated
+	updated, err = json.Marshal(body)
+	if err != nil {
+		return raw
+	}
+	return updated
+}
+
 func (f *applyFixture) apply(t *testing.T, a *providerAnswer) (bool, error) {
 	t.Helper()
+	var original map[string]json.RawMessage
+	_ = json.Unmarshal(a.body, &original)
+	wasGenerated := a.version == setHash(original)
+	a.body = fixtureAnswerBody(a.body)
+	var heads []outboundHead
+	var sections map[string]json.RawMessage
+	_ = json.Unmarshal(a.body, &sections)
+	if wasGenerated {
+		a.version = setHash(sections)
+	}
+	_ = json.Unmarshal(sections["outbounds"], &heads)
+	for i := range a.heads {
+		if a.heads[i].Path == nil && i < len(heads) {
+			a.heads[i].Path = heads[i].Path
+		}
+	}
 	return f.o.applySet(f.rt, a, &refreshJob{p: f.rt.p, trigger: triggerHost})
 }
 
@@ -335,10 +409,10 @@ func TestApplyBrokenSetChangesNothing(t *testing.T) {
 	}
 }
 
-func TestApplyRejectsCostsNotAboveZero(t *testing.T) {
+func TestApplyRejectsPathCostNotAboveZero(t *testing.T) {
 	for _, cost := range []string{"0", "-1"} {
 		f := newApplyFixture(t, time.Minute)
-		a, err := parseAnswer([]byte(`{"outbounds": [{"tag": "x1", "protocol": "vless", "v": 1}], "costs": {"x1": ` + cost + `}}`))
+		a, err := parseAnswer([]byte(`{"outbounds": [{"tag": "x1", "protocol": "vless", "v": 1, "path":{"balancer":"auto","cost":` + cost + `}}]}`))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -400,10 +474,10 @@ func TestApplySameVersionDoesNothing(t *testing.T) {
 // were. One that passes counts the outbounds of the applied set.
 func TestApplySameVersionChecksItsOutbounds(t *testing.T) {
 	for name, set := range map[string][]fakeOutbound{
-		"has no tag":    {{Tag: "x1", V: 1}, {V: 1}},
-		"duplicate tag": {{Tag: "x1", V: 1}, {Tag: "x1", V: 2}},
-		"not allowed":   {{Tag: "x1", V: 1}, {Tag: "x3", Protocol: "freedom"}},
-		"cost of x1":    {{Tag: "x1", V: 1}},
+		"has no tag":      {{Tag: "x1", V: 1}, {V: 1}},
+		"duplicate tag":   {{Tag: "x1", V: 1}, {Tag: "x1", V: 2}},
+		"not allowed":     {{Tag: "x1", V: 1}, {Tag: "x3", Protocol: "freedom"}},
+		"path needs cost": {{Tag: "x1", V: 1}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			f := newApplyFixture(t, time.Minute)
@@ -414,8 +488,8 @@ func TestApplySameVersionChecksItsOutbounds(t *testing.T) {
 			}
 			kept, seq := f.providerSet(t, 0)
 			a := answer(t, set...)
-			if name == "cost of x1" {
-				a.costs = map[string]float64{"x1": -1}
+			if name == "path needs cost" {
+				a.heads[0].Path = json.RawMessage(`{"balancer":"auto","cost":-1}`)
 			}
 			a.version = "v1"
 			if _, err := f.apply(t, a); err == nil {
@@ -501,8 +575,8 @@ func TestParseAge(t *testing.T) {
 }
 
 func TestParseAnswer(t *testing.T) {
-	a, err := parseAnswer([]byte(`{"outbounds": [{"tag": "x"}], "nextRefreshIn": "90m", "costs": {"x": 3}}`))
-	if err != nil || a.nextRefreshIn != 90*time.Minute || a.costs["x"] != 3 {
+	a, err := parseAnswer([]byte(`{"outbounds": [{"tag": "x", "path":{"balancer":"auto","cost":3}}], "nextRefreshIn": "90m"}`))
+	if err != nil || a.nextRefreshIn != 90*time.Minute || a.heads[0].Path == nil {
 		t.Fatalf("parsed %+v, %v", a, err)
 	}
 	if _, err := parseAnswer([]byte(`{"outbounds": [{"tag": "x"}], "nextRefreshIn": 600}`)); err == nil {
@@ -570,16 +644,16 @@ func TestParseAnswer(t *testing.T) {
 // The version names the set: an answer that differs only in how to take it
 // is the applied set again, not a new one to build.
 func TestVersionIgnoresMetaKeys(t *testing.T) {
-	a1, _ := parseAnswer([]byte(`{"outbounds": [{"tag": "x"}], "costs": {"x": 2}}`))
-	a2, _ := parseAnswer([]byte(`{"protocol": 1, "outbounds": [{"tag": "x"}], "costs": {"x": 2}, "nextRefreshIn": "1h",
+	a1, _ := parseAnswer([]byte(`{"outbounds": [{"tag": "x", "path":{"balancer":"auto","cost":2}}]}`))
+	a2, _ := parseAnswer([]byte(`{"protocol": 1, "outbounds": [{"tag": "x", "path":{"balancer":"auto","cost":2}}], "nextRefreshIn": "1h",
 		"serverTime": "2026-10-08T12:00:00Z", "expiresAt": {"x": "2026-10-09T12:00:00Z"}, "baseVersion": "cfg-12"}`))
-	a3, _ := parseAnswer([]byte(`{"outbounds": [{"tag": "x"}], "costs": {"x": 3}}`))
-	a4, _ := parseAnswer([]byte(`{"outbounds": [{"tag": "x"}], "costs": {"x": 2}, "routing": {"rules": []}}`))
+	a3, _ := parseAnswer([]byte(`{"outbounds": [{"tag": "x", "path":{"balancer":"auto","cost":3}}]}`))
+	a4, _ := parseAnswer([]byte(`{"outbounds": [{"tag": "x", "path":{"balancer":"auto","cost":2}}], "routing": {"rules": []}}`))
 	if a1.version != a2.version || a1.version == a3.version || a1.version == a4.version {
 		t.Fatalf("versions %s %s %s %s; want the first two equal and the others apart", a1.version, a2.version, a3.version, a4.version)
 	}
 	// A set the host saved is the set it saved, with a fresh token or not.
-	saved, err := parseInitial([]byte(`{"outbounds": [{"tag": "x"}], "costs": {"x": 2}, "headers": {"Authorization": "Bearer t2"},
+	saved, err := parseInitial([]byte(`{"outbounds": [{"tag": "x", "path":{"balancer":"auto","cost":2}}], "headers": {"Authorization": "Bearer t2"},
 		"receivedAt": "2026-10-08T12:00:00Z"}`))
 	if err != nil || saved.version != a1.version || saved.receivedAt.IsZero() {
 		t.Fatalf("saved set %+v, %v", saved, err)
@@ -608,7 +682,7 @@ func TestReplacedOutboundForgetsItsServer(t *testing.T) {
 // An outbound gone from the set leaves nothing behind once its drain ends.
 func TestDrainedOutboundLeavesNothingBehind(t *testing.T) {
 	f := newApplyFixture(t, 50*time.Millisecond)
-	f.o.e.addSelector("auto", newSelectorSettings(&SelectorConfig{Costs: costs("p-", 1), SkipProbeBeforeSwitch: true}))
+	f.o.e.addSelector("auto", newSelectorSettings(&SelectorConfig{Paths: pathSpecs("p-", 1), SkipProbeBeforeSwitch: true}))
 	if _, err := f.apply(t, answer(t, fakeOutbound{Tag: "x1", V: 1}, fakeOutbound{Tag: "x2", V: 1})); err != nil {
 		t.Fatal(err)
 	}
@@ -646,7 +720,7 @@ func TestDrainedOutboundLeavesNothingBehind(t *testing.T) {
 // would and leave a retired one without probing.
 func (f *applyFixture) follow(tags ...string) {
 	f.o.mu.Lock()
-	s := f.o.e.addSelector("auto", newSelectorSettings(&SelectorConfig{Costs: costs("p-", 1), SkipProbeBeforeSwitch: true}))
+	s := f.o.e.addSelector("auto", newSelectorSettings(&SelectorConfig{Paths: pathSpecs("p-", 1), SkipProbeBeforeSwitch: true}))
 	f.o.e.updateCandidates(s, tags, time.Now())
 	f.o.mu.Unlock()
 }
@@ -816,7 +890,7 @@ func TestAnswerIsParsedInOnePass(t *testing.T) {
 	for i := 0; i < 100; i++ {
 		outs = append(outs, fmt.Sprintf(`{"tag": "x%d", "protocol": "vless", "settings": {"pad": %q}}`, i, pad))
 	}
-	body := []byte(`{"outbounds": [` + strings.Join(outs, ",") + `], "costs": {"x1": 2},
+	body := []byte(`{"outbounds": [` + strings.Join(outs, ",") + `],
 		"routing": {"rules": [], "balancers": []}, "nextRefreshIn": "1h"}`)
 	var before, after runtime.MemStats
 	runtime.GC()

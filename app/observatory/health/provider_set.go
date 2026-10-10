@@ -24,6 +24,7 @@ import (
 	"github.com/xtls/xray-core/app/router"
 	"github.com/xtls/xray-core/common"
 	"github.com/xtls/xray-core/common/net"
+	"github.com/xtls/xray-core/common/serial"
 	"github.com/xtls/xray-core/core"
 	"github.com/xtls/xray-core/features/outbound"
 	"github.com/xtls/xray-core/transport/internet/tagged"
@@ -65,14 +66,16 @@ type drainingOutbound struct {
 
 // providerAnswer is a parsed provider response in protocol 1:
 //
-//	{"protocol": 1, "outbounds": [...], "costs": {"tag": 1}, "nextRefreshIn": "2h", "version": "...",
+//	{"protocol": 1, "outbounds": [...], "groups": [...], "nextRefreshIn": "2h", "version": "...",
 //	 "expiresAt": {"tag": "2026-10-09T12:00:00Z"}, "serverTime": "2026-10-08T12:00:00Z",
 //	 "headers": {"Authorization": "Bearer ..."}, "baseVersion": "..."}
 type providerAnswer struct {
 	// The outbounds as sent, handed to the config loader in one piece.
 	outbounds        json.RawMessage
 	heads            []outboundHead
-	costs            map[string]float64
+	groupsRaw        json.RawMessage
+	paths            []*PathDefinition
+	groups           []*PathGroup
 	nextRefreshIn    time.Duration
 	hasNextRefreshIn bool
 	version          string
@@ -104,8 +107,9 @@ type providerAnswer struct {
 }
 
 type outboundHead struct {
-	Tag      string `json:"tag"`
-	Protocol string `json:"protocol"`
+	Tag      string          `json:"tag"`
+	Protocol string          `json:"protocol"`
+	Path     json.RawMessage `json:"path"`
 }
 
 // Keys of an answer in protocol 1. The set keys make up the set, and an
@@ -114,7 +118,7 @@ type outboundHead struct {
 // set. Any other key refuses the whole answer, so a backend never takes a
 // key for applied that the core threw away; a new key is protocol 2.
 var (
-	setKeys  = map[string]bool{"outbounds": true, "costs": true, "routing": true}
+	setKeys  = map[string]bool{"outbounds": true, "groups": true, "routing": true}
 	metaKeys = map[string]bool{"protocol": true, "version": true, "nextRefreshIn": true,
 		"expiresAt": true, "serverTime": true, "headers": true, "baseVersion": true}
 )
@@ -190,11 +194,7 @@ func readAnswer(body []byte, initial bool) (*providerAnswer, error) {
 	if len(a.heads) == 0 {
 		return nil, answerErrorf("no outbounds")
 	}
-	if c := sections["costs"]; !isNull(c) {
-		if err := json.Unmarshal(c, &a.costs); err != nil {
-			return nil, answerErrorf("costs: %v", err)
-		}
-	}
+	a.groupsRaw = sections["groups"]
 	next, hasNext, err := parseRefreshIn(sections["nextRefreshIn"])
 	if err != nil {
 		return nil, answerErrorf("%v", err)
@@ -384,8 +384,23 @@ func writeCompact(w io.Writer, v []byte) {
 // loadOutbounds builds outbound configs with the JSON config loader of the
 // core, the same code that reads the config file.
 func loadOutbounds(raw json.RawMessage) ([]*core.OutboundHandlerConfig, error) {
+	var entries []map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &entries); err != nil {
+		return nil, err
+	}
+	for _, entry := range entries {
+		for key := range entry {
+			if strings.EqualFold(key, "path") {
+				delete(entry, key)
+			}
+		}
+	}
+	handlerOutbounds, err := json.Marshal(entries)
+	if err != nil {
+		return nil, err
+	}
 	c, err := core.LoadConfig("json", io.MultiReader(
-		strings.NewReader(`{"outbounds":`), bytes.NewReader(raw), strings.NewReader(`}`)))
+		strings.NewReader(`{"outbounds":`), bytes.NewReader(handlerOutbounds), strings.NewReader(`}`)))
 	if err != nil {
 		return nil, err
 	}
@@ -395,33 +410,60 @@ func loadOutbounds(raw json.RawMessage) ([]*core.OutboundHandlerConfig, error) {
 // loadRouting builds rules and balancers with the JSON config loader of the
 // core, like loadOutbounds.
 func loadRouting(raw json.RawMessage) (*router.Config, error) {
-	// The loader accepts leastCost balancers only next to an observatory that
-	// observes their selectors; the real check is checkRouting.
-	var head struct {
-		Balancers []struct {
-			Selector []string `json:"selector"`
-		} `json:"balancers"`
-	}
-	if err := json.Unmarshal(raw, &head); err != nil {
+	var doc map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &doc); err != nil {
 		return nil, err
 	}
-	observe := []string{}
-	for _, b := range head.Balancers {
-		observe = append(observe, b.Selector...)
+	var balancers []map[string]json.RawMessage
+	if len(doc["balancers"]) > 0 {
+		if err := json.Unmarshal(doc["balancers"], &balancers); err != nil {
+			return nil, err
+		}
 	}
-	health := []byte{}
-	if len(observe) > 0 {
-		subjects, _ := json.Marshal(observe)
-		health = append(append([]byte(`,"healthObservatory":{"subjectSelector":`), subjects...), '}')
+	// The config loader needs a path for each leastCost balancer. These
+	// placeholders are replaced with the declared paths before routing applies.
+	fake := make([]map[string]any, 0, len(balancers))
+	seenTags := map[string]bool{}
+	for i, b := range balancers {
+		var tag string
+		if err := json.Unmarshal(b["tag"], &tag); err != nil || tag == "" {
+			return nil, fmt.Errorf("balancer %d needs tag", i+1)
+		}
+		if seenTags[tag] {
+			return nil, fmt.Errorf("duplicate balancer tag %s", tag)
+		}
+		seenTags[tag] = true
+		var strategy struct {
+			Type string `json:"type"`
+		}
+		if err := json.Unmarshal(b["strategy"], &strategy); err != nil {
+			return nil, err
+		}
+		if !strings.EqualFold(strategy.Type, "leastcost") {
+			continue
+		}
+		if _, exists := b["selector"]; exists {
+			return nil, fmt.Errorf("leastCost selector is not supported")
+		}
+		fake = append(fake, map[string]any{"tag": fmt.Sprintf("__routing_check_%d", i), "protocol": "freedom", "path": map[string]any{"balancer": tag, "cost": 1}})
 	}
-	c, err := core.LoadConfig("json", io.MultiReader(
-		strings.NewReader(`{"routing":`), bytes.NewReader(raw), bytes.NewReader(health), strings.NewReader(`}`)))
+	wrapper := map[string]any{"routing": json.RawMessage(raw), "outbounds": fake, "healthObservatory": map[string]any{}}
+	body, err := json.Marshal(wrapper)
+	if err != nil {
+		return nil, err
+	}
+	c, err := core.LoadConfig("json", bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
 	for _, app := range c.App {
 		if inst, err := app.GetInstance(); err == nil {
 			if rc, ok := inst.(*router.Config); ok {
+				for _, b := range rc.BalancingRule {
+					if strings.EqualFold(b.Strategy, "leastcost") {
+						b.OutboundSelector = nil
+					}
+				}
 				return rc, nil
 			}
 		}
@@ -434,12 +476,17 @@ func loadRouting(raw json.RawMessage) (*router.Config, error) {
 // them, which may be outside the tunnel. It refuses webhooks too: a webhook
 // posts every matching connection, with its destination, from a goroutine
 // of its own.
-func (o *Observer) checkRouting(rt *providerRuntime, rc *router.Config, setTags []string) error {
+func (o *Observer) checkRouting(rt *providerRuntime, a *providerAnswer, rc *router.Config, setTags []string) error {
+	o.mu.Lock()
+	defer o.mu.Unlock()
 	exists := func(tag string) bool {
 		return slices.Contains(setTags, tag) || (o.ohm != nil && o.ohm.GetHandler(tag) != nil)
 	}
 	balancers := map[string]*router.BalancingRule{}
 	for _, b := range rc.BalancingRule {
+		if _, exists := balancers[b.Tag]; exists {
+			return fmt.Errorf("duplicate balancer tag %s", b.Tag)
+		}
 		balancers[b.Tag] = b
 		if b.FallbackTag != "" && !exists(b.FallbackTag) {
 			return fmt.Errorf("balancer %s falls back to unknown outbound %s", b.Tag, b.FallbackTag)
@@ -447,16 +494,66 @@ func (o *Observer) checkRouting(rt *providerRuntime, rc *router.Config, setTags 
 		if !strings.EqualFold(b.Strategy, "leastcost") {
 			continue
 		}
-		for _, sel := range b.OutboundSelector {
-			if !o.observedSelector(sel) {
-				return fmt.Errorf("balancer %s chooses %s, which nothing observes", b.Tag, sel)
+		if len(b.OutboundSelector) > 0 {
+			return fmt.Errorf("balancer %s: leastCost selector is not supported", b.Tag)
+		}
+		var base *SelectorConfig
+		if selected := o.e.selectors[b.Tag]; selected != nil {
+			base = selected.baseRaw
+		}
+		var settings *SelectorConfig
+		if b.StrategySettings != nil {
+			inst, err := b.StrategySettings.GetInstance()
+			if err != nil {
+				return fmt.Errorf("balancer %s: %w", b.Tag, err)
+			}
+			settings, _ = inst.(*SelectorConfig)
+		}
+		if settings == nil && base != nil {
+			settings = proto.Clone(base).(*SelectorConfig)
+		}
+		if settings == nil {
+			settings = &SelectorConfig{}
+		}
+		settings.Paths, settings.Groups = nil, nil
+		if base != nil {
+			settings.Paths = append(settings.Paths, base.Paths...)
+			settings.Groups = append(settings.Groups, base.Groups...)
+		}
+		for _, p := range o.e.providers {
+			if p.cfg.balancer != b.Tag {
+				continue
+			}
+			if p == rt.p {
+				settings.Paths = append(settings.Paths, a.paths...)
+				settings.Groups = append(settings.Groups, a.groups...)
+			} else {
+				settings.Paths = append(settings.Paths, p.pathDefs...)
+				settings.Groups = append(settings.Groups, p.groupDefs...)
+			}
+			b.OutboundSelector = append(b.OutboundSelector, p.cfg.prefix)
+		}
+		for _, path := range settings.Paths {
+			if path.Balancer == b.Tag {
+				b.OutboundSelector = append(b.OutboundSelector, path.Tag)
 			}
 		}
+		if len(b.OutboundSelector) == 0 {
+			return fmt.Errorf("balancer %s has no paths", b.Tag)
+		}
+		b.StrategySettings = serial.ToTypedMessage(settings)
 	}
 	if b := balancers[rt.cfg.balancer]; b == nil || !strings.EqualFold(b.Strategy, "leastcost") {
 		return fmt.Errorf("routing drops the leastCost balancer %s the provider feeds", rt.cfg.balancer)
 	}
+	ruleTags := map[string]bool{}
 	for i, r := range rc.Rule {
+		if tag := r.GetRuleTag(); tag != "" {
+			if ruleTags[tag] {
+				return fmt.Errorf("duplicate ruleTag %s", tag)
+			}
+			ruleTags[tag] = true
+		}
 		if r.GetWebhook() != nil {
 			return fmt.Errorf("rule %d has a webhook", i+1)
 		}
@@ -474,10 +571,16 @@ func (o *Observer) checkRouting(rt *providerRuntime, rc *router.Config, setTags 
 }
 
 func (o *Observer) observedSelector(sel string) bool {
-	for _, p := range o.s.subjects {
-		if strings.HasPrefix(sel, p) {
-			return true
+	found := false
+	o.s.paths.Range(func(key, _ any) bool {
+		if strings.HasPrefix(key.(string), sel) {
+			found = true
+			return false
 		}
+		return true
+	})
+	if found {
+		return true
 	}
 	for _, rt := range o.providers {
 		if strings.HasPrefix(sel, rt.cfg.prefix) {
@@ -839,6 +942,15 @@ func (o *Observer) applySet(rt *providerRuntime, a *providerAnswer, j *refreshJo
 	if err != nil {
 		return fail(err)
 	}
+	if _, err := checkHeads(rt.cfg, a); err != nil {
+		return fail(err)
+	}
+	o.mu.Lock()
+	err = o.checkGroupOwnership(rt, a)
+	o.mu.Unlock()
+	if err != nil {
+		return fail(err)
+	}
 	if a.version == rt.version {
 		// The version names the set, not the answer: the most common answer
 		// while leases run is the same set with later ends, which renews
@@ -846,6 +958,9 @@ func (o *Observer) applySet(rt *providerRuntime, a *providerAnswer, j *refreshJo
 		// the same, short of building: the answer is kept for the next
 		// start, which would refuse it.
 		if _, err := checkHeads(rt.cfg, a); err != nil {
+			return fail(err)
+		}
+		if err := validateAnswerProbes(o.s, a); err != nil {
 			return fail(err)
 		}
 		kept := compactAnswer(a.body)
@@ -869,6 +984,24 @@ func (o *Observer) applySet(rt *providerRuntime, a *providerAnswer, j *refreshJo
 		o.mu.Unlock()
 		return false, nil
 	}
+	if err := validateAnswerProbes(o.s, a); err != nil {
+		return fail(err)
+	}
+	var staged []string
+	// An outbound handler binds its observer when constructed, before the
+	// provider set is committed. Only new exact tags need temporary visibility.
+	for _, path := range a.paths {
+		if _, present := o.s.paths.Load(path.Tag); present {
+			continue
+		}
+		o.s.paths.Store(path.Tag, "")
+		staged = append(staged, path.Tag)
+	}
+	defer func() {
+		for _, tag := range staged {
+			o.s.paths.Delete(tag)
+		}
+	}()
 	changes, unchanged, err := o.buildSet(rt, a)
 	if err != nil {
 		return fail(err)
@@ -886,7 +1019,7 @@ func (o *Observer) applySet(rt *providerRuntime, a *providerAnswer, j *refreshJo
 			}
 			setTags = append(setTags, unchanged...)
 			if routing, err = o.parseRouting(a.routing); err == nil {
-				err = o.checkRouting(rt, routing, setTags)
+				err = o.checkRouting(rt, a, routing, setTags)
 			}
 			if err != nil {
 				for _, c := range changes {
@@ -992,10 +1125,6 @@ func (o *Observer) applySet(rt *providerRuntime, a *providerAnswer, j *refreshJo
 		}
 	}
 
-	costs := map[string]float64{}
-	for tag, c := range a.costs {
-		costs[rt.cfg.prefix+tag] = c
-	}
 	kept := compactAnswer(a.body)
 	now := o.now()
 	o.mu.Lock()
@@ -1011,8 +1140,9 @@ func (o *Observer) applySet(rt *providerRuntime, a *providerAnswer, j *refreshJo
 	// arrival is never taken as new.
 	leases, _ := o.e.acceptLeases(rt.p, tags, leasesOf(a, rt.cfg.prefix), now)
 	o.e.applyProviderSet(rt.p, providerChange{
-		tags: tags, costs: costs, added: addedTags, retire: removed, revive: revive, reset: reset,
+		tags: tags, paths: a.paths, groups: a.groups, added: addedTags, retire: removed, revive: revive, reset: reset,
 	}, now)
+	staged = nil
 	rt.p.version = a.version
 	rt.p.draining = len(rt.draining)
 	names, stale := o.e.takeAnswerHeaders(rt.p, a.headers, j.headersGen, headersBy(j), now)
@@ -1080,10 +1210,8 @@ func checkHeads(cfg *providerSettings, a *providerAnswer) ([]string, error) {
 	if len(a.heads) > cfg.maxOutbounds {
 		return nil, fmt.Errorf("set of %d outbounds, at most %d allowed", len(a.heads), cfg.maxOutbounds)
 	}
-	for tag, c := range a.costs {
-		if math.IsNaN(c) || math.IsInf(c, 0) || c <= 0 {
-			return nil, fmt.Errorf("cost of %s must be a number above zero", tag)
-		}
+	if err := validateAnswerPaths(cfg, a); err != nil {
+		return nil, err
 	}
 	tags := make([]string, len(a.heads))
 	seen := map[string]bool{}
@@ -1103,6 +1231,29 @@ func checkHeads(cfg *providerSettings, a *providerAnswer) ([]string, error) {
 	return tags, nil
 }
 
+func (o *Observer) checkGroupOwnership(rt *providerRuntime, a *providerAnswer) error {
+	for _, g := range a.groups {
+		if s := o.e.selectors[rt.cfg.balancer]; s != nil && s.baseRaw != nil {
+			for _, base := range s.baseRaw.Groups {
+				if base.Name == g.Name {
+					return fmt.Errorf("group %s belongs to the base config", g.Name)
+				}
+			}
+		}
+		for _, other := range o.e.providers {
+			if other == rt.p || other.cfg.balancer != rt.cfg.balancer {
+				continue
+			}
+			for _, owned := range other.groupDefs {
+				if owned.Name == g.Name {
+					return fmt.Errorf("group %s belongs to provider %s", g.Name, other.cfg.tag)
+				}
+			}
+		}
+	}
+	return nil
+}
+
 // buildSet validates the answer and creates handlers for outbounds that are
 // new or changed. It returns them and the tags of outbounds that stay as
 // they are. On error every created handler is closed.
@@ -1117,6 +1268,9 @@ func (o *Observer) buildSet(rt *providerRuntime, a *providerAnswer) ([]*outbound
 	}
 	if len(configs) != len(tags) {
 		return nil, nil, fmt.Errorf("build: %d outbounds of %d", len(configs), len(tags))
+	}
+	if err := validateAnswerProbes(o.s, a); err != nil {
+		return nil, nil, err
 	}
 	var changes []*outboundChange
 	var unchanged []string

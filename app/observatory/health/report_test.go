@@ -15,7 +15,7 @@ import (
 func newReportEngine(t *testing.T, cfg *Config, sc *SelectorConfig, candidates ...string) *testEngine {
 	t.Helper()
 	if sc == nil {
-		sc = &SelectorConfig{Costs: costs("a", 1, "b", 3)}
+		sc = &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3)}
 	}
 	te := newTestEngine(t, cfg, sc, candidates...)
 	te.report.begin(t0)
@@ -324,7 +324,7 @@ func TestPinnedDownUnderTheStartPinIsNoDecision(t *testing.T) {
 		{"pin of the host over the start pin", "a1", true, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			sc := &SelectorConfig{Costs: costs("a", 1, "b", 3), StartPinnedOutbound: tc.start, StartPinTimeout: int64(30 * time.Second)}
+			sc := &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3), StartPinnedOutbound: tc.start, StartPinTimeout: int64(30 * time.Second)}
 			te := newReportEngine(t, nil, sc, "a1", "b1")
 			if tc.host {
 				te.pin("auto", "a1", at(time.Second))
@@ -548,7 +548,7 @@ func TestReportStaysBounded(t *testing.T) {
 		t.Fatalf("latest switch %q", c.SwitchPath[reportSwitches-1])
 	}
 
-	o := newObserver(context.Background(), &Config{SubjectSelector: []string{"a"}})
+	o := newObserver(context.Background(), &Config{Paths: observed("a")})
 	if allocs := testing.AllocsPerRun(100, func() {
 		if o.TakeReport(false) != nil || o.Report() != nil {
 			t.Fatal("a report is due")
@@ -559,7 +559,7 @@ func TestReportStaysBounded(t *testing.T) {
 }
 
 func TestObserverReport(t *testing.T) {
-	o := newObserver(context.Background(), &Config{SubjectSelector: []string{"a"}, Report: &ReportConfig{Interval: int64(time.Hour)}})
+	o := newObserver(context.Background(), &Config{Paths: observed("a"), Report: &ReportConfig{Interval: int64(time.Hour)}})
 	clock := t0
 	o.clock = func() time.Time { return clock }
 	o.e.report.begin(clock)
@@ -618,7 +618,7 @@ func readmeEventRow(t *testing.T, typ string) string {
 // A network change no balancer forgets on keeps the generation and tells
 // so, as the README describes.
 func TestIgnoredNetworkChangeDocumented(t *testing.T) {
-	te := newTestEngine(t, nil, &SelectorConfig{Costs: costs("a", 1, "b", 3), NetworkChangeAction: NetworkChangeMode_IGNORE}, "a1", "b1")
+	te := newTestEngine(t, nil, &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3), NetworkChangeAction: NetworkChangeMode_IGNORE}, "a1", "b1")
 	gen := te.generation
 	te.onNetworkChange("x", at(time.Second))
 	ev := te.lastOf(t, "network_change")

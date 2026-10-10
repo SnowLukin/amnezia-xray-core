@@ -39,7 +39,7 @@ func gcUntil(done func() bool) {
 // Connections that ended while others still wait for their deadline must not
 // stay reachable through the sweep.
 func TestSweepLetsEndedConnectionsGo(t *testing.T) {
-	o := newObserver(context.Background(), &Config{SubjectSelector: []string{"a"},
+	o := newObserver(context.Background(), &Config{Paths: observed("a1", "a2"),
 		Passive: &PassiveConfig{SweepInterval: int64(5 * time.Millisecond)}})
 	defer o.Close()
 	dest := net.TCPDestination(net.LocalHostIP, 443)
@@ -72,7 +72,7 @@ func keepAlive(p *[4096]byte) func() { return func() { runtime.KeepAlive(p) } }
 // A tracker someone forgot to let go of does not keep the connection, or the
 // user session behind its abort, alive.
 func TestEndedTrackerHoldsNeitherConnectionNorAbort(t *testing.T) {
-	o := newObserver(context.Background(), &Config{SubjectSelector: []string{"a"}})
+	o := newObserver(context.Background(), &Config{Paths: observed("a1", "a2")})
 	defer o.Close()
 	conn := &heldConn{payload: make([]byte, 32*1024)}
 	session := new([4096]byte)
@@ -91,12 +91,12 @@ func TestEndedTrackerHoldsNeitherConnectionNorAbort(t *testing.T) {
 // Outbounds no balancer offers lose their path, their server address and
 // the penalty of a failed return.
 func TestGCForgetsEverythingAboutAnOutbound(t *testing.T) {
-	o := newObserver(context.Background(), &Config{SubjectSelector: []string{"a"}})
+	o := newObserver(context.Background(), &Config{Paths: observed("a1", "a2")})
 	defer o.Close()
 	m := newFakeManager()
 	m.handlers["a2"] = &fakeHandler{tag: "a2"}
 	o.ohm = m
-	s := o.e.addSelector("auto", newSelectorSettings(&SelectorConfig{Costs: costs("a", 1)}))
+	s := o.e.addSelector("auto", newSelectorSettings(&SelectorConfig{Paths: pathSpecs("a1", 1, "a2", 1)}))
 	o.e.noteDemand(t0)
 	o.e.updateCandidates(s, []string{"a1", "a2"}, t0)
 	o.StartDial(context.Background(), "a2", net.TCPDestination(net.ParseAddress("192.0.2.7"), 443), nil)
@@ -120,12 +120,12 @@ func TestGCForgetsEverythingAboutAnOutbound(t *testing.T) {
 // Outbounds a provider adds later are hooked like the configured ones.
 func TestObservesJudgedOutboundsAndTheNetworkCheck(t *testing.T) {
 	o := newObserver(context.Background(), &Config{
-		SubjectSelector: []string{"a"},
-		Connectivity:    &ConnectivityConfig{Outbound: "check", Destination: "https://check.test/", Witnesses: []string{"direct"}},
-		Providers:       []*ProviderConfig{quietProvider(nil)},
+		Paths:        observed("a1", "a2"),
+		Connectivity: &ConnectivityConfig{Outbound: "check", Destination: "https://check.test/", Witnesses: []string{"direct"}},
+		Providers:    []*ProviderConfig{quietProvider(nil)},
 	})
 	defer o.Close()
-	for tag, want := range map[string]bool{"a1": true, "p-x9": true, "direct": true, "check": true, "block": false, "dns": false} {
+	for tag, want := range map[string]bool{"a1": true, "p-x9": false, "direct": true, "check": true, "block": false, "dns": false} {
 		if got := o.Observes(tag); got != want {
 			t.Errorf("observes %s: %v, want %v", tag, got, want)
 		}
@@ -177,9 +177,12 @@ func TestConfigValuesHaveCeilings(t *testing.T) {
 // provider rotates its tags: the counts of requests under way by outbound
 // keep nothing once the requests ended.
 func TestFetchViaKeepsNothingAfterTheRequests(t *testing.T) {
-	te := newTestEngine(t, &Config{SubjectSelector: []string{"p-"}}, &SelectorConfig{SkipProbeBeforeSwitch: true}, "p-0")
+	te := newTestEngine(t, &Config{Paths: observed("p-0")}, &SelectorConfig{SkipProbeBeforeSwitch: true}, "p-0")
 	for i := 1; i <= 100; i++ {
 		tag := fmt.Sprintf("p-%d", i)
+		te.updateCandidates(te.sel, []string{tag}, at(time.Duration(i)*time.Second))
+		te.sel.cfg.paths[tag] = &costEntrySettings{cost: 1}
+		te.sel.cfg.baseOrder = append(te.sel.cfg.baseOrder, tag)
 		te.updateCandidates(te.sel, []string{tag}, at(time.Duration(i)*time.Second))
 		via, skip := te.resolveVia("auto", at(time.Duration(i)*time.Second))
 		if via != tag || skip != "" {

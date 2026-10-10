@@ -17,7 +17,7 @@ func (c *fakeClock) now() time.Time          { return c.t }
 func (c *fakeClock) advance(d time.Duration) { c.t = c.t.Add(d) }
 
 func newTestObserver() (*Observer, *fakeClock) {
-	s := newSettings(&Config{SubjectSelector: []string{"a"}})
+	s := newSettings(&Config{Paths: observed("a1", "a2")})
 	clk := &fakeClock{t: t0}
 	o := &Observer{
 		s:        s,
@@ -190,8 +190,8 @@ func TestDialTimeoutAndStuckDial(t *testing.T) {
 
 func TestWitnessConnectionEndsTheNetworkPause(t *testing.T) {
 	s := newSettings(&Config{
-		SubjectSelector: []string{"a"},
-		Connectivity:    &ConnectivityConfig{Outbound: "direct", Destination: "http://x/204", Witnesses: []string{"direct"}},
+		Paths:        observed("a1"),
+		Connectivity: &ConnectivityConfig{Outbound: "direct", Destination: "http://x/204", Witnesses: []string{"direct"}},
 	})
 	clk := &fakeClock{t: t0}
 	o := &Observer{s: s, e: newEngine(s, 1), kick: make(chan struct{}, 1), clock: clk.now, base: t0.Add(-time.Second),
@@ -317,8 +317,8 @@ func TestDownOutboundEndsConnectionsThatGotNothing(t *testing.T) {
 
 func TestDialsStartedInThePauseDoNotJudgeAfterIt(t *testing.T) {
 	s := newSettings(&Config{
-		SubjectSelector: []string{"a"},
-		Connectivity:    &ConnectivityConfig{Outbound: "direct", Destination: "http://x/204"},
+		Paths:        observed("a1"),
+		Connectivity: &ConnectivityConfig{Outbound: "direct", Destination: "http://x/204"},
 	})
 	clk := &fakeClock{t: t0}
 	o := &Observer{s: s, e: newEngine(s, 1), kick: make(chan struct{}, 1), clock: clk.now, base: t0.Add(-time.Second),
@@ -402,7 +402,8 @@ func TestSlowSplicedDownloadIsNotAStall(t *testing.T) {
 func TestRequestOfAnotherRunIsIgnored(t *testing.T) {
 	o, clk := newTestObserver()
 	o.run = "r2"
-	o.e.updateCandidates(o.e.addSelector("auto", newSelectorSettings(&SelectorConfig{StartPinnedOutbound: "a1"})), []string{"a1", "b1"}, clk.now())
+	paths := []*PathDefinition{{Tag: "a1", Balancer: "auto", Cost: 1}, {Tag: "b1", Balancer: "auto", Cost: 2}}
+	o.e.updateCandidates(o.e.addSelector("auto", newSelectorSettings(&SelectorConfig{Paths: paths, StartPinnedOutbound: "a1"})), []string{"a1", "b1"}, clk.now())
 	if o.Release("auto", "r1") || o.e.selectors["auto"].pinned != "a1" {
 		t.Fatal("a release meant for the previous run lifted the pin")
 	}

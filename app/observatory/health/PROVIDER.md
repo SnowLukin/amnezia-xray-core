@@ -190,9 +190,16 @@ outputs. `nextRefreshIn` follows this table as well; a number is refused.
 {
   "protocol": 1,
   "version": "slots-7781",
-  "outbounds": [ { "tag": "x1", "protocol": "vless", "settings": {}, "streamSettings": {} } ],
-  "costs": { "x1": 1, "x2": 3 },
-  "expiresAt": { "x1": "2026-10-09T12:00:00Z", "x2": "2026-10-09T12:00:00Z" },
+  "outbounds": [
+    { "tag": "x1", "protocol": "vless", "settings": {}, "streamSettings": {},
+      "path": { "balancer": "auto", "group": "g" } },
+    { "tag": "x2", "protocol": "vless", "settings": {}, "streamSettings": {},
+      "path": { "balancer": "auto", "group": "g" } },
+    { "tag": "b", "protocol": "vless", "settings": {}, "streamSettings": {},
+      "path": { "balancer": "auto", "cost": 3, "isLazy": true, "returnInterval": "10m" } }
+  ],
+  "groups": [{ "name": "g", "cost": 1, "probe": "large", "failedInRowToLeave": 3 }],
+  "expiresAt": { "x1": "2026-10-09T12:00:00Z", "x2": "2026-10-09T12:00:00Z", "b": "2026-10-09T12:00:00Z" },
   "serverTime": "2026-10-08T12:00:00Z",
   "nextRefreshIn": "2h",
   "headers": { "Authorization": "Bearer <new token>" },
@@ -203,22 +210,31 @@ outputs. `nextRefreshIn` follows this table as well; a number is refused.
 
 A 200 with a JSON object. These are all the keys of protocol 1:
 
+The example's `large` probe must be declared by the client's
+`healthObservatory.probes` with `name: "large"`. A path without `probe` uses
+the built-in `https://www.gstatic.com/generate_204` probe. There is no
+special named `default` profile.
+
 | Key | Rule | What the core does |
 | --- | --- | --- |
 | `protocol` | The number 1, or no key. | Anything else refuses the answer as `protocol N is not supported`, whatever its other keys. |
-| `outbounds` | Required, at least one. Outbounds in the format of the config file, each with a unique non-empty `tag` and a `protocol` the client allows: by default `vless`, `vmess`, `trojan`, `shadowsocks`, `wireguard`, `hysteria`, `socks` and `http`, never one that sends traffic straight out such as `freedom`. At most as many as the client allows, 64 by default. | The set. Every outbound gets the prefix of the provider. An outbound whose settings did not change keeps its connections; one whose settings changed is replaced under its tag; one that left the set keeps its connections for a while and is then closed. |
-| `costs` | Tag to a number above zero. | Costs of the balancer for these outbounds; tags outside the set are ignored. |
-| `version` | A string. | Names the set. Without it the set is named by a hash of `outbounds`, `costs` and `routing`. |
+| `outbounds` | Required, at least one. Each outbound needs a unique non-empty `tag`, an allowed protocol and `path.balancer` exactly equal to `apply.balancer`. Its `path` has either a positive `cost` with optional `isLazy`, `returnInterval` and `probe`, or only `group` naming a group of this answer. The default allowed protocols are `vless`, `vmess`, `trojan`, `shadowsocks`, `wireguard`, `hysteria`, `socks` and `http`; direct `freedom` is not allowed. At most 64 by default. | Every outbound gets `tagPrefix`. One whose settings did not change keeps its connections; a replaced or removed one is drained. Their array order determines group order and breaks ties between equal-cost paths. |
+| `groups` | Optional list with unique `name`, positive `cost`, optional `isLazy`, `returnInterval`, `probe` and `failedInRowToLeave` (default 3). A member cannot override these properties. A declared group may have no members in this answer. | Names receive `tagPrefix` and stay within this answer. A member cannot join a base or another provider's group. A collision with a foreign group rejects the whole answer; refreshing this provider's own group is allowed. |
+| `version` | A string. | Names the set. Without it the set is named by a hash of `outbounds`, `groups` and `routing`. |
 | `nextRefreshIn` | A Go duration string such as `"90m"`; numbers are refused. | Replaces the regular interval until the next refresh. `"0s"` asks immediately, subject to the provider limits; omission uses the regular interval, `null` is refused. |
 | `expiresAt` | Tag to a time in RFC 3339 with a zone. | Leases, see [Leases](#leases). Tags outside the set are ignored. |
 | `serverTime` | A time in RFC 3339 with a zone. | The clock the leases count from. |
 | `headers` | Header name to value, see [Token](#token). | Headers of the next requests. |
 | `baseVersion` | A string of at most 256 bytes. | See [Base config](#base-config). |
-| `routing` | Only `rules`, `balancers` and `domainStrategy` (`AsIs`, `IPIfNonMatch` or `IPOnDemand`), in the format of the config file. Rules and balancers refer to the tags of the set with the prefix of the provider. | Replaces all rules and balancers at once, and the domain strategy when it is there, without a restart, where the client allows routing from the provider; otherwise it is ignored and the set applies without it. |
+| `routing` | Only `rules`, `balancers` and `domainStrategy` (`AsIs`, `IPIfNonMatch` or `IPOnDemand`), in the format of the config file. Rules and balancers refer to final tags with `tagPrefix`. | Replaces allowed routing settings when the client accepts routing; otherwise it is ignored. Strategy settings may change, but leastCost membership and order remain derived from assembled outbound paths. |
 
 Any other key refuses the whole answer: a section of the config such as
 `dns`, `inbounds` or `policy` as `unknown key "dns"`, and
 `healthObservatory` as `healthObservatory is not accepted in an answer`.
+The retired answer key `costs` is also refused. The base config likewise
+rejects `leastCost.selector`, `costs`, `defaultCost`, `lazyOutbounds`,
+`healthObservatory.subjectSelector` and `probes[].selector`; stock Xray
+strategies continue using their own selectors.
 The core never takes a section it would have to restart for, and a backend
 never takes a key for applied that the core threw away. `receivedAt` is a
 key of the kept set only, see [Initial and kept sets](#initial-and-kept-sets).
@@ -230,11 +246,12 @@ The core checks, and changes nothing until every check passed:
 2. the keys and `protocol`;
 3. the values of `expiresAt`, `serverTime`, `headers`, `baseVersion` and
    `nextRefreshIn`;
-4. the outbounds: their number, tags, protocols and costs, and that each
+4. the outbounds: their number, tags, protocols and paths, the groups and
+   named probes, and that each
    builds;
 5. `routing`: a rule or a fallback that goes to an outbound or a balancer
    that does not exist, a webhook, dropping the balancer of the provider or
-   a balancer that chooses outbounds nothing observes refuse it.
+   an invalid path definition refuse it.
 
 A refused answer changes nothing: neither the set, nor a lease, nor the
 token. The reason, cut to 200 bytes, goes with the next request in
@@ -246,7 +263,7 @@ changes no outbound, while its leases, headers and base apply as in any
 other answer. This is the usual answer to a renewal: the same set with
 later ends. The core keeps such an answer for the next start as well, so
 its outbounds still go through the checks that need no build, their
-number, tags, protocols and costs, and one that fails them is refused. The keys other than `outbounds`, `costs` and `routing` do not
+number, tags, protocols, paths and groups, and one that fails them is refused. The keys other than `outbounds`, `groups` and `routing` do not
 name the set, so a fresh `serverTime` does not make a new one.
 
 ## Errors and Retry-After
@@ -400,6 +417,11 @@ after a long pause, an `expiry` request.
   of Xray, so an outbound it would refuse at start is refused in an answer
   too: for example, VLESS or Trojan without TLS or REALITY to a public
   address.
+- **Paths and groups.** Put an explicit `path` on every returned outbound.
+  Keep the member order in the `outbounds` array and declare each group by
+  raw `name` in `groups`. Put cost, laziness, return interval and probe on
+  the group, never on its members. Validate generated base configs with
+  `xray run -test` before delivery; the core rejects an unused base group.
 - **Leases.** Give leases much longer than the refresh interval, a day for
   a refresh every 2 hours, and at least ten times the shortest pause
   between refreshes. Put an end for every leased outbound into every

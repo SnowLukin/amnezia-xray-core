@@ -23,9 +23,10 @@ type silenceFixture struct {
 func newSilenceFixture(t *testing.T, passive *PassiveConfig, sc *SelectorConfig) *silenceFixture {
 	t.Helper()
 	if sc == nil {
-		sc = &SelectorConfig{Costs: costs("a", 1, "b", 3), SkipProbeBeforeSwitch: true}
+		sc = &SelectorConfig{Paths: pathSpecs("a1", 1, "b1", 3), SkipProbeBeforeSwitch: true}
 	}
-	cfg := &Config{SubjectSelector: []string{"a", "b"}, Passive: passive,
+	declared := fixtureSelector(sc, []string{"a1", "b1"})
+	cfg := &Config{Paths: declared.Paths, Passive: passive,
 		Schedule: &ScheduleConfig{IdleAfter: int64(time.Hour)}}
 	f := &silenceFixture{t: t, o: newObserver(context.Background(), cfg), clk: &fakeClock{t: t0}, ended: map[string]bool{}}
 	t.Cleanup(func() { f.o.Close() })
@@ -34,7 +35,7 @@ func newSilenceFixture(t *testing.T, passive *PassiveConfig, sc *SelectorConfig)
 	// The tests sweep by hand.
 	f.o.sweeping = true
 	f.o.mu.Lock()
-	s := f.o.e.addSelector("auto", newSelectorSettings(sc))
+	s := f.o.e.addSelector("auto", newSelectorSettings(declared))
 	f.o.e.noteDemand(t0)
 	f.o.e.updateCandidates(s, []string{"a1", "b1"}, t0)
 	f.o.mu.Unlock()
@@ -209,8 +210,8 @@ func TestSilentConnectionsEndStallTimeoutAfterADown(t *testing.T) {
 // a probe confirmed it), the decision was provisional, the network failed
 // meanwhile, or keepSilentOnDown.
 func TestSilenceKeepsConnectionsWhenItProvesNothing(t *testing.T) {
-	confirmAlways := &SelectorConfig{Costs: costs("a", 1, "b", 3), SkipProbeBeforeSwitch: true, ConfirmWithProbe: ConfirmMode_ALWAYS}
-	confirmNever := &SelectorConfig{Costs: costs("a", 1, "b", 3), SkipProbeBeforeSwitch: true, ConfirmWithProbe: ConfirmMode_NEVER}
+	confirmAlways := &SelectorConfig{Paths: pathSpecs("a1", 1, "b1", 3), SkipProbeBeforeSwitch: true, ConfirmWithProbe: ConfirmMode_ALWAYS}
+	confirmNever := &SelectorConfig{Paths: pathSpecs("a1", 1, "b1", 3), SkipProbeBeforeSwitch: true, ConfirmWithProbe: ConfirmMode_NEVER}
 	strong := func(f *silenceFixture) { f.failStrong("a1") }
 	// confirmed fails the probe that confirms the suspicion.
 	confirmed := func(fail func(*silenceFixture)) func(*silenceFixture) {
@@ -300,7 +301,7 @@ func TestSilenceKeepsConnectionsWhenItProvesNothing(t *testing.T) {
 // it: the check waits for the balancer to move off, without a timer, and
 // runs then.
 func TestSilenceWaitsForTheFailover(t *testing.T) {
-	f := newSilenceFixture(t, nil, &SelectorConfig{Costs: costs("a", 1, "b", 3)})
+	f := newSilenceFixture(t, nil, &SelectorConfig{Paths: pathSpecs("a1", 1, "b1", 3)})
 	f.open("a1", "quiet", 100)
 	f.clk.advance(time.Second)
 	decided := f.clk.now()
