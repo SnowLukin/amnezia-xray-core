@@ -263,11 +263,11 @@ func (e *engine) noteDemand(now time.Time) {
 }
 
 func (e *engine) idle(now time.Time) bool {
-	if e.s.schedule.pauseWhenIdle == 0 {
+	if e.s.schedule.idleAfter == 0 {
 		return false
 	}
 	last := e.lastDemand.Load()
-	return last == 0 || now.Sub(time.Unix(0, last)) > e.s.schedule.pauseWhenIdle
+	return last == 0 || now.Sub(time.Unix(0, last)) > e.s.schedule.idleAfter
 }
 
 func (e *engine) active(tag string) bool {
@@ -454,7 +454,7 @@ func (e *engine) markDown(p *path, reason string, strong bool, now time.Time) {
 	for _, s := range e.sortedSelectors() {
 		if s.returnedTo == p.tag && now.Sub(s.returnedAt) < s.cfg.returnToCheaper.penaltyWindow {
 			p.rescue.notePenalty(s, p.tag)
-			base := maxDuration(s.cfg.returnToCheaper.interval, s.cfg.minHold)
+			base := maxDuration(s.cfg.returnToCheaper.interval, s.cfg.minHoldTime)
 			s.penalty[p.tag] = minFloat(s.penaltyFor(p.tag)*s.cfg.returnToCheaper.penaltyMultiplier,
 				float64(s.cfg.returnToCheaper.maxPenalty)/float64(base))
 			e.emit(now, "return_penalty", map[string]any{"balancer": s.tag, "outbound": p.tag, "multiplier": s.penalty[p.tag]})
@@ -695,8 +695,8 @@ func (e *engine) start(s *selector, now time.Time) {
 	if s.cfg.startPinned != "" && s.hasCandidate(s.cfg.startPinned) {
 		s.pinned = s.cfg.startPinned
 		s.startPin = true
-		if s.cfg.startPinnedFor > 0 {
-			s.pinnedUntil = now.Add(s.cfg.startPinnedFor)
+		if s.cfg.startPinTimeout > 0 {
+			s.pinnedUntil = now.Add(s.cfg.startPinTimeout)
 		}
 		e.switchTo(s, s.pinned, "start_pinned", now)
 		return
@@ -706,7 +706,7 @@ func (e *engine) start(s *selector, now time.Time) {
 		e.switchTo(s, tag, "start_remembered", now)
 		return
 	}
-	if tag := s.cfg.startWith; tag != "" && s.hasCandidate(tag) && e.path(tag).usable(now) && !e.expired[tag] {
+	if tag := s.cfg.startOutbound; tag != "" && s.hasCandidate(tag) && e.path(tag).usable(now) && !e.expired[tag] {
 		e.switchTo(s, tag, "start_with", now)
 		return
 	}
@@ -960,7 +960,7 @@ func (e *engine) scheduleReturnToCheaper(s *selector, now time.Time, soon bool) 
 		return
 	}
 	if soon {
-		s.returnToCheaperAt = maxTime(now, s.activeSince.Add(s.cfg.minHold))
+		s.returnToCheaperAt = maxTime(now, s.activeSince.Add(s.cfg.minHoldTime))
 		return
 	}
 	u := s.cfg.returnToCheaper
@@ -968,7 +968,7 @@ func (e *engine) scheduleReturnToCheaper(s *selector, now time.Time, soon bool) 
 	if u.randomPhase {
 		wait = time.Duration(e.rnd.Float64() * float64(u.interval))
 	}
-	s.returnToCheaperAt = maxTime(now.Add(wait), s.activeSince.Add(s.cfg.minHold))
+	s.returnToCheaperAt = maxTime(now.Add(wait), s.activeSince.Add(s.cfg.minHoldTime))
 }
 
 // hasCheaper tells whether a return is worth waiting for. There is none to
@@ -1084,7 +1084,7 @@ func (e *engine) budgetWait(j *probeJob, now time.Time) time.Duration {
 	}
 	byName := pruneTimes(e.startsByName[name], now)
 	e.startsByName[name] = byName
-	if len(byName) >= e.s.schedule.perServerName {
+	if len(byName) >= e.s.schedule.probesPerServerNamePerMinute {
 		if w := byName[0].Add(time.Minute).Sub(now); w > wait {
 			wait = w
 		}
@@ -1096,7 +1096,7 @@ func (e *engine) budgetWait(j *probeJob, now time.Time) time.Duration {
 		if n := len(e.hostStarts); n >= e.s.schedule.hostProbes.perMinute {
 			wait = max(wait, e.hostStarts[n-e.s.schedule.hostProbes.perMinute].Add(time.Minute).Sub(now))
 		}
-		if share := max(e.s.schedule.perServerName/2, 1); len(byName) >= share {
+		if share := max(e.s.schedule.probesPerServerNamePerMinute/2, 1); len(byName) >= share {
 			wait = max(wait, byName[len(byName)-share].Add(time.Minute).Sub(now))
 		}
 	}
@@ -1342,7 +1342,7 @@ func (e *engine) maybeReturnToCheaper(s *selector, now time.Time) time.Time {
 		return wake
 	}
 	if pen := s.penaltyFor(target); pen > 1 && !s.penaltyServed {
-		delay := time.Duration(float64(maxDuration(s.cfg.returnToCheaper.interval, s.cfg.minHold)) * (pen - 1))
+		delay := time.Duration(float64(maxDuration(s.cfg.returnToCheaper.interval, s.cfg.minHoldTime)) * (pen - 1))
 		s.penaltyServed = true
 		s.returnToCheaperAt = now.Add(delay)
 		e.emit(now, "return_delayed", map[string]any{"balancer": s.tag, "outbound": target, "delay_ms": delay.Milliseconds()})
@@ -1452,7 +1452,7 @@ func (e *engine) onProbeResult(j *probeJob, r probeResult, now time.Time) {
 				// The outbound came back since the decision, as after a
 				// rescue; a candidate that passed still moves the balancer,
 				// nothing more is probed, and the return to the outbound
-				// comes soon after minHold.
+				// comes soon after minHoldTime.
 				if tag := e.failoverChoice(s, e.ranked(s, now, func(t string) bool { return t == cur })); tag != "" {
 					e.switchTo(s, tag, "failover", now)
 					e.scheduleReturn(s, now)

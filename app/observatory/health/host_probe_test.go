@@ -223,7 +223,7 @@ func TestHostProbeBudget(t *testing.T) {
 			te.onProbeResult(j, probeResult{ok: true}, now)
 		}
 	}
-	// perServerNamePerMinute is 3: the host gets one of them.
+	// probesPerServerNamePerMinute is 3: the host gets one of them.
 	if len(started) != 2 || started[1] < time.Minute {
 		t.Fatalf("host probes of one server name started at %v, want a minute apart", started)
 	}

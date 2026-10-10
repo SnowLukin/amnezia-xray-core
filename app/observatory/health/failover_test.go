@@ -394,7 +394,7 @@ func brief(t *testing.T, te *testEngine) []string {
 // up with reason rescued, out of quarantine at the level it had, and its
 // silent connections stay. The failover started by the down still moves
 // the balancer once its candidate passes, and the return to a1 comes soon
-// after minHold.
+// after minHoldTime.
 func TestConfirmingProbeThatPassesAfterTheDownRescuesThePath(t *testing.T) {
 	te := newTestEngine(t, connectivityConfig(), &SelectorConfig{Costs: costs("a", 1, "b", 3)}, "a1", "b1")
 	confirm := confirmRunning(t, te)
@@ -440,9 +440,9 @@ func TestConfirmingProbeThatPassesAfterTheDownRescuesThePath(t *testing.T) {
 			t.Fatalf("at %v connections of a1 were marked to end: %+v", now.Sub(t0), downs)
 		}
 	}
-	hold, spread := te.sel.cfg.minHold, min(te.sel.cfg.returnToCheaper.interval, returnSpread)
+	hold, spread := te.sel.cfg.minHoldTime, min(te.sel.cfg.returnToCheaper.interval, returnSpread)
 	if wait := te.sel.returnToCheaperAt.Sub(switched); wait < hold || wait > hold+spread {
-		t.Fatalf("return %v after the failover, want within %v after minHold %v", wait, spread, hold)
+		t.Fatalf("return %v after the failover, want within %v after minHoldTime %v", wait, spread, hold)
 	}
 }
 
@@ -533,7 +533,7 @@ func TestRescueRestoresTheQuarantineLevel(t *testing.T) {
 }
 
 // A balancer that moved away on the false down stays where it moved. It
-// returns as any return does: after minHold, at once with a fixed phase,
+// returns as any return does: after minHoldTime, at once with a fixed phase,
 // and through the returnToCheaper probes, without the penalty the down gave the
 // return it had just made to a1.
 func TestRescueLeavesTheBalancerWhereItMoved(t *testing.T) {
@@ -559,7 +559,7 @@ func TestRescueLeavesTheBalancerWhereItMoved(t *testing.T) {
 			te.sel.returnedTo, te.sel.returnedAt.Sub(t0))
 	}
 	// The failover planned the return for returnToCheaper.interval later; a1 did
-	// not fail, so it waits only for minHold.
+	// not fail, so it waits only for minHoldTime.
 	hold, spacing := time.Duration(sc.MinHoldTime), time.Duration(sc.ReturnToCheaper.ProbeInterval)
 	var back time.Time
 	probes := 0
@@ -569,7 +569,7 @@ func TestRescueLeavesTheBalancerWhereItMoved(t *testing.T) {
 				continue
 			}
 			if now.Before(moved.Add(hold)) {
-				t.Fatalf("a return probe %v after the move, inside minHold", now.Sub(moved))
+				t.Fatalf("a return probe %v after the move, inside minHoldTime", now.Sub(moved))
 			}
 			probes++
 		}
@@ -582,7 +582,7 @@ func TestRescueLeavesTheBalancerWhereItMoved(t *testing.T) {
 		t.Fatalf("back on a1 %v after the move, %d return probes; events %v", back.Sub(moved), probes, got)
 	}
 	if took := back.Sub(moved); took > hold+3*spacing+10*time.Second {
-		t.Fatalf("back on a1 %v after the move, want minHold %v and the probes %v apart", took, hold, spacing)
+		t.Fatalf("back on a1 %v after the move, want minHoldTime %v and the probes %v apart", took, hold, spacing)
 	}
 }
 
@@ -659,10 +659,10 @@ func TestRescueAndWhatHoldsTheOutbound(t *testing.T) {
 }
 
 // Every device that saw one server hiccup rescues it at about the same
-// moment, so their returns to it spread after minHold by the random choices
+// moment, so their returns to it spread after minHoldTime by the random choices
 // of each, as timed returns do: when the balancer had moved before the
-// rescue and when its failover ends after it. None comes before minHold,
-// and with a fixed phase each comes at minHold.
+// rescue and when its failover ends after it. None comes before minHoldTime,
+// and with a fixed phase each comes at minHoldTime.
 func TestReturnAfterARescueIsSpread(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -689,10 +689,10 @@ func TestReturnAfterARescueIsSpread(t *testing.T) {
 				if te.sel.current() != "b1" {
 					t.Fatalf("seed %d: setup: the balancer is on %q, want b1", seed, te.sel.current())
 				}
-				hold, spread := te.sel.cfg.minHold, min(te.sel.cfg.returnToCheaper.interval, returnSpread)
+				hold, spread := te.sel.cfg.minHoldTime, min(te.sel.cfg.returnToCheaper.interval, returnSpread)
 				wait := te.sel.returnToCheaperAt.Sub(te.sel.activeSince)
 				if wait < hold || wait > hold+spread || tc.fixed && wait != hold {
-					t.Fatalf("seed %d: return %v after the move, want within %v after minHold %v", seed, wait, spread, hold)
+					t.Fatalf("seed %d: return %v after the move, want within %v after minHoldTime %v", seed, wait, spread, hold)
 				}
 				waits[wait] = true
 			}

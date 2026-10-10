@@ -240,7 +240,7 @@ func (p *path) evaluate(cfg *passiveSettings) verdict {
 		v.strong = true
 		return v
 	}
-	if v.failures >= cfg.failures && v.targets >= cfg.distinctTargets {
+	if v.failures >= cfg.failures && v.targets >= cfg.minDistinctTargets {
 		v.suspect = true
 	}
 	return v

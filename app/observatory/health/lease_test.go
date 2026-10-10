@@ -596,7 +596,7 @@ func TestFailedExpiryRetryWaitsForTrafficWhenIdle(t *testing.T) {
 	te := leaseEngine(t, func(p *ProviderConfig) {
 		p.Limits.Backoff = &Backoff{InitialDelay: int64(30 * time.Second), JitterFraction: -1}
 	}, &SelectorConfig{Costs: costs("p-", 1)}, "p-x1")
-	te.s.schedule.pauseWhenIdle = 2 * time.Minute
+	te.s.schedule.idleAfter = 2 * time.Minute
 	te.lease(t0, map[string]time.Duration{"p-x1": time.Hour}, "p-x1")
 	// Idle since t0, yet the end of the lease wakes the observer.
 	if jobs, wake := te.tickProviders(at(30 * time.Minute)); len(jobs) != 0 || wake != at(time.Hour) {
@@ -622,7 +622,7 @@ func TestFailedExpiryRetryWaitsForTrafficWhenIdle(t *testing.T) {
 // backend would wake a sleeping device at the urgent point of every lease.
 func TestFailedRenewalAddsNoUrgentWakeWhenIdle(t *testing.T) {
 	te := leaseEngine(t, renewing(func(e *ExpiryTrigger) { e.JitterFraction = -1 }), &SelectorConfig{Costs: costs("p-", 1)}, "p-x1")
-	te.s.schedule.pauseWhenIdle = 2 * time.Minute
+	te.s.schedule.idleAfter = 2 * time.Minute
 	te.lease(t0, map[string]time.Duration{"p-x1": time.Hour}, "p-x1")
 	jobs, _ := te.tickProviders(at(30 * time.Minute))
 	if len(jobs) != 1 || jobs[0].trigger != triggerExpiry {
@@ -748,7 +748,7 @@ func TestExpiryRefreshUsesExhaustedMinIntervalAndRunsUnderLowMemory(t *testing.T
 func TestIdleExhaustedDoesNotHideExpiry(t *testing.T) {
 	te := leaseEngine(t, func(p *ProviderConfig) { p.Triggers.SkipRefreshWhenExhausted = false },
 		&SelectorConfig{Costs: costs("p-", 1), SkipProbeBeforeSwitch: true}, "p-x1", "p-x2")
-	te.s.schedule.pauseWhenIdle = 2 * time.Minute
+	te.s.schedule.idleAfter = 2 * time.Minute
 	te.s.schedule.quarantine = backoff{initial: 2 * time.Hour, multiplier: 2, max: 4 * time.Hour}
 	te.lease(t0, map[string]time.Duration{"p-x1": time.Hour}, "p-x1", "p-x2")
 	te.failN(3, "p-x1", failDial, at(time.Minute))
@@ -1035,7 +1035,7 @@ func TestRenewalAtShareOfShortestLease(t *testing.T) {
 // outbounds otherwise. It waits for the network.
 func TestRenewalIgnoresIdleWaitsForNetwork(t *testing.T) {
 	te := leaseEngine(t, renewing(nil), &SelectorConfig{Costs: costs("p-", 1)}, "p-x1")
-	te.s.schedule.pauseWhenIdle = 2 * time.Minute
+	te.s.schedule.idleAfter = 2 * time.Minute
 	te.lease(t0, map[string]time.Duration{"p-x1": time.Hour}, "p-x1")
 	renew := t0.Add(te.prov().leases["p-x1"].renewIn)
 	if jobs, wake := te.tickProviders(at(10 * time.Minute)); len(jobs) != 0 || !wake.Equal(renew) {

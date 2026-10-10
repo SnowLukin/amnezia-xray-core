@@ -676,7 +676,7 @@ type selectorHandle struct {
 func (h *selectorHandle) Select(candidates []string) string {
 	now := h.o.now()
 	nano := now.UnixNano()
-	if prev := h.o.e.lastDemand.Swap(nano); h.o.s.schedule.pauseWhenIdle > 0 && (prev == 0 || now.Sub(time.Unix(0, prev)) > h.o.s.schedule.pauseWhenIdle) {
+	if prev := h.o.e.lastDemand.Swap(nano); h.o.s.schedule.idleAfter > 0 && (prev == 0 || now.Sub(time.Unix(0, prev)) > h.o.s.schedule.idleAfter) {
 		h.o.wake()
 	}
 	if snap := h.s.snapshot.Load(); snap == nil || !equalStrings(*snap, candidates) {

@@ -19,7 +19,7 @@ import (
 // stay ended.
 //
 // The failover the down started goes on: a balancer that moved or still
-// moves away comes back by a return, soon after minHold and through its
+// moves away comes back by a return, soon after minHoldTime and through its
 // returnToCheaper probes, so a path that fails for a second does not move new
 // connections twice within it. A balancer left with nothing takes the
 // outbound back at once, as after a recheck. The rescue changes no choice by
@@ -35,9 +35,9 @@ import (
 // once the outbound was no longer suspect.
 
 // Returns to an outbound that came back after a failover from it spread
-// over this long after minHold, or over returnToCheaper.interval when that is
+// over this long after minHoldTime, or over returnToCheaper.interval when that is
 // shorter. One server that hiccups rescues itself on every device that saw
-// the hiccup at about the same moment; returns at minHold sharp would bring
+// the hiccup at about the same moment; returns at minHoldTime sharp would bring
 // their probes to it in one wave.
 const returnSpread = 5 * time.Minute
 
@@ -132,7 +132,7 @@ func (e *engine) rescue(p *path, m *rescueMark, now time.Time) {
 		case s.exhausted:
 			e.switchTo(s, p.tag, "recovered", now)
 		case cur != "" && cur != p.tag && !s.cfg.isLazy(p.tag) && e.rankCost(s, p.tag) < e.rankCost(s, cur):
-			// It moved away already; it returns soon after minHold. A
+			// It moved away already; it returns soon after minHoldTime. A
 			// failover still under way returns from where it lands.
 			e.scheduleReturn(s, now)
 		}
@@ -140,9 +140,9 @@ func (e *engine) rescue(p *path, m *rescueMark, now time.Time) {
 }
 
 // scheduleReturn plans the return of s to a cheaper outbound that turned out
-// to work after the balancer failed over from it: once minHold ends, at a
+// to work after the balancer failed over from it: once minHoldTime ends, at a
 // random point within returnSpread when the returnToCheapers of s have a random
-// phase, as a timed return would. The point is never before minHold.
+// phase, as a timed return would. The point is never before minHoldTime.
 func (e *engine) scheduleReturn(s *selector, now time.Time) {
 	e.scheduleReturnToCheaper(s, now, true)
 	u := s.cfg.returnToCheaper

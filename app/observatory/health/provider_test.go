@@ -136,7 +136,7 @@ func TestTimedRefreshWaitsForTraffic(t *testing.T) {
 		p.Triggers.Interval = int64(time.Hour)
 		p.Triggers.JitterFraction = -1
 	}), nil, "a1")
-	te.s.schedule.pauseWhenIdle = 2 * time.Minute
+	te.s.schedule.idleAfter = 2 * time.Minute
 	te.refreshAt(t0)
 	// No traffic since t0: due, but nobody needs it now and no timer is set.
 	jobs, wake := te.tickProviders(at(time.Hour))

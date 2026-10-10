@@ -13,17 +13,17 @@ import (
 // are phrased so that false is the default, therefore a config built in
 // protobuf directly behaves like the same config in JSON.
 const (
-	defaultWindow           = 60 * time.Second
-	defaultDialTimeout      = 6 * time.Second
-	defaultFirstByteTimeout = 5 * time.Second
-	defaultStallTimeout     = 8 * time.Second
-	defaultFailures         = 3
-	defaultDistinctTargets  = 2
-	defaultSuccessBytes     = 24 * 1024
-	defaultSweepInterval    = 500 * time.Millisecond
-	defaultPartialStallAge  = 30 * time.Second
-	defaultStallMinWrite    = 128
-	defaultPartialMinBytes  = 8 * 1024
+	defaultWindow             = 60 * time.Second
+	defaultDialTimeout        = 6 * time.Second
+	defaultFirstByteTimeout   = 5 * time.Second
+	defaultStallTimeout       = 8 * time.Second
+	defaultFailures           = 3
+	defaultMinDistinctTargets = 2
+	defaultSuccessBytes       = 24 * 1024
+	defaultSweepInterval      = 500 * time.Millisecond
+	defaultPartialStallAge    = 30 * time.Second
+	defaultStallMinWrite      = 128
+	defaultPartialMinBytes    = 8 * 1024
 
 	defaultProbeDestination = "https://www.gstatic.com/generate_204"
 	defaultProbeTimeout     = 8 * time.Second
@@ -34,30 +34,30 @@ const (
 	defaultConnectivityTimeout = 4 * time.Second
 	defaultMaxPause            = time.Minute
 
-	defaultPauseWhenIdle            = 2 * time.Minute
-	defaultConcurrent               = 1
-	defaultSpacing                  = 2 * time.Second
-	defaultSpacingJitter            = 0.3
-	defaultPerServerName            = 3
-	defaultPerMinute                = 12
-	defaultSuspectCooldown          = time.Minute
-	defaultHostPerMinute            = 4
-	defaultHostReuse                = 15 * time.Second
-	defaultHostMaxOutbounds         = 8
-	defaultHostTimeout              = 2 * time.Minute
-	maxSuspectCooldown              = time.Hour
-	defaultMaxEvents                = 1000
-	defaultReportInterval           = 24 * time.Hour
-	defaultMaxEventBytes            = 64 * 1024
-	defaultMaxNetworks              = 16
-	defaultMinHold                  = 2 * time.Minute
-	defaultReturnToCheaperInterval  = 30 * time.Minute
-	defaultReturnToCheaperSuccesses = 3
-	defaultReturnToCheaperSpacing   = 20 * time.Second
-	defaultPenaltyWindow            = 5 * time.Minute
-	defaultPenaltyMultiplier        = 2
-	defaultMaxPenalty               = 2 * time.Hour
-	maxJitter                       = 0.9
+	defaultIdleAfter                    = 2 * time.Minute
+	defaultConcurrent                   = 1
+	defaultSpacing                      = 2 * time.Second
+	defaultSpacingJitter                = 0.3
+	defaultProbesPerServerNamePerMinute = 3
+	defaultPerMinute                    = 12
+	defaultSuspectCooldown              = time.Minute
+	defaultHostPerMinute                = 4
+	defaultHostReuse                    = 15 * time.Second
+	defaultHostMaxOutbounds             = 8
+	defaultHostTimeout                  = 2 * time.Minute
+	maxSuspectCooldown                  = time.Hour
+	defaultMaxEvents                    = 1000
+	defaultReportInterval               = 24 * time.Hour
+	defaultMaxEventBytes                = 64 * 1024
+	defaultMaxNetworks                  = 16
+	defaultMinHoldTime                  = 2 * time.Minute
+	defaultReturnToCheaperInterval      = 30 * time.Minute
+	defaultReturnToCheaperSuccesses     = 3
+	defaultReturnToCheaperSpacing       = 20 * time.Second
+	defaultPenaltyWindow                = 5 * time.Minute
+	defaultPenaltyMultiplier            = 2
+	defaultMaxPenalty                   = 2 * time.Hour
+	maxJitter                           = 0.9
 
 	// An outbound no balancer chooses sleeps this long after its last use,
 	// as long as penaltyWindow: a return to a cheaper outbound that fails
@@ -186,20 +186,20 @@ func (b backoff) delay(attempt int) time.Duration {
 }
 
 type passiveSettings struct {
-	window           time.Duration
-	dialTimeout      time.Duration
-	firstByteTimeout time.Duration
-	stallTimeout     time.Duration
-	failures         int
-	distinctTargets  int
-	successBytes     int64
-	sweepInterval    time.Duration
-	dialOnly         bool
-	partialStallAge  time.Duration
-	stallMinWrite    int64
-	partialMinBytes  int64
-	keepPending      bool
-	keepSilent       bool
+	window             time.Duration
+	dialTimeout        time.Duration
+	firstByteTimeout   time.Duration
+	stallTimeout       time.Duration
+	failures           int
+	minDistinctTargets int
+	successBytes       int64
+	sweepInterval      time.Duration
+	dialOnly           bool
+	partialStallAge    time.Duration
+	stallMinWrite      int64
+	partialMinBytes    int64
+	keepPending        bool
+	keepSilent         bool
 }
 
 type probeSettings struct {
@@ -234,15 +234,15 @@ type connectivitySettings struct {
 }
 
 type scheduleSettings struct {
-	pauseWhenIdle   time.Duration
-	quarantine      backoff
-	concurrent      int
-	spacing         time.Duration
-	spacingJitter   float64
-	perServerName   int
-	perMinute       int
-	suspectCooldown time.Duration
-	hostProbes      hostProbeSettings
+	idleAfter                    time.Duration
+	quarantine                   backoff
+	concurrent                   int
+	spacing                      time.Duration
+	spacingJitter                float64
+	probesPerServerNamePerMinute int
+	perMinute                    int
+	suspectCooldown              time.Duration
+	hostProbes                   hostProbeSettings
 }
 
 type hostProbeSettings struct {
@@ -464,20 +464,20 @@ func newSettings(c *Config) *settings {
 	s := &settings{subjects: append([]string(nil), c.GetSubjectSelector()...)}
 	p := c.GetPassive()
 	s.passive = passiveSettings{
-		window:           dur(p.GetWindow(), defaultWindow),
-		dialTimeout:      dur(p.GetDialTimeout(), defaultDialTimeout),
-		firstByteTimeout: dur(p.GetFirstByteTimeout(), defaultFirstByteTimeout),
-		stallTimeout:     dur(p.GetStallTimeout(), defaultStallTimeout),
-		failures:         num(p.GetFailuresToSuspect(), defaultFailures),
-		distinctTargets:  num(p.GetMinDistinctTargets(), defaultDistinctTargets),
-		successBytes:     size(p.GetSuccessBytes(), defaultSuccessBytes),
-		sweepInterval:    dur(p.GetSweepInterval(), defaultSweepInterval),
-		dialOnly:         p.GetIsDialOnly(),
-		partialStallAge:  dur(p.GetPartialStallMaxAge(), defaultPartialStallAge),
-		stallMinWrite:    size(p.GetStallMinWriteBytes(), defaultStallMinWrite),
-		partialMinBytes:  size(p.GetPartialStallMinBytes(), defaultPartialMinBytes),
-		keepPending:      p.GetShouldKeepPendingOnDown(),
-		keepSilent:       p.GetShouldKeepSilentOnDown(),
+		window:             dur(p.GetWindow(), defaultWindow),
+		dialTimeout:        dur(p.GetDialTimeout(), defaultDialTimeout),
+		firstByteTimeout:   dur(p.GetFirstByteTimeout(), defaultFirstByteTimeout),
+		stallTimeout:       dur(p.GetStallTimeout(), defaultStallTimeout),
+		failures:           num(p.GetFailuresToSuspect(), defaultFailures),
+		minDistinctTargets: num(p.GetMinDistinctTargets(), defaultMinDistinctTargets),
+		successBytes:       size(p.GetSuccessBytes(), defaultSuccessBytes),
+		sweepInterval:      dur(p.GetSweepInterval(), defaultSweepInterval),
+		dialOnly:           p.GetIsDialOnly(),
+		partialStallAge:    dur(p.GetPartialStallMaxAge(), defaultPartialStallAge),
+		stallMinWrite:      size(p.GetStallMinWriteBytes(), defaultStallMinWrite),
+		partialMinBytes:    size(p.GetPartialStallMinBytes(), defaultPartialMinBytes),
+		keepPending:        p.GetShouldKeepPendingOnDown(),
+		keepSilent:         p.GetShouldKeepSilentOnDown(),
 	}
 	if p.GetShouldIgnorePartialStalls() {
 		s.passive.partialStallAge = 0
@@ -505,14 +505,14 @@ func newSettings(c *Config) *settings {
 	}
 	sc := c.GetSchedule()
 	s.schedule = scheduleSettings{
-		pauseWhenIdle:   dur(sc.GetIdleAfter(), defaultPauseWhenIdle),
-		quarantine:      toBackoff(sc.GetQuarantine(), defaultQuarantine),
-		concurrent:      min(num(sc.GetMaxConcurrentProbes(), defaultConcurrent), maxConcurrent),
-		spacing:         dur(sc.GetMinProbeInterval(), defaultSpacing),
-		spacingJitter:   jitter(sc.GetProbeJitterFraction(), defaultSpacingJitter),
-		perServerName:   num(sc.GetProbesPerServerNamePerMinute(), defaultPerServerName),
-		perMinute:       num(sc.GetProbesPerMinute(), defaultPerMinute),
-		suspectCooldown: dur(sc.GetSuspectCooldown(), defaultSuspectCooldown),
+		idleAfter:                    dur(sc.GetIdleAfter(), defaultIdleAfter),
+		quarantine:                   toBackoff(sc.GetQuarantine(), defaultQuarantine),
+		concurrent:                   min(num(sc.GetMaxConcurrentProbes(), defaultConcurrent), maxConcurrent),
+		spacing:                      dur(sc.GetMinProbeInterval(), defaultSpacing),
+		spacingJitter:                jitter(sc.GetProbeJitterFraction(), defaultSpacingJitter),
+		probesPerServerNamePerMinute: num(sc.GetProbesPerServerNamePerMinute(), defaultProbesPerServerNamePerMinute),
+		perMinute:                    num(sc.GetProbesPerMinute(), defaultPerMinute),
+		suspectCooldown:              dur(sc.GetSuspectCooldown(), defaultSuspectCooldown),
 	}
 	hp := sc.GetHostProbes()
 	s.schedule.hostProbes = hostProbeSettings{
@@ -575,11 +575,11 @@ type selectorSettings struct {
 	lazy             []string
 	switchAfterProbe bool
 	confirm          ConfirmMode
-	minHold          time.Duration
+	minHoldTime      time.Duration
 	returnToCheaper  returnToCheaperSettings
 	startPinned      string
-	startPinnedFor   time.Duration
-	startWith        string
+	startPinTimeout  time.Duration
+	startOutbound    string
 	onNetworkChange  NetworkChangeMode
 }
 
@@ -614,7 +614,7 @@ func newSelectorSettings(c *SelectorConfig) *selectorSettings {
 		lazy:             c.GetLazyOutbounds(),
 		switchAfterProbe: !c.GetSkipProbeBeforeSwitch(),
 		confirm:          c.GetConfirmWithProbe(),
-		minHold:          dur(c.GetMinHoldTime(), defaultMinHold),
+		minHoldTime:      dur(c.GetMinHoldTime(), defaultMinHoldTime),
 		returnToCheaper: returnToCheaperSettings{
 			interval:            dur(u.GetInterval(), defaultReturnToCheaperInterval),
 			randomPhase:         !u.GetSkipRandomPhase(),
@@ -627,8 +627,8 @@ func newSelectorSettings(c *SelectorConfig) *selectorSettings {
 			unknownNetworksOnly: !u.GetTryOnAllNetworks(),
 		},
 		startPinned:     c.GetStartPinnedOutbound(),
-		startPinnedFor:  time.Duration(max(c.GetStartPinTimeout(), 0)),
-		startWith:       c.GetStartOutbound(),
+		startPinTimeout: time.Duration(max(c.GetStartPinTimeout(), 0)),
+		startOutbound:   c.GetStartOutbound(),
 		onNetworkChange: c.GetNetworkChangeAction(),
 	}
 }
