@@ -1634,12 +1634,12 @@ def hybrid_pin_stop(stand, xray, work, name):
         ]
         if label == "start":
             checks.append(check("final report (start)", final and f"{final['report_reason']} "
-                                f"pinned_down {final['pinned_down']}", final is None, "none"))
+                                f"pinned_down_count {final['pinned_down_count']}", final is None, "none"))
         else:
             checks.append(check("final report (host)", final and f"{final['report_reason']} "
-                                f"pinned_down {final['pinned_down']}",
-                                bool(final) and final["report_reason"] == "stop" and final["pinned_down"] >= 1,
-                                "stop, pinned_down >= 1"))
+                                f"pinned_down_count {final['pinned_down_count']}",
+                                bool(final) and final["report_reason"] == "stop" and final["pinned_down_count"] >= 1,
+                                "stop, pinned_down_count >= 1"))
         checks.append(leak_check(c))
     return checks
 
