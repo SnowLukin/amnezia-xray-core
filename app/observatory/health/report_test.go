@@ -59,6 +59,8 @@ func foldReport(t *testing.T, raw []byte) (reportCounts, bool) {
 				c.PathDown++
 			case "suspect":
 				c.PathSuspect++
+			case "degraded":
+				c.PathDegraded++
 			case "up":
 				if f["reason"] == "rescued" {
 					c.PathRescued++
@@ -183,6 +185,7 @@ func TestReportAddsUpTheEvents(t *testing.T) {
 	}
 	te.run(t, at(16*time.Minute+2*time.Second), nil)
 	now := at(17 * time.Minute)
+	te.emit(now, "path_state", map[string]any{"outbound": "a1", "state": "degraded", "reason": "egress"})
 	te.emit(now, "group_state", map[string]any{"balancer": "auto", "group": "a", "state": "down", "members": 3, "failed": 3, "quarantine_ms": int64(30000)})
 	te.emit(now, "pending_closed", map[string]any{"outbound": "a1", "connections": 3, "reason": "traffic"})
 	te.emit(now, "pinned_down", map[string]any{"balancer": "auto", "outbound": "a1"})
@@ -480,7 +483,7 @@ func TestReportPathsGrowSincePreviousReport(t *testing.T) {
 	if p := v.Paths["a1"]; p.ActiveMs != 15_000 || p.BytesUp != 0 || p.BytesDown != 24 || p.ConnsOK != 0 || p.Probes != 1 || p.ProbeBytes != 4096 {
 		t.Fatalf("a1 grew by %+v", p)
 	}
-	if p, ok := v.Paths["b1"]; !ok || p != (reportPath{State: "unknown"}) {
+	if p, ok := v.Paths["b1"]; !ok || !reflect.DeepEqual(p, reportPath{State: "unknown", ProbeSteps: []reportProbeStep{}}) {
 		t.Fatalf("b1 without growth %+v, listed %v", p, ok)
 	}
 	// An outbound forgotten and seen again counts from zero.
@@ -654,7 +657,7 @@ func TestReportFieldsDocumented(t *testing.T) {
 	for k := range paths["a1"] {
 		keys = append(keys, k)
 	}
-	if len(top) < 30 || len(paths["a1"]) != 9 {
+	if len(top) < 30 || len(paths["a1"]) != 11 {
 		t.Fatalf("setup: report %s", raw)
 	}
 	for _, k := range keys {

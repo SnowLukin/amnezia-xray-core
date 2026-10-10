@@ -35,6 +35,7 @@ type reportCounts struct {
 	GroupDown               int64            `json:"group_down_count"`
 	PathDown                int64            `json:"path_down_count"`
 	PathSuspect             int64            `json:"path_suspect_count"`
+	PathDegraded            int64            `json:"path_degraded_count"`
 	PathRescued             int64            `json:"path_rescued_count"`
 	PendingClosed           int64            `json:"pending_closed_count"`
 	IdleClosed              int64            `json:"idle_closed_count"`
@@ -67,15 +68,28 @@ type reportCounts struct {
 }
 
 type reportPath struct {
-	State       string `json:"state"`
-	TTFBP50Ms   int64  `json:"ttfb_p50_ms"`
-	ActiveMs    int64  `json:"active_ms"`
-	BytesUp     int64  `json:"bytes_up"`
-	BytesDown   int64  `json:"bytes_down"`
-	ConnsOK     int64  `json:"conns_ok"`
-	ConnsFailed int64  `json:"conns_failed"`
-	Probes      int64  `json:"probes"`
-	ProbeBytes  int64  `json:"probe_bytes"`
+	State       string            `json:"state"`
+	TTFBP50Ms   int64             `json:"ttfb_p50_ms"`
+	ActiveMs    int64             `json:"active_ms"`
+	BytesUp     int64             `json:"bytes_up"`
+	BytesDown   int64             `json:"bytes_down"`
+	ConnsOK     int64             `json:"conns_ok"`
+	ConnsFailed int64             `json:"conns_failed"`
+	Probes      int64             `json:"probes"`
+	ProbeBytes  int64             `json:"probe_bytes"`
+	ProbeSteps  []reportProbeStep `json:"probe_steps"`
+	DegradedMs  int64             `json:"degraded_ms"`
+}
+
+type reportProbeStep struct {
+	Name   string `json:"name"`
+	Passed int64  `json:"passed"`
+	Failed int64  `json:"failed"`
+}
+
+type reportStepTotals struct {
+	order  []string
+	byName map[string]reportProbeStep
 }
 
 type reportView struct {
@@ -103,12 +117,14 @@ type pathTotals struct {
 	connsFailed int64
 	probes      int64
 	probeBytes  int64
+	degraded    time.Duration
 }
 
 // report counts every event as it is emitted, so the report depends neither
 // on the event log being drained nor on it overflowing.
 type report struct {
-	counts reportCounts
+	counts     reportCounts
+	stepCounts map[string]*reportStepTotals
 	// Decisions in the window; whether there was any in the run.
 	decisions int
 	decided   bool
@@ -160,6 +176,8 @@ func (r *report) count(typ string, f map[string]any) {
 			c.PathDown++
 		case "suspect":
 			c.PathSuspect++
+		case "degraded":
+			c.PathDegraded++
 		case "up":
 			// A down undone changes no choice by itself: a balancer it
 			// brings back tells so with its own switch.
@@ -181,6 +199,7 @@ func (r *report) count(typ string, f map[string]any) {
 		if f["reason"] == "host" {
 			c.HostProbes++
 		}
+		r.countProbeSteps(f)
 	case "probe_request":
 		c.HostProbeRequests++
 	case "return_start":
@@ -265,6 +284,58 @@ func (r *report) count(typ string, f map[string]any) {
 	}
 }
 
+func (r *report) forgetProbeSteps(tag string) {
+	delete(r.stepCounts, tag)
+}
+
+func (r *report) countProbeSteps(f map[string]any) {
+	tag, ok := f["outbound"].(string)
+	if !ok || tag == "" {
+		return
+	}
+	steps, ok := f["steps"].([]map[string]any)
+	if !ok || len(steps) == 0 {
+		return
+	}
+	if r.stepCounts == nil {
+		r.stepCounts = make(map[string]*reportStepTotals)
+	}
+	totals := r.stepCounts[tag]
+	if totals == nil {
+		if len(r.stepCounts) == reportPaths {
+			largest := tag
+			for existing := range r.stepCounts {
+				if existing > largest {
+					largest = existing
+				}
+			}
+			if largest == tag {
+				return
+			}
+			delete(r.stepCounts, largest)
+		}
+		totals = &reportStepTotals{byName: make(map[string]reportProbeStep)}
+		r.stepCounts[tag] = totals
+	}
+	for _, raw := range steps {
+		name, ok := raw["name"].(string)
+		if !ok || name == "" {
+			continue
+		}
+		v, exists := totals.byName[name]
+		if !exists {
+			totals.order = append(totals.order, name)
+			v.Name = name
+		}
+		if raw["is_passed"] == true {
+			v.Passed++
+		} else {
+			v.Failed++
+		}
+		totals.byName[name] = v
+	}
+}
+
 func (r *report) decide() {
 	r.decisions++
 	r.decided = true
@@ -310,6 +381,7 @@ func (e *engine) takeReport(final bool, now time.Time) *reportView {
 	v := e.reportView(reason, now, true)
 	r.taken++
 	r.counts = reportCounts{}
+	r.stepCounts = nil
 	r.decisions = 0
 	r.windowStart = now.Round(0)
 	r.droppedBefore = e.events.droppedTotal
@@ -372,6 +444,10 @@ func (e *engine) reportView(reason string, now time.Time, take bool) *reportView
 	sort.Strings(tags)
 	for i, tag := range tags {
 		p := e.paths[tag]
+		degraded := p.stats.degradedTime
+		if p.status == statusDegraded && !p.statusSince.IsZero() && wall.After(p.statusSince.Round(0)) {
+			degraded += wall.Sub(p.statusSince.Round(0))
+		}
 		total := pathTotals{
 			active:      p.stats.activeTime + active[tag],
 			bytesUp:     p.stats.bytesUp,
@@ -380,6 +456,7 @@ func (e *engine) reportView(reason string, now time.Time, take bool) *reportView
 			connsFailed: p.stats.connsFailed,
 			probes:      p.stats.probes,
 			probeBytes:  p.stats.probeBytes,
+			degraded:    degraded,
 		}
 		if i < reportPaths {
 			base := p.reported
@@ -393,6 +470,8 @@ func (e *engine) reportView(reason string, now time.Time, take bool) *reportView
 				ConnsFailed: total.connsFailed - base.connsFailed,
 				Probes:      total.probes - base.probes,
 				ProbeBytes:  total.probeBytes - base.probeBytes,
+				ProbeSteps:  e.reportProbeSteps(tag),
+				DegradedMs:  max((total.degraded - base.degraded).Milliseconds(), 0),
 			}
 		}
 		if take {
@@ -400,4 +479,25 @@ func (e *engine) reportView(reason string, now time.Time, take bool) *reportView
 		}
 	}
 	return v
+}
+
+func (e *engine) reportProbeSteps(tag string) []reportProbeStep {
+	steps := []reportProbeStep{}
+	totals := e.report.stepCounts[tag]
+	if totals == nil {
+		return steps
+	}
+	seen := make(map[string]bool, len(totals.order))
+	for _, step := range e.s.probeFor(tag).steps {
+		if v, ok := totals.byName[step.name]; ok {
+			steps = append(steps, v)
+			seen[step.name] = true
+		}
+	}
+	for _, name := range totals.order {
+		if !seen[name] {
+			steps = append(steps, totals.byName[name])
+		}
+	}
+	return steps
 }

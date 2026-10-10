@@ -29,6 +29,7 @@ type pathStatusView struct {
 	Probes          int64            `json:"probes"`
 	ProbesFailed    int64            `json:"probes_failed"`
 	ProbeBytes      int64            `json:"probe_bytes"`
+	Probe           *statusProbeView `json:"probe,omitempty"`
 	ActiveMs        int64            `json:"active_ms"`
 	// What is left of the provider lease, below zero once it ended; none
 	// without a lease.
@@ -169,6 +170,7 @@ func (e *engine) status(now time.Time) statusView {
 			Probes:       p.stats.probes,
 			ProbesFailed: p.stats.probesFailed,
 			ProbeBytes:   p.stats.probeBytes,
+			Probe:        p.statusProbe(now),
 			ActiveMs:     (p.stats.activeTime + active[tag]).Milliseconds(),
 			IsAsleep:     p.asleep,
 		}

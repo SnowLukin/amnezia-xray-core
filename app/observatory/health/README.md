@@ -239,6 +239,22 @@ The values above are the defaults, except `outbounds[].path`, `probes`,
 `connectivity`, `startPinnedOutbound` and `startOutbound`, which have none. A path without `probe` uses the built-in GET of
 `https://www.gstatic.com/generate_204`.
 
+A probe profile may instead contain one to four ordered `steps`. Each step has
+`name`, one to four `destinations`, optional `isOptional`, and its own `method`,
+`expectedStatuses`, `minBytes`, `timeout` and `progressTimeout`. Required steps
+run first and stop the probe on failure. Optional steps run afterwards even
+when another optional step fails. The first successful destination in a step
+wins; the others are canceled. Required steps passing and an optional step
+failing leave the path `degraded`: it still carries traffic, but an `up` path
+is preferred even when it costs more. If all candidates are `degraded`, cost
+decides among them. A profile with `destination` keeps its former behavior
+as one required step named after the profile.
+
+Each HTTP probe uses its own connection through the outbound. On a mux
+outbound the request uses an isolated mux worker, so a completed mux handshake
+measures the actual dial of this probe; mux framing stays in place. User
+traffic and provider requests continue using the reusable worker pool.
+
 Values that size what the observatory keeps have ceilings, and a larger
 value is taken as the ceiling: probe and network check timeouts 30 s,
 `maxConcurrentProbes` 8, `maxEvents` 4096, events `maxBytes` 256 KiB, `maxNetworks`
@@ -845,8 +861,8 @@ outbound is forgotten once no balancer offers it (one that can sleep once it
 sleeps or its handler goes), failures per outbound are capped, probes end by
 a deadline, and the config values that size anything have ceilings. For an
 open connection of a watched outbound it keeps under 1 KB and no goroutine
-of its own. The report keeps fixed counters, the latest 10 switches and
-seven numbers per outbound. A provider keeps its last applied answer for
+of its own. The report keeps fixed counters, the latest 10 switches, and
+window counters for up to 64 outbounds and their configured probe steps. A provider keeps its last applied answer for
 `ProviderSet`, at most `maxBytes`, a kept initial set some 200 KiB more,
 and replaced by the next one; the config drops its initial set once
 applied.
@@ -920,10 +936,10 @@ Every event is `{"seq": n, "ts": unix_ms, "type": "...", "fields": {...}}`.
 | Type | Fields | When |
 | --- | --- | --- |
 | `switch` | `balancer`, `from`, `to`, `reason`, `held_ms`, `cost` | New connections go to another outbound. `reason`: `start`, `start_pinned`, `start_remembered`, `start_with`, `failover`, `return`, `recovered`, `remembered`, `network_change`, `network_up` (the network check passed again and brought back outbounds ruled out while it failed, to a balancer that had nothing usable), `candidates_changed`, `pin`, `retired` (the previous one left its provider set), `expired` (the lease of the previous one ended; one that failed as well is left with `failover`). `held_ms` is the time on the previous one. |
-| `path_state` | `outbound`, `state`, `reason`; for `suspect` also `failures`, `targets`, `kinds`, `is_strong`; for `down` also `quarantine_ms`, `quarantine_level` and `is_provisional` when it was ruled out while the network check was failing | An outbound became `up`, `suspect`, `down` or `unknown`. `reason`: `traffic`, `probe`, `return_probe`, `host_probe`, `network_change`, `network_down`, `network_up`, `replaced` (a provider
-changed its settings), `rescued` (a probe that was confirming a suspicion when strong evidence ruled the outbound out passed, see How it decides). `kinds` counts failures by kind: `dial_failed`, `dial_timeout`, `server_unverified`, `no_response`, `closed`, `stall`, `partial_stall`. For an outbound with a tunnel, `dial_failed` and `dial_timeout` tell that the tunnel could not be set up or that its server did not answer a connection, see How it decides. |
+| `path_state` | `outbound`, `state`, `reason`; for `suspect` also `failures`, `targets`, `kinds`, `is_strong`; for `down` also `quarantine_ms`, `quarantine_level` and `is_provisional` when it was ruled out while the network check was failing | An outbound became `up`, `degraded`, `suspect`, `down` or `unknown`. For `degraded`, `reason` is the first failed optional step. Other reasons: `traffic`, `probe`, `return_probe`, `host_probe`, `network_change`, `network_down`, `network_up`, `replaced` (a provider
+changed its settings), `probe_changed` (a provider changed the profile of an unchanged outbound), `rescued` (a probe that was confirming a suspicion when strong evidence ruled the outbound out passed, see How it decides). `kinds` counts failures by kind: `dial_failed`, `dial_timeout`, `server_unverified`, `no_response`, `closed`, `stall`, `partial_stall`. For an outbound with a tunnel, `dial_failed` and `dial_timeout` tell that the tunnel could not be set up or that its server did not answer a connection, see How it decides. |
 | `probe_start` | `outbound`, `reason`, `balancer`, `running`, `request` | A probe started. `reason`: `confirm`, `failover`, `network_change`, `remembered`, `recheck`, `return`, `group_recheck`, `host`. `running` counts the outbound probes running now, this one included. `request` is the id of the request a `host` probe is for. |
-| `probe_result` | `outbound`, `reason`, `balancer`, `is_ok`, `rtt_ms`, `bytes`, `error`, `is_stale`, `request` | A probe finished. `bytes` counts both directions above TLS. `is_stale` means it was made in the previous network and was ignored. |
+| `probe_result` | `outbound`, `reason`, `balancer`, `is_ok`, `rtt_ms`, `bytes`, `error`, `is_stale`, `request`, `profile`, `state`, `steps` | A probe finished. `steps` lists only attempted steps with `name`, `is_passed`, `connect_ms`, `ms`, `bytes`, a `destination` index on success or an `error` class on failure. `bytes` counts both directions above TLS. `is_stale` means the network, handler or probe profile changed while it ran, so its result did not change the path. Its attempted steps still count in the report. |
 | `group_state` | `balancer`, `group`, `state`, `members`, `failed`, `quarantine_ms` | An explicit group became `down` after consecutive failures or `up` after a successful recovery check. Unvisited members of a down group are skipped. |
 | `probe_request` | `request`, `balancer`, `outbounds`, `end`, `ms`, `probed`, `reused`, `ok`, `failed`, `down`, `skipped`, `expired`, `gone` | A request of the host that waited for a probe ended; one answered at once writes none. `end`: `done`, `timeout`, `network_change`, `gone`. The counts are by result; `probed` and `reused` count the answers of a probe and of a recent proof. |
 | `exhausted` | `balancer`, `from`, `candidates` | No usable candidate is left; traffic goes to `fallbackTag`. |
@@ -1002,7 +1018,7 @@ to this one. Reports of one run add up.
 | `events_dropped` | Events the log dropped in the window because it was full: they never reached `DrainEvents`. |
 | `switches`, `switch_reasons`, `switch_path` | `switch` events, their count by reason, and the latest 10 as `from>to:reason`. |
 | `exhausted_count`, `pinned_down_count` | Events of those types. |
-| `path_down_count`, `path_suspect_count` | `path_state` events with those states. |
+| `path_down_count`, `path_suspect_count`, `path_degraded_count` | `path_state` events with those states. |
 | `group_down_count` | `group_state` events with state `down`. |
 | `path_rescued_count` | `path_state` events with reason `rescued`: downs a confirming probe proved false. A rescue changes no choice by itself and is no decision; a balancer it brings back switches with `recovered`. |
 | `pending_closed_count` | Connections of outbounds found down ended by `pending_closed` events: those that had received nothing and, with `is_silent`, those that went silent after the decision. |
@@ -1022,7 +1038,7 @@ to this one. Reports of one run add up.
 | `memory_low_count` | `memory_low` events with `is_low`. |
 | `outbound_sleeps` | `outbound_sleep` events: outbounds that released what they held. A sleep changes no choice and is no decision. |
 | `active`, `is_balancer_exhausted`, `is_network_up`, `connectivity` | At the time of the report: the chosen outbound by balancer, whether a balancer is exhausted, and the network as in Status. |
-| `paths` | The first 64 outbounds by tag. `state` and `ttfb_p50_ms` (over the whole life of the outbound, 0 without samples) as they are now; `active_ms`, `bytes_up`, `bytes_down`, `conns_ok`, `conns_failed`, `probes` and `probe_bytes` grown since the previous report. An outbound forgotten and seen again counts from zero. |
+| `paths` | The first 64 outbounds by tag. `state` and `ttfb_p50_ms` (over the whole life of the outbound, 0 without samples) as they are now; `active_ms`, `degraded_ms`, `bytes_up`, `bytes_down`, `conns_ok`, `conns_failed`, `probes` and `probe_bytes` cover this report window. `probe_steps` gives `name`, `passed` and `failed` for steps actually attempted in the window, including stale probes. Steps follow the current profile order; names from an earlier profile in the same window follow in their first observed order. An outbound forgotten and seen again counts from zero. |
 | `groups` | Current explicit-group summaries as described in Outbound groups. |
 
 ## Status
@@ -1051,3 +1067,11 @@ below zero once a refresh may try them again, none while it waits for new
 headers); the probe requests of the host (`probe_requests`), each with `id`,
 `balancer`, `age_ms`, `is_done`, `end` and the result per outbound, see Probes
 on request.
+
+Each path also has `probe`, the last finished result in the current network:
+`profile`, `state`, `ago_ms` and attempted `steps`. Step keys are snake_case:
+`name`, `is_passed`, `connect_ms`, `ms`, `bytes`, `destination` only for a
+successful address (zero is valid), and `error` only as a failure class.
+`connect_ms` measures connection establishment and `ms` the complete step.
+The result disappears on a network change. The event keeps stale results for
+traffic diagnostics, without replacing this Status snapshot.

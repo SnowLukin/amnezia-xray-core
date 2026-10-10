@@ -40,6 +40,124 @@ func TestHealthObservatoryConfig(t *testing.T) {
 	})
 }
 
+func TestHealthProbeStepsJSON(t *testing.T) {
+	cfg, err := buildHealth(t, `{"probes":[
+		{"name":"full","steps":[
+			{"name":"transport","destinations":["http://10.12.0.1/check"],"minBytes":32768},
+			{"name":"egress","isOptional":true,"destinations":["https://one.test/204","https://two.test/204"],
+			 "method":"HEAD","expectedStatuses":[204],"timeout":"3s","progressTimeout":"1s"}]},
+		{"name":"light","destination":"https://legacy.test/check","minBytes":8}]}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Probes) != 2 || len(cfg.Probes[0].Steps) != 2 || len(cfg.Probes[1].Steps) != 0 {
+		t.Fatalf("profiles %+v", cfg.Probes)
+	}
+	steps := cfg.Probes[0].Steps
+	if steps[0].Name != "transport" || steps[0].MinBytes != 32768 || steps[0].Timeout != 0 ||
+		steps[1].Name != "egress" || !steps[1].IsOptional || len(steps[1].Destinations) != 2 ||
+		steps[1].Method != "HEAD" || steps[1].ExpectedStatuses[0] != 204 ||
+		steps[1].Timeout != int64(3*time.Second) || steps[1].ProgressTimeout != int64(time.Second) {
+		t.Fatalf("steps %+v", steps)
+	}
+	if cfg.Probes[1].Destination != "https://legacy.test/check" || cfg.Probes[1].MinBytes != 8 {
+		t.Fatalf("legacy profile %+v", cfg.Probes[1])
+	}
+}
+
+func TestHealthProbeStepsJSONRejects(t *testing.T) {
+	for name, raw := range map[string]string{
+		"empty steps": `{"name":"x","steps":[]}`,
+		"null steps":  `{"name":"x","steps":null}`,
+		"five steps": `{"name":"x","steps":[{"name":"a","destinations":["https://x.test"]},
+			{"name":"b","destinations":["https://x.test"]},{"name":"c","destinations":["https://x.test"]},
+			{"name":"d","destinations":["https://x.test"]},{"name":"e","destinations":["https://x.test"]}]}`,
+		"no destinations": `{"name":"x","steps":[{"name":"a"}]}`,
+		"five destinations": `{"name":"x","steps":[{"name":"a","destinations":["https://a.test","https://b.test",
+			"https://c.test","https://d.test","https://e.test"]}]}`,
+		"empty destination": `{"name":"x","steps":[{"name":"a","destinations":[""]}]}`,
+		"bad destination":   `{"name":"x","steps":[{"name":"a","destinations":["ftp://x.test"]}]}`,
+		"missing name":      `{"name":"x","steps":[{"destinations":["https://x.test"]}]}`,
+		"duplicate name": `{"name":"x","steps":[{"name":"a","destinations":["https://x.test"]},
+			{"name":"a","destinations":["https://x.test"]}]}`,
+		"first optional": `{"name":"x","steps":[{"name":"a","isOptional":true,"destinations":["https://x.test"]}]}`,
+		"mandatory after optional": `{"name":"x","steps":[{"name":"a","destinations":["https://x.test"]},
+			{"name":"b","isOptional":true,"destinations":["https://x.test"]},
+			{"name":"c","destinations":["https://x.test"]}]}`,
+		"steps and destination":       `{"name":"x","destination":"https://x.test","steps":[{"name":"a","destinations":["https://x.test"]}]}`,
+		"steps and empty destination": `{"name":"x","destination":"","steps":[{"name":"a","destinations":["https://x.test"]}]}`,
+		"bad method":                  `{"name":"x","steps":[{"name":"a","destinations":["https://x.test"],"method":"POST"}]}`,
+		"HEAD body":                   `{"name":"x","steps":[{"name":"a","destinations":["https://x.test"],"method":"HEAD","minBytes":1}]}`,
+		"zero timeout":                `{"name":"x","steps":[{"name":"a","destinations":["https://x.test"],"timeout":"0s"}]}`,
+		"zero progress timeout":       `{"name":"x","steps":[{"name":"a","destinations":["https://x.test"],"progressTimeout":"0s"}]}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := buildHealth(t, `{"probes":[`+raw+`]}`)
+			if err == nil || !strings.Contains(err.Error(), "healthObservatory") {
+				t.Fatalf("error %v, want healthObservatory rejection", err)
+			}
+		})
+	}
+}
+
+func TestHealthProbeStepsRejectProfileZeroTimeouts(t *testing.T) {
+	for field, value := range map[string]string{
+		"timeout":         `"timeout":"0s"`,
+		"progressTimeout": `"progressTimeout":"0s"`,
+	} {
+		raw := `{"probes":[{"name":"full",` + value + `,"steps":[{"name":"transport","destinations":["https://x.test/204"]}]}]}`
+		_, err := buildHealth(t, raw)
+		if err == nil || !strings.Contains(err.Error(), "probes[]."+field) {
+			t.Errorf("%s: error %v must name probes[].%s", raw, err, field)
+		}
+	}
+}
+
+func TestHealthProbeDurationErrorBeforeMissingName(t *testing.T) {
+	for _, tc := range []struct {
+		raw, field string
+	}{
+		{`{"probes":[{"timeout":"0s"}]}`, "probes[].timeout"},
+		{`{"probes":[{"progressTimeout":"0s"}]}`, "probes[].progressTimeout"},
+		{`{"probes":[{"timeout":"0s","steps":[{"name":"transport","destinations":["https://x.test/204"]}]}]}`, "probes[].timeout"},
+		{`{"probes":[{"progressTimeout":"0s","steps":[{"name":"transport","destinations":["https://x.test/204"]}]}]}`, "probes[].progressTimeout"},
+	} {
+		_, err := buildHealth(t, tc.raw)
+		if err == nil || !strings.Contains(err.Error(), tc.field) {
+			t.Errorf("%s: error %v must name %s", tc.raw, err, tc.field)
+		}
+	}
+}
+
+func TestHealthProbeStepsJSONPresence(t *testing.T) {
+	step := `{"name":"transport","destinations":["https://x.test/204"]}`
+	for name, tc := range map[string]struct {
+		profile string
+		field   string
+	}{
+		"capitalized null steps":   {`"Steps":null`, "steps"},
+		"mixed case null steps":    {`"sTePs":null`, "steps"},
+		"capitalized destination":  {`"steps":[` + step + `],"Destination":null`, "destination"},
+		"empty profile method":     {`"steps":[` + step + `],"method":""`, "method"},
+		"empty statuses":           {`"steps":[` + step + `],"expectedStatuses":[]`, "expectedStatuses"},
+		"zero min bytes":           {`"steps":[` + step + `],"minBytes":0`, "minBytes"},
+		"profile timeout":          {`"steps":[` + step + `],"timeout":"1s"`, "timeout"},
+		"profile progress timeout": {`"steps":[` + step + `],"progressTimeout":"1s"`, "progressTimeout"},
+		"capitalized method":       {`"steps":[` + step + `],"METHOD":""`, "method"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := buildHealth(t, `{"probes":[{"name":"full",`+tc.profile+`}]}`)
+			if err == nil || !strings.Contains(strings.ToLower(err.Error()), strings.ToLower(tc.field)) {
+				t.Fatalf("error %v must name %s", err, tc.field)
+			}
+		})
+	}
+	cfg, err := buildHealth(t, `{"probes":[{"name":"full","STEPS":[`+step+`]}]}`)
+	if err != nil || len(cfg.GetProbes()[0].GetSteps()) != 1 {
+		t.Fatalf("capitalized valid steps: config %v, error %v", cfg, err)
+	}
+}
+
 func leastCostConfig(health, settings string, selector ...string) string {
 	sel := ""
 	if len(selector) > 0 {

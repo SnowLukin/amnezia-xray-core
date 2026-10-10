@@ -178,11 +178,111 @@ func (s *probeState) stop() {
 	}
 }
 
-// probe makes one request through the outbound and reads the body. It fails
-// on a wrong status, a short body, or no progress after the dial.
 func (o *Observer) probe(tag string, ps *probeSettings) probeResult {
+	steps := ps.steps
+	if len(steps) == 0 {
+		name := ps.name
+		if name == "" {
+			name = "default"
+		}
+		steps = []probeStepSettings{{
+			name: name, destinations: []string{ps.destination}, method: ps.method,
+			expectStatus: ps.expectStatus, minBytes: ps.minBytes,
+			timeout: ps.timeout, progressTimeout: ps.progressTimeout,
+		}}
+	}
+	result := probeResult{profile: ps.name, state: statusUp}
+	for i := range steps {
+		step, attempt := o.probeStep(tag, &steps[i])
+		result.bytes += step.bytes
+		if o.runCtx.Err() != nil {
+			result.canceled = true
+			result.err = "canceled"
+			return result
+		}
+		result.steps = append(result.steps, step)
+		if !step.ok {
+			if !steps[i].isOptional {
+				result.state = statusDown
+				result.err = attempt.err
+				result.class = step.class
+				return result
+			}
+			result.state = statusDegraded
+			continue
+		}
+		if result.rtt == 0 {
+			result.rtt = attempt.rtt
+		}
+	}
+	result.ok = true
+	return result
+}
+
+type probeAttemptResult struct {
+	ok      bool
+	rtt     time.Duration
+	connect time.Duration
+	bytes   int64
+	err     string
+	class   string
+}
+
+func (o *Observer) probeStep(tag string, step *probeStepSettings) (probeStepResult, probeAttemptResult) {
+	started := time.Now()
+	result := probeStepResult{name: step.name, destination: -1}
+	results := make(chan struct {
+		index int
+		probeAttemptResult
+	}, len(step.destinations))
+	cancels := make([]context.CancelFunc, len(step.destinations))
+	for i, destination := range step.destinations {
+		ctx, cancel := context.WithCancel(o.runCtx)
+		cancels[i] = cancel
+		go func(index int, destination string) {
+			r := o.probeDestination(ctx, tag, step, destination)
+			results <- struct {
+				index int
+				probeAttemptResult
+			}{index, r}
+		}(i, destination)
+	}
+	failures := make([]probeAttemptResult, len(step.destinations))
+	for range step.destinations {
+		attempt := <-results
+		result.bytes += attempt.bytes
+		failures[attempt.index] = attempt.probeAttemptResult
+		if attempt.ok && !result.ok && o.runCtx.Err() == nil {
+			result.ok = true
+			result.destination = attempt.index
+			result.connect = attempt.connect
+			for i, cancel := range cancels {
+				if i != attempt.index {
+					cancel()
+				}
+			}
+		}
+	}
+	for _, cancel := range cancels {
+		cancel()
+	}
+	result.elapsed = time.Since(started)
+	if result.ok {
+		return result, failures[result.destination]
+	}
+	if len(failures) > 0 {
+		result.connect = failures[0].connect
+		result.class = failures[0].class
+		return result, failures[0]
+	}
+	return result, probeAttemptResult{err: "no destinations", class: "other"}
+}
+
+// probeDestination makes one request through the outbound and reads the body.
+// Its context and counters belong only to this address, including when another wins.
+func (o *Observer) probeDestination(parent context.Context, tag string, ps *probeStepSettings, destination string) probeAttemptResult {
 	var bytes atomic.Int64
-	probeCtx := withProbe(o.runCtx, &bytes)
+	probeCtx := withProbe(parent, &bytes)
 	probeCtx = session.ContextWithContent(probeCtx, &session.Content{SkipMuxReuse: true})
 	state := probeStateFrom(probeCtx)
 	ctx, cancel := context.WithCancel(probeCtx)
@@ -209,20 +309,26 @@ func (o *Observer) probe(tag string, ps *probeSettings) probeResult {
 			return http.ErrUseLastResponse
 		},
 	}
-	fail := func(err, class string) probeResult {
+	fail := func(err, class string) probeAttemptResult {
 		if o.runCtx.Err() != nil {
-			return probeResult{canceled: true, err: "canceled", bytes: bytes.Load()}
+			return probeAttemptResult{err: "canceled", bytes: bytes.Load()}
 		}
-		return probeResult{err: err, class: class, bytes: bytes.Load()}
+		state.mu.Lock()
+		connect := time.Duration(0)
+		if state.dialDone {
+			connect = state.dialElapsed
+		}
+		state.mu.Unlock()
+		return probeAttemptResult{err: err, class: class, connect: connect, bytes: bytes.Load()}
 	}
 
-	req, err := http.NewRequestWithContext(ctx, ps.method, ps.destination, nil)
+	req, err := http.NewRequestWithContext(ctx, ps.method, destination, nil)
 	if err != nil {
 		return fail(err.Error(), "other")
 	}
 	utils.TryDefaultHeadersWith(req.Header, "nav")
 
-	failed := func(err error) probeResult {
+	failed := func(err error) probeAttemptResult {
 		reason, dialDone, dialErr := state.result()
 		switch reason {
 		case "dial_timeout":
@@ -235,7 +341,10 @@ func (o *Observer) probe(tag string, ps *probeSettings) probeResult {
 		if dialDone && dialErr != nil {
 			return fail(dialErr.Error(), probeDialFailureKind(dialErr).String())
 		}
-		return fail(err.Error(), errorClass(err))
+		if errorClass(err) == "timeout" {
+			return fail(err.Error(), "timeout")
+		}
+		return fail(err.Error(), "closed")
 	}
 
 	start := time.Now()
@@ -281,7 +390,13 @@ func (o *Observer) probe(tag string, ps *probeSettings) probeResult {
 	if reason, _, _ := state.result(); reason != "" || o.runCtx.Err() != nil {
 		return failed(context.Canceled)
 	}
-	return probeResult{ok: true, rtt: rtt, bytes: bytes.Load()}
+	state.mu.Lock()
+	connect := time.Duration(0)
+	if state.dialDone && state.dialErr == nil {
+		connect = state.dialElapsed
+	}
+	state.mu.Unlock()
+	return probeAttemptResult{ok: true, rtt: rtt, connect: connect, bytes: bytes.Load()}
 }
 
 // errorClass names the error of a probe by its type: the class goes to a

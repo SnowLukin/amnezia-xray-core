@@ -81,6 +81,9 @@ type Observer struct {
 
 // New creates the observer.
 func New(ctx context.Context, config *Config) (*Observer, error) {
+	if err := config.ValidateProbeSteps(); err != nil {
+		return nil, err
+	}
 	o := newObserver(ctx, config)
 	err := core.RequireFeatures(ctx, func(dispatcher routing.Dispatcher, ohm outbound.Manager, r routing.Router, sm stats.Manager) error {
 		o.dispatcher = dispatcher

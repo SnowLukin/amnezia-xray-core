@@ -368,14 +368,16 @@ func (e *engine) dropHostProbesForMemory() {
 // onHostProbeResult applies a probe the host asked for: it is evidence like
 // any other probe, but it neither moves a balancer to a cheaper outbound
 // nor counts toward a return.
-func (e *engine) onHostProbeResult(p *path, ok bool, now time.Time) {
-	if ok {
+func (e *engine) onHostProbeResult(p *path, r probeResult, now time.Time) {
+	if r.ok {
 		if p.status == statusSuspect {
-			// The same false alarm as a confirming probe that passes.
 			e.dropQueued(p.tag, reasonConfirm)
-			e.backOffWeakEvidence(p, now)
+			if r.pathState() == statusUp {
+				// The same false alarm as a confirming probe that passes.
+				e.backOffWeakEvidence(p, now)
+			}
 		}
-		e.markUp(p, "host_probe", now)
+		e.markProbeState(p, r, now)
 		for _, s := range e.sortedSelectors() {
 			if s.exhausted && s.hasCandidate(p.tag) {
 				e.switchTo(s, p.tag, "recovered", now)

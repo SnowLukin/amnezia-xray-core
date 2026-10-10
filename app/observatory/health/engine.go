@@ -57,26 +57,16 @@ func (r probeReason) String() string {
 // probeJob is one probe of an outbound. Jobs are shared: one probe of a tag
 // for a reason answers every balancer waiting for it.
 type probeJob struct {
-	id         uint64
-	tag        string
-	reason     probeReason
-	selector   string
-	notBefore  time.Time
-	generation uint64
+	id          uint64
+	tag         string
+	reason      probeReason
+	selector    string
+	notBefore   time.Time
+	generation  uint64
+	invalidated bool
+	forgotten   bool
 	// The request of the host that asked for the probe.
 	request uint64
-}
-
-type probeResult struct {
-	ok    bool
-	rtt   time.Duration
-	bytes int64
-	err   string
-	// err by class: timeout, no_progress, status_<N>, short_body, reset,
-	// refused, eof, tls or other.
-	class string
-	// The observer ended the probe on close; it tells nothing about the outbound.
-	canceled bool
 }
 
 // Outbounds no balancer offers any more are forgotten after this long.
@@ -216,6 +206,30 @@ func (e *engine) rankCost(s *selector, tag string) float64 {
 	return e.cost(s, tag)
 }
 
+func (e *engine) pathQuality(tag string) int {
+	if e.path(tag).status == statusDegraded {
+		return 1
+	}
+	return 0
+}
+
+func (e *engine) preferred(s *selector, candidate, current string) bool {
+	if e.expired[candidate] != e.expired[current] {
+		return !e.expired[candidate]
+	}
+	if cq, pq := e.pathQuality(candidate), e.pathQuality(current); cq != pq {
+		return cq < pq
+	}
+	return e.cost(s, candidate) < e.cost(s, current)
+}
+
+func (e *engine) worthProbingForReturn(s *selector, candidate, current string) bool {
+	if e.pathQuality(current) > 0 && !e.expired[candidate] {
+		return true
+	}
+	return e.preferred(s, candidate, current) || e.rankCost(s, candidate) < e.rankCost(s, current)
+}
+
 // leaving tells whether the balancers move off an outbound that may still
 // work: it left its provider set or its lease ended.
 func (e *engine) leaving(tag string) bool {
@@ -321,6 +335,9 @@ func (e *engine) onFailure(tag string, kind failureKind, target string, conn uin
 	if !v.suspect {
 		return
 	}
+	if p.status == statusDegraded && !v.strong {
+		return
+	}
 	// Strong evidence does not wait for the cooldown that false alarms of
 	// weak evidence earned.
 	if !v.strong && now.Before(p.cooldownUntil) {
@@ -358,7 +375,7 @@ func (e *engine) onSuccess(tag string, now time.Time) {
 	}
 	e.groupSuccess(tag, now)
 	p.success(now)
-	if p.status != statusUp {
+	if p.status != statusUp && p.status != statusDegraded {
 		p.quarantineLevel = 0
 		p.provisional = false
 		if p.setStatus(statusUp, "traffic", now) {
@@ -521,6 +538,28 @@ func (e *engine) markUp(p *path, reason string, now time.Time) {
 	e.remember(p.tag)
 }
 
+func (e *engine) markDegraded(p *path, r probeResult, now time.Time) {
+	p.success(now)
+	p.falseAlarms = 0
+	p.cooldownUntil = time.Time{}
+	p.quarantineLevel = 0
+	p.quarantineUntil = time.Time{}
+	p.provisional = false
+	previousReason := p.reason
+	if p.setStatus(statusDegraded, r.degradedReason(), now) || p.reason != previousReason {
+		e.emitPath(p, now)
+	}
+	e.remember(p.tag)
+}
+
+func (e *engine) markProbeState(p *path, r probeResult, now time.Time) {
+	if r.pathState() == statusDegraded {
+		e.markDegraded(p, r, now)
+	} else {
+		e.markUp(p, "probe", now)
+	}
+}
+
 // ---- selection --------------------------------------------------------------
 
 type selector struct {
@@ -659,9 +698,8 @@ func (e *engine) addSelector(tag string, cfg *selectorSettings) *selector {
 	return s
 }
 
-// ranked returns usable candidates from cheapest to most expensive, the ones
-// whose lease ended last. Within one cost, outbounds known to work go first,
-// then candidate order.
+// ranked puts live leases first, then paths that are not degraded, cost and
+// candidate order. A path that has not been probed may still be up.
 func (e *engine) ranked(s *selector, now time.Time, skip func(string) bool) []string {
 	if len(s.groups) > 0 {
 		return e.rankedGroups(s, now, skip)
@@ -670,7 +708,7 @@ func (e *engine) ranked(s *selector, now time.Time, skip func(string) bool) []st
 		tag     string
 		expired bool
 		cost    float64
-		known   int
+		quality int
 		order   int
 	}
 	var items []item
@@ -682,11 +720,14 @@ func (e *engine) ranked(s *selector, now time.Time, skip func(string) bool) []st
 		if !p.usable(now) {
 			continue
 		}
-		items = append(items, item{c, e.expired[c], e.cost(s, c), 0, i})
+		items = append(items, item{c, e.expired[c], e.cost(s, c), e.pathQuality(c), i})
 	}
 	sort.SliceStable(items, func(i, j int) bool {
 		if items[i].expired != items[j].expired {
 			return !items[i].expired
+		}
+		if items[i].quality != items[j].quality {
+			return items[i].quality < items[j].quality
 		}
 		if items[i].cost != items[j].cost {
 			return items[i].cost < items[j].cost
@@ -876,7 +917,12 @@ func (e *engine) failover(s *selector, now time.Time) {
 	}
 	if !s.cfg.switchAfterProbe {
 		next := e.ranked(s, now, func(t string) bool { return s.failoverTried[t] })
-		if len(next) == 0 {
+		if len(next) == 0 || (e.path(s.current()).status == statusDegraded && !e.preferred(s, next[0], s.current())) {
+			if e.path(s.current()).status == statusDegraded {
+				s.failoverTried = nil
+				e.scheduleReturnToCheaper(s, now, false)
+				return
+			}
 			e.exhaust(s, now)
 			return
 		}
@@ -925,16 +971,22 @@ func (e *engine) leaveOutbound(s *selector, now time.Time) {
 	}
 }
 
-// probeCandidates moves the balancer to the cheapest candidate that passed
-// its probe, once no cheaper candidate is open: being probed or not tried
-// yet. Until then it probes the cheapest open candidates, up to concurrent
-// at a time, so that dead candidates do not cost a probe timeout each in
-// turn. Candidates in avoid are not taken. It reports false when no
-// candidate is left.
+// probeCandidates moves the balancer to the best candidate that passed its
+// probe, once no better candidate is open: being probed or not tried yet.
+// It probes open candidates up to concurrent at a time. Candidates in avoid
+// are not taken. It reports false when no candidate is left.
 func (e *engine) probeCandidates(s *selector, now time.Time, avoid map[string]bool) bool {
 	cur := s.current()
-	ranked := e.ranked(s, now, func(t string) bool { return t == cur || avoid[t] })
+	searchBetter := e.path(cur).status == statusDegraded && !e.leaving(cur)
+	ranked := e.ranked(s, now, func(t string) bool { return (t == cur && !searchBetter) || avoid[t] })
 	if tag := e.failoverChoice(s, ranked); tag != "" {
+		if tag == cur {
+			s.failoverTried = nil
+			s.failoverProbing = nil
+			e.dropUnclaimedFailover()
+			e.scheduleReturnToCheaper(s, now, false)
+			return true
+		}
 		// A balancer leaving an outbound that left its set tells so, as it
 		// did before leases; one leaving an expired outbound tells so while
 		// the outbound works, since a failure of it is found as usual.
@@ -968,7 +1020,7 @@ func (e *engine) probeCandidates(s *selector, now time.Time, avoid map[string]bo
 		switch {
 		case s.failoverProbing[t]:
 		case s.failoverTried[t]:
-			if e.path(t).status == statusUp {
+			if e.path(t).status == statusUp || e.path(t).status == statusDegraded {
 				// It passed and waits for cheaper ones; nothing after it is better.
 				return true
 			}
@@ -993,21 +1045,18 @@ func (e *engine) probeCandidates(s *selector, now time.Time, avoid map[string]bo
 	return len(s.failoverProbing) > 0
 }
 
-// failoverChoice returns the cheapest candidate that passed its probe in the
-// failover under way, unless a cheaper candidate is still open.
+// failoverChoice returns the best candidate that passed its probe in the
+// failover under way, unless a better candidate is still open.
 func (e *engine) failoverChoice(s *selector, ranked []string) string {
-	open := math.Inf(1)
 	var openTag string
 	for _, t := range ranked {
-		c := e.rankCost(s, t)
 		switch {
 		case s.failoverProbing[t] || !s.failoverTried[t]:
-			open = math.Min(open, c)
 			if openTag == "" {
 				openTag = t
 			}
-		case e.path(t).status == statusUp:
-			if open < c || (openTag != "" && (s.groupFor(openTag) != nil || s.groupFor(t) != nil)) {
+		case e.path(t).status == statusUp || e.path(t).status == statusDegraded:
+			if openTag != "" {
 				return ""
 			}
 			return t
@@ -1068,12 +1117,11 @@ func (e *engine) scheduleReturnToCheaper(s *selector, now time.Time, soon bool) 
 	s.returnToCheaperAt = maxTime(now.Add(wait), s.activeSince.Add(s.cfg.minHoldTime))
 }
 
-// hasCheaper tells whether a return is worth waiting for. There is none to
-// an outbound whose lease ended, and from one any live outbound is a return.
+// hasCheaper tells whether a return probe is worth waiting for. A cheaper
+// degraded path may recover, and any live path may improve on a degraded one.
 func (e *engine) hasCheaper(s *selector, cur string) bool {
-	c := e.rankCost(s, cur)
 	for _, t := range s.candidates {
-		if e.rankCost(s, t) < c && !s.cfg.isLazy(t) {
+		if t != cur && e.worthProbingForReturn(s, t, cur) && !s.cfg.isLazy(t) {
 			return true
 		}
 	}
@@ -1082,7 +1130,6 @@ func (e *engine) hasCheaper(s *selector, cur string) bool {
 
 func (e *engine) returnToCheaperTargetFor(s *selector, now time.Time) string {
 	cur := s.current()
-	c := e.rankCost(s, cur)
 	skip := func(t string) bool { return t == cur || s.cfg.isLazy(t) }
 	var ranked []string
 	if len(s.groups) > 0 {
@@ -1091,7 +1138,7 @@ func (e *engine) returnToCheaperTargetFor(s *selector, now time.Time) string {
 		ranked = e.ranked(s, now, skip)
 	}
 	for _, t := range ranked {
-		if e.rankCost(s, t) < c {
+		if e.worthProbingForReturn(s, t, cur) {
 			return t
 		}
 	}
@@ -1104,7 +1151,7 @@ func (e *engine) returnToCheaperTargetFor(s *selector, now time.Time) string {
 // Probes made in a previous network do not count: their results are dropped.
 func (e *engine) queued(tag string, reason probeReason) bool {
 	same := func(j *probeJob) bool {
-		return j.tag == tag && j.reason == reason && (reason == reasonConnectivity || j.generation == e.generation)
+		return !j.invalidated && j.tag == tag && j.reason == reason && (reason == reasonConnectivity || j.generation == e.generation)
 	}
 	for _, j := range e.queue {
 		if same(j) {
@@ -1127,6 +1174,43 @@ func (e *engine) dropQueued(tag string, reason probeReason) {
 		}
 	}
 	e.queue = kept
+}
+
+func (e *engine) invalidateProbeJobs(tag string, now time.Time) {
+	var old []*probeJob
+	e.queue = slices.DeleteFunc(e.queue, func(j *probeJob) bool {
+		if j.tag != tag {
+			return false
+		}
+		old = append(old, j)
+		return true
+	})
+	for _, j := range e.running {
+		if j.tag == tag && !j.invalidated {
+			j.invalidated = true
+			old = append(old, j)
+		}
+	}
+	p := e.paths[tag]
+	if p != nil {
+		p.probing = false
+	}
+	for _, s := range e.selectors {
+		if s.returnToCheaperTarget == tag {
+			s.returnToCheaperSuccesses = 0
+		}
+	}
+	for _, previous := range old {
+		if previous.reason == reasonConfirm && (p == nil || p.status != statusSuspect) {
+			continue
+		}
+		if previous.reason == reasonHost && !e.waitedFor(tag) {
+			continue
+		}
+		if j := e.enqueue(tag, previous.reason, previous.selector, now); j != nil {
+			j.request = previous.request
+		}
+	}
 }
 
 // enqueue returns the new job, or nil when one is already waiting or running.
@@ -1283,6 +1367,9 @@ func (e *engine) tick(now time.Time) ([]*probeJob, time.Time) {
 	sort.SliceStable(e.queue, func(i, j int) bool { return e.queue[i].reason < e.queue[j].reason })
 	kept := e.queue[:0]
 	for _, j := range e.queue {
+		if j.invalidated {
+			continue
+		}
 		if j.reason == reasonGroup && !e.groupProbeClaimed(j) {
 			continue
 		}
@@ -1461,10 +1548,9 @@ func (e *engine) maybeReturnToCheaper(s *selector, now time.Time) time.Time {
 	if target == "" {
 		// Cheaper outbounds rest in quarantine; look again when the first rest ends.
 		var wake time.Time
-		cur := e.rankCost(s, s.current())
 		for _, c := range s.candidates {
 			p := e.path(c)
-			if e.rankCost(s, c) < cur && !s.cfg.isLazy(c) && p.quarantined(now) {
+			if e.worthProbingForReturn(s, c, s.current()) && !s.cfg.isLazy(c) && p.quarantined(now) {
 				if wake.IsZero() || p.quarantineUntil.Before(wake) {
 					wake = p.quarantineUntil
 				}
@@ -1505,13 +1591,19 @@ func (e *engine) maybeReturnToCheaper(s *selector, now time.Time) time.Time {
 
 func (e *engine) onProbeResult(j *probeJob, r probeResult, now time.Time) {
 	delete(e.running, j.id)
+	if j.forgotten {
+		return
+	}
 	rescue := e.takeRescue(j)
-	if j.reason != reasonConnectivity {
+	if r.state != statusUnknown {
+		r.ok = r.state != statusDown
+	}
+	if j.reason != reasonConnectivity && !j.invalidated {
 		// The probe may have woken a sleeping tunnel; it sleeps from here.
 		e.used(j.tag, now)
 	}
 	if r.canceled {
-		if p := e.paths[j.tag]; p != nil {
+		if p := e.paths[j.tag]; p != nil && !j.invalidated && j.generation == e.generation {
 			p.probing = false
 		}
 		return
@@ -1521,23 +1613,33 @@ func (e *engine) onProbeResult(j *probeJob, r probeResult, now time.Time) {
 		return
 	}
 	p := e.path(j.tag)
-	p.probing = false
-	p.lastProbeEnd = now
+	stale := j.invalidated || j.generation != e.generation
 	p.stats.probes++
 	p.stats.probeBytes += r.bytes
 	if !r.ok {
 		p.stats.probesFailed++
-		p.lastError = r.err
-		p.lastClass = cmp.Or(r.class, "other")
-	} else {
-		p.lastRTT = r.rtt
-		p.lastError = ""
-		p.lastClass = ""
 	}
-	stale := j.generation != e.generation
+	if !stale {
+		p.probing = false
+		p.lastProbeEnd = now
+		p.lastProbeResult = r.snapshot()
+		if !r.ok {
+			p.lastError = r.err
+			p.lastClass = cmp.Or(r.class, "other")
+		} else {
+			p.lastRTT = r.rtt
+			p.lastError = ""
+			p.lastClass = ""
+		}
+	}
+	eventError := ""
+	if !r.ok {
+		eventError = cmp.Or(r.class, "other")
+	}
 	f := map[string]any{
 		"outbound": j.tag, "reason": j.reason.String(), "balancer": j.selector, "is_ok": r.ok,
-		"rtt_ms": r.rtt.Milliseconds(), "bytes": r.bytes, "error": r.err, "is_stale": stale,
+		"rtt_ms": r.rtt.Milliseconds(), "bytes": r.bytes, "error": eventError, "is_stale": stale,
+		"profile": r.profile, "state": r.pathState().String(), "steps": r.eventSteps(),
 	}
 	if j.request != 0 {
 		f["request"] = j.request
@@ -1564,6 +1666,20 @@ func (e *engine) onProbeResult(j *probeJob, r probeResult, now time.Time) {
 			// A pass is newer proof than that evidence: the down was false.
 			if r.ok && rescue != nil && p.status == statusDown {
 				e.rescue(p, rescue, now)
+				e.markProbeState(p, r, now)
+			}
+			return
+		}
+		if r.pathState() == statusDegraded {
+			e.markDegraded(p, r, now)
+			for _, s := range e.sortedSelectors() {
+				if s.current() == p.tag && s.pinned == "" {
+					if e.leaving(p.tag) {
+						e.leaveOutbound(s, now)
+					} else {
+						e.failover(s, now)
+					}
+				}
 			}
 			return
 		}
@@ -1575,13 +1691,24 @@ func (e *engine) onProbeResult(j *probeJob, r probeResult, now time.Time) {
 		e.markDown(p, "probe", now)
 	case reasonNetwork:
 		if r.ok {
-			e.markUp(p, "probe", now)
+			e.markProbeState(p, r, now)
+			if r.pathState() == statusDegraded {
+				for _, s := range e.sortedSelectors() {
+					if s.current() == p.tag && s.pinned == "" {
+						if e.leaving(p.tag) {
+							e.leaveOutbound(s, now)
+						} else {
+							e.failover(s, now)
+						}
+					}
+				}
+			}
 			return
 		}
 		e.markDown(p, "probe", now)
 	case reasonFailover:
 		if r.ok {
-			e.markUp(p, "probe", now)
+			e.markProbeState(p, r, now)
 		} else {
 			e.markDown(p, "probe", now)
 		}
@@ -1596,6 +1723,8 @@ func (e *engine) onProbeResult(j *probeJob, r probeResult, now time.Time) {
 				e.failover(s, now)
 			case e.leaving(cur):
 				e.leaveOutbound(s, now)
+			case e.path(cur).status == statusDegraded && s.pinned == "":
+				e.probeCandidates(s, now, nil)
 			case s.pinned == "":
 				// The outbound came back since the decision, as after a
 				// rescue; a candidate that passed still moves the balancer,
@@ -1614,7 +1743,7 @@ func (e *engine) onProbeResult(j *probeJob, r probeResult, now time.Time) {
 			e.markDown(p, "probe", now)
 			return
 		}
-		e.markUp(p, "probe", now)
+		e.markProbeState(p, r, now)
 		for _, s := range e.sortedSelectors() {
 			if s.exhausted && s.hasCandidate(j.tag) {
 				e.switchTo(s, j.tag, "recovered", now)
@@ -1625,16 +1754,17 @@ func (e *engine) onProbeResult(j *probeJob, r probeResult, now time.Time) {
 			e.markDown(p, "probe", now)
 			return
 		}
-		e.markUp(p, "probe", now)
+		e.markProbeState(p, r, now)
 		for _, s := range e.sortedSelectors() {
-			if s.pinned == "" && s.current() != j.tag && e.rememberedFor(s) == j.tag && s.hasCandidate(j.tag) {
+			if s.pinned == "" && s.current() != j.tag && e.rememberedFor(s) == j.tag && s.hasCandidate(j.tag) &&
+				(r.pathState() != statusDegraded || e.preferred(s, j.tag, s.current())) {
 				e.switchTo(s, j.tag, "remembered", now)
 			}
 		}
 	case reasonReturnToCheaper:
 		e.onReturnToCheaperResult(j, r, p, now)
 	case reasonHost:
-		e.onHostProbeResult(p, r.ok, now)
+		e.onHostProbeResult(p, r, now)
 	}
 }
 
@@ -1688,20 +1818,27 @@ func (e *engine) onReturnToCheaperResult(j *probeJob, r probeResult, p *path, no
 		e.abandonReturns(j.tag, now)
 		return
 	}
-	p.success(now)
-	if p.status != statusUp {
-		p.setStatus(statusUp, "probe", now)
-		e.emitPath(p, now)
-	}
+	e.markProbeState(p, r, now)
 	next := false
 	for _, s := range waiting {
 		if !s.hasCandidate(j.tag) {
 			s.returnToCheaperTarget = ""
 			continue
 		}
+		if e.pathQuality(j.tag) > e.pathQuality(s.current()) {
+			s.returnToCheaperTarget = ""
+			e.emit(now, "return_failed", map[string]any{"balancer": s.tag, "outbound": j.tag, "successes": s.returnToCheaperSuccesses})
+			e.scheduleReturnToCheaper(s, now, false)
+			continue
+		}
 		s.returnToCheaperSuccesses++
 		if s.returnToCheaperSuccesses >= s.cfg.returnToCheaper.successes {
-			e.switchTo(s, j.tag, "return", now)
+			if e.preferred(s, j.tag, s.current()) {
+				e.switchTo(s, j.tag, "return", now)
+			} else {
+				s.returnToCheaperTarget = ""
+				e.scheduleReturnToCheaper(s, now, false)
+			}
 			continue
 		}
 		next = true
@@ -1930,6 +2067,12 @@ func (e *engine) onNetworkChange(id string, now time.Time) {
 		p.cooldownUntil = time.Time{}
 		p.falseAlarms = 0
 		p.probing = false
+		p.lastProbe = time.Time{}
+		p.lastProbeEnd = time.Time{}
+		p.lastRTT = 0
+		p.lastError = ""
+		p.lastClass = ""
+		p.lastProbeResult = probeResult{}
 		p.setStatus(statusUnknown, "network_change", now)
 	}
 	e.queue = e.queue[:0]
@@ -2172,7 +2315,14 @@ func (e *engine) gc(now time.Time, stale time.Duration) {
 
 // forget drops everything kept about an outbound that is gone.
 func (e *engine) forget(tag string) {
+	for _, j := range e.running {
+		if j.tag == tag {
+			j.invalidated = true
+			j.forgotten = true
+		}
+	}
 	delete(e.paths, tag)
+	e.report.forgetProbeSteps(tag)
 	e.lastServer.Delete(tag)
 	for _, s := range e.selectors {
 		delete(s.penalty, tag)

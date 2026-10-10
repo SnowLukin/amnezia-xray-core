@@ -11,6 +11,7 @@ const (
 	statusUp
 	statusSuspect
 	statusDown
+	statusDegraded
 )
 
 func (s pathStatus) String() string {
@@ -21,6 +22,8 @@ func (s pathStatus) String() string {
 		return "suspect"
 	case statusDown:
 		return "down"
+	case statusDegraded:
+		return "degraded"
 	default:
 		return "unknown"
 	}
@@ -116,7 +119,8 @@ type path struct {
 	lastError    string
 	// The class of lastError, which a provider may see: the error itself may
 	// carry the URL of the probe.
-	lastClass string
+	lastClass       string
+	lastProbeResult probeResult
 
 	serverName string
 	stats      pathStats
@@ -150,6 +154,15 @@ type path struct {
 	idleClosed bool
 }
 
+func (p *path) clearProbeSnapshot() {
+	p.lastProbe = time.Time{}
+	p.lastProbeEnd = time.Time{}
+	p.lastRTT = 0
+	p.lastError = ""
+	p.lastClass = ""
+	p.lastProbeResult = probeResult{}
+}
+
 type pathStats struct {
 	connsOK        int64
 	connsFailed    int64
@@ -161,6 +174,7 @@ type pathStats struct {
 	probesFailed   int64
 	probeBytes     int64
 	activeTime     time.Duration
+	degradedTime   time.Duration
 }
 
 func (p *path) setStatus(s pathStatus, reason string, now time.Time) bool {
@@ -168,6 +182,9 @@ func (p *path) setStatus(s pathStatus, reason string, now time.Time) bool {
 		return false
 	}
 	changed := p.status != s
+	if changed && p.status == statusDegraded && !p.statusSince.IsZero() && now.Round(0).After(p.statusSince.Round(0)) {
+		p.stats.degradedTime += now.Round(0).Sub(p.statusSince.Round(0))
+	}
 	p.status = s
 	p.reason = reason
 	if changed {

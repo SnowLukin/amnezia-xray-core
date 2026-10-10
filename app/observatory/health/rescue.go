@@ -63,7 +63,7 @@ type penaltyMark struct {
 // probes of one server name never do.
 func (e *engine) rescueMarkFor(tag string, level int) *rescueMark {
 	for _, j := range e.running {
-		if j.tag == tag && j.reason == reasonConfirm && j.generation == e.generation {
+		if j.tag == tag && j.reason == reasonConfirm && !j.invalidated && j.generation == e.generation {
 			return &rescueMark{job: j.id, level: level}
 		}
 	}

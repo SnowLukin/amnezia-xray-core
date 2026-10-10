@@ -209,13 +209,33 @@ type probeSettings struct {
 	minBytes        int64
 	timeout         time.Duration
 	progressTimeout time.Duration
+	steps           []probeStepSettings
+}
+
+type probeStepSettings struct {
+	name            string
+	destinations    []string
+	isOptional      bool
+	method          string
+	expectStatus    []int32
+	minBytes        int64
+	timeout         time.Duration
+	progressTimeout time.Duration
 }
 
 func (p *probeSettings) statusOK(code int) bool {
-	if len(p.expectStatus) == 0 {
+	return probeStatusOK(p.expectStatus, code)
+}
+
+func (p *probeStepSettings) statusOK(code int) bool {
+	return probeStatusOK(p.expectStatus, code)
+}
+
+func probeStatusOK(expected []int32, code int) bool {
+	if len(expected) == 0 {
 		return code >= 200 && code < 300
 	}
-	for _, s := range p.expectStatus {
+	for _, s := range expected {
 		if int(s) == code {
 			return true
 		}
@@ -487,7 +507,7 @@ func newSettings(c *Config) *settings {
 		s.passive.partialStallAge = 0
 	}
 	for _, pp := range c.GetProbes() {
-		s.probes = append(s.probes, probeSettings{
+		profile := probeSettings{
 			name:            pp.GetName(),
 			destination:     stringOr(pp.GetDestination(), defaultProbeDestination),
 			method:          strings.ToUpper(stringOr(pp.GetMethod(), "GET")),
@@ -495,7 +515,34 @@ func newSettings(c *Config) *settings {
 			minBytes:        pp.GetMinBytes(),
 			timeout:         min(dur(pp.GetTimeout(), defaultProbeTimeout), maxProbeTimeout),
 			progressTimeout: min(dur(pp.GetProgressTimeout(), defaultProbeProgress), maxProbeTimeout),
-		})
+		}
+		if len(pp.GetSteps()) == 0 {
+			profile.steps = []probeStepSettings{{
+				name: pp.GetName(), destinations: []string{profile.destination},
+				method: profile.method, expectStatus: profile.expectStatus, minBytes: profile.minBytes,
+				timeout: profile.timeout, progressTimeout: profile.progressTimeout,
+			}}
+		} else {
+			for _, step := range pp.GetSteps() {
+				profile.steps = append(profile.steps, probeStepSettings{
+					name: step.GetName(), destinations: step.GetDestinations(), isOptional: step.GetIsOptional(),
+					method: strings.ToUpper(stringOr(step.GetMethod(), "GET")), expectStatus: step.GetExpectedStatuses(),
+					minBytes: step.GetMinBytes(), timeout: min(dur(step.GetTimeout(), defaultProbeTimeout), maxProbeTimeout),
+					progressTimeout: min(dur(step.GetProgressTimeout(), defaultProbeProgress), maxProbeTimeout),
+				})
+			}
+			first := profile.steps[0]
+			profile.destination = defaultProbeDestination
+			if len(first.destinations) > 0 {
+				profile.destination = first.destinations[0]
+			}
+			profile.method = first.method
+			profile.expectStatus = first.expectStatus
+			profile.minBytes = first.minBytes
+			profile.timeout = first.timeout
+			profile.progressTimeout = first.progressTimeout
+		}
+		s.probes = append(s.probes, profile)
 	}
 	if cc := c.GetConnectivity(); cc != nil && cc.GetOutbound() != "" && cc.GetDestination() != "" {
 		s.connectivity = &connectivitySettings{
@@ -571,6 +618,10 @@ func (s *settings) probeFor(tag string) *probeSettings {
 		expectStatus:    defaultExpectStatus,
 		timeout:         defaultProbeTimeout,
 		progressTimeout: defaultProbeProgress,
+		steps: []probeStepSettings{{
+			name: "default", destinations: []string{defaultProbeDestination}, method: "GET",
+			expectStatus: defaultExpectStatus, timeout: defaultProbeTimeout, progressTimeout: defaultProbeProgress,
+		}},
 	}
 }
 

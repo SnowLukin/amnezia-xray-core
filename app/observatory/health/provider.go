@@ -640,6 +640,12 @@ type providerChange struct {
 // outbounds.
 func (e *engine) applyProviderSet(p *provider, c providerChange, now time.Time) {
 	clear(e.replacing)
+	oldProfiles := map[string]string{}
+	for _, tag := range c.tags {
+		if profile, ok := e.s.paths.Load(tag); ok {
+			oldProfiles[tag] = profile.(string)
+		}
+	}
 	if s := e.selectors[p.cfg.balancer]; s != nil {
 		newTags := map[string]bool{}
 		for _, tag := range c.tags {
@@ -668,11 +674,13 @@ func (e *engine) applyProviderSet(p *provider, c providerChange, now time.Time) 
 	for _, g := range c.groups {
 		groups[g.Name] = g
 	}
+	newProfiles := map[string]string{}
 	for _, path := range c.paths {
 		probe := path.Probe
 		if g := groups[path.Group]; g != nil {
 			probe = g.Probe
 		}
+		newProfiles[path.Tag] = probe
 		e.s.paths.Store(path.Tag, probe)
 	}
 	p.pathDefs, p.groupDefs = c.paths, c.groups
@@ -684,6 +692,15 @@ func (e *engine) applyProviderSet(p *provider, c providerChange, now time.Time) 
 	}
 	for _, tag := range c.reset {
 		e.resetPath(tag, now)
+	}
+	reset := make(map[string]bool, len(c.reset))
+	for _, tag := range c.reset {
+		reset[tag] = true
+	}
+	for tag, current := range newProfiles {
+		if old, ok := oldProfiles[tag]; ok && old != current && !reset[tag] {
+			e.resetProbeProfile(tag, now)
+		}
 	}
 	p.expect = ""
 	if len(c.added) > 0 {
@@ -718,10 +735,18 @@ func (e *engine) resetPath(tag string, now time.Time) {
 			}
 		}
 	}
+	for _, remembered := range e.networks {
+		for balancer, choice := range remembered {
+			if choice == tag {
+				delete(remembered, balancer)
+			}
+		}
+	}
 	// The new settings may point to another server.
 	e.lastServer.Delete(tag)
 	p := e.paths[tag]
 	if p == nil {
+		e.invalidateProbeJobs(tag, now)
 		return
 	}
 	p.failures = p.failures[:0]
@@ -730,6 +755,11 @@ func (e *engine) resetPath(tag string, now time.Time) {
 	p.provisional = false
 	p.cooldownUntil = time.Time{}
 	p.falseAlarms = 0
+	p.lastSuccess = time.Time{}
+	p.lastAnsweredStart = 0
+	p.rescue = nil
+	delete(e.pendingSuspicion, tag)
+	p.clearProbeSnapshot()
 	p.serverName = ""
 	// The new handler holds nothing until it is used, and its proxy may
 	// sleep where the old one could not. The old handler drains apart.
@@ -740,6 +770,65 @@ func (e *engine) resetPath(tag string, now time.Time) {
 	if p.setStatus(statusUnknown, "replaced", now) {
 		e.emitPath(p, now)
 	}
+	e.invalidateProbeJobs(tag, now)
+}
+
+func (e *engine) resetProbeProfile(tag string, now time.Time) {
+	p := e.paths[tag]
+	if p == nil {
+		e.invalidateProbeJobs(tag, now)
+		return
+	}
+	trafficProof := p.status == statusUp && p.reason == "traffic" ||
+		!p.lastProbeEnd.IsZero() && p.lastSuccess.After(p.lastProbeEnd)
+	trafficProven := p.status == statusUp && trafficProof
+	probeDown := p.status == statusDown && p.reason != "traffic"
+	forgetState := p.status == statusDegraded || probeDown || p.status == statusUp && !trafficProven
+	if forgetState {
+		for _, s := range e.sortedSelectors() {
+			if probeDown {
+				delete(s.penalty, tag)
+				if s.returnedTo == tag {
+					s.returnedTo = ""
+				}
+			}
+			if g := s.groupFor(tag); g != nil {
+				if g.lastWorking == tag {
+					g.lastWorking = ""
+				}
+				if probeDown && g.lastFailed == tag {
+					wasDown := g.down
+					g.failed, g.level = 0, 0
+					g.down, g.provisional = false, false
+					g.until = time.Time{}
+					g.lastFailed, g.lastFailure = "", ""
+					if wasDown {
+						e.emitGroup(s, g, now)
+					}
+				}
+			}
+		}
+		if probeDown {
+			e.downs = slices.DeleteFunc(e.downs, func(d downMark) bool { return d.tag == tag })
+			e.silences = slices.DeleteFunc(e.silences, func(c silenceCheck) bool { return c.mark.tag == tag })
+		}
+		p.quarantineLevel = 0
+		p.quarantineUntil = time.Time{}
+		p.provisional = false
+		if p.setStatus(statusUnknown, "probe_changed", now) {
+			e.emitPath(p, now)
+		}
+	} else if trafficProven {
+		p.setStatus(statusUp, "traffic", now)
+	}
+	if !trafficProof && p.status != statusSuspect && p.status != statusDown {
+		p.lastSuccess = time.Time{}
+	}
+	p.cooldownUntil = time.Time{}
+	p.falseAlarms = 0
+	p.rescue = nil
+	p.clearProbeSnapshot()
+	e.invalidateProbeJobs(tag, now)
 }
 
 // dropProviderOutbound forgets an outbound removed after its drain. The

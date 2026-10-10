@@ -50,8 +50,27 @@ type HealthPassiveConfig struct {
 }
 
 type HealthProbeConfig struct {
+	Name             string                  `json:"name"`
+	Destination      string                  `json:"destination"`
+	Steps            []HealthProbeStepConfig `json:"steps"`
+	Method           string                  `json:"method"`
+	ExpectedStatuses []int32                 `json:"expectedStatuses"`
+	MinBytes         int64                   `json:"minBytes"`
+	Timeout          *duration.Duration      `json:"timeout"`
+	ProgressTimeout  *duration.Duration      `json:"progressTimeout"`
+	hasDestination   bool
+	hasSteps         bool
+	hasMethod        bool
+	hasStatuses      bool
+	hasMinBytes      bool
+	hasTimeout       bool
+	hasProgress      bool
+}
+
+type HealthProbeStepConfig struct {
 	Name             string             `json:"name"`
-	Destination      string             `json:"destination"`
+	Destinations     []string           `json:"destinations"`
+	IsOptional       bool               `json:"isOptional"`
 	Method           string             `json:"method"`
 	ExpectedStatuses []int32            `json:"expectedStatuses"`
 	MinBytes         int64              `json:"minBytes"`
@@ -68,7 +87,28 @@ func (p *HealthProbeConfig) UnmarshalJSON(raw []byte) error {
 		return errors.New("healthObservatory: probes[].selector is not supported")
 	}
 	type plain HealthProbeConfig
-	return json.Unmarshal(raw, (*plain)(p))
+	if err := json.Unmarshal(raw, (*plain)(p)); err != nil {
+		return err
+	}
+	for key := range fields {
+		switch {
+		case strings.EqualFold(key, "destination"):
+			p.hasDestination = true
+		case strings.EqualFold(key, "steps"):
+			p.hasSteps = true
+		case strings.EqualFold(key, "method"):
+			p.hasMethod = true
+		case strings.EqualFold(key, "expectedStatuses"):
+			p.hasStatuses = true
+		case strings.EqualFold(key, "minBytes"):
+			p.hasMinBytes = true
+		case strings.EqualFold(key, "timeout"):
+			p.hasTimeout = true
+		case strings.EqualFold(key, "progressTimeout"):
+			p.hasProgress = true
+		}
+	}
+	return nil
 }
 
 type HealthConnectivityConfig struct {
@@ -471,6 +511,10 @@ func (c *HealthObservatoryConfig) Build() (proto.Message, error) {
 		if p == nil {
 			return nil, errors.New("healthObservatory: probes[].name must be nonempty and unique")
 		}
+		hasSteps := p.hasSteps || p.Steps != nil
+		if hasSteps && (p.hasDestination || p.Destination != "") {
+			return nil, errors.New("healthObservatory: probes[].steps and destination cannot be used together")
+		}
 		for _, field := range []struct {
 			name  string
 			value *duration.Duration
@@ -479,21 +523,38 @@ func (c *HealthObservatoryConfig) Build() (proto.Message, error) {
 				return nil, err
 			}
 		}
-		if err := checkProbeURL("probe destination", p.Destination); err != nil {
-			return nil, err
-		}
 		if p.Name == "" || probeNames[p.Name] {
 			return nil, errors.New("healthObservatory: probes[].name must be nonempty and unique: ", p.Name)
 		}
 		probeNames[p.Name] = true
-		switch strings.ToUpper(p.Method) {
-		case "", "GET":
-		case "HEAD":
-			if p.MinBytes > 0 {
-				return nil, errors.New("healthObservatory: a HEAD probe has no body for minBytes")
+		if hasSteps {
+			for _, field := range []struct {
+				name    string
+				present bool
+			}{
+				{"method", p.hasMethod || p.Method != ""},
+				{"expectedStatuses", p.hasStatuses || len(p.ExpectedStatuses) > 0},
+				{"minBytes", p.hasMinBytes || p.MinBytes != 0},
+				{"timeout", p.hasTimeout || p.Timeout != nil},
+				{"progressTimeout", p.hasProgress || p.ProgressTimeout != nil},
+			} {
+				if field.present {
+					return nil, errors.New("healthObservatory: probes[].", field.name, " belongs to steps[] when steps is present")
+				}
 			}
-		default:
-			return nil, errors.New("healthObservatory: probe method must be GET or HEAD")
+		} else {
+			if err := checkProbeURL("probe destination", p.Destination); err != nil {
+				return nil, err
+			}
+			switch strings.ToUpper(p.Method) {
+			case "", "GET":
+			case "HEAD":
+				if p.MinBytes > 0 {
+					return nil, errors.New("healthObservatory: a HEAD probe has no body for minBytes")
+				}
+			default:
+				return nil, errors.New("healthObservatory: probe method must be GET or HEAD")
+			}
 		}
 		out.Probes = append(out.Probes, &health.ProbeProfile{
 			Name:             p.Name,
@@ -504,6 +565,28 @@ func (c *HealthObservatoryConfig) Build() (proto.Message, error) {
 			Timeout:          optionalDuration(p.Timeout),
 			ProgressTimeout:  optionalDuration(p.ProgressTimeout),
 		})
+		profile := out.Probes[len(out.Probes)-1]
+		if hasSteps {
+			profile.Steps = make([]*health.ProbeStep, 0, len(p.Steps))
+		}
+		for _, step := range p.Steps {
+			for _, field := range []struct {
+				name  string
+				value *duration.Duration
+			}{{"probes[].steps[].timeout", step.Timeout}, {"probes[].steps[].progressTimeout", step.ProgressTimeout}} {
+				if err := requirePositiveDuration("healthObservatory: "+field.name, field.value); err != nil {
+					return nil, err
+				}
+			}
+			profile.Steps = append(profile.Steps, &health.ProbeStep{
+				Name: step.Name, Destinations: step.Destinations, IsOptional: step.IsOptional,
+				Method: step.Method, ExpectedStatuses: step.ExpectedStatuses, MinBytes: step.MinBytes,
+				Timeout: optionalDuration(step.Timeout), ProgressTimeout: optionalDuration(step.ProgressTimeout),
+			})
+		}
+	}
+	if err := out.ValidateProbeSteps(); err != nil {
+		return nil, err
 	}
 	if cc := c.Connectivity; cc != nil {
 		if err := requirePositiveDuration("healthObservatory: connectivity.timeout", cc.Timeout); err != nil {

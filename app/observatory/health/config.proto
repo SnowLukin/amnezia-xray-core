@@ -81,6 +81,19 @@ message ProbeProfile {
   int64 timeout = 6;
   // The probe fails when no byte arrives for this long.
   int64 progress_timeout = 7;
+  repeated ProbeStep steps = 8;
+}
+
+message ProbeStep {
+  string name = 1;
+  repeated string destinations = 2;
+  bool is_optional = 3;
+  string method = 4;
+  // Accepted status codes. Empty accepts 200-299.
+  repeated int32 expected_statuses = 5;
+  int64 min_bytes = 6;
+  int64 timeout = 7;
+  int64 progress_timeout = 8;
 }
 
 // ConnectivityConfig tells a dead outbound from a dead network.

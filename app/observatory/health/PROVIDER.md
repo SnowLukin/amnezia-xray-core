@@ -109,10 +109,15 @@ well.
   "outbounds": [
     { "tag": "x1", "state": "down", "reason": "traffic", "stateMs": 81000, "seenMs": 3600000,
       "quarantineLevel": 2, "quarantineMs": 81000, "failures": { "dial_timeout": 4 },
-      "probe": { "isPassed": false, "error": "timeout", "agoMs": 30000 },
+      "probe": { "profile": "full", "state": "down", "steps": [
+        { "name": "transport", "isPassed": false, "connectMs": 800, "ms": 1800, "bytes": 0, "error": "timeout" }
+      ], "isPassed": false, "error": "timeout", "agoMs": 30000 },
       "connsOk": 12, "connsFailed": 4, "bytesUp": 90112, "bytesDown": 1048576,
       "activeMs": 600000, "ttfbP50Ms": 300, "expiresInMs": 61200000 },
-    { "tag": "x2", "state": "up", "probe": { "isPassed": true, "rttMs": 180, "agoMs": 840000 },
+    { "tag": "x2", "state": "degraded", "probe": { "profile": "full", "state": "degraded", "steps": [
+        { "name": "transport", "isPassed": true, "connectMs": 80, "ms": 180, "bytes": 32768, "destination": 0 },
+        { "name": "egress", "isPassed": false, "connectMs": 70, "ms": 120, "bytes": 0, "error": "closed" }
+      ], "isPassed": true, "rttMs": 180, "agoMs": 840000 },
       "connsOk": 412, "bytesDown": 52428800, "activeMs": 840000, "expiresInMs": 61200000 },
     { "tag": "x3", "state": "unknown", "expiresInMs": -5000 }
   ]
@@ -144,12 +149,12 @@ Per outbound:
 | Field | Meaning |
 | --- | --- |
 | `tag` | Always. |
-| `state` | Always. `up`, `suspect`, `down`, or `unknown` for an outbound the core knows nothing about yet. |
+| `state` | Always. `up`, `degraded`, `suspect`, `down`, or `unknown` for an outbound the core knows nothing about yet. `degraded` means required probe steps passed but an optional step failed; an `up` candidate is preferred before cost is considered. |
 | `reason`, `stateMs` | What set the state (`traffic`, `probe`, `return_probe`, `host_probe`, `network_change`, `network_down`, `network_up`, `replaced`, `rescued` for an outbound whose down a probe that was already running proved false, or `chosen` for an outbound a balancer chose again after its rest, judged afresh) and how long ago. |
 | `seenMs` | How long the core has kept the counters of the outbound. |
 | `quarantineLevel`, `quarantineMs` | While the outbound rests after a failure: the level of its rest, which grows with every failure in a row, and how much longer it lasts. |
 | `failures` | Failures of user connections by kind over the life of the outbound: `dial_failed`, `dial_timeout`, `server_unverified` (REALITY did not verify the server), `no_response`, `closed`, `stall`, `partial_stall`. |
-| `probe` | The last probe that finished: `isPassed`, always; `rttMs` when it passed; `error` as a class when it failed: `timeout`, `no_progress`, `status_<N>`, `short_body`, `reset`, `refused`, `eof`, `tls` or `other`; `agoMs`, always, since its result. |
+| `probe` | The last probe that finished in the current network: `profile`, `state`, and attempted `steps` with `name`, `isPassed`, `connectMs` (connection establishment), `ms` (whole step), `bytes`, a `destination` index on success (including zero), or an `error` class on failure. The compatibility fields remain: `isPassed` means state other than `down`, `rttMs` when it passed, `error` as a class when it failed, and `agoMs` since its result. Failure classes include `dial_failed`, `dial_timeout`, `server_unverified`, `closed`, `timeout`, `no_progress`, `status_<N>` and `short_body`; addresses and error text are never sent. A network change clears this snapshot. |
 | `connsOk`, `connsFailed`, `bytesUp`, `bytesDown` | User connections and their bytes. |
 | `activeMs` | How long a balancer has chosen the outbound, the current stretch included. |
 | `ttfbP50Ms` | The median time to the first byte. |

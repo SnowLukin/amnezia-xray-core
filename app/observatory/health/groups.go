@@ -95,8 +95,8 @@ func (g *outboundGroup) start(s *selector) int {
 	return g.position
 }
 
-// Prices always take precedence, including prices changed by a provider.
-// At the same price a group stays together and follows its tag ring.
+// Live leases and path quality precede price, including prices changed by a
+// provider. At the same quality and price a group follows its tag ring.
 func (e *engine) rankedGroups(s *selector, now time.Time, skip func(string) bool) []string {
 	return e.groupOrder(s, now, skip, reasonFailover)
 }
@@ -106,6 +106,7 @@ func (e *engine) groupOrder(s *selector, now time.Time, skip func(string) bool, 
 		tag, key               string
 		cost                   float64
 		expired                bool
+		quality                int
 		pathOrder, memberOrder int
 	}
 	first := map[string]int{}
@@ -119,7 +120,7 @@ func (e *engine) groupOrder(s *selector, now time.Time, skip func(string) bool, 
 		if !p.usable(now) || (g != nil && g.down && reason != reasonRecheck && reason != reasonHost) {
 			continue
 		}
-		it := item{tag: t, key: t, cost: e.cost(s, t), expired: e.expired[t], pathOrder: i}
+		it := item{tag: t, key: t, cost: e.cost(s, t), expired: e.expired[t], quality: e.pathQuality(t), pathOrder: i}
 		if g != nil {
 			it.key = g.name
 			if _, ok := first[g.name]; !ok {
@@ -144,6 +145,9 @@ func (e *engine) groupOrder(s *selector, now time.Time, skip func(string) bool, 
 		a, b := items[i], items[j]
 		if a.expired != b.expired {
 			return !a.expired
+		}
+		if a.quality != b.quality {
+			return a.quality < b.quality
 		}
 		if a.cost != b.cost {
 			return a.cost < b.cost
@@ -310,7 +314,7 @@ func (e *engine) onGroupProbeResult(j *probeJob, r probeResult, p *path, now tim
 		}
 		return
 	}
-	e.markUp(p, "probe", now)
+	e.markProbeState(p, r, now)
 	for _, s := range e.sortedSelectors() {
 		if !s.hasCandidate(j.tag) || s.pinned != "" {
 			continue
