@@ -341,8 +341,8 @@ func (o *Observer) Observes(tag string) bool {
 
 // StartDial implements outbound.ConnectionObserver.
 func (o *Observer) StartDial(ctx context.Context, tag string, server net.Destination, abort func()) outbound.DialTracker {
-	if bytes := probeBytesFrom(ctx); bytes != nil {
-		return &probeTracker{bytes: bytes}
+	if state := probeStateFrom(ctx); state != nil {
+		return &probeTracker{state: state}
 	}
 	if !o.s.observes(tag) {
 		if o.s.witness(tag) {

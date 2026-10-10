@@ -41,6 +41,29 @@ func (m *ClientManager) Dispatch(ctx context.Context, link *transport.Link) erro
 	return errors.New("unable to find an available mux client").AtWarning()
 }
 
+func (m *ClientManager) DispatchIsolated(ctx context.Context, link *transport.Link) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	picker, ok := m.Picker.(interface {
+		PickIsolated(context.Context) (*ClientWorker, error)
+	})
+	if !ok {
+		return errors.New("mux worker picker cannot create an isolated worker")
+	}
+	worker, err := picker.PickIsolated(ctx)
+	if err != nil {
+		return err
+	}
+	stopClose := context.AfterFunc(ctx, func() { _ = worker.Close() })
+	if !worker.Dispatch(ctx, link) {
+		stopClose()
+		_ = worker.Close()
+		return errors.New("isolated mux worker cannot accept the request")
+	}
+	return nil
+}
+
 type WorkerPicker interface {
 	PickAvailable() (*ClientWorker, error)
 }
@@ -125,6 +148,16 @@ func (p *IncrementalWorkerPicker) PickAvailable() (*ClientWorker, error) {
 	return worker, err
 }
 
+func (p *IncrementalWorkerPicker) PickIsolated(ctx context.Context) (*ClientWorker, error) {
+	factory, ok := p.Factory.(interface {
+		CreateWithContext(context.Context) (*ClientWorker, error)
+	})
+	if !ok {
+		return nil, errors.New("mux worker factory cannot create an isolated worker")
+	}
+	return factory.CreateWithContext(ctx)
+}
+
 type ClientWorkerFactory interface {
 	Create() (*ClientWorker, error)
 }
@@ -136,6 +169,14 @@ type DialingWorkerFactory struct {
 }
 
 func (f *DialingWorkerFactory) Create() (*ClientWorker, error) {
+	return f.createWithContext(context.Background())
+}
+
+func (f *DialingWorkerFactory) CreateWithContext(ctx context.Context) (*ClientWorker, error) {
+	return f.createWithContext(ctx)
+}
+
+func (f *DialingWorkerFactory) createWithContext(parent context.Context) (*ClientWorker, error) {
 	opts := []pipe.Option{pipe.WithSizeLimit(64 * 1024)}
 	uplinkReader, upLinkWriter := pipe.New(opts...)
 	downlinkReader, downlinkWriter := pipe.New(opts...)
@@ -152,7 +193,7 @@ func (f *DialingWorkerFactory) Create() (*ClientWorker, error) {
 		outbounds := []*session.Outbound{{
 			Target: net.TCPDestination(muxCoolAddress, muxCoolPort),
 		}}
-		ctx := session.ContextWithOutbounds(context.Background(), outbounds)
+		ctx := session.ContextWithOutbounds(parent, outbounds)
 		ctx, cancel := context.WithCancel(ctx)
 
 		if errP := p.Process(ctx, &transport.Link{Reader: uplinkReader, Writer: downlinkWriter}, d); errP != nil {

@@ -99,6 +99,8 @@ type Content struct {
 
 	// SkipDNSResolve is set from DNS module. the DOH remote server maybe a domain name, this prevents cycle resolving dead loop
 	SkipDNSResolve bool
+	// SkipMuxReuse gives this request a fresh mux worker scoped to its context.
+	SkipMuxReuse bool
 }
 
 // Sockopt is the settings for socket connection.

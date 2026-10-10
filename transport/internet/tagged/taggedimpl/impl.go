@@ -18,6 +18,9 @@ func DialTaggedOutbound(ctx context.Context, dispatcher routing.Dispatcher, dest
 	}
 	content := new(session.Content)
 	content.SkipDNSResolve = true
+	if previous := session.ContentFromContext(ctx); previous != nil {
+		content.SkipMuxReuse = previous.SkipMuxReuse
+	}
 
 	ctx = session.ContextWithContent(ctx, content)
 	ctx = session.SetForcedOutboundTagToContext(ctx, tag)

@@ -416,14 +416,15 @@ func (c *trackerWriteCounter) Spliced() { c.t.onSpliced() }
 // probeTracker counts the traffic of the observatory's own probes. It never
 // produces evidence: probe results are judged by the probe itself.
 type probeTracker struct {
-	bytes *atomic.Int64
+	state *probeState
 }
 
 func (t *probeTracker) Dialed(_ net.Conn, err error, read, write stats.Counter) (stats.Counter, stats.Counter) {
+	t.state.recordDial(err)
 	if err != nil {
 		return nil, nil
 	}
-	return &probeCounter{t.bytes, read}, &probeCounter{t.bytes, write}
+	return &probeCounter{t.state.bytes, read}, &probeCounter{t.state.bytes, write}
 }
 
 func (t *probeTracker) Finished(error) {}
@@ -505,11 +506,11 @@ func (c *witnessCounter) Add(n int64) int64 {
 type probeContextKey struct{}
 
 func withProbe(ctx context.Context, bytes *atomic.Int64) context.Context {
-	return context.WithValue(ctx, probeContextKey{}, bytes)
+	return context.WithValue(ctx, probeContextKey{}, &probeState{bytes: bytes})
 }
 
-func probeBytesFrom(ctx context.Context) *atomic.Int64 {
-	v, _ := ctx.Value(probeContextKey{}).(*atomic.Int64)
+func probeStateFrom(ctx context.Context) *probeState {
+	v, _ := ctx.Value(probeContextKey{}).(*probeState)
 	return v
 }
 

@@ -243,7 +243,11 @@ func (h *Handler) Dispatch(ctx context.Context, link *transport.Link) {
 			return
 		}
 		if h.mux.Enabled {
-			test(h.mux.Dispatch(ctx, link))
+			if content != nil && content.SkipMuxReuse {
+				test(h.mux.DispatchIsolated(ctx, link))
+			} else {
+				test(h.mux.Dispatch(ctx, link))
+			}
 			return
 		}
 	}

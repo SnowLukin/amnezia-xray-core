@@ -5,11 +5,133 @@ import (
 	"encoding/json"
 	goerrors "errors"
 	gonet "net"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/xtls/xray-core/common/net"
 )
+
+func TestProbeSlowDialGetsARequestWindowAfterDialed(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	state := &probeState{bytes: &atomic.Int64{}}
+	state.begin(time.Now(), cancel, time.Second, time.Second, 40*time.Millisecond)
+	defer state.stop()
+	time.Sleep(100 * time.Millisecond)
+	if err := ctx.Err(); err != nil {
+		t.Fatalf("progress timer consumed the live dial: %v", err)
+	}
+	tracker := &probeTracker{state: state}
+	tracker.Dialed(nil, nil, nil, nil)
+	time.Sleep(100 * time.Millisecond)
+	state.progress()
+	if reason, _, _ := state.result(); reason != "" || ctx.Err() != nil {
+		t.Fatalf("live response after the dial: reason %q, context %v", reason, ctx.Err())
+	}
+}
+
+func TestProbeSlowResponseExpiresAfterDialed(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	state := &probeState{bytes: &atomic.Int64{}}
+	state.begin(time.Now(), cancel, time.Second, time.Second, 40*time.Millisecond)
+	defer state.stop()
+	(&probeTracker{state: state}).Dialed(nil, nil, nil, nil)
+	select {
+	case <-ctx.Done():
+	case <-time.After(time.Second):
+		t.Fatal("request without a first byte did not expire")
+	}
+	if reason, _, _ := state.result(); reason != "no_progress" {
+		t.Fatalf("reason %q, want no_progress", reason)
+	}
+}
+
+func TestProbeDeadDialExpiresAsDialTimeout(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	state := &probeState{bytes: &atomic.Int64{}}
+	state.begin(time.Now(), cancel, 40*time.Millisecond, time.Second, time.Second)
+	defer state.stop()
+	select {
+	case <-ctx.Done():
+	case <-time.After(time.Second):
+		t.Fatal("dead dial did not expire")
+	}
+	if reason, dialDone, _ := state.result(); reason != "dial_timeout" || dialDone {
+		t.Fatalf("reason %q, dialDone %v", reason, dialDone)
+	}
+}
+
+func TestProbeDialErrorClasses(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+		want failureKind
+	}{
+		{"ordinary", goerrors.New("connection refused"), failDial},
+		{"timeout", context.DeadlineExceeded, failDialTimeout},
+		{"unverified", goerrors.New("REALITY: processed invalid connection"), failUnverified},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			state := &probeState{bytes: &atomic.Int64{}}
+			state.begin(time.Now(), cancel, time.Second, time.Second, time.Second)
+			defer state.stop()
+			read, write := (&probeTracker{state: state}).Dialed(nil, tc.err, nil, nil)
+			_, dialDone, dialErr := state.result()
+			if read != nil || write != nil || !dialDone || dialErr != tc.err || probeDialFailureKind(dialErr) != tc.want {
+				t.Fatalf("Dialed(%v): counters %v/%v, recorded %v, kind %s", tc.err, read, write, dialErr, probeDialFailureKind(dialErr))
+			}
+		})
+	}
+}
+
+func TestProbeFailedDialAttemptDoesNotEndConnectionPhase(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	state := &probeState{bytes: &atomic.Int64{}}
+	state.begin(time.Now(), cancel, 200*time.Millisecond, time.Second, time.Second)
+	defer state.stop()
+	tracker := &probeTracker{state: state}
+	tracker.Dialed(nil, goerrors.New("first address failed"), nil, nil)
+	tracker.Dialed(nil, nil, nil, nil)
+	if reason, dialDone, dialErr := state.result(); reason != "" || !dialDone || dialErr != nil || ctx.Err() != nil {
+		t.Fatalf("successful retry: reason %q, dialDone %v, dialErr %v, context %v", reason, dialDone, dialErr, ctx.Err())
+	}
+}
+
+func TestProbeStepCapNeverExceedsMaximum(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	state := &probeState{bytes: &atomic.Int64{}}
+	state.begin(time.Now().Add(-maxProbeTimeout+250*time.Millisecond), cancel, time.Minute, time.Minute, time.Second)
+	defer state.stop()
+	(&probeTracker{state: state}).Dialed(nil, nil, nil, nil)
+	select {
+	case <-ctx.Done():
+	case <-time.After(time.Second):
+		t.Fatal("step exceeded maxProbeTimeout")
+	}
+	if reason, _, _ := state.result(); reason != "timeout" {
+		t.Fatalf("reason %q at maximum step cap, want timeout", reason)
+	}
+}
+
+func TestProbeCancelStopsPhaseTimers(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	state := &probeState{bytes: &atomic.Int64{}}
+	state.begin(time.Now(), cancel, 200*time.Millisecond, time.Second, time.Second)
+	cancel()
+	state.stop()
+	<-ctx.Done()
+	time.Sleep(220 * time.Millisecond)
+	if reason, _, _ := state.result(); reason != "" {
+		t.Fatalf("observer cancellation became probe failure %q", reason)
+	}
+}
 
 type fakeClock struct{ t time.Time }
 
