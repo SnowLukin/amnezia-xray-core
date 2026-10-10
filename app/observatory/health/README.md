@@ -331,8 +331,9 @@ their ring order. An outbound without an explicit group keeps its existing
 selection behavior.
 
 After group quarantine, one following member is checked with reason
-`group_recheck`. A passed check makes the group available; unvisited members
-remain unknown and individually quarantined members keep their rest. This
+`group_recheck`. A passed check makes the group available; other members
+keep their individual state, including unknown for members never checked,
+and individually quarantined members keep their rest. This
 check does not move a working balancer by itself or replace `probesToReturn`.
 It can restore group availability when `returnInterval` disables periodic
 returns. Idle, a lost network and a pin postpone it; low memory permits it

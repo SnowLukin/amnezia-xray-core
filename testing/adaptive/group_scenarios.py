@@ -99,6 +99,64 @@ def group_events(events, since, state=None):
             and (state is None or e["fields"].get("state") == state)]
 
 
+def group_quarantine_checks(events, selected, since, end, restored_at=None, back=None):
+    """Check the down group's probe embargo and its one recovery candidate."""
+    positions = {id(e): i for i, e in enumerate(events)}
+    downs = group_events(events, since, "down")
+    relay_starts = [e for e in events_between(events, "probe_start", since, end)
+                    if e["fields"].get("outbound") in RELAY]
+    end_ms = round(end * 1000)
+    early = []
+    for down in downs:
+        due_ms = down["ts"] + down["fields"].get("quarantine_ms", 0)
+        early += [e for e in relay_starts if positions[id(e)] > positions[id(down)]
+                  and e["ts"] < min(due_ms, end_ms)]
+    checks = [check("no relay probes during group quarantine",
+                    [(e["fields"].get("outbound"), e["fields"].get("reason"), e["ts"]) for e in early],
+                    bool(downs) and not early, "none from group down until quarantine due")]
+    if restored_at is None:
+        return checks
+    ups = group_events(events, restored_at, "up")
+    down = downs[0] if downs else None
+    up = ups[0] if ups else None
+    down_pos = positions[id(down)] if down else None
+    up_pos = positions[id(up)] if up else None
+    due_ms = down["ts"] + down["fields"].get("quarantine_ms", 0) if down else None
+    rechecks = [e for e in relay_starts if due_ms is not None and up_pos is not None
+                and due_ms <= e["ts"] and positions[id(e)] < up_pos]
+    all_rechecks = [e for e in relay_starts if down_pos is not None and positions[id(e)] > down_pos
+                    and e["fields"].get("reason") == "group_recheck"]
+    expected = next_tag(selected, K)
+    checks.append(check("one group recheck after quarantine, next around ring",
+                        [(e["fields"].get("outbound"), e["fields"].get("reason")) for e in rechecks],
+                        bool(up) and bool(down) and up_pos > down_pos and up["ts"] >= due_ms
+                        and len(rechecks) == 1
+                        and len(all_rechecks) == 1 and rechecks[0] is all_rechecks[0]
+                        and rechecks[0]["fields"].get("reason") == "group_recheck"
+                        and rechecks[0]["fields"].get("outbound") == expected,
+                        f"one group_recheck on {expected} after due and before up"))
+    recheck = rechecks[0] if len(rechecks) == 1 else None
+    results = [e for e in events_between(events, "probe_result", since, end)
+               if recheck and up_pos is not None
+               and positions[id(recheck)] < positions[id(e)] < up_pos
+               and e["fields"].get("outbound") == expected
+               and e["fields"].get("reason") == "group_recheck"
+               and e["fields"].get("is_ok") is True]
+    checks.append(check("group recheck succeeded before up", len(results),
+                        len(results) == 1, "one successful group_recheck result"))
+    if back is not None:
+        back_pos = positions.get(id(back))
+        returns = [e for e in events_between(events, "probe_result", since, end)
+                   if up_pos is not None and back_pos is not None
+                   and up_pos < positions[id(e)] < back_pos
+                   and e["fields"].get("outbound") in RELAY
+                   and e["fields"].get("reason") == "return"
+                   and e["fields"].get("is_ok") is True]
+        checks.append(check("normal return probe succeeds after group up", len(returns),
+                            len(returns) == 1, "one return success for probesToReturn=1"))
+    return checks
+
+
 def probe_windows(events, names):
     """Peak scheduled probes per SNI from start/result events.
 
@@ -120,6 +178,116 @@ def probe_windows(events, names):
         running[name] = max(0, running.get(name, 0) + (1 if typ == "probe_start" else -1))
         peak[name] = max(peak.get(name, 0), running[name])
     return peak
+
+
+def parse_server_handshakes(lines):
+    """Pair native server TLS begin/end records by ID, including failed calls.
+
+    A begin without an end stays open in overlap calculations. Its SNI is
+    unknown because Go learns the name from the ClientHello during handshake.
+    """
+    by_id = {}
+    problems = []
+    for number, line in enumerate(lines, 1):
+        if '"bench_tls_handshake"' not in line:
+            continue
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            problems.append(f"line {number}: malformed trace JSON")
+            continue
+        if record.get("bench_tls_handshake") is not True:
+            problems.append(f"line {number}: invalid trace marker")
+            continue
+        ident, stamp, phase = record.get("id"), record.get("ts_ns"), record.get("phase")
+        if (not isinstance(ident, int) or isinstance(ident, bool) or ident <= 0
+                or not isinstance(stamp, int) or isinstance(stamp, bool) or stamp <= 0
+                or phase not in ("begin", "end")
+                or not isinstance(record.get("serverName"), str)
+                or not isinstance(record.get("remote"), str)
+                or not isinstance(record.get("error"), str)):
+            problems.append(f"line {number}: invalid trace fields")
+            continue
+        if phase == "begin":
+            if ident in by_id:
+                problems.append(f"line {number}: duplicate begin for id {ident}")
+                continue
+            by_id[ident] = {"id": ident, "begin_ns": stamp, "end_ns": None,
+                            "server_name": record["serverName"], "remote": record["remote"],
+                            "error": ""}
+            continue
+        interval = by_id.get(ident)
+        if interval is None:
+            problems.append(f"line {number}: end without begin for id {ident}")
+        elif interval["end_ns"] is not None:
+            problems.append(f"line {number}: duplicate end for id {ident}")
+        elif stamp < interval["begin_ns"]:
+            problems.append(f"line {number}: end before begin for id {ident}")
+        elif interval["server_name"] and record["serverName"] != interval["server_name"]:
+            problems.append(f"line {number}: SNI changed for id {ident}")
+        elif interval["remote"] != record["remote"]:
+            problems.append(f"line {number}: remote changed for id {ident}")
+        else:
+            interval["end_ns"] = stamp
+            interval["server_name"] = record["serverName"]
+            interval["error"] = record["error"]
+    return list(by_id.values()), problems
+
+
+def handshake_window(intervals, start, end):
+    """Count overlapping actual server calls; an unknown SNI may be any name."""
+    begin, finish = round(start * 1e9), round(end * 1e9)
+    relevant = [h for h in intervals if h["begin_ns"] < finish
+                and (h["end_ns"] is None or h["end_ns"] > begin)]
+    names = {h["server_name"] for h in relevant if h["server_name"]}
+    if not names and relevant:
+        names = {"<unknown SNI>"}
+    peaks = {}
+    for name in sorted(names):
+        edges = []
+        for h in relevant:
+            if h["server_name"] not in ("", name):
+                continue
+            left = max(begin, h["begin_ns"])
+            right = min(finish, h["end_ns"] if h["end_ns"] is not None else finish)
+            if left < right:
+                edges.extend(((left, 1), (right, -1)))
+        running = peak = 0
+        for _, delta in sorted(edges, key=lambda e: (e[0], e[1])):
+            running += delta
+            peak = max(peak, running)
+        peaks[name] = peak
+    return {"count": len(relevant), "failed": sum(bool(h["error"]) for h in relevant),
+            "unfinished": sum(h["end_ns"] is None for h in relevant),
+            "open_at_window_end": sum(h["end_ns"] is None or h["end_ns"] > finish for h in relevant),
+            "unknown_sni": sum(not h["server_name"] for h in relevant), "peak_by_sni": peaks}
+
+
+def actual_handshake_checks(work, windows):
+    if not bench.SERVER_BIN:
+        return [check("native server TLS trace", "BENCH_SERVER_BIN unset", not GROUPS,
+                      "BEFORE info; AFTER requires an instrumented server binary")]
+    path = os.path.join(work, "server.log")
+    if not os.path.exists(path):
+        return [check("native server TLS trace", path, False, "server.log exists")]
+    with open(path, errors="replace") as f:
+        intervals, problems = parse_server_handshakes(f)
+    first = min(start for _, start, _ in windows)
+    last = max(end for _, _, end in windows)
+    seen = handshake_window(intervals, first, last)["count"]
+    checks = [check("native server TLS trace parsed", f"{seen} handshakes; {problems[:3]}",
+                    (not problems and seen > 0) if GROUPS else True,
+                    ">= 1 handshake, no malformed or unmatched records in AFTER")]
+    for label, start, end in windows:
+        if end <= start:
+            continue
+        summary = handshake_window(intervals, start, end)
+        peak = max(summary["peak_by_sni"].values(), default=0)
+        checks.append(check(f"actual server TLS overlap: {label}", summary,
+                            (peak <= 1 and not problems) if GROUPS else True,
+                            "<= 1 per SNI including failed/open calls; unknown SNI counts against every name"
+                            if GROUPS else "info in BEFORE"))
+    return checks
 
 
 def measured_checks(c, cs, marks, selected, banned, switch, rec):
@@ -164,7 +332,7 @@ def measured_checks(c, cs, marks, selected, banned, switch, rec):
 
 def exercise(stand, xray, work, name, fault_kind):
     cfg = config()
-    marks = {}
+    marks = {"trace_start": time.time()}
     before_checks = []
     selected = None
     banned = []
@@ -217,10 +385,26 @@ def exercise(stand, xray, work, name, fault_kind):
             marks["end"] = time.time()
         finally:
             traffic.stop()
+    marks["trace_end"] = time.time()
     traffic.save(os.path.join(work, f"{name}-traffic.json"))
     rec, _ = bench.recovery(traffic.records, marks["fault"])
     checks, starts, failed = measured_checks(c, cs, marks, selected, banned, switch, rec)
     checks = before_checks + checks
+    windows = [("whole run", marks["trace_start"], marks["trace_end"]),
+               ("before fault", marks["trace_start"], marks["fault"])]
+    if switch:
+        switched_at = event_time(switch)
+        windows.append(("fault to switch", marks["fault"], switched_at))
+        if fault_kind == "contiguous" and GROUPS:
+            windows.append(("switch to repair", switched_at, marks["restore"]))
+            if back:
+                windows.append(("repair to return", marks["restore"], event_time(back)))
+                windows.append(("after return", event_time(back), marks["trace_end"]))
+            else:
+                windows.append(("after repair", marks["restore"], marks["trace_end"]))
+        else:
+            windows.append(("after switch", switched_at, marks["trace_end"]))
+    checks += actual_handshake_checks(work, windows)
     got = switch["fields"].get("to") if switch else None
     checks.append(check("first switch destination", got, bool(switch) if not GROUPS else
                         got == (CDN if fault_kind in ("sni", "contiguous") else next_tag(selected)),
@@ -261,6 +445,8 @@ def exercise(stand, xray, work, name, fault_kind):
                        if e["fields"].get("outbound") == CDN and e["fields"].get("is_ok") is True]
         checks.append(check("CDN passed a probe before selection", len(cdn_success),
                             len(cdn_success) == 1, "== 1"))
+        checks += group_quarantine_checks(c.events, selected, marks["fault"], marks["trace_end"],
+                                          marks.get("restore"), back)
     else:
         checks.append(check("successful relay stays in the group", len(downs),
                             not downs and got in RELAY, "no group down; relay selected"))
@@ -314,6 +500,7 @@ def group_contiguous_ban(stand, xray, work, name):
 
 @scenario
 def group_spread(stand, xray, work, name):
+    trace_start = time.time()
     histogram = {tag: 0 for tag in RELAY}
     runs = set()
     failed = []
@@ -334,6 +521,7 @@ def group_spread(stand, xray, work, name):
                 runs.add(run)
     with open(os.path.join(work, f"{name}-histogram.json"), "w") as f:
         json.dump(histogram, f, indent=1)
+    trace_end = time.time()
     occupied = sum(v > 0 for v in histogram.values())
     maximum = max(histogram.values())
     checks = [check("50 distinct production run IDs", len(runs), len(runs) == 50, "== 50"),
@@ -341,6 +529,7 @@ def group_spread(stand, xray, work, name):
                     sum(histogram.values()) == 50, "50/50")]
     checks.append(check("position histogram relay-01..relay-24",
                         [histogram[t] for t in RELAY], True, "numeric histogram, in tag order"))
+    checks += actual_handshake_checks(work, [("50 independent clients", trace_start, trace_end)])
     if GROUPS:
         # For 50 independent uniform choices in 24 cells, the union bound for
         # a cell with >=10 choices is <0.00084. Fewer than 16 occupied cells

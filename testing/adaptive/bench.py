@@ -11,6 +11,8 @@ Environment:
   BENCH_CLIENT_BIN    the client binary for that device, built with
                       GOOS=android GOARCH=arm64 CGO_ENABLED=0 go build
                       -ldflags=-checklinkname=0 ./main
+  BENCH_SERVER_BIN    optional instrumented binary for the local Xray server
+                      processes; the client still uses the requested xray.
   BENCH_HOST          the address the client reaches this machine at:
                       127.0.0.1 locally, 10.0.2.2 from an emulator, the LAN
                       address for a phone.
@@ -49,6 +51,7 @@ REALITY_PUBLIC = "SFQq-6EUyhY12O_zOjI9pVdY1b7y3aVaevZJg8JDaEw"
 CLIENT = os.environ.get("BENCH_CLIENT", "")
 ADB_SERIAL = CLIENT[len("adb:"):] if CLIENT.startswith("adb:") else None
 CLIENT_BIN = os.environ.get("BENCH_CLIENT_BIN", "")
+SERVER_BIN = os.environ.get("BENCH_SERVER_BIN", "")
 HOST = os.environ.get("BENCH_HOST", "10.0.2.2" if ADB_SERIAL else "127.0.0.1")
 TLS = os.environ.get("BENCH_TLS") == "1"
 LOGLEVEL = os.environ.get("BENCH_LOGLEVEL", "warning")
@@ -360,7 +363,7 @@ class Stand:
             path = os.path.join(self.workdir, f"{name}.json")
             with open(path, "w") as f:
                 json.dump(config, f)
-            self.procs.append(subprocess.Popen([self.xray, "run", "-c", path],
+            self.procs.append(subprocess.Popen([SERVER_BIN or self.xray, "run", "-c", path],
                                                stdout=open(os.path.join(self.workdir, f"{name}.log"), "w"),
                                                stderr=subprocess.STDOUT))
         specs = [f"{address_port(k, i)}:{server_port(k)}" for k in TRANSPORTS for i in range(ADDRESSES)]
@@ -1112,7 +1115,7 @@ START_REASONS = ("start", "start_pinned", "start_remembered", "start_with")
 def fold_report(events):
     """Adds up events the way the report of the core counts them. Returns the
     counters and whether there was a decision."""
-    keys = ["events", "switches", "exhausted_count", "path_down_count", "path_suspect_count", "path_rescued_count", "pending_closed_count",
+    keys = ["events", "switches", "exhausted_count", "group_down_count", "path_down_count", "path_suspect_count", "path_rescued_count", "pending_closed_count",
             "idle_closed_count", "probes", "probes_failed", "probe_bytes", "host_probe_requests", "host_probes",
             "return_attempts",
             "return_failures", "pinned_down_count",
@@ -1137,6 +1140,8 @@ def fold_report(events):
             decided = decided or not f.get("is_start_pinned")
         elif t == "path_state" and f.get("state") in ("down", "suspect"):
             c["path_" + f["state"] + "_count"] += 1
+        elif t == "group_state" and f.get("state") == "down":
+            c["group_down_count"] += 1
         elif t == "path_state" and f.get("reason") == "rescued":
             c["path_rescued_count"] += 1
         elif t == "pending_closed":
