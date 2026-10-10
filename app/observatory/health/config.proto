@@ -63,10 +63,10 @@ message PassiveConfig {
   // anything yet are ended right away, so applications retry on the outbound
   // chosen now instead of waiting for their own timeout. This keeps them.
   bool should_keep_pending_on_down = 14;
-  // When an outbound is found down on evidence about the path itself, its
-  // connections that started before and then receive nothing for
-  // stall_timeout are ended too: they cannot progress on a dead path, and
-  // they keep its tunnel awake. This keeps them.
+  // When an outbound is found down, its connections that started before
+  // and then receive nothing for stall_timeout are ended too: they cannot
+  // progress on a path the core has left, and they keep its tunnel awake.
+  // This keeps them.
   bool should_keep_silent_on_down = 15;
 }
 

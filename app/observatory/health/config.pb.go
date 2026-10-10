@@ -336,10 +336,10 @@ type PassiveConfig struct {
 	// anything yet are ended right away, so applications retry on the outbound
 	// chosen now instead of waiting for their own timeout. This keeps them.
 	ShouldKeepPendingOnDown bool `protobuf:"varint,14,opt,name=should_keep_pending_on_down,json=shouldKeepPendingOnDown,proto3" json:"should_keep_pending_on_down,omitempty"`
-	// When an outbound is found down on evidence about the path itself, its
-	// connections that started before and then receive nothing for
-	// stall_timeout are ended too: they cannot progress on a dead path, and
-	// they keep its tunnel awake. This keeps them.
+	// When an outbound is found down, its connections that started before
+	// and then receive nothing for stall_timeout are ended too: they cannot
+	// progress on a path the core has left, and they keep its tunnel awake.
+	// This keeps them.
 	ShouldKeepSilentOnDown bool `protobuf:"varint,15,opt,name=should_keep_silent_on_down,json=shouldKeepSilentOnDown,proto3" json:"should_keep_silent_on_down,omitempty"`
 	unknownFields          protoimpl.UnknownFields
 	sizeCache              protoimpl.SizeCache

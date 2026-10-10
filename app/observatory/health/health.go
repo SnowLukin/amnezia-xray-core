@@ -412,9 +412,9 @@ func (o *Observer) watch(t *connTracker) {
 // outbound chosen now instead of waiting for their own timeout, and the
 // memory the stuck connections hold is freed. Connections that received
 // something keep going: an address that refuses new connections may still
-// serve old ones. Unless the evidence was about the path itself: then it
-// notes what they have received (d.watch), and at the mark stallTimeout
-// later ends those that received nothing since (d.silent), see silence.go.
+// serve old ones. At the decision it notes what they have received
+// (d.watch), and at the mark stallTimeout later ends those that received
+// nothing since (d.silent), see silence.go.
 func (o *Observer) closePending(d downMark) {
 	before := int64(d.at.Sub(o.base))
 	var aborts []func()

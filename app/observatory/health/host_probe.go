@@ -388,7 +388,7 @@ func (e *engine) onHostProbeResult(p *path, ok bool, now time.Time) {
 		return
 	}
 	e.dropQueued(p.tag, reasonConfirm)
-	e.markDown(p, "host_probe", false, now)
+	e.markDown(p, "host_probe", now)
 	e.abandonReturns(p.tag, now)
 }
 

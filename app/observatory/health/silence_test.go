@@ -79,6 +79,25 @@ func (f *silenceFixture) failWeak(tag string) {
 	})
 }
 
+// probeFails runs a probe of tag for reason that fails at the time of the
+// clock, as the observer does for any reason but a confirmation, which
+// needs a suspicion first.
+func (f *silenceFixture) probeFails(tag string, reason probeReason) {
+	var j *probeJob
+	f.engine(func(e *engine) {
+		e.nextID++
+		j = &probeJob{id: e.nextID, tag: tag, reason: reason, selector: "auto", generation: e.generation}
+		e.begin(j, f.clk.now())
+	})
+	f.answer(j, false)
+}
+
+// leave moves the balancer off a1 to b1 while a1 still works, as a pin or
+// a return from a dearer outbound left behind would.
+func (f *silenceFixture) leave() {
+	f.engine(func(e *engine) { e.switchTo(e.selectors["auto"], "b1", "pin", f.clk.now()) })
+}
+
 // turn runs one turn of the loop at the time of the clock: what is due, and
 // what it asks of the connections. It returns the probes that started and
 // the wake.
@@ -203,16 +222,16 @@ func TestSilentConnectionsEndStallTimeoutAfterADown(t *testing.T) {
 	}
 }
 
-// Nothing is ended for silence when it proves nothing about the path or
-// nobody asked for it: the outbound came back, also when the probe that was
-// confirming a suspicion of it when it went down passed, or a balancer chose
-// it again before the check, the evidence was about destinations (also when
-// a probe confirmed it), the decision was provisional, the network failed
-// meanwhile, or keepSilentOnDown.
-func TestSilenceKeepsConnectionsWhenItProvesNothing(t *testing.T) {
+// Whatever rules an outbound out, its connections from before the decision
+// that received nothing since are ended stallTimeout after it, as one
+// pending_closed with silent and the reason of the down: failures about the
+// path, failures that may be about destinations with or without a probe
+// that confirms them, and a failed probe alone, for every reason the
+// observer probes, of an outbound a balancer chooses or of one none does.
+// A connection that received anything since the decision is kept.
+func TestSilentConnectionsEndAfterEveryDown(t *testing.T) {
 	confirmAlways := &SelectorConfig{Paths: pathSpecs("a1", 1, "b1", 3), SkipProbeBeforeSwitch: true, ConfirmWithProbe: ConfirmMode_ALWAYS}
 	confirmNever := &SelectorConfig{Paths: pathSpecs("a1", 1, "b1", 3), SkipProbeBeforeSwitch: true, ConfirmWithProbe: ConfirmMode_NEVER}
-	strong := func(f *silenceFixture) { f.failStrong("a1") }
 	// confirmed fails the probe that confirms the suspicion.
 	confirmed := func(fail func(*silenceFixture)) func(*silenceFixture) {
 		return func(f *silenceFixture) {
@@ -224,19 +243,101 @@ func TestSilenceKeepsConnectionsWhenItProvesNothing(t *testing.T) {
 			f.answer(jobs[0], false)
 		}
 	}
+	probe := func(r probeReason) func(*silenceFixture) {
+		return func(f *silenceFixture) { f.probeFails("a1", r) }
+	}
+	for _, tc := range []struct {
+		name   string
+		sc     *SelectorConfig
+		left   bool
+		decide func(*silenceFixture)
+		reason string
+	}{
+		{name: "path failures", decide: func(f *silenceFixture) { f.failStrong("a1") }, reason: "traffic"},
+		{name: "path failures confirmed by a probe", sc: confirmAlways,
+			decide: confirmed(func(f *silenceFixture) { f.failStrong("a1") }), reason: "probe"},
+		{name: "destination failures without a probe", sc: confirmNever,
+			decide: func(f *silenceFixture) { f.failWeak("a1") }, reason: "traffic"},
+		{name: "destination failures confirmed by a probe",
+			decide: confirmed(func(f *silenceFixture) { f.failWeak("a1") }), reason: "probe"},
+		{name: "network change probe of the chosen outbound", decide: probe(reasonNetwork), reason: "probe"},
+		{name: "host probe of the chosen outbound", decide: probe(reasonHost), reason: "host_probe"},
+		{name: "recheck", left: true, decide: probe(reasonRecheck), reason: "probe"},
+		{name: "return to cheaper", left: true, decide: probe(reasonReturnToCheaper), reason: "return_probe"},
+		{name: "failover candidate", left: true, decide: probe(reasonFailover), reason: "probe"},
+		{name: "network change probe", left: true, decide: probe(reasonNetwork), reason: "probe"},
+		{name: "remembered", left: true, decide: probe(reasonRemembered), reason: "probe"},
+		{name: "group recheck", left: true, decide: probe(reasonGroup), reason: "probe"},
+		{name: "host probe", left: true, decide: probe(reasonHost), reason: "host_probe"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newSilenceFixture(t, nil, tc.sc)
+			if tc.left {
+				f.leave()
+			}
+			f.open("a1", "quiet", 100)
+			_, talking := f.open("a1", "talking", 100)
+			f.clk.advance(time.Second)
+			decided := f.clk.now()
+			tc.decide(f)
+			if s := f.status("a1"); s != statusDown {
+				t.Fatalf("setup: a1 is %v, want down", s)
+			}
+			_, wake := f.turn()
+			if due := decided.Add(defaultStallTimeout); wake.IsZero() || wake.After(due) {
+				t.Fatalf("wake %v after the decision, want the check at stallTimeout %v", wake.Sub(decided), defaultStallTimeout)
+			}
+			f.check(map[string]bool{})
+			f.events("pending_closed")
+
+			f.clk.advance(time.Second)
+			talking.Add(1)
+			f.clk.t = decided.Add(defaultStallTimeout - time.Millisecond)
+			f.turn()
+			f.check(map[string]bool{})
+
+			f.clk.t = decided.Add(defaultStallTimeout)
+			f.turn()
+			f.check(map[string]bool{"quiet": true, "talking": false})
+			evs := f.events("pending_closed")
+			if len(evs) != 1 || evs[0].Fields["is_silent"] != true || evs[0].Fields["connections"] != float64(1) ||
+				evs[0].Fields["outbound"] != "a1" || evs[0].Fields["reason"] != tc.reason {
+				t.Fatalf("at the check: %+v, want one pending_closed of a1, silent, reason %s, for one connection",
+					evs, tc.reason)
+			}
+			f.engine(func(e *engine) {
+				if len(e.silences) != 0 {
+					t.Fatalf("checks left: %+v", e.silences)
+				}
+			})
+		})
+	}
+}
+
+// Nothing is ended for silence when it proves nothing about the path or
+// nobody asked for it: the outbound came back, also when the probe that was
+// confirming a suspicion of it when it went down passed, or a balancer chose
+// it again before the check, the decision was provisional, the network
+// failed, changed or is in doubt at the check, or shouldKeepSilentOnDown.
+// A failed probe is held to the same rules as failures about the path.
+func TestSilenceKeepsConnectionsWhenItProvesNothing(t *testing.T) {
+	strong := func(f *silenceFixture) { f.failStrong("a1") }
+	probe := func(f *silenceFixture) { f.probeFails("a1", reasonHost) }
+	// The doubt ends before the check, the outbound still down.
+	outOfDoubt := func(f *silenceFixture) { f.engine(func(e *engine) { e.doubt = false }) }
 	// The probe confirming weak evidence when strong evidence came.
 	var confirming *probeJob
 	for _, tc := range []struct {
 		name    string
 		passive *PassiveConfig
-		sc      *SelectorConfig
+		left    bool
 		decide  func(*silenceFixture)
 		between func(*silenceFixture)
-		end     bool
 	}{
-		{name: "strong", decide: strong, end: true},
-		{name: "strong confirmed by a probe", sc: confirmAlways, decide: confirmed(strong), end: true},
 		{name: "back up", decide: strong, between: func(f *silenceFixture) {
+			f.engine(func(e *engine) { e.markUp(e.path("a1"), "probe", f.clk.now()) })
+		}},
+		{name: "back up after a probe", left: true, decide: probe, between: func(f *silenceFixture) {
 			f.engine(func(e *engine) { e.markUp(e.path("a1"), "probe", f.clk.now()) })
 		}},
 		{name: "rescued", decide: func(f *silenceFixture) {
@@ -255,22 +356,45 @@ func TestSilenceKeepsConnectionsWhenItProvesNothing(t *testing.T) {
 				}
 			})
 		}},
-		{name: "weak", sc: confirmNever, decide: func(f *silenceFixture) { f.failWeak("a1") }},
-		{name: "weak confirmed by a probe", decide: confirmed(func(f *silenceFixture) { f.failWeak("a1") })},
+		{name: "chosen again after a probe", left: true, decide: probe, between: func(f *silenceFixture) {
+			f.engine(func(e *engine) {
+				if !e.pin("auto", "a1", f.clk.now()) {
+					f.t.Fatal("setup: pin refused")
+				}
+			})
+		}},
 		{name: "provisional", decide: func(f *silenceFixture) {
 			f.engine(func(e *engine) { e.doubt = true })
 			f.failStrong("a1")
+		}, between: outOfDoubt},
+		{name: "provisional probe", left: true, decide: func(f *silenceFixture) {
+			f.engine(func(e *engine) { e.doubt = true })
+			probe(f)
+		}, between: outOfDoubt},
+		{name: "network in doubt at the check", left: true, decide: probe, between: func(f *silenceFixture) {
+			f.engine(func(e *engine) { e.doubt = true })
 		}},
 		{name: "network lost meanwhile", decide: strong, between: func(f *silenceFixture) {
+			f.engine(func(e *engine) { e.onNetworkLost(f.clk.now()) })
+		}},
+		{name: "network lost after a probe", left: true, decide: probe, between: func(f *silenceFixture) {
 			f.engine(func(e *engine) { e.onNetworkLost(f.clk.now()) })
 		}},
 		{name: "network changed meanwhile", decide: strong, between: func(f *silenceFixture) {
 			f.engine(func(e *engine) { e.onNetworkChange("lte", f.clk.now()) })
 		}},
-		{name: "keepSilentOnDown", passive: &PassiveConfig{ShouldKeepSilentOnDown: true}, decide: strong},
+		{name: "network changed after a probe", left: true, decide: probe, between: func(f *silenceFixture) {
+			f.engine(func(e *engine) { e.onNetworkChange("lte", f.clk.now()) })
+		}},
+		{name: "shouldKeepSilentOnDown", passive: &PassiveConfig{ShouldKeepSilentOnDown: true}, decide: strong},
+		{name: "shouldKeepSilentOnDown after a probe", passive: &PassiveConfig{ShouldKeepSilentOnDown: true},
+			left: true, decide: probe},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			f := newSilenceFixture(t, tc.passive, tc.sc)
+			f := newSilenceFixture(t, tc.passive, nil)
+			if tc.left {
+				f.leave()
+			}
 			f.open("a1", "quiet", 100)
 			f.clk.advance(time.Second)
 			decided := f.clk.now()
@@ -286,7 +410,7 @@ func TestSilenceKeepsConnectionsWhenItProvesNothing(t *testing.T) {
 			}
 			f.clk.t = decided.Add(defaultStallTimeout + time.Second)
 			f.turn()
-			f.check(map[string]bool{"quiet": tc.end})
+			f.check(map[string]bool{"quiet": false})
 			f.engine(func(e *engine) {
 				if len(e.silences) != 0 {
 					t.Fatalf("checks left: %+v", e.silences)

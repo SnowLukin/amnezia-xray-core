@@ -125,23 +125,25 @@ timeout, and the stuck connections stop holding memory. Connections that
 received something keep going, since an address that refuses new
 connections may still serve old ones. `shouldKeepPendingOnDown` turns this off.
 
-When the failures that ruled the outbound out were about the path, which
-needs no probe, the path is dead for the other connections as well; with
-`confirmWithProbe` `always`, the probe that confirms such failures changes nothing
-about that. `stallTimeout` after the decision, the connections from before
-it that have received nothing since, UDP flows too, are ended: they cannot
-progress, and long-lived ones such as DNS over HTTPS or push connections
-would keep a tunnel such as WireGuard awake, see Sleep, while their
-applications wait for a timeout of their own. A connection that received
-anything since the decision is kept, and so is everything when the outbound
-came back, also by a rescue, or a balancer chose it again before the look,
-or when the network failed or changed meanwhile. While a failover away from
-it still probes candidates, new connections still go to it, and the look
-waits for the switch. A decision on failures that may be about
-destinations, also once a probe confirmed them, or on a failed probe alone
-ends nothing more: the path may still serve the destinations it served. A
-spliced connection is judged by what its socket received; on a platform
-that does not tell, it is kept. `shouldKeepSilentOnDown` turns this off.
+Once the core has left an outbound found down, a connection from before the
+decision that receives nothing on it does not progress either, whatever
+ruled the outbound out. Failures about the path need no proof, and a probe
+goes to a destination of the config: one that fails tells that the path is
+dead, also when it confirmed failures that may have been about
+destinations, and also when no balancer uses the outbound, as for a return,
+a recheck or a request of the host. `stallTimeout` after the decision, the
+connections from before it that have received nothing since, UDP flows too,
+are ended: long-lived ones such as DNS over HTTPS or push connections would
+keep a tunnel such as WireGuard awake, see Sleep, while their applications
+wait for a timeout of their own. A connection that received anything since
+the decision is kept, as an address that refuses new connections may still
+serve old ones, and so is everything when the outbound came back, also by a
+rescue, or a balancer chose it again before the look, or when the network
+failed or changed meanwhile or is in doubt at the look. While a failover
+away from it still probes candidates, new connections still go to it, and
+the look waits for the switch. A spliced connection is judged by what its
+socket received; on a platform that does not tell, it is kept.
+`shouldKeepSilentOnDown` turns this off.
 
 A first reply on a newer connection makes delayed dial and handshake
 errors from older connections obsolete. That reply alone does not mark
@@ -775,9 +777,10 @@ Kept up, a WireGuard device repeats its handshake to the dead address every
 5 s for 90 s, and starts over with every packet its stack still sends, such
 as the FIN that a connection which ended repeats for minutes: the battery
 pays for it, and the address shows, until `sleep.afterLastUse`. Its connections
-that received nothing were ended when it went down, and after path
-failures so are those that receive nothing for `stallTimeout` after that,
-see How it decides; those that still receive keep it awake until they end.
+that received nothing were ended when it went down, and so are those that
+receive nothing for `stallTimeout` after that, whether its traffic or a
+failed probe ruled it out, see How it decides; those that still receive
+keep it awake until they end.
 The probe at the end of its quarantine wakes it, and one that fails puts it
 to sleep again at once. One ruled out while the network check was failing
 waits for `sleep.afterLastUse` as usual: it comes back as soon as the network does.
@@ -924,7 +927,7 @@ changed its settings), `rescued` (a probe that was confirming a suspicion when s
 | `group_state` | `balancer`, `group`, `state`, `members`, `failed`, `quarantine_ms` | An explicit group became `down` after consecutive failures or `up` after a successful recovery check. Unvisited members of a down group are skipped. |
 | `probe_request` | `request`, `balancer`, `outbounds`, `end`, `ms`, `probed`, `reused`, `ok`, `failed`, `down`, `skipped`, `expired`, `gone` | A request of the host that waited for a probe ended; one answered at once writes none. `end`: `done`, `timeout`, `network_change`, `gone`. The counts are by result; `probed` and `reused` count the answers of a probe and of a recent proof. |
 | `exhausted` | `balancer`, `from`, `candidates` | No usable candidate is left; traffic goes to `fallbackTag`. |
-| `pending_closed` | `outbound`, `connections`, `reason`, `is_silent` | Connections of an outbound found down were ended: at the decision and at the switch away from it those that had received nothing, or, with `is_silent` true, `stallTimeout` after a decision on path failures those that received nothing since it, see How it decides. `reason` is the one the outbound went down for. |
+| `pending_closed` | `outbound`, `connections`, `reason`, `is_silent` | Connections of an outbound found down were ended: at the decision and at the switch away from it those that had received nothing, or, with `is_silent` true, `stallTimeout` after the decision those that received nothing since it, see How it decides. `reason` is the one the outbound went down for. |
 | `return_start` | `balancer`, `from`, `to` | Probing a cheaper outbound to return to it. |
 | `return_failed` | `balancer`, `outbound`, `successes` | The return was abandoned after a failed probe. |
 | `return_delayed` | `balancer`, `outbound`, `delay_ms` | The return waits longer because the previous one failed. |

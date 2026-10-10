@@ -299,7 +299,7 @@ func (e *engine) onGroupProbeResult(j *probeJob, r probeResult, p *path, now tim
 				waiting[s] = g
 			}
 		}
-		e.markDown(p, "probe", false, now)
+		e.markDown(p, "probe", now)
 		for _, s := range e.sortedSelectors() {
 			if g := waiting[s]; g != nil && g.down {
 				g.lastFailed = j.tag

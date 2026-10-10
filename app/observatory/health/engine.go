@@ -140,8 +140,8 @@ type engine struct {
 	pendingSuspicion    map[string]verdict
 	// Outbounds found down whose waiting connections the observer is to end.
 	downs []downMark
-	// Outbounds found down on strong evidence whose silent connections the
-	// observer is to end stallTimeout later, at most one per outbound.
+	// Outbounds found down whose silent connections the observer is to end
+	// stallTimeout later, at most one per outbound.
 	silences []silenceCheck
 
 	// Outbounds that left a provider set: they keep their connections but
@@ -309,7 +309,7 @@ func (e *engine) onFailure(tag string, kind failureKind, target string, conn uin
 			if p.addFailure(failure{at: now, kind: kind, target: target, conn: conn}, e.s.passive.window) &&
 				p.evaluate(&e.s.passive).strong {
 				e.dropQueued(p.tag, reasonConfirm)
-				e.markDown(p, "traffic", true, now)
+				e.markDown(p, "traffic", now)
 			}
 			return
 		}
@@ -385,7 +385,7 @@ func (e *engine) suspect(p *path, v verdict, now time.Time) {
 		// Old connections on an outbound that is no longer chosen. Strong
 		// evidence still rules it out; weak evidence is not worth a probe.
 		if v.strong {
-			e.markDown(p, "traffic", true, now)
+			e.markDown(p, "traffic", now)
 		} else {
 			p.failures = p.failures[:0]
 		}
@@ -420,20 +420,17 @@ func (e *engine) decideSuspect(p *path, v verdict, now time.Time) {
 		}
 	}
 	if confirm {
-		p.strongSuspicion = v.strong
 		e.enqueue(p.tag, reasonConfirm, "", now)
 		return
 	}
-	e.markDown(p, "traffic", v.strong, now)
+	e.markDown(p, "traffic", now)
 }
 
 // ---- state changes --------------------------------------------------------
 
-// markDown rules p out. strong: the evidence was failures about the path
-// itself, as How it decides in the README has it, rather than failures that
-// may be about destinations, which a probe confirmed, or a failed probe
-// alone.
-func (e *engine) markDown(p *path, reason string, strong bool, now time.Time) {
+// markDown rules p out, on traffic or a failed probe, and has its
+// connections ended as noteDown tells.
+func (e *engine) markDown(p *path, reason string, now time.Time) {
 	if p.status == statusDown && p.quarantined(now) {
 		// Ruled out already; a late probe or more traffic adds nothing, and a
 		// second failover would abandon the candidate being probed.
@@ -459,7 +456,7 @@ func (e *engine) markDown(p *path, reason string, strong bool, now time.Time) {
 	p.failures = p.failures[:0]
 	delete(e.pendingSuspicion, p.tag)
 	e.emitPath(p, now)
-	e.noteDown(p, strong, now)
+	e.noteDown(p, true, now)
 	for _, s := range e.sortedSelectors() {
 		if s.returnedTo == p.tag && now.Sub(s.returnedAt) < s.cfg.returnToCheaper.penaltyWindow {
 			p.rescue.notePenalty(s, p.tag)
@@ -489,16 +486,15 @@ type downMark struct {
 
 // noteDown asks the observer to end what waits on p. While the network
 // itself is in doubt, waiting connections may still be answered once it is
-// back, so they are kept. On strong evidence the path is dead for the
-// connections that received something as well, and those that fall silent
-// are ended stallTimeout later, see silence.go; a probe that confirmed weak
-// evidence only tells that some destinations fail.
-func (e *engine) noteDown(p *path, strong bool, now time.Time) {
+// back, so they are kept. watch, at the decision itself: the core has left
+// the path, so the connections that received something and then fall
+// silent are ended stallTimeout later as well, see silence.go.
+func (e *engine) noteDown(p *path, watch bool, now time.Time) {
 	if p.status != statusDown || p.provisional {
 		return
 	}
 	d := downMark{tag: p.tag, at: now, reason: p.reason,
-		pending: !e.s.passive.keepPending, watch: strong && !e.s.passive.keepSilent}
+		pending: !e.s.passive.keepPending, watch: watch && !e.s.passive.keepSilent}
 	if !d.pending && !d.watch {
 		return
 	}
@@ -1576,18 +1572,18 @@ func (e *engine) onProbeResult(j *probeJob, r probeResult, now time.Time) {
 			return
 		}
 		p.falseAlarms = 0
-		e.markDown(p, "probe", p.strongSuspicion, now)
+		e.markDown(p, "probe", now)
 	case reasonNetwork:
 		if r.ok {
 			e.markUp(p, "probe", now)
 			return
 		}
-		e.markDown(p, "probe", false, now)
+		e.markDown(p, "probe", now)
 	case reasonFailover:
 		if r.ok {
 			e.markUp(p, "probe", now)
 		} else {
-			e.markDown(p, "probe", false, now)
+			e.markDown(p, "probe", now)
 		}
 		for _, s := range e.sortedSelectors() {
 			if !s.failoverProbing[j.tag] {
@@ -1615,7 +1611,7 @@ func (e *engine) onProbeResult(j *probeJob, r probeResult, now time.Time) {
 		e.onGroupProbeResult(j, r, p, now)
 	case reasonRecheck:
 		if !r.ok {
-			e.markDown(p, "probe", false, now)
+			e.markDown(p, "probe", now)
 			return
 		}
 		e.markUp(p, "probe", now)
@@ -1626,7 +1622,7 @@ func (e *engine) onProbeResult(j *probeJob, r probeResult, now time.Time) {
 		}
 	case reasonRemembered:
 		if !r.ok {
-			e.markDown(p, "probe", false, now)
+			e.markDown(p, "probe", now)
 			return
 		}
 		e.markUp(p, "probe", now)
@@ -1688,7 +1684,7 @@ func (e *engine) onReturnToCheaperResult(j *probeJob, r probeResult, p *path, no
 		}
 	}
 	if !r.ok {
-		e.markDown(p, "return_probe", false, now)
+		e.markDown(p, "return_probe", now)
 		e.abandonReturns(j.tag, now)
 		return
 	}

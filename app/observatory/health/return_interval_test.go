@@ -159,7 +159,7 @@ func TestCostReturnIntervalCapsPenaltyAfterSelectingOutbound(t *testing.T) {
 			}
 			te := newTestEngine(t, &Config{Schedule: quarantine(time.Second)}, sc, "a1", "b1")
 			te.switchTo(te.sel, "a1", "return", t0)
-			te.markDown(te.path("a1"), "traffic", true, at(time.Second))
+			te.markDown(te.path("a1"), "traffic", at(time.Second))
 			if got := te.sel.penaltyFor("a1"); got != 2 {
 				t.Fatalf("penalty multiplier = %v, want 2", got)
 			}
@@ -188,12 +188,12 @@ func TestZeroCostReturnIntervalAndHoldKeepPenaltyFinite(t *testing.T) {
 	}
 	te := newTestEngine(t, &Config{Schedule: quarantine(time.Second)}, sc, "a1", "b1")
 	te.switchTo(te.sel, "a1", "return", t0)
-	te.markDown(te.path("a1"), "traffic", true, at(time.Second))
+	te.markDown(te.path("a1"), "traffic", at(time.Second))
 	for i := 2; i < 65; i++ {
 		now := at(time.Duration(i) * time.Second)
 		te.sel.returnedTo, te.sel.returnedAt = "a1", now
 		te.path("a1").status = statusUp
-		te.markDown(te.path("a1"), "traffic", true, now)
+		te.markDown(te.path("a1"), "traffic", now)
 	}
 	penalty := te.sel.penaltyFor("a1")
 	if math.IsInf(penalty, 0) || math.IsNaN(penalty) || penalty <= 1 {
@@ -231,7 +231,7 @@ func TestCostReturnPenaltyRecoversAfterDelayAndHold(t *testing.T) {
 	}
 	te := newTestEngine(t, &Config{Schedule: quarantine(time.Second)}, sc, "a1", "b1")
 	te.switchTo(te.sel, "a1", "return", t0)
-	te.markDown(te.path("a1"), "traffic", true, at(time.Second))
+	te.markDown(te.path("a1"), "traffic", at(time.Second))
 	now := te.sel.returnToCheaperAt
 	te.maybeReturnToCheaper(te.sel, now)
 	if got := te.sel.returnToCheaperAt.Sub(now); got != 10*time.Second {
@@ -259,7 +259,7 @@ func TestGlobalReturnPenaltyKeepsExistingLimit(t *testing.T) {
 	te := newTestEngine(t, &Config{Schedule: quarantine(time.Second)}, sc, "a1", "b1")
 	te.sel.penalty["a1"] = 2
 	te.switchTo(te.sel, "a1", "return", t0)
-	te.markDown(te.path("a1"), "traffic", true, at(time.Second))
+	te.markDown(te.path("a1"), "traffic", at(time.Second))
 	if got := te.sel.penaltyFor("a1"); got != 3 {
 		t.Fatalf("global penalty multiplier = %v, want capped 3", got)
 	}

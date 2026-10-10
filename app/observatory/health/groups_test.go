@@ -13,7 +13,7 @@ func groupConfig() *SelectorConfig {
 
 func TestGroupStopsAfterConsecutiveFailures(t *testing.T) {
 	te := newTestEngine(t, &Config{Schedule: quarantine(time.Minute)}, groupConfig(), "a1", "a2", "a3", "a4", "a5", "b1")
-	te.markDown(te.path("a2"), "traffic", true, t0)
+	te.markDown(te.path("a2"), "traffic", t0)
 	jobs, _ := te.tick(t0)
 	if len(jobs) != 1 || jobs[0].tag != "a3" {
 		t.Fatalf("first successor: %v", jobs)
@@ -65,7 +65,7 @@ func readyGroupEngine(t *testing.T) *testEngine {
 
 func abandonGroup(t *testing.T, te *testEngine) {
 	t.Helper()
-	te.markDown(te.path("a2"), "traffic", true, t0)
+	te.markDown(te.path("a2"), "traffic", t0)
 	for _, tag := range []string{"a3", "a4", "b1"} {
 		jobs, _ := te.tick(t0)
 		if len(jobs) != 1 || jobs[0].tag != tag {
@@ -123,7 +123,7 @@ func TestGroupSuccessResetsFailures(t *testing.T) {
 	for _, traffic := range []bool{false, true} {
 		t.Run(fmt.Sprint(traffic), func(t *testing.T) {
 			te := readyGroupEngine(t)
-			te.markDown(te.path("a2"), "traffic", true, t0)
+			te.markDown(te.path("a2"), "traffic", t0)
 			jobs, _ := te.tick(t0)
 			if traffic {
 				te.onSuccess("a3", t0)
@@ -143,7 +143,7 @@ func TestGroupSamePriceBeforeExpensiveAndProviderCostKeepsMembership(t *testing.
 	cfg.Paths = append(cfg.Paths, &PathDefinition{Tag: "c", Group: "c"})
 	cfg.Groups = append(cfg.Groups, &PathGroup{Name: "c", Cost: 1, FailedInRowToLeave: 3})
 	te := newTestEngine(t, nil, cfg, "a1", "a2", "b1", "c1", "c2")
-	te.markDown(te.path("a2"), "traffic", true, t0)
+	te.markDown(te.path("a2"), "traffic", t0)
 	jobs, _ := te.tick(t0)
 	if len(jobs) != 1 || jobs[0].tag[0] != 'c' {
 		t.Fatalf("same-price group not first: %v", jobs)
@@ -289,7 +289,7 @@ func TestGroupCandidateAndNetworkLifecycle(t *testing.T) {
 func TestGroupExpiredMemberIsLastReserve(t *testing.T) {
 	te := readyGroupEngine(t)
 	te.expired["a3"] = true
-	te.markDown(te.path("a2"), "traffic", true, t0)
+	te.markDown(te.path("a2"), "traffic", t0)
 	jobs, _ := te.tick(t0)
 	if len(jobs) != 1 || jobs[0].tag != "a4" {
 		t.Fatal("expired member taken before live ring member")
@@ -312,7 +312,7 @@ func TestGroupViewsAndReportCount(t *testing.T) {
 func TestGroupProviderSummaryUsesOwnMembersAndCamelCase(t *testing.T) {
 	cfg := &SelectorConfig{Paths: []*PathDefinition{{Tag: "x", Group: "x"}}, Groups: []*PathGroup{{Name: "x", Cost: 1, FailedInRowToLeave: 1}}, StartOutbound: "p-x1"}
 	te := newProviderEngine(t, quietProvider(nil), cfg, "p-x1", "p-x2", "other-x3")
-	te.markDown(te.path("p-x1"), "traffic", true, t0)
+	te.markDown(te.path("p-x1"), "traffic", t0)
 	body, _, _ := requestOf(t, te, t0)
 	groups, ok := body["groups"].([]any)
 	if !ok || len(groups) != 1 {
@@ -355,7 +355,7 @@ func TestGroupSharedNamesRetainThreePerMinute(t *testing.T) {
 	te := readyGroupEngine(t)
 	te.s.schedule.probesPerServerNamePerMinute = 3
 	te.serverNameFor = func(string) string { return "same.example" }
-	te.markDown(te.path("a2"), "traffic", true, t0)
+	te.markDown(te.path("a2"), "traffic", t0)
 	for _, tag := range []string{"a3", "a4", "b1"} {
 		jobs, _ := te.tick(t0)
 		if len(jobs) != 1 || jobs[0].tag != tag {
@@ -457,8 +457,8 @@ func TestGroupHostLimitCountsGroupsNotMembers(t *testing.T) {
 func TestGroupCurrentFailureCountsOnceAndOldTrafficCannotReviveIt(t *testing.T) {
 	te := readyGroupEngine(t)
 	te.sel.groups["a"].limit = 1
-	te.markDown(te.path("a2"), "traffic", true, t0)
-	te.markDown(te.path("a2"), "traffic", true, t0)
+	te.markDown(te.path("a2"), "traffic", t0)
+	te.markDown(te.path("a2"), "traffic", t0)
 	g := te.sel.groups["a"]
 	if !g.down || g.failed != 1 {
 		t.Fatal("failure counted more than once")
@@ -472,7 +472,7 @@ func TestGroupCurrentFailureCountsOnceAndOldTrafficCannotReviveIt(t *testing.T) 
 func TestGroupRingWrapsAndQuarantineCancelsQueuedReturn(t *testing.T) {
 	te := readyGroupEngine(t)
 	te.switchTo(te.sel, "a5", "start", t0)
-	te.markDown(te.path("a5"), "traffic", true, t0)
+	te.markDown(te.path("a5"), "traffic", t0)
 	jobs, _ := te.tick(t0)
 	if len(jobs) != 1 || jobs[0].tag != "a1" {
 		t.Fatal("ring did not wrap", jobs)
@@ -482,7 +482,7 @@ func TestGroupRingWrapsAndQuarantineCancelsQueuedReturn(t *testing.T) {
 	te.sel.cfg.paths["a2"].cost = 10
 	te.sel.returnToCheaperTarget = "a1"
 	te.enqueue("a1", reasonReturnToCheaper, te.sel.tag, t0)
-	te.markDown(te.path("a2"), "traffic", true, t0)
+	te.markDown(te.path("a2"), "traffic", t0)
 	jobs, _ = te.tick(t0)
 	if len(jobs) != 1 || jobs[0].tag != "b1" || te.sel.returnToCheaperTarget != "" {
 		t.Fatal("abandoned group still probed", jobs)

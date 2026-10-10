@@ -2,17 +2,26 @@ package health
 
 import "time"
 
-// An outbound found down on strong evidence leads nowhere, also for the
-// connections that started before and have received something: a dead
-// WireGuard server answers none of them. Long-lived flows such as DoH or
-// push connections then keep the tunnel awake, and its device repeats the
-// handshake to the dead address for as long as they last, while their
-// applications wait for a timeout of their own. closePending ends at once
-// only the connections that have received nothing yet; for the others the
-// observer notes at the decision what each has received, and stallTimeout
-// later ends those that received nothing since: they cannot progress, and
-// their applications reconnect through the outbound chosen now. A connection
-// that received anything since is kept: the path works for it.
+// An outbound found down leads nowhere, also for the connections that
+// started before and have received something: a dead WireGuard server
+// answers none of them. Long-lived flows such as DoH or push connections
+// then keep the tunnel awake, and its device repeats the handshake to the
+// dead address for as long as they last, while their applications wait for
+// a timeout of their own. closePending ends at once only the connections
+// that have received nothing yet; for the others the observer notes at the
+// decision what each has received, and stallTimeout later ends those that
+// received nothing since: they cannot progress, and their applications
+// reconnect through the outbound chosen now. A connection that received
+// anything since is kept: the path works for it, as an address that refuses
+// new connections may still serve old ones.
+//
+// This holds for every decision but one made while the network check was
+// failing, which ends nothing: the network may be what failed. Failures
+// about the path need no proof, and a probe goes to a destination of ours:
+// one that fails tells that the path is dead, also when it confirmed
+// failures that may have been about destinations. Once the core has left
+// the path, a connection silent on it for stallTimeout does not progress,
+// and its application is better off on the outbound chosen now.
 //
 // The check costs one wake of the loop per decision and none in silence,
 // and reads the counters the trackers keep anyway, nothing per packet.
@@ -27,9 +36,9 @@ type silenceCheck struct {
 	held bool
 }
 
-// watchSilence plans the check of a decision on strong evidence. A later
-// decision about the same outbound replaces the earlier one: the observer
-// notes the connections anew for it.
+// watchSilence plans the check of a decision. A later decision about the
+// same outbound replaces the earlier one: the observer notes the
+// connections anew for it.
 func (e *engine) watchSilence(d downMark) {
 	for i := range e.silences {
 		if e.silences[i].mark.tag == d.tag {

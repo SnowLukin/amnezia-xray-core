@@ -184,6 +184,13 @@ func startWireGuard(t *testing.T, ts *httptest.Server, passive, probe string) *w
 // such as "sleep", as JSON members.
 func startWireGuardWith(t *testing.T, ts *httptest.Server, passive, probe, more string) *wireGuardFailover {
 	t.Helper()
+	return startWireGuardStrategy(t, ts, passive, probe, more, "")
+}
+
+// startWireGuardStrategy is startWireGuardWith with more settings of the
+// leastCost strategy, such as "minHoldTime", as JSON members.
+func startWireGuardStrategy(t *testing.T, ts *httptest.Server, passive, probe, more, strategy string) *wireGuardFailover {
+	t.Helper()
 	if more != "" {
 		more = ", " + more
 	}
@@ -218,7 +225,7 @@ func startWireGuardWith(t *testing.T, ts *httptest.Server, passive, probe, more 
 	  "routing": {"rules": [{"inboundTag": ["server"], "outboundTag": "behind"},
 	                        {"ip": ["10.10.0.0/24"], "balancerTag": "auto"}],
 	    "balancers": [{"tag": "auto", "fallbackTag": "block",
-	      "strategy": {"type": "leastCost", "settings": {}}}]},
+	      "strategy": {"type": "leastCost", "settings": {`+strategy+`}}}]},
 	  "healthObservatory": {
 	    "passive": `+passive+`,
 	    "probes": [`+strings.Replace(probe, `{`, `{"name":"wg",`, 1)+`],
@@ -529,6 +536,109 @@ func TestWireGuardOutboundSleepsOnceItsSilentConnectionsEnd(t *testing.T) {
 	stopUsers()
 	if err := f.get("10.10.0.1", "/small", 10*time.Second); err != nil {
 		t.Fatal("after the failover:", err)
+	}
+}
+
+// A connection opened through w1 while the balancer chose it, and quiet
+// since, holds the tunnel once a pin has moved the balancer to w2. The
+// server of w1 then stops answering, and after the release the balancer
+// tries to return to the cheaper w1: the probe of the return fails, and w1
+// is found down on that probe alone, with no evidence from traffic and no
+// switch. stallTimeout later the observer ends the connection as silent; w1
+// then sleeps with reason down and sends the dead address nothing more. On
+// a phone, push connections kept such a tunnel handshaking with the dead
+// address for over a minute and a half.
+func TestWireGuardUnchosenOutboundProbedDeadSleepsOnceItsSilentConnectionsEnd(t *testing.T) {
+	const stall = 2 * time.Second
+	ts := targetServer(t)
+	f := startWireGuardStrategy(t, ts, `{"stallTimeout": "2s", "sweepInterval": "50ms"}`,
+		`{"destination": "http://10.10.0.1/probe", "timeout": "8s", "progressTimeout": "3s"}`, "",
+		`"minHoldTime": "1s", "returnToCheaper": {"interval": "1s", "hasRandomPhase": false, "probesToReturn": 1}`)
+	if err := f.get("10.10.0.1", "/small", 10*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.active(t); got != "w1" {
+		t.Fatalf("the balancer chose %q, want w1", got)
+	}
+	// A keep-alive connection that got its answer and waits for the next
+	// request, which never comes.
+	held, err := core.Dial(context.Background(), f.inst, net.TCPDestination(net.ParseAddress("10.10.0.1"), 80))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer held.Close()
+	if _, err := fmt.Fprintf(held, "GET /small HTTP/1.1\r\nHost: target\r\n\r\n"); err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.ReadResponse(bufio.NewReader(held), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.Copy(io.Discard, resp.Body); err != nil {
+		t.Fatal(err)
+	}
+	ended := make(chan struct{})
+	go func() {
+		held.Read(make([]byte, 1))
+		close(ended)
+	}()
+
+	from := f.mark()
+	if !f.obs.Pin("auto", "w2", "") {
+		t.Fatal("pin to w2 refused")
+	}
+	if sw := f.first(from, "switch", nil); sw.Fields["from"] != "w1" || sw.Fields["to"] != "w2" {
+		t.Fatalf("switch %v, want from w1 to w2", sw.Fields)
+	}
+	f.w1.blocked.Store(true)
+	if !f.obs.Release("auto", "") {
+		t.Fatal("release refused")
+	}
+	probe := f.within(from, "probe_result", about("w1"), 20*time.Second)
+	if probe.Fields["reason"] != "return" || probe.Fields["is_ok"] != false {
+		t.Fatalf("probe of w1 %v, want the return probe, failed", probe.Fields)
+	}
+	down := f.first(from, "path_state", stateOf("w1", "down"))
+	if down.Fields["reason"] != "return_probe" {
+		t.Fatalf("w1 down %v, want by the return probe", down.Fields)
+	}
+	closed := f.within(from, "pending_closed", func(e health.Event) bool {
+		return e.Fields["outbound"] == "w1" && e.Fields["is_silent"] == true
+	}, stall+15*time.Second)
+	if after := time.Duration(closed.Time-down.Time) * time.Millisecond; closed.Fields["connections"] != float64(1) ||
+		closed.Fields["reason"] != "return_probe" || after < stall-10*time.Millisecond || after > stall+2*time.Second {
+		t.Fatalf("silent close %v, %v after the decision; want the held connection, stallTimeout %v after", closed.Fields,
+			after, stall)
+	}
+	select {
+	case <-ended:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the held connection is still open after the silent close")
+	}
+	slept := f.within(from, "outbound_sleep", about("w1"), 10*time.Second)
+	if slept.Fields["reason"] != "down" || slept.Time < closed.Time {
+		t.Fatalf("w1 slept with %v at %d, silent close at %d; want reason down after the close: the held "+
+			"connection keeps it awake until then", slept.Fields, slept.Time, closed.Time)
+	}
+	if after := time.Duration(slept.Time-closed.Time) * time.Millisecond; after > 2*time.Second {
+		t.Fatalf("w1 slept %v after the silent close, want at once", after)
+	}
+	for _, e := range f.events.since(from, "path_state") {
+		if e.Fields["outbound"] == "w1" && e.Fields["state"] == "suspect" {
+			t.Fatalf("w1 suspect by its traffic: %v; want the probe alone to rule it out", e.Fields)
+		}
+	}
+	// Awake, its device would repeat a handshake every 5 s.
+	sent := f.w1.sent.Load()
+	time.Sleep(6 * time.Second)
+	if n := f.w1.sent.Load() - sent; n != 0 {
+		t.Fatalf("%d datagrams to the dead address after w1 slept", n)
+	}
+	if got := f.active(t); got != "w2" {
+		t.Fatalf("the balancer is on %q, want w2", got)
+	}
+	if err := f.get("10.10.0.1", "/small", 10*time.Second); err != nil {
+		t.Fatal("through w2:", err)
 	}
 }
 

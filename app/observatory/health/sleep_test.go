@@ -524,7 +524,7 @@ func newDownFixture(t *testing.T) *sleepFixture {
 // balancer leaves it unless pinned to it.
 func (f *sleepFixture) failW1(now time.Time) {
 	f.now = now
-	f.engine(func(e *engine) { e.markDown(e.pathAt("w1", now), "traffic", true, now) })
+	f.engine(func(e *engine) { e.markDown(e.pathAt("w1", now), "traffic", now) })
 }
 
 func (f *sleepFixture) quarantineEnd() time.Time {
@@ -628,48 +628,83 @@ func TestDownSleepRetriesSoon(t *testing.T) {
 }
 
 // A connection from before the decision that keeps a dead outbound awake
-// and falls silent is ended stallTimeout after it. Its end starts the
-// retries afresh and turns the loop, which puts the outbound to sleep at
-// once, not when a retry that had grown meanwhile is due.
+// and falls silent is ended stallTimeout after it, whether failures of the
+// chosen outbound or a failed probe of one no balancer chooses ruled it out.
+// While the connection holds it the outbound refuses to sleep, and the
+// retries grow; the end starts them afresh and turns the loop, which puts
+// the outbound to sleep at once, not when a retry that had grown meanwhile
+// is due.
 func TestSilentCloseLetsADownOutboundSleepAtOnce(t *testing.T) {
-	f := newDownFixture(t)
-	// The test sweeps nothing.
-	f.o.sweeping = true
-	from := at(time.Minute)
-	f.now = from.Add(-time.Second)
-	ended := false
-	tr := f.o.StartDial(context.Background(), "w1", net.Destination{}, func() { ended = true }).(*connTracker)
-	r, _ := tr.Dialed(nil, nil, nil, nil)
-	r.Add(100)
-	f.failW1(from)
-	now := from
-	for _, want := range []time.Duration{0, 5 * time.Second} {
-		now = from.Add(want)
-		f.turn(now)
-		if n := f.proxies["w1"].asked(); n != 0 {
-			t.Fatalf("Sleep called %d times under a connection the observer follows", n)
-		}
-	}
-	if ended || f.asleep(t, "w1") {
-		t.Fatalf("before stallTimeout: ended %v", ended)
-	}
-	drainKick(f.o)
-	now = from.Add(defaultStallTimeout)
-	f.turn(now)
-	if !ended {
-		t.Fatal("the silent connection was not ended stallTimeout after the decision")
-	}
-	f.now = now.Add(10 * time.Millisecond)
-	tr.Finished(context.Canceled)
-	select {
-	case <-f.o.kick:
-	default:
-		t.Fatal("the end of the connection the observer ended did not turn the loop")
-	}
-	f.turn(f.now)
-	evs := f.sleeps(t)
-	if len(evs) != 1 || evs[0].Fields["reason"] != "down" || !f.asleep(t, "w1") {
-		t.Fatalf("after the silent close: events %+v", evs)
+	for _, tc := range []struct {
+		name string
+		// fixture returns the observer with w1 used; down rules w1 out at now.
+		fixture func(t *testing.T) *sleepFixture
+		down    func(f *sleepFixture, now time.Time)
+	}{
+		{"failures of the chosen outbound", newDownFixture, func(f *sleepFixture, now time.Time) { f.failW1(now) }},
+		{"failed probe of an unchosen outbound", func(t *testing.T) *sleepFixture {
+			f := newSleepFixture(t, nil, &SelectorConfig{Paths: pathSpecs("a", 1, "w", 3), SkipProbeBeforeSwitch: true}, "a1", "w1")
+			f.use("w1", t0)
+			return f
+		}, func(f *sleepFixture, now time.Time) {
+			f.now = now
+			f.engine(func(e *engine) {
+				e.nextID++
+				j := &probeJob{id: e.nextID, tag: "w1", reason: reasonHost, selector: "auto", generation: e.generation}
+				e.begin(j, now)
+				e.onProbeResult(j, probeResult{err: "timeout", class: "timeout"}, now)
+				if p := e.paths["w1"]; p.status != statusDown || e.selectors["auto"].current() != "a1" {
+					t.Fatalf("setup: w1 %v, the balancer on %q; want w1 down and a1 chosen", p.status,
+						e.selectors["auto"].current())
+				}
+			})
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := tc.fixture(t)
+			// The test sweeps nothing.
+			f.o.sweeping = true
+			from := at(time.Minute)
+			f.now = from.Add(-time.Second)
+			ended := false
+			tr := f.o.StartDial(context.Background(), "w1", net.Destination{}, func() { ended = true }).(*connTracker)
+			r, _ := tr.Dialed(nil, nil, nil, nil)
+			r.Add(100)
+			tc.down(f, from)
+			for _, after := range []time.Duration{0, 5 * time.Second} {
+				f.turn(from.Add(after))
+				if n := f.proxies["w1"].asked(); n != 0 {
+					t.Fatalf("Sleep called %d times under a connection the observer follows", n)
+				}
+			}
+			var retry time.Time
+			f.engine(func(e *engine) { retry = e.paths["w1"].nextSleepTry })
+			if due := from.Add(defaultStallTimeout); !retry.After(due.Add(time.Second)) {
+				t.Fatalf("setup: the next retry %v after the decision, want one that grew past stallTimeout",
+					retry.Sub(from))
+			}
+			if ended || f.asleep(t, "w1") {
+				t.Fatalf("before stallTimeout: ended %v", ended)
+			}
+			drainKick(f.o)
+			now := from.Add(defaultStallTimeout)
+			f.turn(now)
+			if !ended {
+				t.Fatal("the silent connection was not ended stallTimeout after the decision")
+			}
+			f.now = now.Add(10 * time.Millisecond)
+			tr.Finished(context.Canceled)
+			select {
+			case <-f.o.kick:
+			default:
+				t.Fatal("the end of the connection the observer ended did not turn the loop")
+			}
+			f.turn(f.now)
+			evs := f.sleeps(t)
+			if len(evs) != 1 || evs[0].Fields["reason"] != "down" || !f.asleep(t, "w1") {
+				t.Fatalf("after the silent close: events %+v", evs)
+			}
+		})
 	}
 }
 

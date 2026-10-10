@@ -70,7 +70,7 @@ func TestHostProbePlan(t *testing.T) {
 	sc := &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3, "c", 5)}
 	sc.Paths[2].IsLazy = true
 	te := newTestEngine(t, hostConfig(nil), sc, "a1", "a2", "b1", "b2", "c1")
-	te.markDown(te.path("a2"), "probe", false, at(0))
+	te.markDown(te.path("a2"), "probe", at(0))
 	te.onSuccess("b2", at(0))
 	r := te.ask(t, at(time.Second))
 	want := []string{"a1 pending/", "b1 pending/", "b2 ok/recent", "a2 down/quarantine"}
