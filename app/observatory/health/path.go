@@ -90,6 +90,9 @@ type path struct {
 	// Failures since the last proof that the path works.
 	failures    []failure
 	lastSuccess time.Time
+	// Start of the newest connection that received bytes. Dial failures
+	// from older connections may arrive after that reply.
+	lastAnsweredStart int64
 
 	// After a probe cleared a suspicion, new suspicions from weak evidence wait
 	// until this time. The wait grows with every false alarm in a row.

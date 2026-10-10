@@ -143,6 +143,12 @@ ends nothing more: the path may still serve the destinations it served. A
 spliced connection is judged by what its socket received; on a platform
 that does not tell, it is kept. `shouldKeepSilentOnDown` turns this off.
 
+A first reply on a newer connection makes delayed dial and handshake
+errors from older connections obsolete. That reply alone does not mark
+the path up: `successBytes` still decides that. An old connection that
+keeps carrying traffic does not hide failures of newer dials, and
+destination-specific response and stall failures still count.
+
 A decision made while the network check was failing ends nothing.
 
 ## Durations

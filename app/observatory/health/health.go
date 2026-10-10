@@ -528,12 +528,26 @@ func (o *Observer) sweepLoop(done chan struct{}) {
 func (o *Observer) failure(t *connTracker, kind failureKind) {
 	o.mu.Lock()
 	o.e.used(t.tag, o.now())
-	stale := kind.pathLevel() && o.e.startedInPause(o.base.Add(time.Duration(t.started)))
+	stale := false
+	if kind.pathLevel() {
+		p := o.e.paths[t.tag]
+		stale = o.e.startedInPause(o.base.Add(time.Duration(t.started))) ||
+			(p != nil && t.started < p.lastAnsweredStart)
+	}
 	if t.network == o.e.generation && !stale {
 		o.e.onFailure(t.tag, kind, t.target, t.conn, o.now())
 	}
 	o.mu.Unlock()
 	o.wake()
+}
+
+func (o *Observer) answered(t *connTracker) {
+	o.mu.Lock()
+	if t.network == o.e.generation {
+		p := o.e.pathAt(t.tag, o.now())
+		p.lastAnsweredStart = max(p.lastAnsweredStart, t.started)
+	}
+	o.mu.Unlock()
 }
 
 func (o *Observer) success(t *connTracker) {

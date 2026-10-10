@@ -36,8 +36,8 @@ const (
 const trackerAbandoned = 10 * time.Minute
 
 // connTracker follows one user connection. The counters it returns from
-// Dialed are on the hot path and only touch atomics; the observer is
-// involved once per deadline, not per packet.
+// Dialed keep per-read state in atomics; the observer is
+// involved on the first reply, success and deadlines, not per packet.
 type connTracker struct {
 	o      *Observer
 	tag    string
@@ -172,6 +172,9 @@ func (t *connTracker) sweepSpliced(now int64) bool {
 	if rx > t.kernelRx.Load() {
 		t.kernelRx.Store(rx)
 		t.lastRead.Store(now)
+		if t.firstRead.CompareAndSwap(0, now) {
+			t.o.answered(t)
+		}
 	}
 	got := t.bytesRead.Load() + int64(rx-t.kernelBase.Load())
 	if got >= p.successBytes {
@@ -214,6 +217,7 @@ func (t *connTracker) onRead(n int64) {
 	now := t.o.nowNano()
 	t.lastRead.Store(now)
 	if t.firstRead.Load() == 0 && t.firstRead.CompareAndSwap(0, now) {
+		t.o.answered(t)
 		from := t.firstWrite.Load()
 		if from == 0 {
 			from = t.dialed.Load()

@@ -491,15 +491,18 @@ func TestWireGuardOutboundSleepsOnceItsSilentConnectionsEnd(t *testing.T) {
 	stopUsers := f.users()
 	defer stopUsers()
 	down := f.first(from, "path_state", stateOf("w1", "down"))
-	if sw := f.first(from, "switch", nil); sw.Fields["from"] != "w1" || sw.Fields["to"] != "w2" {
+	sw := f.first(from, "switch", nil)
+	if sw.Fields["from"] != "w1" || sw.Fields["to"] != "w2" {
 		t.Fatalf("switch %v, want failover from w1 to w2", sw.Fields)
 	}
 	closed := f.first(from, "pending_closed", func(e health.Event) bool {
 		return e.Fields["outbound"] == "w1" && e.Fields["is_silent"] == true
 	})
+	due := max(down.Time+stall.Milliseconds(), sw.Time)
 	if after := time.Duration(closed.Time-down.Time) * time.Millisecond; closed.Fields["connections"] != float64(1) ||
-		after < stall-10*time.Millisecond || after > stall+2*time.Second {
-		t.Fatalf("silent close %v, %v after the decision; want the held connection, stallTimeout %v after", closed.Fields, after, stall)
+		after < stall-10*time.Millisecond || closed.Time < sw.Time || time.Duration(closed.Time-due)*time.Millisecond > 2*time.Second {
+		t.Fatalf("silent close %v at %d, %v after the decision; want the held connection between %d and %d after stallTimeout and switch",
+			closed.Fields, closed.Time, after, due, due+2000)
 	}
 	select {
 	case <-ended:
