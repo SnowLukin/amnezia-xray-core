@@ -67,15 +67,23 @@ func TestProbeEndsByItsDeadlineAndLeavesNothing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer ln.Close()
 	var held []gonet.Conn
+	acceptDone := make(chan struct{})
 	go func() {
+		defer close(acceptDone)
 		for {
 			c, err := ln.Accept()
 			if err != nil {
 				return
 			}
 			held = append(held, c)
+		}
+	}()
+	defer func() {
+		ln.Close()
+		<-acceptDone
+		for _, c := range held {
+			c.Close()
 		}
 	}()
 	o := probeInstance(t)
