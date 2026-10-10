@@ -780,7 +780,7 @@ count again, and the end of a connection the observatory ended has it ask
 at once: an outbound found down sleeps as soon as the connections ended for
 it are gone. Whether an outbound can sleep at all is asked at its first
 use, and again only once a provider replaced its handler; one that cannot
-is never asked to sleep. A sleeping outbound shows `asleep` in Status, and
+is never asked to sleep. A sleeping outbound shows `is_asleep` in Status, and
 every sleep writes `outbound_sleep`.
 Without user traffic the observatory still wakes for this, once per used
 outbound `sleep.afterLastUse` after its last use and for the retries; once

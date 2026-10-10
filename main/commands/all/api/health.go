@@ -44,7 +44,7 @@ Commands:
 	                            default the one it uses and its other
 	                            candidates; waits for the result up to
 	                            the timeout and prints the request with
-	                            done false when it is not over yet
+	                            is_done false when it is not over yet
 	headers <provider>          put headers over those of the config for
 	                            the requests of the provider, such as a new
 	                            token, from a JSON object on stdin:
