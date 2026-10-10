@@ -222,6 +222,9 @@ type tunnelDial struct {
 	// The connection failed inside the tunnel before any answer, so an
 	// answer from now on only shows that the tunnel was slow.
 	late bool
+	// The server answered nothing for answerWait: the connection asks for
+	// no more handshakes, see giveUp.
+	unanswered bool
 	// Closed once Dialed has been called.
 	settled chan struct{}
 	// What Dialed returned for the connection inside the tunnel; a UDP flow
@@ -304,7 +307,7 @@ func (t *tunnelDial) poll() {
 		return
 	}
 	if time.Since(t.since) >= answerWait {
-		t.settle(errNoAnswer)
+		t.giveUp()
 		return
 	}
 	if !t.h.askHandshake() {
@@ -317,6 +320,25 @@ func (t *tunnelDial) poll() {
 		t.timer.Reset(answerPoll)
 	}
 	t.mu.Unlock()
+}
+
+// giveUp stops asking the server for handshakes once it has answered nothing
+// for answerWait: the tunnel does not work. A connection that failed inside
+// the tunnel meanwhile ends its dial with that verdict. One that still waits
+// there, as a TCP connection whose SYN the stack repeats until the handshake
+// timeout of its policy, 60 s by default, keeps its dial open: the observer
+// has timed it out by then, and it must still see the connection to end it
+// when it finds the outbound down, as it does a dial to a server that hangs.
+// Ended there, the connection would wait unseen and hold the tunnel awake,
+// its device handshaking with the dead address.
+func (t *tunnelDial) giveUp() {
+	t.mu.Lock()
+	t.unanswered = true
+	late := t.late
+	t.mu.Unlock()
+	if late {
+		t.settle(errNoAnswer)
+	}
 }
 
 // answeredNow ends the dial when the server has answered since the
@@ -398,13 +420,23 @@ func (t *tunnelDial) openedPacket(pc net.PacketConn) net.PacketConn {
 // nothing yet, and the connection waits for the verdict, at most answerWait
 // since it entered the tunnel: no answer means that the tunnel does not
 // work, a late answer that it was only slow, which is held against nothing.
+// Past that wait the verdict is in.
 func (t *tunnelDial) failedInside() {
 	if t == nil || t.answeredNow() {
 		return
 	}
 	t.mu.Lock()
 	t.late = true
+	unanswered := t.unanswered
 	t.mu.Unlock()
+	if unanswered {
+		if t.ctx.Err() != nil {
+			t.settle(context.Canceled)
+		} else {
+			t.settle(errNoAnswer)
+		}
+		return
+	}
 	select {
 	case <-t.settled:
 	case <-t.ctx.Done():

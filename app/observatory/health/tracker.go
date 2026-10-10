@@ -290,7 +290,11 @@ func (t *connTracker) sweep(now int64) (watching, drop bool) {
 			t.o.failure(t, failDialTimeout)
 		}
 		// A dial that never reports back would otherwise be watched forever.
-		return true, now-t.started > 4*int64(p.dialTimeout)
+		// It stays tracked until it ends: a connection waiting inside a
+		// tunnel, whose dial ends only when the server answers, may wait
+		// longer, and closePending must still end it when its outbound is
+		// found down. An abandoned one goes with the others, see track.
+		return now-t.started <= 4*int64(p.dialTimeout), false
 	case trackerOpen:
 	default:
 		return false, true

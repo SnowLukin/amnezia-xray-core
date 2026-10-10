@@ -582,6 +582,69 @@ func TestAbortedDialAsksForNoHandshake(t *testing.T) {
 	waitFor(t, 15*time.Second, "the handshake asked for", func() bool { return r.sent.Load() > sent })
 }
 
+// A connection the server has not answered for answerWait asks for no more
+// handshakes, but while it still waits inside the tunnel, as a TCP dial
+// whose SYN the stack repeats does, its dial stays open: the observer has
+// timed it out by then, and must still see the connection to end it once it
+// finds the outbound down. Failing inside the tunnel afterwards ends the
+// dial at once, as a server that never answered, or as canceled when the
+// observer or the user ended the connection.
+func TestUnansweredDialStaysOpenWhileTheConnectionWaits(t *testing.T) {
+	priv, pub := testKeys(t)
+	addr := netip.MustParseAddr("10.9.0.2")
+	s := startTestServer(t, testParams, testPeer{pub, addr})
+	r := startTestRelay(t, s.endpoint)
+	conf := testClientConf(s, priv, addr, testParams)
+	conf.Peers[0].Endpoint = r.addr
+	c := newBareClient(t, conf, nil)
+	h, err := c.acquire(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.release()
+	h.askHandshake()
+	waitFor(t, 15*time.Second, "a handshake", func() bool { return h.recv.Load() > 0 })
+	r.freeze()
+
+	type waiting struct {
+		rec   *dialRecorder
+		td    *tunnelDial
+		abort context.CancelFunc
+	}
+	var dials [2]waiting
+	for i := range dials {
+		ctx, abort := context.WithCancel(context.Background())
+		defer abort()
+		rec := &dialRecorder{dialed: make(chan error, 1)}
+		dials[i] = waiting{rec, &tunnelDial{h: h, tracker: rec, ctx: ctx, settled: make(chan struct{})}, abort}
+		dials[i].td.entered()
+	}
+	time.Sleep(answerWait + time.Second)
+	for _, d := range dials {
+		select {
+		case err := <-d.rec.dialed:
+			t.Fatalf("the dial ended with %v while its connection still waits inside the tunnel", err)
+		default:
+		}
+	}
+	dials[1].abort()
+	for i, want := range []error{errNoAnswer, context.Canceled} {
+		start := time.Now()
+		dials[i].td.failedInside()
+		if took := time.Since(start); took > time.Second {
+			t.Fatalf("a connection that failed inside the tunnel past the wait waited %v more", took)
+		}
+		select {
+		case err := <-dials[i].rec.dialed:
+			if !goerrors.Is(err, want) {
+				t.Fatalf("the dial ended with %v, want %v", err, want)
+			}
+		default:
+			t.Fatal("the dial still waits after the connection failed inside the tunnel")
+		}
+	}
+}
+
 // A connection the observer gives up on while it resolves its destination
 // inside a dead tunnel ends at once: its lookup sends the server no more
 // queries, and nothing holds the outbound back from sleeping, which ends

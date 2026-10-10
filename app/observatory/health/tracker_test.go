@@ -183,8 +183,10 @@ func TestDialTimeoutAndStuckDial(t *testing.T) {
 		t.Fatalf("slow dial: failures %d watching %v drop %v", failures(o, failDialTimeout), watching, drop)
 	}
 	clk.advance(30 * time.Second)
-	if _, drop := tr.sweep(o.nowNano()); !drop {
-		t.Fatalf("a dial that never reported back is kept forever")
+	// Still tracked, so that a down of its outbound ends its connection,
+	// which may wait inside a tunnel for longer.
+	if watching, drop := tr.sweep(o.nowNano()); watching || drop {
+		t.Fatalf("a dial that never reported back: watching %v drop %v; want it watched no more but kept", watching, drop)
 	}
 }
 

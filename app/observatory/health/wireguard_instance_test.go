@@ -642,6 +642,106 @@ func TestWireGuardUnchosenOutboundProbedDeadSleepsOnceItsSilentConnectionsEnd(t 
 	}
 }
 
+// A connection that starts through w1 after its server stopped answering
+// waits inside the tunnel for the answer to its SYN, which never comes, while
+// its client waits for a timeout of its own. The tunnel stops asking the
+// server for handshakes for it 11 s after it entered, but the connection
+// goes on waiting, for the handshake timeout of its policy, 60 s by default,
+// and holds the tunnel awake. w1, found down later on a failed probe, ends it
+// as a connection that has received nothing: at the decision, or as silent
+// stallTimeout later when shouldKeepPendingOnDown keeps it then; w1 then
+// sleeps at once. On a phone such a connection outlived both and kept the
+// device handshaking with the dead address for 49 s after the down.
+func TestWireGuardConnectionWaitingInADeadTunnelEndsWhenItsOutboundIsDown(t *testing.T) {
+	for _, keepPending := range []bool{false, true} {
+		name := "pending"
+		if keepPending {
+			name = "silent"
+		}
+		t.Run(name, func(t *testing.T) {
+			const stall = 2 * time.Second
+			ts := targetServer(t)
+			f := startWireGuard(t, ts, `{"stallTimeout": "2s", "sweepInterval": "50ms", "shouldKeepPendingOnDown": `+
+				strconv.FormatBool(keepPending)+`}`, `{"destination": "http://10.10.0.1/probe", "timeout": "8s", "progressTimeout": "6s"}`)
+			if err := f.get("10.10.0.1", "/small", 10*time.Second); err != nil {
+				t.Fatal(err)
+			}
+			if got := f.active(t); got != "w1" {
+				t.Fatalf("the balancer chose %q, want w1", got)
+			}
+			from := f.mark()
+			f.w1.blocked.Store(true)
+			sent := f.w1.sent.Load()
+			waiting, err := core.Dial(context.Background(), f.inst, net.TCPDestination(net.ParseAddress("10.10.0.1"), 80))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer waiting.Close()
+			if _, err := fmt.Fprintf(waiting, "GET /small HTTP/1.1\r\nHost: target\r\n\r\n"); err != nil {
+				t.Fatal(err)
+			}
+			ended := make(chan time.Time, 1)
+			go func() {
+				waiting.Read(make([]byte, 1))
+				ended <- time.Now()
+			}()
+			for deadline := time.Now().Add(10 * time.Second); f.w1.sent.Load() == sent; time.Sleep(20 * time.Millisecond) {
+				if time.Now().After(deadline) {
+					t.Fatal("the connection sent nothing into the tunnel")
+				}
+			}
+			// Past the 11 s the tunnel asks the server for handshakes for the
+			// connection.
+			time.Sleep(13 * time.Second)
+			select {
+			case <-ended:
+				t.Fatal("the connection ended before w1 was found down")
+			default:
+			}
+			if _, err := f.obs.RequestProbe(health.ProbeRequest{Balancer: "auto", Outbounds: []string{"w1"}}); err != nil {
+				t.Fatal(err)
+			}
+			down := f.within(from, "path_state", stateOf("w1", "down"), 20*time.Second)
+			if down.Fields["reason"] != "host_probe" {
+				t.Fatalf("w1 down %v, want by the probe of the host", down.Fields)
+			}
+			closed := f.within(from, "pending_closed", func(e health.Event) bool {
+				return e.Fields["outbound"] == "w1" && (e.Fields["is_silent"] == true) == keepPending
+			}, stall+15*time.Second)
+			after := time.Duration(closed.Time-down.Time) * time.Millisecond
+			if keepPending && (after < stall-10*time.Millisecond || after > stall+2*time.Second) ||
+				!keepPending && after > time.Second {
+				t.Fatalf("pending_closed %v %v after the decision", closed.Fields, after)
+			}
+			select {
+			case at := <-ended:
+				if d := at.Sub(time.UnixMilli(closed.Time)); d > 2*time.Second {
+					t.Fatalf("the connection ended %v after the close", d)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("the connection waiting in the dead tunnel is still open after the close")
+			}
+			// The balancer leaves w1 once the probe of w2 passes.
+			sw := f.within(from, "switch", nil, 15*time.Second)
+			if sw.Fields["from"] != "w1" || sw.Fields["to"] != "w2" {
+				t.Fatalf("switch %v, want failover from w1 to w2", sw.Fields)
+			}
+			due := max(closed.Time, sw.Time)
+			slept := f.within(from, "outbound_sleep", about("w1"), 10*time.Second)
+			if slept.Fields["reason"] != "down" || slept.Time < closed.Time || time.Duration(slept.Time-due)*time.Millisecond > 2*time.Second {
+				t.Fatalf("w1 slept with %v at %d, the connection closed at %d and the balancer left at %d; want reason "+
+					"down at once after both", slept.Fields, slept.Time, closed.Time, sw.Time)
+			}
+			// Awake, its device would repeat a handshake every 5 s.
+			sent = f.w1.sent.Load()
+			time.Sleep(6 * time.Second)
+			if n := f.w1.sent.Load() - sent; n != 0 {
+				t.Fatalf("%d datagrams to the dead address after w1 slept", n)
+			}
+		})
+	}
+}
+
 // A WireGuard tunnel that freezes mid-transfer stalls the downloads in it.
 // Stalls at two destinations make the outbound suspect, a probe confirms
 // it, and the balancer moves to the next outbound, through traffic alone.
