@@ -11,82 +11,81 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/xtls/xray-core/app/observatory/health"
-	"github.com/xtls/xray-core/app/router"
 	"github.com/xtls/xray-core/common/errors"
 	"github.com/xtls/xray-core/infra/conf/cfgcommon/duration"
 )
 
 type HealthBackoffConfig struct {
-	Initial    duration.Duration `json:"initial"`
-	Multiplier float64           `json:"multiplier"`
-	Max        duration.Duration `json:"max"`
-	Jitter     float64           `json:"jitter"`
+	InitialDelay   *duration.Duration `json:"initialDelay"`
+	Multiplier     float64            `json:"multiplier"`
+	MaxDelay       *duration.Duration `json:"maxDelay"`
+	JitterFraction float64            `json:"jitterFraction"`
 }
 
 func (b *HealthBackoffConfig) build() (*health.Backoff, error) {
 	if b == nil {
 		return nil, nil
 	}
-	if b.Jitter < 0 || b.Jitter >= 1 {
-		return nil, errors.New("healthObservatory: jitter must be in [0, 1)")
+	if b.JitterFraction < 0 || b.JitterFraction >= 1 {
+		return nil, errors.New("healthObservatory: jitterFraction must be in [0, 1)")
 	}
-	return &health.Backoff{Initial: int64(b.Initial), Multiplier: b.Multiplier, Max: int64(b.Max), Jitter: b.Jitter}, nil
+	return &health.Backoff{InitialDelay: optionalDuration(b.InitialDelay), Multiplier: b.Multiplier, MaxDelay: optionalDuration(b.MaxDelay), JitterFraction: b.JitterFraction}, nil
 }
 
 type HealthPassiveConfig struct {
-	Window               duration.Duration `json:"window"`
-	DialTimeout          duration.Duration `json:"dialTimeout"`
-	FirstByteTimeout     duration.Duration `json:"firstByteTimeout"`
-	StallTimeout         duration.Duration `json:"stallTimeout"`
-	Failures             int32             `json:"failures"`
-	DistinctTargets      int32             `json:"distinctTargets"`
-	SuccessBytes         int64             `json:"successBytes"`
-	SweepInterval        duration.Duration `json:"sweepInterval"`
-	DialOnly             bool              `json:"dialOnly"`
-	PartialStallAge      duration.Duration `json:"partialStallMaxAge"`
-	NoPartialStalls      bool              `json:"ignorePartialStalls"`
-	StallMinWriteBytes   int64             `json:"stallMinWriteBytes"`
-	PartialStallMinBytes int64             `json:"partialStallMinBytes"`
-	KeepPendingOnDown    bool              `json:"keepPendingOnDown"`
-	KeepSilentOnDown     bool              `json:"keepSilentOnDown"`
+	Window                    *duration.Duration `json:"window"`
+	DialTimeout               *duration.Duration `json:"dialTimeout"`
+	FirstByteTimeout          *duration.Duration `json:"firstByteTimeout"`
+	StallTimeout              *duration.Duration `json:"stallTimeout"`
+	FailuresToSuspect         int32              `json:"failuresToSuspect"`
+	MinDistinctTargets        int32              `json:"minDistinctTargets"`
+	SuccessBytes              int64              `json:"successBytes"`
+	SweepInterval             *duration.Duration `json:"sweepInterval"`
+	IsDialOnly                bool               `json:"isDialOnly"`
+	PartialStallAge           *duration.Duration `json:"partialStallMaxAge"`
+	ShouldIgnorePartialStalls bool               `json:"shouldIgnorePartialStalls"`
+	StallMinWriteBytes        int64              `json:"stallMinWriteBytes"`
+	PartialStallMinBytes      int64              `json:"partialStallMinBytes"`
+	ShouldKeepPendingOnDown   bool               `json:"shouldKeepPendingOnDown"`
+	ShouldKeepSilentOnDown    bool               `json:"shouldKeepSilentOnDown"`
 }
 
 type HealthProbeConfig struct {
-	Selector        StringList        `json:"selector"`
-	Destination     string            `json:"destination"`
-	Method          string            `json:"method"`
-	ExpectStatus    []int32           `json:"expectStatus"`
-	MinBytes        int64             `json:"minBytes"`
-	Timeout         duration.Duration `json:"timeout"`
-	ProgressTimeout duration.Duration `json:"progressTimeout"`
+	Selector         StringList         `json:"selector"`
+	Destination      string             `json:"destination"`
+	Method           string             `json:"method"`
+	ExpectedStatuses []int32            `json:"expectedStatuses"`
+	MinBytes         int64              `json:"minBytes"`
+	Timeout          *duration.Duration `json:"timeout"`
+	ProgressTimeout  *duration.Duration `json:"progressTimeout"`
 }
 
 type HealthConnectivityConfig struct {
-	Outbound    string               `json:"outbound"`
-	Destination string               `json:"destination"`
-	Timeout     duration.Duration    `json:"timeout"`
-	Recheck     *HealthBackoffConfig `json:"recheck"`
-	MaxPause    duration.Duration    `json:"maxPause"`
-	Witnesses   StringList           `json:"witnesses"`
+	Outbound       string               `json:"outbound"`
+	Destination    string               `json:"destination"`
+	Timeout        *duration.Duration   `json:"timeout"`
+	RecheckBackoff *HealthBackoffConfig `json:"recheckBackoff"`
+	MaxPause       *duration.Duration   `json:"maxPause"`
+	Witnesses      StringList           `json:"witnesses"`
 }
 
 type HealthScheduleConfig struct {
-	PauseWhenIdle          duration.Duration       `json:"pauseWhenIdle"`
-	Quarantine             *HealthBackoffConfig    `json:"quarantine"`
-	Concurrent             int32                   `json:"concurrent"`
-	Spacing                duration.Duration       `json:"spacing"`
-	SpacingJitter          float64                 `json:"spacingJitter"`
-	PerServerNamePerMinute int32                   `json:"perServerNamePerMinute"`
-	PerMinute              int32                   `json:"perMinute"`
-	SuspectCooldown        duration.Duration       `json:"suspectCooldown"`
-	HostProbes             *HealthHostProbesConfig `json:"hostProbes"`
+	IdleAfter                    *duration.Duration      `json:"idleAfter"`
+	Quarantine                   *HealthBackoffConfig    `json:"quarantine"`
+	MaxConcurrentProbes          int32                   `json:"maxConcurrentProbes"`
+	MinProbeInterval             *duration.Duration      `json:"minProbeInterval"`
+	ProbeJitterFraction          float64                 `json:"probeJitterFraction"`
+	ProbesPerServerNamePerMinute int32                   `json:"probesPerServerNamePerMinute"`
+	ProbesPerMinute              int32                   `json:"probesPerMinute"`
+	SuspectCooldown              *duration.Duration      `json:"suspectCooldown"`
+	HostProbes                   *HealthHostProbesConfig `json:"hostProbes"`
 }
 
 type HealthHostProbesConfig struct {
-	PerMinute    int32             `json:"perMinute"`
-	Reuse        duration.Duration `json:"reuse"`
-	MaxOutbounds int32             `json:"maxOutbounds"`
-	Timeout      duration.Duration `json:"timeout"`
+	ProbesPerMinute int32              `json:"probesPerMinute"`
+	ReuseWindow     *duration.Duration `json:"reuseWindow"`
+	MaxOutbounds    int32              `json:"maxOutbounds"`
+	Timeout         *duration.Duration `json:"timeout"`
 }
 
 type HealthEventsConfig struct {
@@ -95,8 +94,8 @@ type HealthEventsConfig struct {
 }
 
 type HealthNetworkConfig struct {
-	Remember    *bool `json:"remember"`
-	MaxNetworks int32 `json:"maxNetworks"`
+	ShouldRememberNetworks *bool `json:"shouldRememberNetworks"`
+	MaxNetworks            int32 `json:"maxNetworks"`
 }
 
 type HealthReportConfig struct {
@@ -104,38 +103,38 @@ type HealthReportConfig struct {
 }
 
 type HealthSleepConfig struct {
-	After *duration.Duration `json:"after"`
+	AfterLastUse *duration.Duration `json:"afterLastUse"`
 	// CloseIdleAfter: "0s" or missing keeps the connections of an outbound
 	// that can sleep whatever their silence, the default.
 	CloseIdleAfter *duration.Duration `json:"closeIdleAfter"`
 }
 
 type HealthCostTriggerConfig struct {
-	Cost  float32           `json:"cost"`
-	After duration.Duration `json:"for"`
+	Cost  float32            `json:"cost"`
+	After *duration.Duration `json:"after"`
 }
 
 // HealthProviderTriggersConfig: an explicit zero turns a trigger off, a
 // missing field keeps its default.
 type HealthProviderTriggersConfig struct {
-	Interval        *duration.Duration       `json:"interval"`
-	Jitter          *float64                 `json:"jitter"`
-	MinHealthy      *int32                   `json:"minHealthy"`
-	WhenExhausted   *bool                    `json:"whenExhausted"`
-	WhenCostAbove   *HealthCostTriggerConfig `json:"whenCostAbove"`
-	MaxAge          *duration.Duration       `json:"maxAge"`
-	OnNetworkChange string                   `json:"onNetworkChange"`
-	NetworkSettle   duration.Duration        `json:"networkSettle"`
-	Expiry          *HealthExpiryConfig      `json:"expiry"`
+	Interval                   *duration.Duration       `json:"interval"`
+	JitterFraction             *float64                 `json:"jitterFraction"`
+	MinHealthyOutbounds        *int32                   `json:"minHealthyOutbounds"`
+	ShouldRefreshWhenExhausted *bool                    `json:"shouldRefreshWhenExhausted"`
+	WhenCostAbove              *HealthCostTriggerConfig `json:"whenCostAbove"`
+	MaxAge                     *duration.Duration       `json:"maxAge"`
+	NetworkChangeMode          string                   `json:"networkChangeMode"`
+	NetworkSettleDelay         *duration.Duration       `json:"networkSettleDelay"`
+	Expiry                     *HealthExpiryConfig      `json:"expiry"`
 }
 
 // HealthExpiryConfig renews provider leases: shares of a lease, where an
 // explicit renewAt of 0 turns renewal off and an explicit jitter of 0 is
 // none.
 type HealthExpiryConfig struct {
-	RenewAt  *float64 `json:"renewAt"`
-	UrgentAt *float64 `json:"urgentAt"`
-	Jitter   *float64 `json:"jitter"`
+	RenewAtFraction  *float64 `json:"renewAtFraction"`
+	UrgentAtFraction *float64 `json:"urgentAtFraction"`
+	JitterFraction   *float64 `json:"jitterFraction"`
 }
 
 func (c *HealthExpiryConfig) build(where string) (*health.ExpiryTrigger, error) {
@@ -144,29 +143,29 @@ func (c *HealthExpiryConfig) build(where string) (*health.ExpiryTrigger, error) 
 	}
 	out := &health.ExpiryTrigger{}
 	renewAt := 0.5
-	if c.RenewAt != nil {
-		renewAt = *c.RenewAt
+	if c.RenewAtFraction != nil {
+		renewAt = *c.RenewAtFraction
 		if renewAt < 0 || renewAt > 0.95 {
-			return nil, errors.New("healthObservatory: ", where, ": expiry.renewAt must be in [0, 0.95]")
+			return nil, errors.New("healthObservatory: ", where, ": expiry.renewAtFraction must be in [0, 0.95]")
 		}
-		out.RenewAt = renewAt
+		out.RenewAtFraction = renewAt
 		if renewAt == 0 {
-			out.RenewAt = -1
+			out.RenewAtFraction = -1
 		}
 	}
-	if c.UrgentAt != nil {
-		if *c.UrgentAt < renewAt || *c.UrgentAt > 0.95 {
-			return nil, errors.New("healthObservatory: ", where, ": expiry.urgentAt must be in [renewAt, 0.95]")
+	if c.UrgentAtFraction != nil {
+		if *c.UrgentAtFraction < renewAt || *c.UrgentAtFraction > 0.95 {
+			return nil, errors.New("healthObservatory: ", where, ": expiry.urgentAtFraction must be in [renewAt, 0.95]")
 		}
-		out.UrgentAt = *c.UrgentAt
+		out.UrgentAtFraction = *c.UrgentAtFraction
 	}
-	if c.Jitter != nil {
-		if *c.Jitter < 0 || *c.Jitter > 0.5 {
-			return nil, errors.New("healthObservatory: ", where, ": expiry.jitter must be in [0, 0.5]")
+	if c.JitterFraction != nil {
+		if *c.JitterFraction < 0 || *c.JitterFraction > 0.5 {
+			return nil, errors.New("healthObservatory: ", where, ": expiry.jitterFraction must be in [0, 0.5]")
 		}
-		out.Jitter = *c.Jitter
-		if *c.Jitter == 0 {
-			out.Jitter = -1
+		out.JitterFraction = *c.JitterFraction
+		if *c.JitterFraction == 0 {
+			out.JitterFraction = -1
 		}
 	}
 	return out, nil
@@ -175,41 +174,41 @@ func (c *HealthExpiryConfig) build(where string) (*health.ExpiryTrigger, error) 
 type HealthProviderLimitsConfig struct {
 	MinInterval          *duration.Duration   `json:"minInterval"`
 	ExhaustedMinInterval *duration.Duration   `json:"exhaustedMinInterval"`
-	MaxPerHour           *int32               `json:"maxPerHour"`
+	MaxRefreshesPerHour  *int32               `json:"maxRefreshesPerHour"`
 	Backoff              *HealthBackoffConfig `json:"backoff"`
-	// AuthRetry: "0s" waits for new headers after the backend refused them.
-	AuthRetry *duration.Duration `json:"authRetry"`
+	// AuthRetryDelay: "0s" waits for new headers after the backend refused them.
+	AuthRetryDelay *duration.Duration `json:"authRetryDelay"`
 }
 
 type HealthProviderApplyConfig struct {
-	Balancer     string            `json:"balancer"`
-	TagPrefix    string            `json:"tagPrefix"`
-	Drain        duration.Duration `json:"drain"`
-	MaxOutbounds int32             `json:"maxOutbounds"`
-	Protocols    StringList        `json:"protocols"`
-	Routing      bool              `json:"routing"`
+	Balancer          string             `json:"balancer"`
+	TagPrefix         string             `json:"tagPrefix"`
+	DrainTimeout      *duration.Duration `json:"drainTimeout"`
+	MaxOutbounds      int32              `json:"maxOutbounds"`
+	AllowedProtocols  StringList         `json:"allowedProtocols"`
+	IsRoutingAccepted bool               `json:"isRoutingAccepted"`
 	// Headers: an explicit [] lets no answer set a header.
-	Headers *StringList `json:"headers"`
+	AcceptedHeaders *StringList `json:"acceptedHeaders"`
 }
 
 type HealthProviderConfig struct {
-	Tag      string            `json:"tag"`
-	URL      string            `json:"url"`
-	Method   string            `json:"method"`
-	Headers  map[string]string `json:"headers"`
-	Via      StringList        `json:"via"`
-	Timeout  duration.Duration `json:"timeout"`
-	MaxBytes int64             `json:"maxBytes"`
-	// AllowPlainHTTP permits an http url; headers then travel unencrypted.
-	AllowPlainHTTP bool                          `json:"allowPlainHttp"`
-	Triggers       *HealthProviderTriggersConfig `json:"triggers"`
-	Limits         *HealthProviderLimitsConfig   `json:"limits"`
-	Apply          *HealthProviderApplyConfig    `json:"apply"`
+	Tag      string             `json:"tag"`
+	URL      string             `json:"url"`
+	Method   string             `json:"method"`
+	Headers  map[string]string  `json:"headers"`
+	Via      StringList         `json:"via"`
+	Timeout  *duration.Duration `json:"timeout"`
+	MaxBytes int64              `json:"maxBytes"`
+	// IsPlainHTTPAllowed permits an http url; headers then travel unencrypted.
+	IsPlainHTTPAllowed bool                          `json:"isPlainHttpAllowed"`
+	Triggers           *HealthProviderTriggersConfig `json:"triggers"`
+	Limits             *HealthProviderLimitsConfig   `json:"limits"`
+	Apply              *HealthProviderApplyConfig    `json:"apply"`
 	// Initial is an answer applied at the start. It is passed on as it is:
 	// a bad saved set must not keep the core from starting, so the
 	// observatory checks all of it, its form and size too, reports a set it
 	// refuses and starts without it.
-	Initial json.RawMessage `json:"initial"`
+	InitialAnswer json.RawMessage `json:"initialAnswer"`
 	// BaseVersion names this config as the backend that generated it did.
 	BaseVersion string `json:"baseVersion"`
 }
@@ -242,11 +241,21 @@ func optionalCount(n *int32) int32 {
 	}
 }
 
+func requirePositiveDuration(key string, value *duration.Duration) error {
+	if value != nil && *value <= 0 {
+		return errors.New(key, " must be greater than 0s")
+	}
+	return nil
+}
+
 func (c *HealthProviderConfig) build() (*health.ProviderConfig, error) {
 	if c.Tag == "" {
 		return nil, errors.New("healthObservatory: provider without tag")
 	}
 	where := "provider " + c.Tag
+	if err := requirePositiveDuration("healthObservatory: "+where+" timeout", c.Timeout); err != nil {
+		return nil, err
+	}
 	if c.URL == "" {
 		return nil, errors.New("healthObservatory: ", where, ": url is empty")
 	}
@@ -257,8 +266,8 @@ func (c *HealthProviderConfig) build() (*health.ProviderConfig, error) {
 	if u.User != nil {
 		return nil, errors.New("healthObservatory: ", where, ": put credentials into headers, not into the url")
 	}
-	if u.Scheme != "https" && !c.AllowPlainHTTP {
-		return nil, errors.New("healthObservatory: ", where, ": url must be https, or set allowPlainHttp")
+	if u.Scheme != "https" && !c.IsPlainHTTPAllowed {
+		return nil, errors.New("healthObservatory: ", where, ": url must be https, or set isPlainHttpAllowed")
 	}
 	// Empty stays empty: the observatory takes it for POST.
 	method := strings.ToUpper(c.Method)
@@ -277,10 +286,10 @@ func (c *HealthProviderConfig) build() (*health.ProviderConfig, error) {
 			return nil, errors.New("healthObservatory: ", where, ": empty tag in via")
 		}
 	}
-	if a.Headers != nil {
-		for _, name := range *a.Headers {
+	if a.AcceptedHeaders != nil {
+		for _, name := range *a.AcceptedHeaders {
 			if err := health.CheckHeaderName(name); err != nil {
-				return nil, errors.New("healthObservatory: ", where, ": apply.headers: ", err.Error())
+				return nil, errors.New("healthObservatory: ", where, ": apply.acceptedHeaders: ", err.Error())
 			}
 		}
 	}
@@ -290,40 +299,40 @@ func (c *HealthProviderConfig) build() (*health.ProviderConfig, error) {
 		Method:      method,
 		Headers:     c.Headers,
 		Via:         c.Via,
-		Timeout:     int64(c.Timeout),
+		Timeout:     optionalDuration(c.Timeout),
 		MaxBytes:    c.MaxBytes,
 		BaseVersion: c.BaseVersion,
 		Apply: &health.ProviderApply{
-			Balancer:     a.Balancer,
-			TagPrefix:    a.TagPrefix,
-			Drain:        int64(a.Drain),
-			MaxOutbounds: a.MaxOutbounds,
-			Protocols:    a.Protocols,
-			Routing:      a.Routing,
+			Balancer:          a.Balancer,
+			TagPrefix:         a.TagPrefix,
+			DrainTimeout:      optionalDuration(a.DrainTimeout),
+			MaxOutbounds:      a.MaxOutbounds,
+			AllowedProtocols:  a.AllowedProtocols,
+			IsRoutingAccepted: a.IsRoutingAccepted,
 		},
 	}
-	if a.Headers != nil {
-		out.Apply.Headers = *a.Headers
-		out.Apply.FixedHeaders = len(*a.Headers) == 0
+	if a.AcceptedHeaders != nil {
+		out.Apply.AcceptedHeaders = *a.AcceptedHeaders
+		out.Apply.FixedHeaders = len(*a.AcceptedHeaders) == 0
 	}
-	if raw := bytes.TrimSpace(c.Initial); len(raw) > 0 && !bytes.Equal(raw, []byte("null")) {
-		out.Initial = raw
+	if raw := bytes.TrimSpace(c.InitialAnswer); len(raw) > 0 && !bytes.Equal(raw, []byte("null")) {
+		out.InitialAnswer = raw
 	}
 	if t := c.Triggers; t != nil {
 		out.Triggers = &health.ProviderTriggers{
-			Interval:          optionalDuration(t.Interval),
-			MinHealthy:        optionalCount(t.MinHealthy),
-			SkipWhenExhausted: isFalse(t.WhenExhausted),
-			MaxAge:            optionalDuration(t.MaxAge),
-			NetworkSettle:     int64(t.NetworkSettle),
+			Interval:                 optionalDuration(t.Interval),
+			MinHealthyOutbounds:      optionalCount(t.MinHealthyOutbounds),
+			SkipRefreshWhenExhausted: isFalse(t.ShouldRefreshWhenExhausted),
+			MaxAge:                   optionalDuration(t.MaxAge),
+			NetworkSettleDelay:       optionalDuration(t.NetworkSettleDelay),
 		}
-		if t.Jitter != nil {
-			if *t.Jitter < 0 || *t.Jitter >= 1 {
+		if t.JitterFraction != nil {
+			if *t.JitterFraction < 0 || *t.JitterFraction >= 1 {
 				return nil, errors.New("healthObservatory: ", where, ": jitter must be in [0, 1)")
 			}
-			out.Triggers.Jitter = *t.Jitter
-			if *t.Jitter == 0 {
-				out.Triggers.Jitter = -1
+			out.Triggers.JitterFraction = *t.JitterFraction
+			if *t.JitterFraction == 0 {
+				out.Triggers.JitterFraction = -1
 			}
 		}
 		expiry, err := t.Expiry.build(where)
@@ -332,22 +341,22 @@ func (c *HealthProviderConfig) build() (*health.ProviderConfig, error) {
 		}
 		out.Triggers.Expiry = expiry
 		if ca := t.WhenCostAbove; ca != nil {
-			if ca.Cost <= 0 || ca.After < 0 {
+			if ca.Cost <= 0 || (ca.After != nil && *ca.After < 0) {
 				return nil, errors.New("healthObservatory: ", where, ": whenCostAbove needs a cost above zero and a duration not below zero")
 			}
-			out.Triggers.CostAbove = &health.CostTrigger{Cost: ca.Cost, After: int64(ca.After)}
+			out.Triggers.WhenCostAbove = &health.CostTrigger{Cost: ca.Cost, After: optionalDuration(ca.After)}
 		}
-		switch strings.ToLower(t.OnNetworkChange) {
+		switch strings.ToLower(t.NetworkChangeMode) {
 		case "", "unknownnotcheapest":
-			out.Triggers.OnNetworkChange = health.RefreshOnNetwork_REFRESH_UNKNOWN_NOT_CHEAPEST
+			out.Triggers.NetworkChangeMode = health.RefreshOnNetwork_REFRESH_UNKNOWN_NOT_CHEAPEST
 		case "unknown":
-			out.Triggers.OnNetworkChange = health.RefreshOnNetwork_REFRESH_UNKNOWN
+			out.Triggers.NetworkChangeMode = health.RefreshOnNetwork_REFRESH_UNKNOWN
 		case "any":
-			out.Triggers.OnNetworkChange = health.RefreshOnNetwork_REFRESH_ANY
+			out.Triggers.NetworkChangeMode = health.RefreshOnNetwork_REFRESH_ANY
 		case "never":
-			out.Triggers.OnNetworkChange = health.RefreshOnNetwork_REFRESH_NEVER
+			out.Triggers.NetworkChangeMode = health.RefreshOnNetwork_REFRESH_NEVER
 		default:
-			return nil, errors.New("healthObservatory: ", where, ": unknown onNetworkChange ", t.OnNetworkChange)
+			return nil, errors.New("healthObservatory: ", where, ": unknown networkChangeMode ", t.NetworkChangeMode)
 		}
 	}
 	if l := c.Limits; l != nil {
@@ -358,14 +367,14 @@ func (c *HealthProviderConfig) build() (*health.ProviderConfig, error) {
 		out.Limits = &health.ProviderLimits{
 			MinInterval:          optionalDuration(l.MinInterval),
 			ExhaustedMinInterval: optionalDuration(l.ExhaustedMinInterval),
-			MaxPerHour:           optionalCount(l.MaxPerHour),
+			MaxRefreshesPerHour:  optionalCount(l.MaxRefreshesPerHour),
 			Backoff:              backoff,
-			AuthRetry:            optionalDuration(l.AuthRetry),
+			AuthRetryDelay:       optionalDuration(l.AuthRetryDelay),
 		}
 		// Shorter, a refused token loads the backend for little; longer, a
 		// mistake of the backend keeps the fleet without fresh sets.
-		if r := l.AuthRetry; r != nil && *r != 0 && (*r < duration.Duration(5*time.Minute) || *r > duration.Duration(24*time.Hour)) {
-			return nil, errors.New("healthObservatory: ", where, ": limits.authRetry must be 0s or in [5m, 24h]")
+		if r := l.AuthRetryDelay; r != nil && *r != 0 && (*r < duration.Duration(5*time.Minute) || *r > duration.Duration(24*time.Hour)) {
+			return nil, errors.New("healthObservatory: ", where, ": limits.authRetryDelay must be 0s or in [5m, 24h]")
 		}
 	}
 	return out, nil
@@ -414,27 +423,43 @@ func (c *HealthObservatoryConfig) Build() (proto.Message, error) {
 	}
 	out := &health.Config{SubjectSelector: c.SubjectSelector}
 	if p := c.Passive; p != nil {
+		for _, field := range []struct {
+			name  string
+			value *duration.Duration
+		}{{"passive.dialTimeout", p.DialTimeout}, {"passive.firstByteTimeout", p.FirstByteTimeout}, {"passive.stallTimeout", p.StallTimeout}} {
+			if err := requirePositiveDuration("healthObservatory: "+field.name, field.value); err != nil {
+				return nil, err
+			}
+		}
 		out.Passive = &health.PassiveConfig{
-			Window:               int64(p.Window),
-			DialTimeout:          int64(p.DialTimeout),
-			FirstByteTimeout:     int64(p.FirstByteTimeout),
-			StallTimeout:         int64(p.StallTimeout),
-			Failures:             p.Failures,
-			DistinctTargets:      p.DistinctTargets,
-			SuccessBytes:         p.SuccessBytes,
-			SweepInterval:        int64(p.SweepInterval),
-			DialOnly:             p.DialOnly,
-			PartialStallMaxAge:   int64(p.PartialStallAge),
-			IgnorePartialStalls:  p.NoPartialStalls,
-			StallMinWriteBytes:   p.StallMinWriteBytes,
-			PartialStallMinBytes: p.PartialStallMinBytes,
-			KeepPendingOnDown:    p.KeepPendingOnDown,
-			KeepSilentOnDown:     p.KeepSilentOnDown,
+			Window:                    optionalDuration(p.Window),
+			DialTimeout:               optionalDuration(p.DialTimeout),
+			FirstByteTimeout:          optionalDuration(p.FirstByteTimeout),
+			StallTimeout:              optionalDuration(p.StallTimeout),
+			FailuresToSuspect:         p.FailuresToSuspect,
+			MinDistinctTargets:        p.MinDistinctTargets,
+			SuccessBytes:              p.SuccessBytes,
+			SweepInterval:             optionalDuration(p.SweepInterval),
+			IsDialOnly:                p.IsDialOnly,
+			PartialStallMaxAge:        optionalDuration(p.PartialStallAge),
+			ShouldIgnorePartialStalls: p.ShouldIgnorePartialStalls,
+			StallMinWriteBytes:        p.StallMinWriteBytes,
+			PartialStallMinBytes:      p.PartialStallMinBytes,
+			ShouldKeepPendingOnDown:   p.ShouldKeepPendingOnDown,
+			ShouldKeepSilentOnDown:    p.ShouldKeepSilentOnDown,
 		}
 	}
 	for _, p := range c.Probes {
 		if p == nil {
 			continue
+		}
+		for _, field := range []struct {
+			name  string
+			value *duration.Duration
+		}{{"probes[].timeout", p.Timeout}, {"probes[].progressTimeout", p.ProgressTimeout}} {
+			if err := requirePositiveDuration("healthObservatory: "+field.name, field.value); err != nil {
+				return nil, err
+			}
 		}
 		if err := checkProbeURL("probe destination", p.Destination); err != nil {
 			return nil, err
@@ -452,16 +477,19 @@ func (c *HealthObservatoryConfig) Build() (proto.Message, error) {
 			return nil, errors.New("healthObservatory: probe method must be GET or HEAD")
 		}
 		out.Probes = append(out.Probes, &health.ProbeProfile{
-			Selector:        p.Selector,
-			Destination:     p.Destination,
-			Method:          p.Method,
-			ExpectStatus:    p.ExpectStatus,
-			MinBytes:        p.MinBytes,
-			Timeout:         int64(p.Timeout),
-			ProgressTimeout: int64(p.ProgressTimeout),
+			Selector:         p.Selector,
+			Destination:      p.Destination,
+			Method:           p.Method,
+			ExpectedStatuses: p.ExpectedStatuses,
+			MinBytes:         p.MinBytes,
+			Timeout:          optionalDuration(p.Timeout),
+			ProgressTimeout:  optionalDuration(p.ProgressTimeout),
 		})
 	}
 	if cc := c.Connectivity; cc != nil {
+		if err := requirePositiveDuration("healthObservatory: connectivity.timeout", cc.Timeout); err != nil {
+			return nil, err
+		}
 		if cc.Outbound == "" || cc.Destination == "" {
 			return nil, errors.New("healthObservatory: connectivity needs outbound and destination")
 		}
@@ -471,43 +499,48 @@ func (c *HealthObservatoryConfig) Build() (proto.Message, error) {
 		if err := checkSelectors("connectivity witnesses", cc.Witnesses); err != nil {
 			return nil, err
 		}
-		recheck, err := cc.Recheck.build()
+		recheck, err := cc.RecheckBackoff.build()
 		if err != nil {
 			return nil, err
 		}
 		out.Connectivity = &health.ConnectivityConfig{
-			Outbound:    cc.Outbound,
-			Destination: cc.Destination,
-			Timeout:     int64(cc.Timeout),
-			Recheck:     recheck,
-			MaxPause:    int64(cc.MaxPause),
-			Witnesses:   cc.Witnesses,
+			Outbound:       cc.Outbound,
+			Destination:    cc.Destination,
+			Timeout:        optionalDuration(cc.Timeout),
+			RecheckBackoff: recheck,
+			MaxPause:       optionalDuration(cc.MaxPause),
+			Witnesses:      cc.Witnesses,
 		}
 	}
 	if s := c.Schedule; s != nil {
+		if s.HostProbes != nil {
+			if err := requirePositiveDuration("healthObservatory: schedule.hostProbes.timeout", s.HostProbes.Timeout); err != nil {
+				return nil, err
+			}
+		}
 		quarantine, err := s.Quarantine.build()
 		if err != nil {
 			return nil, err
 		}
-		if s.SpacingJitter < 0 || s.SpacingJitter >= 1 {
-			return nil, errors.New("healthObservatory: spacingJitter must be in [0, 1)")
+		if s.ProbeJitterFraction < 0 || s.ProbeJitterFraction >= 1 {
+			return nil, errors.New("healthObservatory: probeJitterFraction must be in [0, 1)")
 		}
 		out.Schedule = &health.ScheduleConfig{
-			PauseWhenIdle:          int64(s.PauseWhenIdle),
-			Quarantine:             quarantine,
-			Concurrent:             s.Concurrent,
-			Spacing:                int64(s.Spacing),
-			SpacingJitter:          s.SpacingJitter,
-			PerServerNamePerMinute: s.PerServerNamePerMinute,
-			PerMinute:              s.PerMinute,
-			SuspectCooldown:        int64(s.SuspectCooldown),
+			IdleAfter:                    optionalDuration(s.IdleAfter),
+			Quarantine:                   quarantine,
+			MaxConcurrentProbes:          s.MaxConcurrentProbes,
+			MinProbeInterval:             optionalDuration(s.MinProbeInterval),
+			ProbeJitterFraction:          s.ProbeJitterFraction,
+			ProbesPerServerNamePerMinute: s.ProbesPerServerNamePerMinute,
+			ProbesPerMinute:              s.ProbesPerMinute,
+			SuspectCooldown:              optionalDuration(s.SuspectCooldown),
 		}
 		if hp := s.HostProbes; hp != nil {
 			out.Schedule.HostProbes = &health.HostProbesConfig{
-				PerMinute:    hp.PerMinute,
-				Reuse:        int64(hp.Reuse),
-				MaxOutbounds: hp.MaxOutbounds,
-				Timeout:      int64(hp.Timeout),
+				ProbesPerMinute: hp.ProbesPerMinute,
+				ReuseWindow:     optionalDuration(hp.ReuseWindow),
+				MaxOutbounds:    hp.MaxOutbounds,
+				Timeout:         optionalDuration(hp.Timeout),
 			}
 		}
 	}
@@ -515,7 +548,7 @@ func (c *HealthObservatoryConfig) Build() (proto.Message, error) {
 		out.Events = &health.EventsConfig{MaxEvents: e.MaxEvents, MaxBytes: e.MaxBytes}
 	}
 	if n := c.Network; n != nil {
-		out.Network = &health.NetworkConfig{NoMemory: n.Remember != nil && !*n.Remember, MaxNetworks: n.MaxNetworks}
+		out.Network = &health.NetworkConfig{NoMemory: n.ShouldRememberNetworks != nil && !*n.ShouldRememberNetworks, MaxNetworks: n.MaxNetworks}
 	}
 	if r := c.Report; r != nil {
 		out.Report = &health.ReportConfig{Interval: optionalDuration(r.Interval)}
@@ -523,10 +556,10 @@ func (c *HealthObservatoryConfig) Build() (proto.Message, error) {
 	if s := c.Sleep; s != nil {
 		// Sooner, a connection that just ended may still be closing inside
 		// the tunnel that sleep releases.
-		if a := s.After; a != nil && *a != 0 && *a < duration.Duration(10*time.Second) {
-			return nil, errors.New("healthObservatory: sleep.after must be 0s or at least 10s")
+		if a := s.AfterLastUse; a != nil && *a != 0 && *a < duration.Duration(10*time.Second) {
+			return nil, errors.New("healthObservatory: sleep.afterLastUse must be 0s or at least 10s")
 		}
-		out.Sleep = &health.SleepConfig{After: optionalDuration(s.After)}
+		out.Sleep = &health.SleepConfig{AfterLastUse: optionalDuration(s.AfterLastUse)}
 		// Shorter, a connection between two requests would count as idle;
 		// longer, the observer may have stopped following it.
 		if a := s.CloseIdleAfter; a != nil && *a != 0 {
@@ -558,30 +591,42 @@ func (c *HealthObservatoryConfig) Build() (proto.Message, error) {
 	return out, nil
 }
 
-type strategyLeastCostUpgradeConfig struct {
-	Interval            duration.Duration `json:"interval"`
-	RandomPhase         *bool             `json:"randomPhase"`
-	Successes           int32             `json:"successes"`
-	Spacing             duration.Duration `json:"spacing"`
-	PenaltyWindow       duration.Duration `json:"penaltyWindow"`
-	PenaltyMultiplier   float64           `json:"penaltyMultiplier"`
-	MaxPenalty          duration.Duration `json:"maxPenalty"`
-	OnNetworkChange     *bool             `json:"onNetworkChange"`
-	UnknownNetworksOnly *bool             `json:"unknownNetworksOnly"`
+type strategyLeastCostReturnToCheaperConfig struct {
+	Interval                 *duration.Duration `json:"interval"`
+	HasRandomPhase           *bool              `json:"hasRandomPhase"`
+	ProbesToReturn           int32              `json:"probesToReturn"`
+	ProbeInterval            *duration.Duration `json:"probeInterval"`
+	PenaltyWindow            *duration.Duration `json:"penaltyWindow"`
+	PenaltyMultiplier        float64            `json:"penaltyMultiplier"`
+	MaxPenaltyDelay          *duration.Duration `json:"maxPenaltyDelay"`
+	ShouldTryOnNetworkChange *bool              `json:"shouldTryOnNetworkChange"`
+	IsUnknownNetworksOnly    *bool              `json:"isUnknownNetworksOnly"`
+}
+
+type strategyCostGroupConfig struct {
+	FailedInRowToLeave int32 `json:"failedInRowToLeave"`
+}
+
+type strategyCostEntry struct {
+	Match          string                   `json:"match"`
+	IsRegexp       bool                     `json:"isRegexp"`
+	Cost           float32                  `json:"cost"`
+	ReturnInterval *duration.Duration       `json:"returnInterval"`
+	Group          *strategyCostGroupConfig `json:"group"`
 }
 
 type strategyLeastCostConfig struct {
-	Costs            []*router.StrategyWeight        `json:"costs"`
-	DefaultCost      float32                         `json:"defaultCost"`
-	Lazy             StringList                      `json:"lazy"`
-	SwitchAfterProbe *bool                           `json:"switchAfterProbe"`
-	Confirm          string                          `json:"confirm"`
-	MinHold          duration.Duration               `json:"minHold"`
-	Upgrade          *strategyLeastCostUpgradeConfig `json:"upgrade"`
-	StartPinned      string                          `json:"startPinned"`
-	StartPinnedFor   duration.Duration               `json:"startPinnedFor"`
-	StartWith        string                          `json:"startWith"`
-	OnNetworkChange  string                          `json:"onNetworkChange"`
+	Costs                   []*strategyCostEntry                    `json:"costs"`
+	DefaultCost             float32                                 `json:"defaultCost"`
+	LazyOutbounds           StringList                              `json:"lazyOutbounds"`
+	ShouldProbeBeforeSwitch *bool                                   `json:"shouldProbeBeforeSwitch"`
+	ConfirmWithProbe        string                                  `json:"confirmWithProbe"`
+	MinHoldTime             *duration.Duration                      `json:"minHoldTime"`
+	ReturnToCheaper         *strategyLeastCostReturnToCheaperConfig `json:"returnToCheaper"`
+	StartPinnedOutbound     string                                  `json:"startPinnedOutbound"`
+	StartPinTimeout         *duration.Duration                      `json:"startPinTimeout"`
+	StartOutbound           string                                  `json:"startOutbound"`
+	NetworkChangeAction     string                                  `json:"networkChangeAction"`
 }
 
 // isFalse is true only for an explicit false; the JSON defaults of these
@@ -592,63 +637,79 @@ func isFalse(v *bool) bool {
 
 // Build implements Buildable.
 func (v *strategyLeastCostConfig) Build() (proto.Message, error) {
-	if err := checkSelectors("lazy", v.Lazy); err != nil {
+	if v.ReturnToCheaper != nil {
+		if err := requirePositiveDuration("leastCost: returnToCheaper.interval", v.ReturnToCheaper.Interval); err != nil {
+			return nil, err
+		}
+	}
+	if err := checkSelectors("lazyOutbounds", v.LazyOutbounds); err != nil {
 		return nil, err
 	}
 	for _, c := range v.Costs {
 		// A zero value means "weight from the number in the tag" to the
 		// shared weight code, which here would make the outbound the most
 		// expensive one.
-		if c == nil || c.Match == "" || c.Value <= 0 {
-			return nil, errors.New("leastCost: every cost needs a match and a value above zero")
+		if c == nil || c.Match == "" || c.Cost <= 0 {
+			return nil, errors.New("leastCost: every cost needs a match and a cost above zero")
 		}
-		if c.Regexp {
+		if c.IsRegexp {
 			if _, err := regexp.Compile(c.Match); err != nil {
 				return nil, errors.New("leastCost: cost match ", c.Match).Base(err)
 			}
 		}
 	}
+	costs := make([]*health.CostEntry, 0, len(v.Costs))
+	for _, c := range v.Costs {
+		entry := &health.CostEntry{Match: c.Match, IsRegexp: c.IsRegexp, Cost: c.Cost}
+		if c.ReturnInterval != nil {
+			entry.ReturnInterval = int64(*c.ReturnInterval)
+		}
+		if c.Group != nil {
+			entry.Group = &health.CostGroupConfig{FailedInRowToLeave: c.Group.FailedInRowToLeave}
+		}
+		costs = append(costs, entry)
+	}
 	out := &health.SelectorConfig{
-		Costs:              v.Costs,
-		DefaultCost:        v.DefaultCost,
-		Lazy:               v.Lazy,
-		SwitchWithoutProbe: isFalse(v.SwitchAfterProbe),
-		MinHold:            int64(v.MinHold),
-		StartPinned:        v.StartPinned,
-		StartPinnedFor:     int64(v.StartPinnedFor),
-		StartWith:          v.StartWith,
+		Costs:                 costs,
+		DefaultCost:           v.DefaultCost,
+		LazyOutbounds:         v.LazyOutbounds,
+		SkipProbeBeforeSwitch: isFalse(v.ShouldProbeBeforeSwitch),
+		MinHoldTime:           optionalDuration(v.MinHoldTime),
+		StartPinnedOutbound:   v.StartPinnedOutbound,
+		StartPinTimeout:       optionalDuration(v.StartPinTimeout),
+		StartOutbound:         v.StartOutbound,
 	}
-	switch strings.ToLower(v.Confirm) {
+	switch strings.ToLower(v.ConfirmWithProbe) {
 	case "", "auto":
-		out.Confirm = health.ConfirmMode_AUTO
+		out.ConfirmWithProbe = health.ConfirmMode_AUTO
 	case "always":
-		out.Confirm = health.ConfirmMode_ALWAYS
+		out.ConfirmWithProbe = health.ConfirmMode_ALWAYS
 	case "never":
-		out.Confirm = health.ConfirmMode_NEVER
+		out.ConfirmWithProbe = health.ConfirmMode_NEVER
 	default:
-		return nil, errors.New("leastCost: unknown confirm mode ", v.Confirm)
+		return nil, errors.New("leastCost: unknown confirm mode ", v.ConfirmWithProbe)
 	}
-	switch strings.ToLower(v.OnNetworkChange) {
+	switch strings.ToLower(v.NetworkChangeAction) {
 	case "", "recheck":
-		out.OnNetworkChange = health.NetworkChangeMode_RECHECK
+		out.NetworkChangeAction = health.NetworkChangeMode_RECHECK
 	case "forget":
-		out.OnNetworkChange = health.NetworkChangeMode_FORGET
+		out.NetworkChangeAction = health.NetworkChangeMode_FORGET
 	case "ignore":
-		out.OnNetworkChange = health.NetworkChangeMode_IGNORE
+		out.NetworkChangeAction = health.NetworkChangeMode_IGNORE
 	default:
-		return nil, errors.New("leastCost: unknown onNetworkChange mode ", v.OnNetworkChange)
+		return nil, errors.New("leastCost: unknown networkChangeAction ", v.NetworkChangeAction)
 	}
-	if u := v.Upgrade; u != nil {
-		out.Upgrade = &health.UpgradeConfig{
-			Interval:            int64(u.Interval),
-			FixedPhase:          isFalse(u.RandomPhase),
-			Successes:           u.Successes,
-			Spacing:             int64(u.Spacing),
-			PenaltyWindow:       int64(u.PenaltyWindow),
-			PenaltyMultiplier:   u.PenaltyMultiplier,
-			MaxPenalty:          int64(u.MaxPenalty),
-			SkipOnNetworkChange: isFalse(u.OnNetworkChange),
-			AllNetworks:         isFalse(u.UnknownNetworksOnly),
+	if u := v.ReturnToCheaper; u != nil {
+		out.ReturnToCheaper = &health.ReturnToCheaperConfig{
+			Interval:               optionalDuration(u.Interval),
+			SkipRandomPhase:        isFalse(u.HasRandomPhase),
+			ProbesToReturn:         u.ProbesToReturn,
+			ProbeInterval:          optionalDuration(u.ProbeInterval),
+			PenaltyWindow:          optionalDuration(u.PenaltyWindow),
+			PenaltyMultiplier:      u.PenaltyMultiplier,
+			MaxPenaltyDelay:        optionalDuration(u.MaxPenaltyDelay),
+			SkipTryOnNetworkChange: isFalse(u.ShouldTryOnNetworkChange),
+			TryOnAllNetworks:       isFalse(u.IsUnknownNetworksOnly),
 		}
 	}
 	return out, nil

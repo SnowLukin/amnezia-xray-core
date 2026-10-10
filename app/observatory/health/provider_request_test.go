@@ -41,7 +41,7 @@ func setEngine(t *testing.T) *testEngine {
 	t.Helper()
 	te := newProviderEngine(t, quietProvider(func(p *ProviderConfig) {
 		p.Limits.ExhaustedMinInterval = int64(time.Second)
-	}), &SelectorConfig{Costs: costs("p-x1", 1, "p-x2", 3, "p-x3", 5), SwitchWithoutProbe: true},
+	}), &SelectorConfig{Costs: costs("p-x1", 1, "p-x2", 3, "p-x3", 5), SkipProbeBeforeSwitch: true},
 		"p-x1", "p-x2", "p-x3")
 	te.applyProviderSet(te.prov(), providerChange{tags: []string{"p-x2", "p-x1", "p-x3"}}, t0)
 	return te
@@ -65,20 +65,20 @@ func TestRequestBodyDescribesTheSet(t *testing.T) {
 
 	now := at(time.Minute)
 	m, _, _ := requestOf(t, te, now)
-	if m["protocol"] != 1.0 || m["provider"] != "fresh" || m["refresh"] != 1.0 || m["trigger"] != "host" ||
-		m["retry"] != 0.0 || m["version"] != "v7" || m["memoryLow"] != false || m["lastFailure"] != nil {
+	if m["protocol"] != 1.0 || m["provider"] != "fresh" || m["refreshNumber"] != 1.0 || m["trigger"] != "host" ||
+		m["retryLevel"] != 0.0 || m["version"] != "v7" || m["isMemoryLow"] != false || m["lastFailure"] != nil {
 		t.Fatalf("head of the body %v", m)
 	}
 	if m["clientTime"] != now.UTC().Format(time.RFC3339Nano) {
 		t.Fatalf("clientTime %v, want %v", m["clientTime"], now.UTC())
 	}
 	net := m["network"].(map[string]any)
-	if net["id"] != providerHash("https://provider.test/set", "home") || net["known"] != false || net["up"] != true {
+	if net["id"] != providerHash("https://provider.test/set", "home") || net["isKnown"] != false || net["isUp"] != true {
 		t.Fatalf("network %v", net)
 	}
 	b := m["balancer"].(map[string]any)
-	if b["tag"] != "auto" || b["current"] != "x2" || b["own"] != true || b["cost"] != 3.0 || b["exhausted"] != false ||
-		b["pinned"] != false || b["heldMs"] != 50000.0 {
+	if b["tag"] != "auto" || b["current"] != "x2" || b["isOwn"] != true || b["cost"] != 3.0 || b["isExhausted"] != false ||
+		b["isPinned"] != false || b["heldMs"] != 50000.0 {
 		t.Fatalf("balancer %v", b)
 	}
 	outs := m["outbounds"].([]any)
@@ -94,14 +94,14 @@ func TestRequestBodyDescribesTheSet(t *testing.T) {
 		o1["quarantineLevel"] != 1.0 || o1["quarantineMs"] == nil || fmt.Sprint(o1["failures"]) != "map[dial_timeout:3]" {
 		t.Fatalf("x1 %v", o1)
 	}
-	if p := o1["probe"].(map[string]any); p["ok"] != false || p["error"] != "eof" || p["agoMs"] != 30000.0 || p["rttMs"] != nil {
+	if p := o1["probe"].(map[string]any); p["isPassed"] != false || p["error"] != "eof" || p["agoMs"] != 30000.0 || p["rttMs"] != nil {
 		t.Fatalf("probe of x1 %v", p)
 	}
 	if o2["connsOk"] != 412.0 || o2["bytesDown"] != float64(50<<20) || o2["bytesUp"] != 3072.0 ||
 		o2["ttfbP50Ms"] != 200.0 || o2["activeMs"] != 50000.0 || o2["failures"] != nil {
 		t.Fatalf("x2 %v", o2)
 	}
-	if p := o2["probe"].(map[string]any); p["ok"] != true || p["rttMs"] != 180.0 || p["error"] != nil {
+	if p := o2["probe"].(map[string]any); p["isPassed"] != true || p["rttMs"] != 180.0 || p["error"] != nil {
 		t.Fatalf("probe of x2 %v", p)
 	}
 	if o3["state"] != "unknown" || o3["probe"] != nil || o3["connsOk"] != nil {
@@ -124,7 +124,7 @@ func TestRequestProbeIsDatedByItsResult(t *testing.T) {
 	te.begin(te.enqueue("p-x2", reasonFailover, "auto", now), now)
 	m, _, _ := requestOf(t, te, now)
 	x2 := m["outbounds"].([]any)[0].(map[string]any)
-	if p := x2["probe"].(map[string]any); p["ok"] != true || p["rttMs"] != 180.0 ||
+	if p := x2["probe"].(map[string]any); p["isPassed"] != true || p["rttMs"] != 180.0 ||
 		p["agoMs"] != float64((10*time.Minute-3*time.Second).Milliseconds()) {
 		t.Fatalf("probe of x2 while another one runs: %v", p)
 	}
@@ -137,7 +137,7 @@ func TestRequestBodyHidesAPathOfOthers(t *testing.T) {
 	te.applyProviderSet(te.prov(), providerChange{tags: []string{"p-x1"}}, t0)
 	m, body, _ := requestOf(t, te, at(time.Second))
 	b := m["balancer"].(map[string]any)
-	if b["own"] != false || b["current"] != nil || b["cost"] != 1.0 || strings.Contains(string(body), "a1") {
+	if b["isOwn"] != false || b["current"] != nil || b["cost"] != 1.0 || strings.Contains(string(body), "a1") {
 		t.Fatalf("balancer %v in %s", b, body)
 	}
 }
@@ -196,7 +196,7 @@ func TestLastFailureCarriesTheRejection(t *testing.T) {
 	te.onRefreshDone(j, refreshOutcome{err: reason, status: 200, class: reason}, at(time.Second))
 	m, _, j := requestOf(t, te, at(time.Minute))
 	if lf := m["lastFailure"].(map[string]any); lf["status"] != 200.0 || lf["error"] != reason || lf["agoMs"] != 59000.0 ||
-		m["retry"] != 1.0 || m["refresh"] != 2.0 {
+		m["retryLevel"] != 1.0 || m["refreshNumber"] != 2.0 {
 		t.Fatalf("after a refused answer: %v", m)
 	}
 	long := "outbound x1: " + strings.Repeat("é", 200)
@@ -211,7 +211,7 @@ func TestLastFailureCarriesTheRejection(t *testing.T) {
 		t.Fatalf("after a timeout: %v", lf)
 	}
 	te.onRefreshDone(j, refreshOutcome{ok: true}, at(4*time.Hour))
-	if m, _, _ = requestOf(t, te, at(5*time.Hour)); m["lastFailure"] != nil || m["retry"] != 0.0 {
+	if m, _, _ = requestOf(t, te, at(5*time.Hour)); m["lastFailure"] != nil || m["retryLevel"] != 0.0 {
 		t.Fatalf("after a success: %v", m)
 	}
 }

@@ -52,7 +52,7 @@ func (f *applyFixture) baseEvents(t *testing.T) ([]string, any) {
 		case "provider_base_changed":
 			told = append(told, fmt.Sprint(e.Fields["from"], ">", e.Fields["to"]))
 		case "provider_apply":
-			if e.Fields["ok"] != true {
+			if e.Fields["is_ok"] != true {
 				t.Fatalf("apply %v", e.Fields)
 			}
 			named = e.Fields["base_version"]
@@ -110,8 +110,8 @@ func TestBaseChangedOncePerValue(t *testing.T) {
 		t.Fatal("a set that does not build applied")
 	}
 	st := f.providerStatus()
-	if st.BaseVersion != "b1" || st.AnswerBaseVersion != "b3" || !st.BaseChanged || st.Version != "v2" {
-		t.Fatalf("status base %q, answer %q, changed %v, version %q", st.BaseVersion, st.AnswerBaseVersion, st.BaseChanged, st.Version)
+	if st.BaseVersion != "b1" || st.AnswerBaseVersion != "b3" || !st.IsBaseChanged || st.Version != "v2" {
+		t.Fatalf("status base %q, answer %q, changed %v, version %q", st.BaseVersion, st.AnswerBaseVersion, st.IsBaseChanged, st.Version)
 	}
 	if got := f.requestBase(t); got != "b1" {
 		t.Fatalf("request baseVersion %v, want the base of the core", got)
@@ -129,8 +129,8 @@ func TestBackToTheBaseClearsIt(t *testing.T) {
 	}{{"b2", true}, {"", true}, {"b2", true}, {"b1", false}, {"b2", true}} {
 		told, _ := f.applyBase(t, baseAnswer(t, "v1", step.base))
 		all = append(all, told...)
-		if st := f.providerStatus(); st.BaseChanged != step.changed || st.AnswerBaseVersion != step.base {
-			t.Fatalf("after %q: base_changed %v, answer_base_version %q", step.base, st.BaseChanged, st.AnswerBaseVersion)
+		if st := f.providerStatus(); st.IsBaseChanged != step.changed || st.AnswerBaseVersion != step.base {
+			t.Fatalf("after %q: base_changed %v, answer_base_version %q", step.base, st.IsBaseChanged, st.AnswerBaseVersion)
 		}
 	}
 	if fmt.Sprint(all) != "[b1>b2 b1>b2]" {
@@ -147,8 +147,8 @@ func TestNoBaseNoEvent(t *testing.T) {
 			t.Fatalf("answer %s: told %v, provider_apply base_version %v", base, told, named)
 		}
 	}
-	if st := f.providerStatus(); st.BaseVersion != "" || st.AnswerBaseVersion != "b3" || st.BaseChanged {
-		t.Fatalf("status base %q, answer %q, changed %v", st.BaseVersion, st.AnswerBaseVersion, st.BaseChanged)
+	if st := f.providerStatus(); st.BaseVersion != "" || st.AnswerBaseVersion != "b3" || st.IsBaseChanged {
+		t.Fatalf("status base %q, answer %q, changed %v", st.BaseVersion, st.AnswerBaseVersion, st.IsBaseChanged)
 	}
 	if got := f.requestBase(t); got != nil {
 		t.Fatalf("request baseVersion %v, want none", got)
@@ -192,8 +192,8 @@ func TestFreshInitialGivesTheBase(t *testing.T) {
 	if told, _ := f.baseEvents(t); told != nil {
 		t.Fatalf("told %v at the start", told)
 	}
-	if st := f.providerStatus(); st.BaseVersion != "b2" || st.BaseChanged {
-		t.Fatalf("status base %q, changed %v", st.BaseVersion, st.BaseChanged)
+	if st := f.providerStatus(); st.BaseVersion != "b2" || st.IsBaseChanged {
+		t.Fatalf("status base %q, changed %v", st.BaseVersion, st.IsBaseChanged)
 	}
 	if got := f.requestBase(t); got != "b2" {
 		t.Fatalf("request baseVersion %v", got)
@@ -220,11 +220,11 @@ func TestFreshInitialThatDoesNotBuildGivesTheBase(t *testing.T) {
 	f, _ := baseFixture(t, "")
 	f.rt.cfg.initial = []byte(`{"version": "v1", "baseVersion": "b2", "outbounds": [{"tag": "x1", "protocol": "vless", "bad": true}]}`)
 	f.o.applyInitial()
-	if ev := f.lastApply(t); ev["ok"] != false || ev["trigger"] != "initial" {
+	if ev := f.lastApply(t); ev["is_ok"] != false || ev["trigger"] != "initial" {
 		t.Fatalf("apply %v", ev)
 	}
-	if st := f.providerStatus(); st.BaseVersion != "b2" || st.BaseChanged {
-		t.Fatalf("status base %q, changed %v", st.BaseVersion, st.BaseChanged)
+	if st := f.providerStatus(); st.BaseVersion != "b2" || st.IsBaseChanged {
+		t.Fatalf("status base %q, changed %v", st.BaseVersion, st.IsBaseChanged)
 	}
 	if told, _ := f.applyBase(t, baseAnswer(t, "v1", "b3")); fmt.Sprint(told) != "[b2>b3]" {
 		t.Fatalf("told %v", told)

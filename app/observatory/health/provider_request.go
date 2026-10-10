@@ -18,20 +18,20 @@ import (
 // like the config and the answer. Destinations of connections, server
 // addresses and header values never go in.
 type providerRequest struct {
-	Protocol    int               `json:"protocol"`
-	Provider    string            `json:"provider"`
-	Run         string            `json:"run"`
-	Refresh     uint64            `json:"refresh"`
-	Trigger     string            `json:"trigger"`
-	Retry       int               `json:"retry"`
-	LastFailure *requestFailure   `json:"lastFailure,omitempty"`
-	Version     string            `json:"version,omitempty"`
-	BaseVersion string            `json:"baseVersion,omitempty"`
-	ClientTime  time.Time         `json:"clientTime"`
-	Network     requestNetwork    `json:"network"`
-	MemoryLow   bool              `json:"memoryLow"`
-	Balancer    requestBalancer   `json:"balancer"`
-	Outbounds   []requestOutbound `json:"outbounds"`
+	Protocol      int               `json:"protocol"`
+	Provider      string            `json:"provider"`
+	Run           string            `json:"run"`
+	RefreshNumber uint64            `json:"refreshNumber"`
+	Trigger       string            `json:"trigger"`
+	RetryLevel    int               `json:"retryLevel"`
+	LastFailure   *requestFailure   `json:"lastFailure,omitempty"`
+	Version       string            `json:"version,omitempty"`
+	BaseVersion   string            `json:"baseVersion,omitempty"`
+	ClientTime    time.Time         `json:"clientTime"`
+	Network       requestNetwork    `json:"network"`
+	IsMemoryLow   bool              `json:"isMemoryLow"`
+	Balancer      requestBalancer   `json:"balancer"`
+	Outbounds     []requestOutbound `json:"outbounds"`
 
 	// The network as the host named it; it goes out hashed, see providerHash.
 	networkID string
@@ -44,20 +44,20 @@ type requestFailure struct {
 }
 
 type requestNetwork struct {
-	ID    string `json:"id,omitempty"`
-	Known bool   `json:"known"`
-	Up    bool   `json:"up"`
+	ID      string `json:"id,omitempty"`
+	IsKnown bool   `json:"isKnown"`
+	IsUp    bool   `json:"isUp"`
 }
 
 type requestBalancer struct {
 	Tag string `json:"tag"`
 	// The chosen outbound, only when it is one of the provider.
-	Current   string  `json:"current,omitempty"`
-	Own       bool    `json:"own"`
-	Cost      float64 `json:"cost,omitempty"`
-	Exhausted bool    `json:"exhausted"`
-	Pinned    bool    `json:"pinned"`
-	HeldMs    int64   `json:"heldMs,omitempty"`
+	Current     string  `json:"current,omitempty"`
+	IsOwn       bool    `json:"isOwn"`
+	Cost        float64 `json:"cost,omitempty"`
+	IsExhausted bool    `json:"isExhausted"`
+	IsPinned    bool    `json:"isPinned"`
+	HeldMs      int64   `json:"heldMs,omitempty"`
 }
 
 type requestOutbound struct {
@@ -81,28 +81,28 @@ type requestOutbound struct {
 }
 
 type requestProbe struct {
-	OK    bool   `json:"ok"`
-	Error string `json:"error,omitempty"`
-	RTTMs int64  `json:"rttMs,omitempty"`
-	AgoMs int64  `json:"agoMs"`
+	IsPassed bool   `json:"isPassed"`
+	Error    string `json:"error,omitempty"`
+	RTTMs    int64  `json:"rttMs,omitempty"`
+	AgoMs    int64  `json:"agoMs"`
 }
 
 // providerRequest gathers the body of the refresh j of p that starts now.
 func (e *engine) providerRequest(p *provider, j *refreshJob, now time.Time) *providerRequest {
 	r := &providerRequest{
-		Protocol:    providerProtocol,
-		Provider:    p.cfg.tag,
-		Refresh:     j.refresh,
-		Trigger:     j.trigger.String(),
-		Retry:       j.retry,
-		Version:     p.version,
-		BaseVersion: p.base,
-		ClientTime:  now.Round(0).UTC(),
-		Network:     requestNetwork{Known: e.networks[e.networkID] != nil, Up: !e.networkDown},
-		MemoryLow:   e.memoryLow,
-		Balancer:    requestBalancer{Tag: p.cfg.balancer},
-		Outbounds:   make([]requestOutbound, 0, len(p.tags)),
-		networkID:   e.networkID,
+		Protocol:      providerProtocol,
+		Provider:      p.cfg.tag,
+		RefreshNumber: j.refresh,
+		Trigger:       j.trigger.String(),
+		RetryLevel:    j.retry,
+		Version:       p.version,
+		BaseVersion:   p.base,
+		ClientTime:    now.Round(0).UTC(),
+		Network:       requestNetwork{IsKnown: e.networks[e.networkID] != nil, IsUp: !e.networkDown},
+		IsMemoryLow:   e.memoryLow,
+		Balancer:      requestBalancer{Tag: p.cfg.balancer},
+		Outbounds:     make([]requestOutbound, 0, len(p.tags)),
+		networkID:     e.networkID,
 	}
 	if !p.lastFailedAt.IsZero() {
 		r.LastFailure = &requestFailure{Status: p.lastStatus, Error: cutText(p.lastClass, maxFailureText),
@@ -120,7 +120,7 @@ func (e *engine) providerRequest(p *provider, j *refreshJob, now time.Time) *pro
 		// Another path of the balancer is no business of this backend: it
 		// sees only that its own outbounds are not in use.
 		if cur != "" && strings.HasPrefix(cur, p.cfg.prefix) {
-			b.Own = true
+			b.IsOwn = true
 			b.Current = strings.TrimPrefix(cur, p.cfg.prefix)
 		}
 		if cur != "" {
@@ -128,8 +128,8 @@ func (e *engine) providerRequest(p *provider, j *refreshJob, now time.Time) *pro
 				b.Cost = c
 			}
 		}
-		b.Exhausted = s.exhausted
-		b.Pinned = s.pinned != ""
+		b.IsExhausted = s.exhausted
+		b.IsPinned = s.pinned != ""
 		if !s.activeSince.IsZero() {
 			b.HeldMs = now.Sub(s.activeSince).Milliseconds()
 		}
@@ -183,8 +183,8 @@ func describeOutbound(p *path, tag string, active time.Duration, now time.Time) 
 	// Dated by its result: a probe that started in the tick that gathers
 	// the body must not make the result of an older one look fresh.
 	if !p.lastProbeEnd.IsZero() {
-		o.Probe = &requestProbe{OK: p.lastError == "", AgoMs: now.Sub(p.lastProbeEnd).Milliseconds()}
-		if o.Probe.OK {
+		o.Probe = &requestProbe{IsPassed: p.lastError == "", AgoMs: now.Sub(p.lastProbeEnd).Milliseconds()}
+		if o.Probe.IsPassed {
 			o.Probe.RTTMs = p.lastRTT.Milliseconds()
 		} else {
 			o.Probe.Error = p.lastClass

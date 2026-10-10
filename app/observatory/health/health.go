@@ -185,7 +185,7 @@ func (o *Observer) applyInitial() {
 		a, err := o.initialAnswer(rt, raw)
 		if err != nil {
 			o.emit("provider_apply", map[string]any{"provider": rt.cfg.tag, "trigger": triggerInitial.String(),
-				"ok": false, "error": cutText(err.Error(), maxFailureText)})
+				"is_ok": false, "error": cutText(err.Error(), maxFailureText)})
 			continue
 		}
 		o.mu.Lock()
@@ -197,7 +197,7 @@ func (o *Observer) applyInitial() {
 			continue
 		}
 		o.mu.Lock()
-		o.e.startFromInitial(rt.p, a.age, a.nextRefreshIn, o.now())
+		o.e.startFromInitial(rt.p, a.age, a.nextRefreshIn, a.hasNextRefreshIn, o.now())
 		o.mu.Unlock()
 	}
 }
@@ -388,6 +388,9 @@ func (o *Observer) track(t *connTracker) {
 
 // watch makes the sweep check t until it has no deadline left.
 func (o *Observer) watch(t *connTracker) {
+	if o.s.passive.sweepInterval == 0 {
+		return
+	}
 	o.trackMu.Lock()
 	if t.state.Load() == trackerFinished {
 		o.trackMu.Unlock()
@@ -444,7 +447,7 @@ func (o *Observer) closePending(d downMark) {
 	}
 	f := map[string]any{"outbound": d.tag, "connections": len(aborts), "reason": d.reason}
 	if d.silent {
-		f["silent"] = true
+		f["is_silent"] = true
 	}
 	o.mu.Lock()
 	o.e.emit(o.now(), "pending_closed", f)
@@ -673,7 +676,7 @@ type selectorHandle struct {
 func (h *selectorHandle) Select(candidates []string) string {
 	now := h.o.now()
 	nano := now.UnixNano()
-	if prev := h.o.e.lastDemand.Swap(nano); prev == 0 || now.Sub(time.Unix(0, prev)) > h.o.s.schedule.pauseWhenIdle {
+	if prev := h.o.e.lastDemand.Swap(nano); h.o.s.schedule.pauseWhenIdle > 0 && (prev == 0 || now.Sub(time.Unix(0, prev)) > h.o.s.schedule.pauseWhenIdle) {
 		h.o.wake()
 	}
 	if snap := h.s.snapshot.Load(); snap == nil || !equalStrings(*snap, candidates) {

@@ -125,7 +125,9 @@ type fakeOutbound struct {
 	Bad      bool   `json:"bad"`
 }
 
-func fakeSettings(v int64) *serial.TypedMessage { return serial.ToTypedMessage(&Backoff{Initial: v}) }
+func fakeSettings(v int64) *serial.TypedMessage {
+	return serial.ToTypedMessage(&Backoff{InitialDelay: v})
+}
 
 type applyFixture struct {
 	o       *Observer
@@ -139,7 +141,7 @@ type applyFixture struct {
 func newApplyFixture(t *testing.T, drain time.Duration, mods ...func(*ProviderConfig)) *applyFixture {
 	t.Helper()
 	pc := quietProvider(func(p *ProviderConfig) {
-		p.Apply.Drain = int64(drain)
+		p.Apply.DrainTimeout = int64(drain)
 		for _, mod := range mods {
 			mod(p)
 		}
@@ -160,14 +162,14 @@ func newApplyFixture(t *testing.T, drain time.Duration, mods ...func(*ProviderCo
 			}
 			cfg := &core.OutboundHandlerConfig{Tag: fo.Tag, ProxySettings: fakeSettings(fo.V), SenderSettings: serial.ToTypedMessage(&Backoff{})}
 			if fo.Bad {
-				cfg.ProxySettings = serial.ToTypedMessage(&Backoff{Initial: -1})
+				cfg.ProxySettings = serial.ToTypedMessage(&Backoff{InitialDelay: -1})
 			}
 			out = append(out, cfg)
 		}
 		return out, nil
 	}
 	o.newHandler = func(c *core.OutboundHandlerConfig) (outbound.Handler, error) {
-		if inst, _ := c.ProxySettings.GetInstance(); inst.(*Backoff).Initial < 0 {
+		if inst, _ := c.ProxySettings.GetInstance(); inst.(*Backoff).InitialDelay < 0 {
 			return nil, errors.New("cannot build")
 		}
 		h := &fakeHandler{tag: c.Tag, proxy: c.ProxySettings}
@@ -311,7 +313,7 @@ func TestApplyBrokenSetChangesNothing(t *testing.T) {
 			if err == nil {
 				t.Fatal("broken set applied")
 			}
-			if ev := f.lastApply(t); ev["ok"] != false || !strings.Contains(ev["error"].(string), name) {
+			if ev := f.lastApply(t); ev["is_ok"] != false || !strings.Contains(ev["error"].(string), name) {
 				t.Fatalf("event %.300v, want an error about %q", ev, name)
 			} else if len(ev["error"].(string)) > maxFailureText || len(err.Error()) > maxFailureText {
 				t.Fatalf("a reason of %d bytes", len(err.Error()))
@@ -384,7 +386,7 @@ func TestApplySameVersionDoesNothing(t *testing.T) {
 	if changed, err := f.apply(t, answer(t, fakeOutbound{Tag: "x1", V: 1})); changed || err != nil {
 		t.Fatalf("same set: changed %v, %v", changed, err)
 	}
-	if ev := f.lastApply(t); ev["ok"] != true || ev["changed"] != false || ev["version"] != set.version || len(f.created) != 0 {
+	if ev := f.lastApply(t); ev["is_ok"] != true || ev["is_changed"] != false || ev["version"] != set.version || len(f.created) != 0 {
 		t.Fatalf("same set built %d handlers, event %v", len(f.created), ev)
 	}
 	if f.m.GetHandler("p-x1") != x1 || x1.closes() != 0 || f.m.tags() != "p-x1" {
@@ -419,7 +421,7 @@ func TestApplySameVersionChecksItsOutbounds(t *testing.T) {
 			if _, err := f.apply(t, a); err == nil {
 				t.Fatal("a broken body of the applied set was taken")
 			}
-			if ev := f.lastApply(t); ev["ok"] != false || !strings.Contains(fmt.Sprint(ev["error"]), name) {
+			if ev := f.lastApply(t); ev["is_ok"] != false || !strings.Contains(fmt.Sprint(ev["error"]), name) {
 				t.Fatalf("apply %v, want a refusal about %q", ev, name)
 			}
 			if again, after := f.providerSet(t, 0); after != seq || fmt.Sprint(again) != fmt.Sprint(kept) {
@@ -432,7 +434,7 @@ func TestApplySameVersionChecksItsOutbounds(t *testing.T) {
 			if changed, err := f.apply(t, same); changed || err != nil {
 				t.Fatalf("the applied set: changed %v, %v", changed, err)
 			}
-			if ev := f.lastApply(t); ev["ok"] != true || ev["unchanged"] != 2.0 {
+			if ev := f.lastApply(t); ev["is_ok"] != true || ev["unchanged"] != 2.0 {
 				t.Fatalf("apply %v, want two outbounds unchanged", ev)
 			}
 		})
@@ -503,14 +505,25 @@ func TestParseAnswer(t *testing.T) {
 	if err != nil || a.nextRefreshIn != 90*time.Minute || a.costs["x"] != 3 {
 		t.Fatalf("parsed %+v, %v", a, err)
 	}
-	if a, _ := parseAnswer([]byte(`{"outbounds": [{"tag": "x"}], "nextRefreshIn": 600}`)); a.nextRefreshIn != 10*time.Minute {
-		t.Fatalf("seconds parsed as %v", a.nextRefreshIn)
+	if _, err := parseAnswer([]byte(`{"outbounds": [{"tag": "x"}], "nextRefreshIn": 600}`)); err == nil {
+		t.Fatal("numeric nextRefreshIn was accepted")
 	}
-	if a, _ := parseAnswer([]byte(`{"outbounds": [{"tag": "x"}], "version": "v7", "hash": "h"}`)); a.version != "v7" {
+	zero, err := parseAnswer([]byte(`{"outbounds": [{"tag": "x"}], "nextRefreshIn": "0s"}`))
+	if err != nil || !zero.hasNextRefreshIn || zero.nextRefreshIn != 0 {
+		t.Fatalf("explicit zero nextRefreshIn: %+v, %v", zero, err)
+	}
+	missing, err := parseAnswer([]byte(`{"outbounds": [{"tag": "x"}]}`))
+	if err != nil || missing.hasNextRefreshIn {
+		t.Fatalf("missing nextRefreshIn: %+v, %v", missing, err)
+	}
+	if a, _ := parseAnswer([]byte(`{"outbounds": [{"tag": "x"}], "version": "v7"}`)); a.version != "v7" {
 		t.Fatalf("version %q, want the one the server sent", a.version)
 	}
+	if _, err := parseAnswer([]byte(`{"outbounds": [{"tag": "x"}], "hash": "h"}`)); err == nil {
+		t.Fatal("hash alias was accepted")
+	}
 	a1, _ := parseAnswer([]byte(`{"outbounds": [{"tag": "x", "v": 1}]}`))
-	a2, _ := parseAnswer([]byte("{\"outbounds\": [ {\"tag\" : \"x\",\n \"v\": 1} ], \"nextRefreshIn\": 5}"))
+	a2, _ := parseAnswer([]byte("{\"outbounds\": [ {\"tag\" : \"x\",\n \"v\": 1} ], \"nextRefreshIn\": \"5s\"}"))
 	a3, _ := parseAnswer([]byte(`{"outbounds": [{"tag": "x", "v": 2}]}`))
 	if a1.version != a2.version || a1.version == a3.version {
 		t.Fatalf("hashes: %s %s %s; want equal for the same set and different for another", a1.version, a2.version, a3.version)
@@ -541,6 +554,7 @@ func TestParseAnswer(t *testing.T) {
 		`{"outbounds": [{"tag": "x"}], "baseVersion": 12}`:                      "baseVersion must be a string",
 		`{"outbounds": [{"tag": "x"}], "routing": {"rules": [], "foo": 1}}`:     `routing: unknown key "foo"`,
 		`{"outbounds": [{"tag": "x"}], "nextRefreshIn": "soon"}`:                "nextRefreshIn",
+		`{"outbounds": [{"tag": "x"}], "nextRefreshIn": null}`:                  "nextRefreshIn",
 		`{"outbounds": [{"tag": "x"}], "` + strings.Repeat("k", 1000) + `": 1}`: "...",
 		`{"outbounds": {"tag": "x"}}`:                                           "outbounds:",
 		longRefresh:                                                             "nextRefreshIn",
@@ -594,7 +608,7 @@ func TestReplacedOutboundForgetsItsServer(t *testing.T) {
 // An outbound gone from the set leaves nothing behind once its drain ends.
 func TestDrainedOutboundLeavesNothingBehind(t *testing.T) {
 	f := newApplyFixture(t, 50*time.Millisecond)
-	f.o.e.addSelector("auto", newSelectorSettings(&SelectorConfig{Costs: costs("p-", 1), SwitchWithoutProbe: true}))
+	f.o.e.addSelector("auto", newSelectorSettings(&SelectorConfig{Costs: costs("p-", 1), SkipProbeBeforeSwitch: true}))
 	if _, err := f.apply(t, answer(t, fakeOutbound{Tag: "x1", V: 1}, fakeOutbound{Tag: "x2", V: 1})); err != nil {
 		t.Fatal(err)
 	}
@@ -632,7 +646,7 @@ func TestDrainedOutboundLeavesNothingBehind(t *testing.T) {
 // would and leave a retired one without probing.
 func (f *applyFixture) follow(tags ...string) {
 	f.o.mu.Lock()
-	s := f.o.e.addSelector("auto", newSelectorSettings(&SelectorConfig{Costs: costs("p-", 1), SwitchWithoutProbe: true}))
+	s := f.o.e.addSelector("auto", newSelectorSettings(&SelectorConfig{Costs: costs("p-", 1), SkipProbeBeforeSwitch: true}))
 	f.o.e.updateCandidates(s, tags, time.Now())
 	f.o.mu.Unlock()
 }

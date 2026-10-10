@@ -381,13 +381,13 @@ type probeRequestView struct {
 	ID        uint64          `json:"id"`
 	Balancer  string          `json:"balancer"`
 	AgeMs     int64           `json:"age_ms"`
-	Done      bool            `json:"done"`
+	IsDone    bool            `json:"is_done"`
 	End       string          `json:"end,omitempty"`
 	Outbounds []probeItemView `json:"outbounds"`
 }
 
 func (r *probeRequest) view(now time.Time) probeRequestView {
-	v := probeRequestView{ID: r.id, Balancer: r.balancer, AgeMs: now.Sub(r.started).Milliseconds(), Done: !r.open(),
+	v := probeRequestView{ID: r.id, Balancer: r.balancer, AgeMs: now.Sub(r.started).Milliseconds(), IsDone: !r.open(),
 		End: r.end, Outbounds: make([]probeItemView, len(r.items))}
 	for i, it := range r.items {
 		iv := probeItemView{Outbound: it.tag, Result: it.result, Source: it.source, Error: it.err,
@@ -436,5 +436,5 @@ func (o *Observer) ProbeResult(id uint64) ([]byte, bool) {
 		return nil, false
 	}
 	out, _ := json.Marshal(v)
-	return out, v.Done
+	return out, v.IsDone
 }

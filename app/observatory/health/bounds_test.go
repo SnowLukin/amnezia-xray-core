@@ -137,15 +137,15 @@ func TestConfigValuesHaveCeilings(t *testing.T) {
 	s := newSettings(&Config{
 		Probes:       []*ProbeProfile{{Timeout: huge, ProgressTimeout: huge}},
 		Connectivity: &ConnectivityConfig{Outbound: "direct", Destination: "https://check.test/", Timeout: huge},
-		Schedule: &ScheduleConfig{Concurrent: 1 << 20, HostProbes: &HostProbesConfig{
-			PerMinute: 1 << 20, Reuse: huge, MaxOutbounds: 1 << 20, Timeout: huge,
+		Schedule: &ScheduleConfig{MaxConcurrentProbes: 1 << 20, HostProbes: &HostProbesConfig{
+			ProbesPerMinute: 1 << 20, ReuseWindow: huge, MaxOutbounds: 1 << 20, Timeout: huge,
 		}},
 		Events:  &EventsConfig{MaxEvents: 1 << 30, MaxBytes: 1 << 40},
 		Network: &NetworkConfig{MaxNetworks: 1 << 30},
 		Providers: []*ProviderConfig{quietProvider(func(p *ProviderConfig) {
 			p.MaxBytes = 1 << 40
 			p.Apply.MaxOutbounds = 1 << 30
-			p.Apply.Drain = huge
+			p.Apply.DrainTimeout = huge
 			p.BaseVersion = strings.Repeat("b", 1<<20)
 		})},
 	})
@@ -154,13 +154,13 @@ func TestConfigValuesHaveCeilings(t *testing.T) {
 		"probe timeout":        {int64(s.probes[0].timeout), int64(maxProbeTimeout)},
 		"probe progress":       {int64(s.probes[0].progressTimeout), int64(maxProbeTimeout)},
 		"connectivity timeout": {int64(s.connectivity.timeout), int64(maxProbeTimeout)},
-		"concurrent":           {int64(s.schedule.concurrent), maxConcurrent},
+		"maxConcurrentProbes":  {int64(s.schedule.concurrent), maxConcurrent},
 		"events":               {int64(s.maxEvents), maxEvents},
 		"event bytes":          {int64(s.maxBytes), maxEventBytes},
 		"networks":             {int64(s.maxNetworks), maxNetworks},
 		"answer bytes":         {p.maxBytes, maxAnswerBytes},
 		"outbounds":            {int64(p.maxOutbounds), maxProviderOutbounds},
-		"drain":                {int64(p.drain), int64(maxDrain)},
+		"drainTimeout":         {int64(p.drain), int64(maxDrain)},
 		"base version":         {int64(len(p.baseVersion)), maxBaseVersion},
 		"host probes a minute": {int64(s.schedule.hostProbes.perMinute), defaultPerMinute / 2},
 		"host reuse":           {int64(s.schedule.hostProbes.reuse), int64(maxHostReuse)},
@@ -177,7 +177,7 @@ func TestConfigValuesHaveCeilings(t *testing.T) {
 // provider rotates its tags: the counts of requests under way by outbound
 // keep nothing once the requests ended.
 func TestFetchViaKeepsNothingAfterTheRequests(t *testing.T) {
-	te := newTestEngine(t, &Config{SubjectSelector: []string{"p-"}}, &SelectorConfig{SwitchWithoutProbe: true}, "p-0")
+	te := newTestEngine(t, &Config{SubjectSelector: []string{"p-"}}, &SelectorConfig{SkipProbeBeforeSwitch: true}, "p-0")
 	for i := 1; i <= 100; i++ {
 		tag := fmt.Sprintf("p-%d", i)
 		te.updateCandidates(te.sel, []string{tag}, at(time.Duration(i)*time.Second))

@@ -26,43 +26,43 @@ const (
 
 // reportCounts is what the events of a report window add up to.
 type reportCounts struct {
-	Events                int64            `json:"events"`
-	EventsDropped         uint64           `json:"events_dropped"`
-	Switches              int64            `json:"switches"`
-	SwitchReasons         map[string]int64 `json:"switch_reasons"`
-	SwitchPath            []string         `json:"switch_path"`
-	Exhausted             int64            `json:"exhausted"`
-	PathDown              int64            `json:"path_down"`
-	PathSuspect           int64            `json:"path_suspect"`
-	PathRescued           int64            `json:"path_rescued"`
-	PendingClosed         int64            `json:"pending_closed"`
-	IdleClosed            int64            `json:"idle_closed"`
-	Probes                int64            `json:"probes"`
-	ProbesFailed          int64            `json:"probes_failed"`
-	ProbeBytes            int64            `json:"probe_bytes"`
-	HostProbeRequests     int64            `json:"host_probe_requests"`
-	HostProbes            int64            `json:"host_probes"`
-	UpgradeAttempts       int64            `json:"upgrade_attempts"`
-	UpgradeFailures       int64            `json:"upgrade_failures"`
-	PinnedDown            int64            `json:"pinned_down"`
-	NetworkChanges        int64            `json:"network_changes"`
-	NetworkKnown          int64            `json:"network_known"`
-	NetworkDown           int64            `json:"network_down"`
-	ProviderFetches       int64            `json:"provider_fetches"`
-	ProviderFetchFailures int64            `json:"provider_fetch_failures"`
-	ProviderTriggers      map[string]int64 `json:"provider_triggers"`
-	ProviderRetryAfter    int64            `json:"provider_retry_after"`
-	ProviderApplied       int64            `json:"provider_applied"`
-	ProviderRejected      int64            `json:"provider_rejected"`
-	ProviderRestartNeeded int64            `json:"provider_restart_needed"`
-	ProviderExpired       int64            `json:"provider_expired"`
-	ProviderRenewals      int64            `json:"provider_renewals"`
-	ProviderAuthFailed    int64            `json:"provider_auth_failed"`
-	ProviderBaseChanged   int64            `json:"provider_base_changed"`
-	Pins                  int64            `json:"pins"`
-	Releases              int64            `json:"releases"`
-	MemoryLow             int64            `json:"memory_low"`
-	OutboundSleeps        int64            `json:"outbound_sleeps"`
+	Events                  int64            `json:"events"`
+	EventsDropped           uint64           `json:"events_dropped"`
+	Switches                int64            `json:"switches"`
+	SwitchReasons           map[string]int64 `json:"switch_reasons"`
+	SwitchPath              []string         `json:"switch_path"`
+	Exhausted               int64            `json:"exhausted_count"`
+	PathDown                int64            `json:"path_down_count"`
+	PathSuspect             int64            `json:"path_suspect_count"`
+	PathRescued             int64            `json:"path_rescued_count"`
+	PendingClosed           int64            `json:"pending_closed_count"`
+	IdleClosed              int64            `json:"idle_closed_count"`
+	Probes                  int64            `json:"probes"`
+	ProbesFailed            int64            `json:"probes_failed"`
+	ProbeBytes              int64            `json:"probe_bytes"`
+	HostProbeRequests       int64            `json:"host_probe_requests"`
+	HostProbes              int64            `json:"host_probes"`
+	ReturnToCheaperAttempts int64            `json:"return_attempts"`
+	ReturnToCheaperFailures int64            `json:"return_failures"`
+	PinnedDown              int64            `json:"pinned_down_count"`
+	NetworkChanges          int64            `json:"network_changes"`
+	NetworkKnown            int64            `json:"network_known"`
+	NetworkDown             int64            `json:"network_down_count"`
+	ProviderFetches         int64            `json:"provider_fetches"`
+	ProviderFetchFailures   int64            `json:"provider_fetch_failures"`
+	ProviderTriggers        map[string]int64 `json:"provider_triggers"`
+	ProviderRetryAfter      int64            `json:"provider_retry_after"`
+	ProviderApplied         int64            `json:"provider_applied"`
+	ProviderRejected        int64            `json:"provider_rejected"`
+	ProviderRestartNeeded   int64            `json:"provider_restart_needed"`
+	ProviderExpired         int64            `json:"provider_expired"`
+	ProviderRenewals        int64            `json:"provider_renewals"`
+	ProviderAuthFailed      int64            `json:"provider_auth_failed"`
+	ProviderBaseChanged     int64            `json:"provider_base_changed"`
+	Pins                    int64            `json:"pins"`
+	Releases                int64            `json:"releases"`
+	MemoryLow               int64            `json:"memory_low_count"`
+	OutboundSleeps          int64            `json:"outbound_sleeps"`
 }
 
 type reportPath struct {
@@ -78,17 +78,17 @@ type reportPath struct {
 }
 
 type reportView struct {
-	Run        string `json:"health_run"`
-	Reason     string `json:"report_reason"`
-	Index      int    `json:"report_index"`
-	WindowSec  int64  `json:"window_sec"`
-	SessionSec int64  `json:"session_sec"`
+	Run       string `json:"health_run"`
+	Reason    string `json:"report_reason"`
+	Index     int    `json:"report_index"`
+	WindowMs  int64  `json:"window_ms"`
+	SessionMs int64  `json:"session_ms"`
 	reportCounts
-	Active            map[string]string     `json:"active"`
-	BalancerExhausted bool                  `json:"balancer_exhausted"`
-	NetworkUp         bool                  `json:"network_up"`
-	Connectivity      string                `json:"connectivity,omitempty"`
-	Paths             map[string]reportPath `json:"paths"`
+	Active              map[string]string     `json:"active"`
+	IsBalancerExhausted bool                  `json:"is_balancer_exhausted"`
+	IsNetworkUp         bool                  `json:"is_network_up"`
+	Connectivity        string                `json:"connectivity,omitempty"`
+	Paths               map[string]reportPath `json:"paths"`
 }
 
 // pathTotals are the counters of a path that a report shows as growth since
@@ -168,7 +168,7 @@ func (r *report) count(typ string, f map[string]any) {
 		c.IdleClosed += number(f["connections"])
 	case "probe_result":
 		c.Probes++
-		if f["ok"] != true {
+		if f["is_ok"] != true {
 			c.ProbesFailed++
 		}
 		c.ProbeBytes += number(f["bytes"])
@@ -177,28 +177,28 @@ func (r *report) count(typ string, f map[string]any) {
 		}
 	case "probe_request":
 		c.HostProbeRequests++
-	case "upgrade_start":
-		c.UpgradeAttempts++
-	case "upgrade_failed":
-		c.UpgradeFailures++
+	case "return_start":
+		c.ReturnToCheaperAttempts++
+	case "return_failed":
+		c.ReturnToCheaperFailures++
 		r.decide()
 	case "pinned_down":
 		c.PinnedDown++
 		// A start pin holds while the host verifies the connection, and the
 		// host reports a failed verification itself.
-		if f["start_pinned"] != true {
+		if f["is_start_pinned"] != true {
 			r.decide()
 		}
 	case "network_change":
 		c.NetworkChanges++
-		if f["known"] == true {
+		if f["is_known"] == true {
 			c.NetworkKnown++
 		}
 	case "network_down":
 		c.NetworkDown++
 	case "provider_fetch":
 		c.ProviderFetches++
-		if f["ok"] != true {
+		if f["is_ok"] != true {
 			c.ProviderFetchFailures++
 		}
 		if trigger, ok := f["trigger"].(string); ok {
@@ -215,15 +215,15 @@ func (r *report) count(typ string, f map[string]any) {
 		// start switch, or every session would count as one. Refused, it
 		// is: the core runs without the set the host gave it.
 		switch {
-		case f["ok"] == false:
+		case f["is_ok"] == false:
 			c.ProviderRejected++
 			r.decide()
-		case f["changed"] == true && f["trigger"] != "initial":
+		case f["is_changed"] == true && f["trigger"] != "initial":
 			c.ProviderApplied++
 			r.decide()
 		}
 		// A renewal keeps what the balancer has: it is no decision.
-		if f["ok"] == true && number(f["renewed"]) > 0 && f["trigger"] != "initial" {
+		if f["is_ok"] == true && number(f["renewed"]) > 0 && f["trigger"] != "initial" {
 			c.ProviderRenewals++
 		}
 	case "provider_restart_needed":
@@ -250,7 +250,7 @@ func (r *report) count(typ string, f map[string]any) {
 	case "release":
 		c.Releases++
 	case "memory_low":
-		if f["on"] == true {
+		if f["is_low"] == true {
 			c.MemoryLow++
 		}
 	case "outbound_sleep":
@@ -276,8 +276,8 @@ func number(v any) int64 {
 	return 0
 }
 
-func wholeSeconds(d time.Duration) int64 {
-	return max(int64(d/time.Second), 0)
+func wholeMilliseconds(d time.Duration) int64 {
+	return max(int64(d/time.Millisecond), 0)
 }
 
 // takeReport returns the report when it is due and starts a new window, or
@@ -327,11 +327,11 @@ func (e *engine) reportView(reason string, now time.Time, take bool) *reportView
 	v := &reportView{
 		Reason:       reason,
 		Index:        r.taken + 1,
-		WindowSec:    wholeSeconds(wall.Sub(r.windowStart)),
-		SessionSec:   wholeSeconds(wall.Sub(r.started)),
+		WindowMs:     wholeMilliseconds(wall.Sub(r.windowStart)),
+		SessionMs:    wholeMilliseconds(wall.Sub(r.started)),
 		reportCounts: r.counts,
 		Active:       map[string]string{},
-		NetworkUp:    !e.networkDown,
+		IsNetworkUp:  !e.networkDown,
 		Connectivity: e.connectivityState(),
 		Paths:        map[string]reportPath{},
 	}
@@ -353,7 +353,7 @@ func (e *engine) reportView(reason string, now time.Time, take bool) *reportView
 	active := map[string]time.Duration{}
 	for _, s := range e.selectors {
 		v.Active[s.tag] = s.current()
-		v.BalancerExhausted = v.BalancerExhausted || s.exhausted
+		v.IsBalancerExhausted = v.IsBalancerExhausted || s.exhausted
 		if !s.activeSince.IsZero() {
 			active[s.current()] += now.Sub(s.activeSince)
 		}

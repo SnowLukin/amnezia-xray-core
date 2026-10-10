@@ -30,10 +30,10 @@ func TestProviderRoutingAppliesInRunningCore(t *testing.T) {
 	  "healthObservatory": {
 	    "subjectSelector": ["p-"],
 	    "providers": [{
-	      "tag": "fresh", "url": "`+ts.URL+`/set", "allowPlainHttp": true, "via": ["direct"],
-	      "triggers": {"interval": "0s", "minHealthy": 0, "whenExhausted": false, "maxAge": "0s", "onNetworkChange": "never"},
-	      "limits": {"exhaustedMinInterval": "10ms", "backoff": {"initial": "50ms"}},
-	      "apply": {"balancer": "auto", "tagPrefix": "p-", "protocols": ["freedom"], "routing": true}
+	      "tag": "fresh", "url": "`+ts.URL+`/set", "isPlainHttpAllowed": true, "via": ["direct"],
+	      "triggers": {"interval": "0s", "minHealthyOutbounds": 0, "shouldRefreshWhenExhausted": false, "maxAge": "0s", "networkChangeMode": "never"},
+	      "limits": {"exhaustedMinInterval": "10ms", "backoff": {"initialDelay": "50ms"}},
+	      "apply": {"balancer": "auto", "tagPrefix": "p-", "allowedProtocols": ["freedom"], "isRoutingAccepted": true}
 	    }]
 	  }
 	}`))
@@ -75,7 +75,7 @@ func TestProviderRoutingAppliesInRunningCore(t *testing.T) {
 	srv.set(`{"protocol": 1, "outbounds": [{"tag": "x1", "protocol": "freedom"}], ` + routingWith("IPIfNonMatch") + `}`)
 	obs.RequestRefresh("fresh")
 	ev := w.until("provider_apply", nil)
-	if ev.Fields["ok"] != true || ev.Fields["rules"] != 3.0 {
+	if ev.Fields["is_ok"] != true || ev.Fields["rules"] != 3.0 {
 		t.Fatalf("apply %v", ev.Fields)
 	}
 	if got := pick("blocked.test"); got != "block" {
@@ -96,7 +96,7 @@ func TestProviderRoutingAppliesInRunningCore(t *testing.T) {
 	  "dns": {"servers": ["1.1.1.1"]}}`)
 	obs.RequestRefresh("fresh")
 	ev = w.until("provider_apply", nil)
-	if ev.Fields["ok"] != false || !strings.Contains(ev.Fields["error"].(string), `unknown key "dns"`) {
+	if ev.Fields["is_ok"] != false || !strings.Contains(ev.Fields["error"].(string), `unknown key "dns"`) {
 		t.Fatalf("an answer with dns: apply %v", ev.Fields)
 	}
 	if len(w.since(from, "provider_restart_needed")) != 0 {
@@ -117,7 +117,7 @@ func TestProviderRoutingAppliesInRunningCore(t *testing.T) {
 		reason, _ := e.Fields["error"].(string)
 		return !strings.Contains(reason, `"dns"`)
 	})
-	if reason, _ := ev.Fields["error"].(string); ev.Fields["ok"] != false || !strings.Contains(reason, "unknown outbound nowhere") ||
+	if reason, _ := ev.Fields["error"].(string); ev.Fields["is_ok"] != false || !strings.Contains(reason, "unknown outbound nowhere") ||
 		pick("blocked.test") != "block" {
 		t.Fatalf("a routing to an unknown outbound: apply %v, blocked.test now goes to %q", ev.Fields, pick("blocked.test"))
 	}

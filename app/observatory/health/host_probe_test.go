@@ -59,7 +59,7 @@ func eventsOf(evs []Event, typ string) []Event {
 }
 
 func hostConfig(hp *HostProbesConfig) *Config {
-	return &Config{Schedule: &ScheduleConfig{PauseWhenIdle: int64(time.Hour), Quarantine: &Backoff{Initial: int64(time.Minute)},
+	return &Config{Schedule: &ScheduleConfig{IdleAfter: int64(time.Hour), Quarantine: &Backoff{InitialDelay: int64(time.Minute)},
 		HostProbes: hp}}
 }
 
@@ -67,7 +67,7 @@ func hostConfig(hp *HostProbesConfig) *Config {
 // candidates from the cheapest and then the ones in quarantine; lazy ones
 // stay out. Quarantine and fresh proof answer without a probe.
 func TestHostProbePlan(t *testing.T) {
-	sc := &SelectorConfig{Costs: costs("a", 1, "b", 3, "c", 5), Lazy: []string{"c"}}
+	sc := &SelectorConfig{Costs: costs("a", 1, "b", 3, "c", 5), LazyOutbounds: []string{"c"}}
 	te := newTestEngine(t, hostConfig(nil), sc, "a1", "a2", "b1", "b2", "c1")
 	te.markDown(te.path("a2"), "probe", false, at(0))
 	te.onSuccess("b2", at(0))
@@ -87,7 +87,7 @@ func TestHostProbePlan(t *testing.T) {
 }
 
 func TestHostProbeRequestChecks(t *testing.T) {
-	sc := &SelectorConfig{Costs: costs("a", 1, "b", 3, "c", 5), Lazy: []string{"c"}}
+	sc := &SelectorConfig{Costs: costs("a", 1, "b", 3, "c", 5), LazyOutbounds: []string{"c"}}
 	te := newTestEngine(t, hostConfig(&HostProbesConfig{MaxOutbounds: 2}), sc, "a1", "b1", "c1")
 	te.addSelector("other", newSelectorSettings(&SelectorConfig{}))
 	for _, tc := range []struct {
@@ -180,7 +180,7 @@ func TestHostProbeRequestsJoin(t *testing.T) {
 // budget, even when the budget would let the host probe through.
 func TestHostProbeWaitsBehindTheObserver(t *testing.T) {
 	cfg := parallelConfig(2)
-	cfg.Schedule.PerServerNamePerMinute = 1
+	cfg.Schedule.ProbesPerServerNamePerMinute = 1
 	te := newTestEngine(t, cfg, &SelectorConfig{Costs: costs("a", 1, "c", 5)}, "a1", "a2", "c1")
 	te.serverNames(map[string]string{"a1": "r.example", "a2": "r.example", "c1": "c.example"})
 	te.startsByName["r.example"] = []time.Time{at(0)}
@@ -197,7 +197,7 @@ func TestHostProbeWaitsBehindTheObserver(t *testing.T) {
 // Host probes start at most hostProbes.perMinute a minute, and at most half
 // of the probes of one server name.
 func TestHostProbeBudget(t *testing.T) {
-	te := newTestEngine(t, hostConfig(&HostProbesConfig{PerMinute: 2}), &SelectorConfig{Costs: costs("a", 1)},
+	te := newTestEngine(t, hostConfig(&HostProbesConfig{ProbesPerMinute: 2}), &SelectorConfig{Costs: costs("a", 1)},
 		"a1", "b1", "c1", "d1")
 	te.ask(t, at(0), "a1", "b1", "c1", "d1")
 	var started []time.Duration
@@ -318,7 +318,7 @@ func TestHostProbeClearsASuspicion(t *testing.T) {
 // An exhausted balancer comes back once a host probe finds a candidate
 // working, here while no user traffic brings a recheck.
 func TestHostProbeRecoversAnExhaustedBalancer(t *testing.T) {
-	te := newTestEngine(t, &Config{Schedule: &ScheduleConfig{Quarantine: &Backoff{Initial: int64(time.Minute)}}},
+	te := newTestEngine(t, &Config{Schedule: &ScheduleConfig{Quarantine: &Backoff{InitialDelay: int64(time.Minute)}}},
 		&SelectorConfig{Costs: costs("a", 1, "b", 3)}, "a1", "b1")
 	te.failN(3, "a1", failDial, at(0))
 	te.run(t, at(time.Second), map[string]bool{"b1": false})
@@ -337,37 +337,37 @@ func TestHostProbeRecoversAnExhaustedBalancer(t *testing.T) {
 // A passed host probe of a cheaper outbound neither moves the balancer nor
 // brings the return closer.
 func TestHostProbeOfACheaperOutboundDoesNotReturn(t *testing.T) {
-	te := newTestEngine(t, &Config{Schedule: quarantine(30 * time.Second)}, upgradeConfig(), "a1", "b1")
+	te := newTestEngine(t, &Config{Schedule: quarantine(30 * time.Second)}, returnToCheaperConfig(), "a1", "b1")
 	failoverToB(t, te, at(0))
-	upgradeAt := te.sel.upgradeAt
+	returnToCheaperAt := te.sel.returnToCheaperAt
 	te.ask(t, at(2*time.Minute), "a1")
 	jobs := te.run(t, at(2*time.Minute), nil)
 	if !slices.Equal(reasons(jobs), []string{"host:a1"}) || te.path("a1").status != statusUp {
 		t.Fatalf("probes %v, a1 %v", reasons(jobs), te.path("a1").status)
 	}
-	if te.sel.current() != "b1" || !te.sel.upgradeAt.Equal(upgradeAt) || te.sel.upgradeTarget != "" {
-		t.Fatalf("active %q, return at %v (was %v), target %q", te.sel.current(), te.sel.upgradeAt.Sub(t0),
-			upgradeAt.Sub(t0), te.sel.upgradeTarget)
+	if te.sel.current() != "b1" || !te.sel.returnToCheaperAt.Equal(returnToCheaperAt) || te.sel.returnToCheaperTarget != "" {
+		t.Fatalf("active %q, return at %v (was %v), target %q", te.sel.current(), te.sel.returnToCheaperAt.Sub(t0),
+			returnToCheaperAt.Sub(t0), te.sel.returnToCheaperTarget)
 	}
 }
 
 // returnConfig lets host probes of an outbound run right after the probes of
 // a return to it.
 func returnConfig() *Config {
-	cfg := hostConfig(&HostProbesConfig{Reuse: int64(time.Second)})
-	cfg.Schedule.Quarantine = &Backoff{Initial: int64(30 * time.Second)}
-	cfg.Schedule.PerServerNamePerMinute = 20
-	cfg.Schedule.PerMinute = 60
+	cfg := hostConfig(&HostProbesConfig{ReuseWindow: int64(time.Second)})
+	cfg.Schedule.Quarantine = &Backoff{InitialDelay: int64(30 * time.Second)}
+	cfg.Schedule.ProbesPerServerNamePerMinute = 20
+	cfg.Schedule.ProbesPerMinute = 60
 	return cfg
 }
 
 // A failed host probe of the outbound a return is under way to ends the
 // return.
 func TestHostProbeFailureEndsAReturn(t *testing.T) {
-	te := newTestEngine(t, returnConfig(), upgradeConfig(), "a1", "b1")
+	te := newTestEngine(t, returnConfig(), returnToCheaperConfig(), "a1", "b1")
 	failoverToB(t, te, at(0))
 	jobs, _ := te.tick(at(6 * time.Minute))
-	if !slices.Equal(reasons(jobs), []string{"upgrade:a1"}) {
+	if !slices.Equal(reasons(jobs), []string{"return:a1"}) {
 		t.Fatalf("setup: probes %v", reasons(jobs))
 	}
 	te.onProbeResult(jobs[0], probeResult{ok: true}, at(6*time.Minute))
@@ -378,14 +378,14 @@ func TestHostProbeFailureEndsAReturn(t *testing.T) {
 		t.Fatalf("probes %v, want the host probe between the return probes", reasons(jobs))
 	}
 	te.onProbeResult(jobs[0], probeResult{ok: false}, at(6*time.Minute+4*time.Second))
-	if te.sel.upgradeTarget != "" || len(te.queue) != 0 || countEvents(te.eventTypes(), "upgrade_failed") != 1 {
-		t.Fatalf("return target %q, queued %v", te.sel.upgradeTarget, queued(te))
+	if te.sel.returnToCheaperTarget != "" || len(te.queue) != 0 || countEvents(te.eventTypes(), "return_failed") != 1 {
+		t.Fatalf("return target %q, queued %v", te.sel.returnToCheaperTarget, queued(te))
 	}
 }
 
 // A failed host probe right after a return is a failed return.
 func TestHostProbeFailureAfterAReturnIsPenalized(t *testing.T) {
-	te := newTestEngine(t, returnConfig(), upgradeConfig(), "a1", "b1")
+	te := newTestEngine(t, returnConfig(), returnToCheaperConfig(), "a1", "b1")
 	failoverToB(t, te, at(0))
 	now := at(6 * time.Minute)
 	for ; te.sel.current() != "a1" && now.Before(at(10*time.Minute)); now = now.Add(5 * time.Second) {
@@ -397,7 +397,7 @@ func TestHostProbeFailureAfterAReturnIsPenalized(t *testing.T) {
 	te.events.drain()
 	te.ask(t, now.Add(5*time.Second), "a1")
 	te.run(t, now.Add(5*time.Second), map[string]bool{"a1": false})
-	if types := te.eventTypes(); countEvents(types, "upgrade_penalty") != 1 || te.sel.current() != "b1" {
+	if types := te.eventTypes(); countEvents(types, "return_penalty") != 1 || te.sel.current() != "b1" {
 		t.Fatalf("events %v, active %q, want a penalty and b1", types, te.sel.current())
 	}
 }
@@ -406,7 +406,7 @@ func TestHostProbeFailureAfterAReturnIsPenalized(t *testing.T) {
 // host probe changes nothing.
 func TestHostProbeFailureWaitsForTheNetworkCheck(t *testing.T) {
 	cfg := connectivityConfig()
-	cfg.Schedule = &ScheduleConfig{Concurrent: 2, PauseWhenIdle: int64(time.Hour)}
+	cfg.Schedule = &ScheduleConfig{MaxConcurrentProbes: 2, IdleAfter: int64(time.Hour)}
 	te := newTestEngine(t, cfg, &SelectorConfig{Costs: costs("a", 1, "b", 3)}, "a1", "b1")
 	suspectWeak(te, "a1", 0)
 	te.ask(t, at(3*time.Second), "a1")
@@ -423,7 +423,7 @@ func TestHostProbeFailureWaitsForTheNetworkCheck(t *testing.T) {
 // A request ends after its timeout; probes it waited for that have not
 // started are dropped.
 func TestHostProbeRequestTimesOut(t *testing.T) {
-	te := newTestEngine(t, hostConfig(&HostProbesConfig{PerMinute: 1, Timeout: int64(30 * time.Second)}),
+	te := newTestEngine(t, hostConfig(&HostProbesConfig{ProbesPerMinute: 1, Timeout: int64(30 * time.Second)}),
 		&SelectorConfig{Costs: costs("a", 1, "b", 3)}, "a1", "b1")
 	r := te.ask(t, at(0), "a1", "b1")
 	jobs, _ := te.tick(at(0))
@@ -548,7 +548,7 @@ func TestHostProbeRequestsAreBounded(t *testing.T) {
 	}
 	open := st.ProbeRequests[len(st.ProbeRequests)-1]
 	closed := st.ProbeRequests[0]["outbounds"].([]any)[0].(map[string]any)
-	if open["done"] != false || open["age_ms"] != 1000.0 || open["balancer"] != "auto" ||
+	if open["is_done"] != false || open["age_ms"] != 1000.0 || open["balancer"] != "auto" ||
 		closed["result"] != "ok" || closed["source"] != "recent" || closed["age_ms"] == nil {
 		t.Fatalf("status probe_requests %v", st.ProbeRequests)
 	}

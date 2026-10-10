@@ -70,11 +70,12 @@ type drainingOutbound struct {
 //	 "headers": {"Authorization": "Bearer ..."}, "baseVersion": "..."}
 type providerAnswer struct {
 	// The outbounds as sent, handed to the config loader in one piece.
-	outbounds     json.RawMessage
-	heads         []outboundHead
-	costs         map[string]float64
-	nextRefreshIn time.Duration
-	version       string
+	outbounds        json.RawMessage
+	heads            []outboundHead
+	costs            map[string]float64
+	nextRefreshIn    time.Duration
+	hasNextRefreshIn bool
+	version          string
 	// Rules, balancers and the domain strategy in the format of the config
 	// file; withStrategy tells whether the strategy was there at all.
 	routing      json.RawMessage
@@ -114,7 +115,7 @@ type outboundHead struct {
 // key for applied that the core threw away; a new key is protocol 2.
 var (
 	setKeys  = map[string]bool{"outbounds": true, "costs": true, "routing": true}
-	metaKeys = map[string]bool{"protocol": true, "version": true, "hash": true, "nextRefreshIn": true,
+	metaKeys = map[string]bool{"protocol": true, "version": true, "nextRefreshIn": true,
 		"expiresAt": true, "serverTime": true, "headers": true, "baseVersion": true}
 )
 
@@ -194,11 +195,12 @@ func readAnswer(body []byte, initial bool) (*providerAnswer, error) {
 			return nil, answerErrorf("costs: %v", err)
 		}
 	}
-	next, err := parseRefreshIn(sections["nextRefreshIn"])
+	next, hasNext, err := parseRefreshIn(sections["nextRefreshIn"])
 	if err != nil {
 		return nil, answerErrorf("%v", err)
 	}
 	a.nextRefreshIn = next
+	a.hasNextRefreshIn = hasNext
 	// A time the core cannot read refuses the answer: a lease taken for
 	// none would keep an outbound the backend meant to end.
 	if raw := sections["expiresAt"]; !isNull(raw) {
@@ -242,11 +244,9 @@ func readAnswer(body []byte, initial bool) (*providerAnswer, error) {
 			return nil, answerErrorf("baseVersion must be a string of at most %d bytes", maxBaseVersion)
 		}
 	}
-	for _, key := range []string{"version", "hash"} {
-		if v := sections[key]; a.version == "" && !isNull(v) {
-			if err := json.Unmarshal(v, &a.version); err != nil {
-				return nil, answerErrorf("%s: %v", key, err)
-			}
+	if v := sections["version"]; !isNull(v) {
+		if err := json.Unmarshal(v, &a.version); err != nil {
+			return nil, answerErrorf("version: %v", err)
 		}
 	}
 	if r := sections["routing"]; !isNull(r) {
@@ -315,24 +315,23 @@ func isNull(raw json.RawMessage) bool {
 	return len(raw) == 0 || string(raw) == "null"
 }
 
-// parseRefreshIn accepts a duration string such as "90m" or seconds.
-func parseRefreshIn(raw json.RawMessage) (time.Duration, error) {
-	if isNull(raw) {
-		return 0, nil
+// parseRefreshIn accepts a Go duration string such as "90m".
+func parseRefreshIn(raw json.RawMessage) (time.Duration, bool, error) {
+	if len(raw) == 0 {
+		return 0, false, nil
+	}
+	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return 0, false, errors.New("nextRefreshIn must be a duration string")
 	}
 	var s string
-	if json.Unmarshal(raw, &s) == nil {
-		d, err := time.ParseDuration(s)
-		if err != nil {
-			return 0, fmt.Errorf("nextRefreshIn: %w", err)
-		}
-		return max(d, 0), nil
+	if err := json.Unmarshal(raw, &s); err != nil {
+		return 0, false, errors.New("nextRefreshIn must be a duration string")
 	}
-	var secs float64
-	if err := json.Unmarshal(raw, &secs); err != nil {
-		return 0, errors.New("nextRefreshIn must be a duration or seconds")
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		return 0, false, fmt.Errorf("nextRefreshIn: %w", err)
 	}
-	return max(time.Duration(secs*float64(time.Second)), 0), nil
+	return max(d, 0), true, nil
 }
 
 // setHash names an answer by its set keys, so the same set sent again,
@@ -522,6 +521,7 @@ func (o *Observer) runRefresh(j *refreshJob) {
 		r.ok = true
 		r.changed = changed
 		r.nextRefreshIn = res.answer.nextRefreshIn
+		r.hasNextRefreshIn = res.answer.hasNextRefreshIn
 	}
 	o.mu.Lock()
 	o.e.onRefreshDone(j, r, o.now())
@@ -575,7 +575,7 @@ func (o *Observer) fetchSet(rt *providerRuntime, j *refreshJob, body []byte) (fe
 		f := map[string]any{"provider": rt.cfg.tag, "trigger": j.trigger.String(), "retry": j.retry,
 			"attempt": i + 1, "via": v, "outbound": tag, "method": rt.cfg.method, "refresh": j.refresh}
 		if skip != "" {
-			f["ok"] = false
+			f["is_ok"] = false
 			f["error"] = skip
 			o.emit("provider_fetch", f)
 			// What a via that was asked met tells the next request more than
@@ -595,7 +595,7 @@ func (o *Observer) fetchSet(rt *providerRuntime, j *refreshJob, body []byte) (fe
 		// request did its job and the refusal is the apply's, so the report
 		// counts it once, as rejected.
 		refused := isAnswerError(err)
-		f["ok"] = err == nil || refused
+		f["is_ok"] = err == nil || refused
 		f["status"] = r.status
 		f["ms"] = time.Since(start).Milliseconds()
 		f["bytes"] = r.bytes
@@ -614,7 +614,7 @@ func (o *Observer) fetchSet(rt *providerRuntime, j *refreshJob, body []byte) (fe
 		}
 		if refused {
 			o.emit("provider_apply", map[string]any{"provider": rt.cfg.tag, "trigger": j.trigger.String(),
-				"ok": false, "error": err.Error()})
+				"is_ok": false, "error": err.Error()})
 		}
 		last, lastErr = r, err
 		if r.backend {
@@ -758,27 +758,27 @@ func (o *Observer) fetchOnce(cfg *providerSettings, headers map[string]string, t
 }
 
 // errorCode returns the code of a protocol error body,
-// {"protocol": 1, "error": "<code>", "message": "..."}, or "" when the body
+// {"protocol": 1, "code": "<code>", "message": "..."}, or "" when the body
 // is not one: a firewall or a portal answers with a status as well, but not
 // in the protocol.
 func errorCode(body []byte) string {
 	var e struct {
 		Protocol *float64 `json:"protocol"`
-		Error    string   `json:"error"`
+		Code     string   `json:"code"`
 	}
 	if json.Unmarshal(body, &e) != nil || e.Protocol == nil || *e.Protocol < 1 || *e.Protocol != math.Trunc(*e.Protocol) {
 		return ""
 	}
 	// The code goes into events as it is, so it has to look like one.
-	if len(e.Error) == 0 || len(e.Error) > 32 {
+	if len(e.Code) == 0 || len(e.Code) > 32 {
 		return ""
 	}
-	for _, c := range e.Error {
+	for _, c := range e.Code {
 		if (c < 'a' || c > 'z') && c != '_' {
 			return ""
 		}
 	}
-	return e.Error
+	return e.Code
 }
 
 // parseRetryAfter reads Retry-After as seconds or as an HTTP date. A date
@@ -825,7 +825,7 @@ func (o *Observer) applySet(rt *providerRuntime, a *providerAnswer, j *refreshJo
 		// Building quotes tags, protocols and what the config loader found
 		// wrong, all from the answer: cut like the reason of an answerError.
 		err = errors.New(cutText(err.Error(), maxFailureText))
-		fields["ok"] = false
+		fields["is_ok"] = false
 		fields["error"] = err.Error()
 		o.emit("provider_apply", fields)
 		return false, err
@@ -859,8 +859,8 @@ func (o *Observer) applySet(rt *providerRuntime, a *providerAnswer, j *refreshJo
 		names, stale := o.e.takeAnswerHeaders(rt.p, a.headers, j.headersGen, headersBy(j), now)
 		based := o.e.takeBase(rt.p, a, now)
 		o.e.keepAnswer(rt.p, a, kept, leases.ends || rt.p.headersGen != gen || based, now)
-		fields["ok"] = true
-		fields["changed"] = false
+		fields["is_ok"] = true
+		fields["is_changed"] = false
 		fields["unchanged"] = len(rt.p.tags)
 		leaseFields(fields, leases, rt.p)
 		headerFields(fields, names, stale)
@@ -878,7 +878,7 @@ func (o *Observer) applySet(rt *providerRuntime, a *providerAnswer, j *refreshJo
 		if !rt.cfg.routing || o.replaceRules == nil {
 			// Whether to take routing from a provider is the choice of the
 			// client: the set applies without it.
-			fields["routing_ignored"] = true
+			fields["is_routing_ignored"] = true
 		} else {
 			setTags := make([]string, 0, len(changes)+len(unchanged))
 			for _, c := range changes {
@@ -1018,13 +1018,13 @@ func (o *Observer) applySet(rt *providerRuntime, a *providerAnswer, j *refreshJo
 	names, stale := o.e.takeAnswerHeaders(rt.p, a.headers, j.headersGen, headersBy(j), now)
 	o.e.takeBase(rt.p, a, now)
 	o.e.keepAnswer(rt.p, a, kept, true, now)
-	fields["ok"] = true
-	fields["changed"] = true
+	fields["is_ok"] = true
+	fields["is_changed"] = true
 	fields["added"] = len(added)
 	fields["replaced"] = len(replaced)
 	fields["removed"] = len(removed)
 	fields["unchanged"] = len(unchanged)
-	fields["exhausted"] = exhausted
+	fields["was_exhausted"] = exhausted
 	leaseFields(fields, leases, rt.p)
 	headerFields(fields, names, stale)
 	baseFields(fields, a)
@@ -1379,7 +1379,7 @@ func (o *Observer) endDrain(rt *providerRuntime, d *drainingOutbound) {
 		o.e.dropProviderOutbound(d.tag, o.now())
 	}
 	rt.p.draining = len(rt.draining)
-	o.e.emit(o.now(), "provider_drained", map[string]any{"provider": rt.cfg.tag, "outbound": d.tag, "replaced": !d.registered})
+	o.e.emit(o.now(), "provider_drained", map[string]any{"provider": rt.cfg.tag, "outbound": d.tag, "is_replaced": !d.registered})
 	o.mu.Unlock()
 	if registered || !d.registered {
 		common.Close(d.handler)

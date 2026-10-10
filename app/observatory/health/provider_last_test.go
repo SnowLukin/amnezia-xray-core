@@ -105,7 +105,7 @@ func TestProviderSetRoundTripsAsInitial(t *testing.T) {
 	g.o.clock = func() time.Time { return later }
 	g.rt.cfg.headers = map[string]string{"Authorization": "Bearer config"}
 	g.o.applyInitial()
-	if ev := g.lastApply(t); ev["ok"] != true || ev["trigger"] != "initial" || ev["version"] != "v1" || ev["clock"] != "saved" {
+	if ev := g.lastApply(t); ev["is_ok"] != true || ev["trigger"] != "initial" || ev["version"] != "v1" || ev["clock"] != "saved" {
 		t.Fatalf("initial %v", ev)
 	}
 	g.o.mu.Lock()
@@ -314,7 +314,7 @@ func TestKeptSetOfALargeAnswerStartsTheNextCore(t *testing.T) {
 	}
 	g, _ := initialFixture(t, string(raw))
 	g.o.applyInitial()
-	if ev := g.lastApply(t); ev["ok"] != true || ev["trigger"] != "initial" {
+	if ev := g.lastApply(t); ev["is_ok"] != true || ev["trigger"] != "initial" {
 		t.Fatalf("the next core refused the kept set: %v", ev)
 	}
 }

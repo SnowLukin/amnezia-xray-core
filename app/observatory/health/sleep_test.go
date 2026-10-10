@@ -98,7 +98,7 @@ func newSleepFixture(t *testing.T, cfg *Config, sc *SelectorConfig, candidates .
 	}
 	cfg.SubjectSelector = append(cfg.SubjectSelector, "a", "w")
 	if cfg.Schedule == nil {
-		cfg.Schedule = &ScheduleConfig{PauseWhenIdle: int64(time.Hour)}
+		cfg.Schedule = &ScheduleConfig{IdleAfter: int64(time.Hour)}
 	}
 	if sc == nil {
 		sc = &SelectorConfig{Costs: costs("a", 1, "w", 3)}
@@ -190,14 +190,14 @@ func (f *sleepFixture) asleep(t *testing.T, tag string) bool {
 	}
 	for _, p := range st.Paths {
 		if p.Outbound == tag {
-			return p.Asleep
+			return p.IsAsleep
 		}
 	}
 	return false
 }
 
 // A probe wakes an outbound the balancer does not use; it sleeps once
-// sleep.after passed since, with one call and one event, and is not asked
+// sleep.afterLastUse passed since, with one call and one event, and is not asked
 // again.
 func TestSleepsAfterIdle(t *testing.T) {
 	f := newSleepFixture(t, nil, nil, "a1", "w1")
@@ -218,7 +218,7 @@ func TestSleepsAfterIdle(t *testing.T) {
 	}
 	f.turn(used.Add(defaultSleepAfter - time.Second))
 	if n := f.proxies["w1"].asked(); n != 0 {
-		t.Fatalf("asked to sleep %d times before sleep.after", n)
+		t.Fatalf("asked to sleep %d times before sleep.afterLastUse", n)
 	}
 	if wake := f.turn(used.Add(defaultSleepAfter)); !wake.IsZero() {
 		t.Fatalf("wake at %v once everything sleeps", wake.Sub(t0))
@@ -265,7 +265,7 @@ func TestNeverSleepsChosenPinnedTargetProbedQueuedOrFetchVia(t *testing.T) {
 			}
 		}},
 		{"return target", func(t *testing.T, e *engine, s *selector, now time.Time) {
-			s.upgradeTarget = "w1"
+			s.returnToCheaperTarget = "w1"
 		}},
 		{"tried by a failover under way", func(t *testing.T, e *engine, s *selector, now time.Time) {
 			s.failoverTried = map[string]bool{"a1": true, "w1": true, "w2": true}
@@ -299,7 +299,7 @@ func TestNeverSleepsChosenPinnedTargetProbedQueuedOrFetchVia(t *testing.T) {
 // while nothing probes it: here the network is down, so its probe waits and
 // the request alone holds the outbound, until it ends after its timeout.
 func TestHostRequestKeepsItsOutboundAwake(t *testing.T) {
-	f := newSleepFixture(t, &Config{Sleep: &SleepConfig{After: int64(10 * time.Second)}}, nil, "a1", "w1")
+	f := newSleepFixture(t, &Config{Sleep: &SleepConfig{AfterLastUse: int64(10 * time.Second)}}, nil, "a1", "w1")
 	f.use("w1", at(time.Second))
 	f.engine(func(e *engine) {
 		e.onNetworkLost(at(2 * time.Second))
@@ -345,8 +345,8 @@ func TestSleepsUnderAProbeThatWaits(t *testing.T) {
 			e.enqueue("w1", reasonNetwork, "", now)
 		}, defaultSleepAfter, "idle"},
 		{"memory low", func(e *engine, now time.Time) {
-			e.selectors["auto"].upgradeTarget = "w1"
-			e.enqueue("w1", reasonUpgrade, "auto", now)
+			e.selectors["auto"].returnToCheaperTarget = "w1"
+			e.enqueue("w1", reasonReturnToCheaper, "auto", now)
 			e.setMemoryLow(true, now)
 		}, 0, "memory"},
 	} {
@@ -376,7 +376,7 @@ func TestSleepsUnderAProbeThatWaits(t *testing.T) {
 // A connection the observer sees no dial of may wake an outbound that can
 // sleep: a rule straight at its tag, a fallbackTag or a dialerProxy chain.
 // Its handler tells of every connection: the outbound is awake in Status
-// again, does not sleep while one runs, and sleeps sleep.after after the
+// again, does not sleep while one runs, and sleeps sleep.afterLastUse after the
 // last one ended, which kicks the loop to plan it.
 func TestProcessWakesAndHoldsASleepingOutbound(t *testing.T) {
 	f := newSleepFixture(t, nil, nil, "a1", "w1")
@@ -417,7 +417,7 @@ func TestProcessWakesAndHoldsASleepingOutbound(t *testing.T) {
 		t.Fatal("the last connection ended without a kick")
 	}
 	if wake := f.turn(at(3 * time.Hour)); !wake.Equal(at(3*time.Hour + defaultSleepAfter)) {
-		t.Fatalf("wake at %v, want sleep.after past the last connection", wake.Sub(t0))
+		t.Fatalf("wake at %v, want sleep.afterLastUse past the last connection", wake.Sub(t0))
 	}
 	f.turn(at(3*time.Hour + defaultSleepAfter))
 	if n := f.proxies["w1"].asked(); n != 2 || !f.asleep(t, "w1") {
@@ -433,7 +433,7 @@ func TestProcessWakesAndHoldsASleepingOutbound(t *testing.T) {
 	if kicked() {
 		t.Fatal("the end of a connection through the chosen outbound kicked the loop")
 	}
-	f.engine(func(e *engine) { e.switchTo(e.selectors["auto"], "a1", "upgrade", at(5*time.Hour)) })
+	f.engine(func(e *engine) { e.switchTo(e.selectors["auto"], "a1", "return", at(5*time.Hour)) })
 	f.turn(at(5 * time.Hour))
 	f.turn(at(5*time.Hour + defaultSleepAfter))
 	if n := f.proxies["w1"].asked(); n != 3 || !f.asleep(t, "w1") {
@@ -514,7 +514,7 @@ func TestSleepsAtOnceUnderLowMemory(t *testing.T) {
 // without a probe: nothing returns to w1, and no probe holds it, afterwards.
 func newDownFixture(t *testing.T) *sleepFixture {
 	t.Helper()
-	f := newSleepFixture(t, nil, &SelectorConfig{Costs: costs("a", 1, "w", 3), SwitchWithoutProbe: true}, "a1", "w1")
+	f := newSleepFixture(t, nil, &SelectorConfig{Costs: costs("a", 1, "w", 3), SkipProbeBeforeSwitch: true}, "a1", "w1")
 	f.engine(func(e *engine) { e.switchTo(e.selectors["auto"], "w1", "failover", t0) })
 	f.turn(t0)
 	return f
@@ -534,7 +534,7 @@ func (f *sleepFixture) quarantineEnd() time.Time {
 }
 
 // The balancer leaves an outbound found down, whose tunnel leads nowhere: it
-// sleeps at once rather than sleep.after later. The probe at the end of its
+// sleeps at once rather than sleep.afterLastUse later. The probe at the end of its
 // quarantine wakes it; one that fails puts it to sleep at once again, one
 // that passes leaves it the usual wait.
 func TestSleepsAtOnceWhenDown(t *testing.T) {
@@ -563,7 +563,7 @@ func TestSleepsAtOnceWhenDown(t *testing.T) {
 	f.engine(func(e *engine) { e.markUp(e.paths["w1"], "probe", end) })
 	f.turn(end.Add(defaultSleepAfter - time.Second))
 	if n := f.proxies["w1"].asked(); n != 2 {
-		t.Fatalf("out of quarantine, yet asked to sleep before sleep.after: %d calls", n)
+		t.Fatalf("out of quarantine, yet asked to sleep before sleep.afterLastUse: %d calls", n)
 	}
 	f.turn(end.Add(defaultSleepAfter))
 	if evs := f.sleeps(t); f.proxies["w1"].asked() != 3 || len(evs) != 1 || evs[0].Fields["reason"] != "idle" {
@@ -598,7 +598,7 @@ func TestDownSleepsOnceItsConnectionsEnd(t *testing.T) {
 }
 
 // A dead outbound that refuses to sleep is asked again within seconds,
-// doubling, not after sleep.after: what holds it ends soon.
+// doubling, not after sleep.afterLastUse: what holds it ends soon.
 func TestDownSleepRetriesSoon(t *testing.T) {
 	f := newDownFixture(t)
 	// The check for silent connections would wake the loop between the
@@ -683,7 +683,7 @@ func drainKick(o *Observer) {
 // Being down puts an outbound to sleep at once only once nothing holds it:
 // a pin keeps the balancer on it, a probe of it runs, and an outbound ruled
 // out while the network check fails may be back as soon as the network is,
-// so it waits sleep.after as usual.
+// so it waits sleep.afterLastUse as usual.
 func TestDownSleepsOnlyOnceLetGo(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -718,13 +718,13 @@ func TestDownSleepsOnlyOnceLetGo(t *testing.T) {
 			}
 			f.turn(from.Add(tc.after))
 			if evs := f.sleeps(t); len(evs) != 1 || evs[0].Fields["reason"] != "idle" {
-				t.Fatalf("events %+v, want one sleep after sleep.after", evs)
+				t.Fatalf("events %+v, want one sleep after sleep.afterLastUse", evs)
 			}
 		})
 	}
 }
 
-// A refusal is asked again after sleep.after, then twice as long each time,
+// A refusal is asked again after sleep.afterLastUse, then twice as long each time,
 // up to 30 minutes; a use starts the count again.
 func TestBusySleepRetriesDoublingUpTo30m(t *testing.T) {
 	f := newSleepFixture(t, nil, nil, "a1", "w1")
@@ -744,7 +744,7 @@ func TestBusySleepRetriesDoublingUpTo30m(t *testing.T) {
 	}
 	f.use("w1", now)
 	if wake := f.turn(now.Add(time.Second)); wake.Sub(now) != defaultSleepAfter {
-		t.Fatalf("after a use: asked again in %v, want sleep.after", wake.Sub(now))
+		t.Fatalf("after a use: asked again in %v, want sleep.afterLastUse", wake.Sub(now))
 	}
 	f.proxies["w1"].setBusy(false)
 	f.turn(now.Add(defaultSleepAfter))
@@ -756,7 +756,7 @@ func TestBusySleepRetriesDoublingUpTo30m(t *testing.T) {
 // A handler has Sleep whatever its proxy; one whose proxy holds nothing is
 // looked at once and never asked to sleep, and costs no wake.
 func TestNonSleeperAskedOnce(t *testing.T) {
-	f := newSleepFixture(t, nil, &SelectorConfig{Costs: costs("a", 1, "w", 3), SwitchWithoutProbe: true}, "a1", "a2", "w1")
+	f := newSleepFixture(t, nil, &SelectorConfig{Costs: costs("a", 1, "w", 3), SkipProbeBeforeSwitch: true}, "a1", "a2", "w1")
 	f.turn(t0)
 	f.engine(func(e *engine) { e.switchTo(e.selectors["auto"], "a2", "failover", at(time.Second)) })
 	if wake := f.turn(at(time.Second)); !wake.IsZero() {
@@ -786,7 +786,7 @@ func TestUseAfterTheDecisionKeepsItAwake(t *testing.T) {
 		t.Fatal("asleep although used while asked")
 	}
 	if !wake.Equal(now.Add(defaultSleepAfter)) {
-		t.Fatalf("asked again in %v, want sleep.after from the use", wake.Sub(now))
+		t.Fatalf("asked again in %v, want sleep.afterLastUse from the use", wake.Sub(now))
 	}
 }
 
@@ -814,7 +814,7 @@ func TestTakenAfterTheDecisionIsNotPutToSleep(t *testing.T) {
 		{"chosen", func(e *engine, s *selector, now time.Time) {
 			e.switchTo(s, "w1", "failover", now)
 		}, func(e *engine, s *selector, now time.Time) {
-			e.switchTo(s, "a1", "upgrade", now)
+			e.switchTo(s, "a1", "return", now)
 		}},
 		{"queued probe", func(e *engine, s *selector, now time.Time) {
 			e.enqueue("w1", reasonRecheck, "auto", now.Add(time.Hour))
@@ -887,7 +887,7 @@ func TestNoWakeOnceEverythingSleeps(t *testing.T) {
 }
 
 func TestSleepOffWithZero(t *testing.T) {
-	f := newSleepFixture(t, &Config{Sleep: &SleepConfig{After: -1}}, nil, "a1", "w1")
+	f := newSleepFixture(t, &Config{Sleep: &SleepConfig{AfterLastUse: -1}}, nil, "a1", "w1")
 	f.use("w1", t0)
 	f.engine(func(e *engine) { e.updateCandidates(e.selectors["auto"], []string{"a1"}, at(time.Second)) })
 	for _, now := range []time.Time{at(time.Second), at(time.Hour)} {

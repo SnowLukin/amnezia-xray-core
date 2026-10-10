@@ -18,22 +18,22 @@ func TestHealthObservatoryConfig(t *testing.T) {
 		{
 			Input: `{
 				"subjectSelector": ["a", "b"],
-				"passive": {"dialTimeout": "6s", "failures": 3, "keepPendingOnDown": true, "keepSilentOnDown": true},
+				"passive": {"dialTimeout": "6s", "failuresToSuspect": 3, "shouldKeepPendingOnDown": true, "shouldKeepSilentOnDown": true},
 				"connectivity": {"outbound": "direct", "destination": "https://example.com/204",
 				                 "timeout": "4s", "maxPause": "90s",
-				                 "recheck": {"initial": "2s", "multiplier": 2, "max": "30s"}}
+				                 "recheckBackoff": {"initialDelay": "2s", "multiplier": 2, "maxDelay": "30s"}}
 			}`,
 			Parser: loadJSON(creator),
 			Output: &health.Config{
 				SubjectSelector: []string{"a", "b"},
-				Passive: &health.PassiveConfig{DialTimeout: int64(6 * time.Second), Failures: 3,
-					KeepPendingOnDown: true, KeepSilentOnDown: true},
+				Passive: &health.PassiveConfig{DialTimeout: int64(6 * time.Second), FailuresToSuspect: 3,
+					ShouldKeepPendingOnDown: true, ShouldKeepSilentOnDown: true},
 				Connectivity: &health.ConnectivityConfig{
-					Outbound:    "direct",
-					Destination: "https://example.com/204",
-					Timeout:     int64(4 * time.Second),
-					MaxPause:    int64(90 * time.Second),
-					Recheck:     &health.Backoff{Initial: int64(2 * time.Second), Multiplier: 2, Max: int64(30 * time.Second)},
+					Outbound:       "direct",
+					Destination:    "https://example.com/204",
+					Timeout:        int64(4 * time.Second),
+					MaxPause:       int64(90 * time.Second),
+					RecheckBackoff: &health.Backoff{InitialDelay: int64(2 * time.Second), Multiplier: 2, MaxDelay: int64(30 * time.Second)},
 				},
 			},
 		},
@@ -55,11 +55,11 @@ func TestLeastCostConfigChecks(t *testing.T) {
 		name, input string
 		ok          bool
 	}{
-		{"valid", leastCostConfig(observed, `{"costs": [{"match": "a", "value": 1}]}`, "a", "b"), true},
+		{"valid", leastCostConfig(observed, `{"costs": [{"match": "a", "cost": 1}]}`, "a", "b"), true},
 		{"no observatory", leastCostConfig("", `{}`, "a"), false},
 		{"selector not observed", leastCostConfig(`, "healthObservatory": {"subjectSelector": ["a"]}`, `{}`, "a", "b"), false},
-		{"zero cost", leastCostConfig(observed, `{"costs": [{"match": "a", "value": 0}]}`, "a"), false},
-		{"broken regexp", leastCostConfig(observed, `{"costs": [{"regexp": true, "match": "a(", "value": 1}]}`, "a"), false},
+		{"zero cost", leastCostConfig(observed, `{"costs": [{"match": "a", "cost": 0}]}`, "a"), false},
+		{"broken regexp", leastCostConfig(observed, `{"costs": [{"isRegexp": true, "match": "a(", "cost": 1}]}`, "a"), false},
 	} {
 		c := new(Config)
 		if err := json.Unmarshal([]byte(tc.input), c); err != nil {
@@ -80,7 +80,7 @@ func TestHealthObservatoryConfigRejects(t *testing.T) {
 		`{"subjectSelector": ["a"], "probes": [{"destination": "https://x/", "method": "POST"}]}`,
 		`{"subjectSelector": ["a"], "probes": [{"destination": "https://x/", "method": "HEAD", "minBytes": 1}]}`,
 		`{"subjectSelector": ["a"], "connectivity": {"outbound": "direct", "destination": "https://x/", "witnesses": [""]}}`,
-		`{"subjectSelector": ["a"], "schedule": {"spacingJitter": 1}}`,
+		`{"subjectSelector": ["a"], "schedule": {"probeJitterFraction": 1}}`,
 	} {
 		c := new(HealthObservatoryConfig)
 		if err := json.Unmarshal([]byte(input), c); err != nil {
@@ -106,12 +106,12 @@ func buildHealth(t *testing.T, raw string) (*health.Config, error) {
 }
 
 func TestHealthHostProbesConfig(t *testing.T) {
-	cfg, err := buildHealth(t, `{"subjectSelector": ["a"], "schedule": {"hostProbes": {"perMinute": 2, "reuse": "30s",
+	cfg, err := buildHealth(t, `{"subjectSelector": ["a"], "schedule": {"hostProbes": {"probesPerMinute": 2, "reuseWindow": "30s",
 		"maxOutbounds": 4, "timeout": "1m"}}}`)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := &health.HostProbesConfig{PerMinute: 2, Reuse: int64(30 * time.Second), MaxOutbounds: 4, Timeout: int64(time.Minute)}
+	want := &health.HostProbesConfig{ProbesPerMinute: 2, ReuseWindow: int64(30 * time.Second), MaxOutbounds: 4, Timeout: int64(time.Minute)}
 	if got := cfg.GetSchedule().GetHostProbes(); !proto.Equal(got, want) {
 		t.Fatalf("hostProbes %v, want %v", got, want)
 	}
@@ -133,25 +133,68 @@ func TestHealthReportInterval(t *testing.T) {
 	}
 }
 
+func TestHealthDurationPresence(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		raw  string
+		get  func(*health.Config) int64
+		want int64
+	}{
+		{"missing window", `{"subjectSelector":["a"],"passive":{}}`, func(c *health.Config) int64 { return c.GetPassive().GetWindow() }, 0},
+		{"zero window", `{"subjectSelector":["a"],"passive":{"window":"0s"}}`, func(c *health.Config) int64 { return c.GetPassive().GetWindow() }, -1},
+		{"missing cost delay", `{"subjectSelector":["a"],"providers":[{"tag":"p","url":"https://x.test/","apply":{"balancer":"b","tagPrefix":"p-"},"triggers":{"whenCostAbove":{"cost":2}}}]}`, func(c *health.Config) int64 { return c.GetProviders()[0].GetTriggers().GetWhenCostAbove().GetAfter() }, 0},
+		{"zero cost delay", `{"subjectSelector":["a"],"providers":[{"tag":"p","url":"https://x.test/","apply":{"balancer":"b","tagPrefix":"p-"},"triggers":{"whenCostAbove":{"cost":2,"after":"0s"}}}]}`, func(c *health.Config) int64 { return c.GetProviders()[0].GetTriggers().GetWhenCostAbove().GetAfter() }, -1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := buildHealth(t, tc.raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if value := tc.get(got); value != tc.want {
+				t.Fatalf("duration %d, want %d", value, tc.want)
+			}
+		})
+	}
+	for key, raw := range map[string]string{
+		"passive.dialTimeout":         `{"subjectSelector":["a"],"passive":{"dialTimeout":"0s"}}`,
+		"probes[].timeout":            `{"subjectSelector":["a"],"probes":[{"timeout":"0s"}]}`,
+		"connectivity.timeout":        `{"subjectSelector":["a"],"connectivity":{"outbound":"direct","destination":"https://x.test/","timeout":"0s"}}`,
+		"schedule.hostProbes.timeout": `{"subjectSelector":["a"],"schedule":{"hostProbes":{"timeout":"0s"}}}`,
+		"provider p timeout":          `{"subjectSelector":["a"],"providers":[{"tag":"p","url":"https://x.test/","timeout":"0s","apply":{"balancer":"b","tagPrefix":"p-"}}]}`,
+	} {
+		if _, err := buildHealth(t, raw); err == nil || !strings.Contains(err.Error(), key) {
+			t.Errorf("%s: error %v must name %s", raw, err, key)
+		}
+	}
+	config := leastCostConfig(`, "healthObservatory": {"subjectSelector": ["a"]}`, `{"returnToCheaper":{"interval":"0s"}}`, "a")
+	c := new(Config)
+	if err := json.Unmarshal([]byte(config), c); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Build(); err == nil || !strings.Contains(err.Error(), "returnToCheaper.interval") {
+		t.Fatalf("leastCost: error %v must name returnToCheaper.interval", err)
+	}
+}
+
 func TestHealthSleepAfter(t *testing.T) {
 	for raw, want := range map[string]int64{
-		`{"subjectSelector": ["a"]}`:                            0,
-		`{"subjectSelector": ["a"], "sleep": {}}`:               0,
-		`{"subjectSelector": ["a"], "sleep": {"after": "0s"}}`:  -1,
-		`{"subjectSelector": ["a"], "sleep": {"after": "10s"}}`: int64(10 * time.Second),
-		`{"subjectSelector": ["a"], "sleep": {"after": "15m"}}`: int64(15 * time.Minute),
+		`{"subjectSelector": ["a"]}`:                                   0,
+		`{"subjectSelector": ["a"], "sleep": {}}`:                      0,
+		`{"subjectSelector": ["a"], "sleep": {"afterLastUse": "0s"}}`:  -1,
+		`{"subjectSelector": ["a"], "sleep": {"afterLastUse": "10s"}}`: int64(10 * time.Second),
+		`{"subjectSelector": ["a"], "sleep": {"afterLastUse": "15m"}}`: int64(15 * time.Minute),
 	} {
 		cfg, err := buildHealth(t, raw)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got := cfg.GetSleep().GetAfter(); got != want {
+		if got := cfg.GetSleep().GetAfterLastUse(); got != want {
 			t.Errorf("%s: after %d, want %d", raw, got, want)
 		}
 	}
 	for _, raw := range []string{
-		`{"subjectSelector": ["a"], "sleep": {"after": "5s"}}`,
-		`{"subjectSelector": ["a"], "sleep": {"after": "-1m"}}`,
+		`{"subjectSelector": ["a"], "sleep": {"afterLastUse": "5s"}}`,
+		`{"subjectSelector": ["a"], "sleep": {"afterLastUse": "-1m"}}`,
 	} {
 		if _, err := buildHealth(t, raw); err == nil {
 			t.Errorf("accepted %s", raw)
@@ -163,7 +206,7 @@ func TestHealthSleepAfter(t *testing.T) {
 func TestHealthSleepCloseIdleAfter(t *testing.T) {
 	for raw, want := range map[string]int64{
 		`{"subjectSelector": ["a"]}`:                                     0,
-		`{"subjectSelector": ["a"], "sleep": {"after": "1m"}}`:           0,
+		`{"subjectSelector": ["a"], "sleep": {"afterLastUse": "1m"}}`:    0,
 		`{"subjectSelector": ["a"], "sleep": {"closeIdleAfter": "0s"}}`:  0,
 		`{"subjectSelector": ["a"], "sleep": {"closeIdleAfter": "10s"}}`: int64(10 * time.Second),
 		`{"subjectSelector": ["a"], "sleep": {"closeIdleAfter": "2m"}}`:  int64(2 * time.Minute),
@@ -194,10 +237,10 @@ func TestHealthProvidersBuild(t *testing.T) {
 	  "providers": [{
 	    "tag": "fresh", "url": "https://api.example/set", "headers": {"Authorization": "Bearer x"},
 	    "via": ["auto", "direct"], "timeout": "5s",
-	    "triggers": {"interval": "0s", "jitter": 0, "minHealthy": 3, "whenExhausted": false,
-	                 "whenCostAbove": {"cost": 10, "for": "15m"}, "onNetworkChange": "unknown"},
-	    "limits": {"minInterval": "1m", "maxPerHour": 0, "backoff": {"initial": "10s"}},
-	    "apply": {"balancer": "auto", "tagPrefix": "p-", "drain": "1m"}
+	    "triggers": {"interval": "0s", "jitterFraction": 0, "minHealthyOutbounds": 3, "shouldRefreshWhenExhausted": false,
+	                 "whenCostAbove": {"cost": 10, "after": "15m"}, "networkChangeMode": "unknown"},
+	    "limits": {"minInterval": "1m", "maxRefreshesPerHour": 0, "backoff": {"initialDelay": "10s"}},
+	    "apply": {"balancer": "auto", "tagPrefix": "p-", "drainTimeout": "1m"}
 	  }]
 	}`)
 	if err != nil {
@@ -205,13 +248,13 @@ func TestHealthProvidersBuild(t *testing.T) {
 	}
 	p := cfg.Providers[0]
 	tr := p.Triggers
-	if tr.Interval != -1 || tr.Jitter != -1 || tr.MinHealthy != 3 || !tr.SkipWhenExhausted || tr.MaxAge != 0 {
+	if tr.Interval != -1 || tr.JitterFraction != -1 || tr.MinHealthyOutbounds != 3 || !tr.SkipRefreshWhenExhausted || tr.MaxAge != 0 {
 		t.Fatalf("triggers %+v: explicit zero must turn off, missing must keep the default", tr)
 	}
-	if tr.CostAbove.Cost != 10 || tr.CostAbove.After != int64(15*time.Minute) || tr.OnNetworkChange != health.RefreshOnNetwork_REFRESH_UNKNOWN {
+	if tr.WhenCostAbove.Cost != 10 || tr.WhenCostAbove.After != int64(15*time.Minute) || tr.NetworkChangeMode != health.RefreshOnNetwork_REFRESH_UNKNOWN {
 		t.Fatalf("triggers %+v", tr)
 	}
-	if l := p.Limits; l.MinInterval != int64(time.Minute) || l.MaxPerHour != -1 || l.ExhaustedMinInterval != 0 || l.Backoff.Initial != int64(10*time.Second) {
+	if l := p.Limits; l.MinInterval != int64(time.Minute) || l.MaxRefreshesPerHour != -1 || l.ExhaustedMinInterval != 0 || l.Backoff.InitialDelay != int64(10*time.Second) {
 		t.Fatalf("limits %+v", l)
 	}
 	if p.Apply.TagPrefix != "p-" || p.Headers["Authorization"] != "Bearer x" || len(p.Via) != 2 {
@@ -237,10 +280,10 @@ func TestHealthProviderExpiry(t *testing.T) {
 	for expiry, want := range map[string]string{
 		``:               "<nil>",
 		`, "expiry": {}`: "&{0 0 0}",
-		`, "expiry": {"renewAt": 0.6, "urgentAt": 0.9, "jitter": 0.2}`: "&{0.6 0.9 0.2}",
-		`, "expiry": {"renewAt": 0, "jitter": 0}`:                      "&{-1 0 -1}",
-		`, "expiry": {"renewAt": 0, "urgentAt": 0.3}`:                  "&{-1 0.3 0}",
-		`, "expiry": {"urgentAt": 0.95}`:                               "&{0 0.95 0}",
+		`, "expiry": {"renewAtFraction": 0.6, "urgentAtFraction": 0.9, "jitterFraction": 0.2}`: "&{0.6 0.9 0.2}",
+		`, "expiry": {"renewAtFraction": 0, "jitterFraction": 0}`:                              "&{-1 0 -1}",
+		`, "expiry": {"renewAtFraction": 0, "urgentAtFraction": 0.3}`:                          "&{-1 0.3 0}",
+		`, "expiry": {"urgentAtFraction": 0.95}`:                                               "&{0 0.95 0}",
 	} {
 		cfg, err := buildHealth(t, `{"subjectSelector": ["a"], "providers": [{"tag": "a", "url": "https://x.test/",
 		  "triggers": {"interval": "1h"`+expiry+`}, "apply": {"balancer": "auto", "tagPrefix": "p-"}}]}`)
@@ -251,7 +294,7 @@ func TestHealthProviderExpiry(t *testing.T) {
 		e := cfg.Providers[0].Triggers.Expiry
 		got := "<nil>"
 		if e != nil {
-			got = fmt.Sprintf("&{%v %v %v}", e.RenewAt, e.UrgentAt, e.Jitter)
+			got = fmt.Sprintf("&{%v %v %v}", e.RenewAtFraction, e.UrgentAtFraction, e.JitterFraction)
 		}
 		if got != want {
 			t.Errorf("%s: %s, want %s", expiry, got, want)
@@ -259,14 +302,14 @@ func TestHealthProviderExpiry(t *testing.T) {
 	}
 }
 
-// apply.headers names what an answer may set: missing keeps the default,
+// apply.acceptedHeaders names what an answer may set: missing keeps the default,
 // an explicit [] allows nothing. limits.authRetry "0s" waits for new
 // headers, which the observatory reads from a negative value.
 func TestHealthProviderHeadersAndAuthRetry(t *testing.T) {
 	for _, tc := range []struct{ apply, limits, want string }{
 		{``, ``, "[] false 0"},
-		{`, "headers": []`, `, "limits": {"authRetry": "0s"}`, "[] true -1"},
-		{`, "headers": ["Authorization", "x-api-key"]`, `, "limits": {"authRetry": "2h"}`,
+		{`, "acceptedHeaders": []`, `, "limits": {"authRetryDelay": "0s"}`, "[] true -1"},
+		{`, "acceptedHeaders": ["Authorization", "x-api-key"]`, `, "limits": {"authRetryDelay": "2h"}`,
 			fmt.Sprint("[Authorization x-api-key] false ", int64(2*time.Hour))},
 	} {
 		cfg, err := buildHealth(t, `{"subjectSelector": ["a"], "providers": [{"tag": "a", "url": "https://x.test/"`+tc.limits+`,
@@ -276,7 +319,7 @@ func TestHealthProviderHeadersAndAuthRetry(t *testing.T) {
 			continue
 		}
 		p := cfg.Providers[0]
-		if got := fmt.Sprint(p.Apply.Headers, " ", p.Apply.FixedHeaders, " ", p.GetLimits().GetAuthRetry()); got != tc.want {
+		if got := fmt.Sprint(p.Apply.AcceptedHeaders, " ", p.Apply.FixedHeaders, " ", p.GetLimits().GetAuthRetryDelay()); got != tc.want {
 			t.Errorf("%s %s: %s, want %s", tc.apply, tc.limits, got, tc.want)
 		}
 	}
@@ -290,20 +333,20 @@ func TestHealthProviderInitial(t *testing.T) {
 		  "apply": {"balancer": "auto", "tagPrefix": "p-"}` + initial + `}]}`
 	}
 	for initial, want := range map[string]string{
-		``:                        "",
-		`, "initial": null`:       "",
-		`, "initial": {}`:         "{}",
-		`, "initial": {"x": [1]}`: `{"x": [1]}`,
-		`, "initial": {"outbounds": [{"tag": "x1", "protocol": "nosuch"}], "dns": {}}`: `{"outbounds": [{"tag": "x1", "protocol": "nosuch"}], "dns": {}}`,
-		`, "initial": []`:   `[]`,
-		`, "initial": "{}"`: `"{}"`,
-		`, "initial": 1`:    `1`,
-		`, "initial": {"v": "` + strings.Repeat("x", 1<<20) + `"}`: `{"v": "` + strings.Repeat("x", 1<<20) + `"}`,
+		``:                              "",
+		`, "initialAnswer": null`:       "",
+		`, "initialAnswer": {}`:         "{}",
+		`, "initialAnswer": {"x": [1]}`: `{"x": [1]}`,
+		`, "initialAnswer": {"outbounds": [{"tag": "x1", "protocol": "nosuch"}], "dns": {}}`: `{"outbounds": [{"tag": "x1", "protocol": "nosuch"}], "dns": {}}`,
+		`, "initialAnswer": []`:   `[]`,
+		`, "initialAnswer": "{}"`: `"{}"`,
+		`, "initialAnswer": 1`:    `1`,
+		`, "initialAnswer": {"v": "` + strings.Repeat("x", 1<<20) + `"}`: `{"v": "` + strings.Repeat("x", 1<<20) + `"}`,
 	} {
 		cfg, err := buildHealth(t, provider(initial))
 		if err != nil {
 			t.Errorf("%.40s: %v", initial, err)
-		} else if got := string(cfg.Providers[0].Initial); got != want {
+		} else if got := string(cfg.Providers[0].InitialAnswer); got != want {
 			t.Errorf("%.40s: %.40q, want %.40q", initial, got, want)
 		}
 	}
@@ -334,33 +377,33 @@ func TestHealthProvidersReject(t *testing.T) {
 		"token in url":     `{"tag": "a", "url": "https://user:pw@x.test/", "apply": {"balancer": "auto", "tagPrefix": "p-"}}`,
 		"not http":         `{"tag": "a", "url": "ftp://x.test/", "apply": {"balancer": "auto", "tagPrefix": "p-"}}`,
 		"plain http":       `{"tag": "a", "url": "http://x.test/", "apply": {"balancer": "auto", "tagPrefix": "p-"}}`,
-		"bad network mode": `{"tag": "a", "url": "https://x.test/", "apply": {"balancer": "auto", "tagPrefix": "p-"}, "triggers": {"onNetworkChange": "sometimes"}}`,
+		"bad network mode": `{"tag": "a", "url": "https://x.test/", "apply": {"balancer": "auto", "tagPrefix": "p-"}, "triggers": {"networkChangeMode": "sometimes"}}`,
 		"overlap": `{"tag": "a", "url": "https://x.test/", "apply": {"balancer": "auto", "tagPrefix": "p-"}},
 		            {"tag": "b", "url": "https://x.test/", "apply": {"balancer": "auto", "tagPrefix": "p-x"}}`,
 		"zero cost trigger": `{"tag": "a", "url": "https://x.test/", "apply": {"balancer": "auto", "tagPrefix": "p-"},
-		            "triggers": {"whenCostAbove": {"cost": 0, "for": "15m"}}}`,
+		            "triggers": {"whenCostAbove": {"cost": 0, "after": "15m"}}}`,
 		"empty via": `{"tag": "a", "url": "https://x.test/", "via": ["auto", ""], "apply": {"balancer": "auto", "tagPrefix": "p-"}}`,
 		"put":       `{"tag": "a", "url": "https://x.test/", "method": "PUT", "apply": {"balancer": "auto", "tagPrefix": "p-"}}`,
 		"renewal past the lease": `{"tag": "a", "url": "https://x.test/", "apply": {"balancer": "auto", "tagPrefix": "p-"},
-		            "triggers": {"expiry": {"renewAt": 0.99}}}`,
+		            "triggers": {"expiry": {"renewAtFraction": 0.99}}}`,
 		"negative renewal": `{"tag": "a", "url": "https://x.test/", "apply": {"balancer": "auto", "tagPrefix": "p-"},
-		            "triggers": {"expiry": {"renewAt": -0.5}}}`,
+		            "triggers": {"expiry": {"renewAtFraction": -0.5}}}`,
 		"urgent before renewal": `{"tag": "a", "url": "https://x.test/", "apply": {"balancer": "auto", "tagPrefix": "p-"},
-		            "triggers": {"expiry": {"renewAt": 0.6, "urgentAt": 0.5}}}`,
+		            "triggers": {"expiry": {"renewAtFraction": 0.6, "urgentAtFraction": 0.5}}}`,
 		"urgent before the default renewal": `{"tag": "a", "url": "https://x.test/", "apply": {"balancer": "auto", "tagPrefix": "p-"},
-		            "triggers": {"expiry": {"urgentAt": 0.4}}}`,
+		            "triggers": {"expiry": {"urgentAtFraction": 0.4}}}`,
 		"wide renewal spread": `{"tag": "a", "url": "https://x.test/", "apply": {"balancer": "auto", "tagPrefix": "p-"},
-		            "triggers": {"expiry": {"jitter": 0.6}}}`,
+		            "triggers": {"expiry": {"jitterFraction": 0.6}}}`,
 		"rotated host header": `{"tag": "a", "url": "https://x.test/", "apply": {"balancer": "auto", "tagPrefix": "p-",
-		            "headers": ["Authorization", "Host"]}}`,
+		            "acceptedHeaders": ["Authorization", "Host"]}}`,
 		"rotated proxy header": `{"tag": "a", "url": "https://x.test/", "apply": {"balancer": "auto", "tagPrefix": "p-",
-		            "headers": ["proxy-authorization"]}}`,
+		            "acceptedHeaders": ["proxy-authorization"]}}`,
 		"rotated header not a token": `{"tag": "a", "url": "https://x.test/", "apply": {"balancer": "auto", "tagPrefix": "p-",
-		            "headers": ["X Key"]}}`,
+		            "acceptedHeaders": ["X Key"]}}`,
 		"short auth retry": `{"tag": "a", "url": "https://x.test/", "apply": {"balancer": "auto", "tagPrefix": "p-"},
-		            "limits": {"authRetry": "1m"}}`,
+		            "limits": {"authRetryDelay": "1m"}}`,
 		"long auth retry": `{"tag": "a", "url": "https://x.test/", "apply": {"balancer": "auto", "tagPrefix": "p-"},
-		            "limits": {"authRetry": "25h"}}`,
+		            "limits": {"authRetryDelay": "25h"}}`,
 	}
 	for name, providers := range cases {
 		if _, err := buildHealth(t, `{"subjectSelector": ["a"], "providers": [`+providers+`]}`); err == nil {

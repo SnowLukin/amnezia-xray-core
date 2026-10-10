@@ -15,7 +15,7 @@ type pathStatusView struct {
 	Failures        int              `json:"failures"`
 	QuarantineMs    int64            `json:"quarantine_ms,omitempty"`
 	QuarantineLevel int              `json:"quarantine_level,omitempty"`
-	Provisional     bool             `json:"provisional,omitempty"`
+	IsProvisional   bool             `json:"is_provisional,omitempty"`
 	RTTMs           int64            `json:"rtt_ms,omitempty"`
 	LastError       string           `json:"last_error,omitempty"`
 	ServerName      string           `json:"server_name,omitempty"`
@@ -33,20 +33,20 @@ type pathStatusView struct {
 	// What is left of the provider lease, below zero once it ended; none
 	// without a lease.
 	ExpiresInMs *int64 `json:"expires_in_ms,omitempty"`
-	Expired     bool   `json:"expired,omitempty"`
+	IsExpired   bool   `json:"is_expired,omitempty"`
 	// The outbound released its tunnel; its next connection creates it.
-	Asleep bool `json:"asleep,omitempty"`
+	IsAsleep bool `json:"is_asleep,omitempty"`
 }
 
 type balancerStatusView struct {
-	Balancer      string   `json:"balancer"`
-	Active        string   `json:"active"`
-	Pinned        string   `json:"pinned,omitempty"`
-	Exhausted     bool     `json:"exhausted"`
-	ActiveForMs   int64    `json:"active_for_ms,omitempty"`
-	UpgradeInMs   *int64   `json:"upgrade_in_ms,omitempty"`
-	UpgradeTarget string   `json:"upgrade_target,omitempty"`
-	Candidates    []string `json:"candidates"`
+	Balancer              string   `json:"balancer"`
+	Active                string   `json:"active"`
+	Pinned                string   `json:"pinned,omitempty"`
+	IsExhausted           bool     `json:"is_exhausted"`
+	ActiveForMs           int64    `json:"active_for_ms,omitempty"`
+	ReturnToCheaperInMs   *int64   `json:"return_in_ms,omitempty"`
+	ReturnToCheaperTarget string   `json:"return_target,omitempty"`
+	Candidates            []string `json:"candidates"`
 }
 
 type providerStatusView struct {
@@ -55,7 +55,7 @@ type providerStatusView struct {
 	Version        string `json:"version,omitempty"`
 	Members        int    `json:"members"`
 	Draining       int    `json:"draining"`
-	Fetching       bool   `json:"fetching"`
+	IsFetching     bool   `json:"is_fetching"`
 	Refreshes      int64  `json:"refreshes"`
 	Failures       int    `json:"failures"`
 	LastError      string `json:"last_error,omitempty"`
@@ -76,7 +76,7 @@ type providerStatusView struct {
 	// whether the backend refused the headers, and how long the pause after
 	// that lasts, none when it waits for new headers.
 	Headers       []string `json:"headers,omitempty"`
-	AuthFailed    bool     `json:"auth_failed,omitempty"`
+	IsAuthRefused bool     `json:"is_auth_refused,omitempty"`
 	AuthRetryInMs *int64   `json:"auth_retry_in_ms,omitempty"`
 	// The number ProviderSet returns with the set.
 	AnswerSeq uint64 `json:"answer_seq,omitempty"`
@@ -84,19 +84,19 @@ type providerStatusView struct {
 	// and whether the host was told of another base that no answer took back.
 	BaseVersion       string `json:"base_version,omitempty"`
 	AnswerBaseVersion string `json:"answer_base_version,omitempty"`
-	BaseChanged       bool   `json:"base_changed,omitempty"`
+	IsBaseChanged     bool   `json:"is_base_changed,omitempty"`
 }
 
 type statusView struct {
 	// Names this run of the core; pin and release requests may carry it.
-	Run       string `json:"run,omitempty"`
-	Network   string `json:"network,omitempty"`
-	NetworkUp bool   `json:"network_up"`
+	Run         string `json:"run,omitempty"`
+	Network     string `json:"network,omitempty"`
+	IsNetworkUp bool   `json:"is_network_up"`
 	// "ok", "paused", "doubt" or "ignored"; empty without a connectivity check.
 	Connectivity string               `json:"connectivity,omitempty"`
 	Generation   uint64               `json:"generation"`
-	Idle         bool                 `json:"idle"`
-	MemoryLow    bool                 `json:"memory_low"`
+	IsIdle       bool                 `json:"is_idle"`
+	IsMemoryLow  bool                 `json:"is_memory_low"`
 	Queued       int                  `json:"probes_queued"`
 	Running      int                  `json:"probes_running"`
 	Paths        []pathStatusView     `json:"paths"`
@@ -109,31 +109,31 @@ type statusView struct {
 func (e *engine) status(now time.Time) statusView {
 	v := statusView{
 		Network:      e.networkID,
-		NetworkUp:    !e.networkDown,
+		IsNetworkUp:  !e.networkDown,
 		Connectivity: e.connectivityState(),
 		Generation:   e.generation,
-		Idle:         e.idle(now),
-		MemoryLow:    e.memoryLow,
+		IsIdle:       e.idle(now),
+		IsMemoryLow:  e.memoryLow,
 		Queued:       len(e.queue),
 		Running:      len(e.running),
 	}
 	active := map[string]time.Duration{}
 	for _, s := range e.sortedSelectors() {
 		b := balancerStatusView{
-			Balancer:      s.tag,
-			Active:        s.current(),
-			Pinned:        s.pinned,
-			Exhausted:     s.exhausted,
-			UpgradeTarget: s.upgradeTarget,
-			Candidates:    s.candidates,
+			Balancer:              s.tag,
+			Active:                s.current(),
+			Pinned:                s.pinned,
+			IsExhausted:           s.exhausted,
+			ReturnToCheaperTarget: s.returnToCheaperTarget,
+			Candidates:            s.candidates,
 		}
 		if !s.activeSince.IsZero() {
 			b.ActiveForMs = now.Sub(s.activeSince).Milliseconds()
 			active[s.current()] += now.Sub(s.activeSince)
 		}
-		if !s.upgradeAt.IsZero() {
-			in := s.upgradeAt.Sub(now).Milliseconds()
-			b.UpgradeInMs = &in
+		if !s.returnToCheaperAt.IsZero() {
+			in := s.returnToCheaperAt.Sub(now).Milliseconds()
+			b.ReturnToCheaperInMs = &in
 		}
 		v.Balancers = append(v.Balancers, b)
 	}
@@ -168,7 +168,7 @@ func (e *engine) status(now time.Time) statusView {
 			ProbesFailed: p.stats.probesFailed,
 			ProbeBytes:   p.stats.probeBytes,
 			ActiveMs:     (p.stats.activeTime + active[tag]).Milliseconds(),
-			Asleep:       p.asleep,
+			IsAsleep:     p.asleep,
 		}
 		if !p.statusSince.IsZero() {
 			pv.ForMs = now.Sub(p.statusSince).Milliseconds()
@@ -176,7 +176,7 @@ func (e *engine) status(now time.Time) statusView {
 		if p.status == statusDown && now.Before(p.quarantineUntil) {
 			pv.QuarantineMs = p.quarantineUntil.Sub(now).Milliseconds()
 			pv.QuarantineLevel = p.quarantineLevel
-			pv.Provisional = p.provisional
+			pv.IsProvisional = p.provisional
 		}
 		for k, n := range p.stats.failuresByKind {
 			if n > 0 {
@@ -189,21 +189,21 @@ func (e *engine) status(now time.Time) statusView {
 		if l := leases[tag]; l != nil {
 			left := l.left(now).Milliseconds()
 			pv.ExpiresInMs = &left
-			pv.Expired = l.expired
+			pv.IsExpired = l.expired
 		}
 		v.Paths = append(v.Paths, pv)
 	}
 	for _, p := range e.providers {
 		pv := providerStatusView{
-			Provider:  p.cfg.tag,
-			Method:    p.cfg.method,
-			Version:   p.version,
-			Members:   len(p.tags),
-			Draining:  p.draining,
-			Fetching:  p.fetching,
-			Refreshes: p.refreshes,
-			Failures:  p.failures,
-			LastError: p.lastError,
+			Provider:   p.cfg.tag,
+			Method:     p.cfg.method,
+			Version:    p.version,
+			Members:    len(p.tags),
+			Draining:   p.draining,
+			IsFetching: p.fetching,
+			Refreshes:  p.refreshes,
+			Failures:   p.failures,
+			LastError:  p.lastError,
 		}
 		if !p.setAt.IsZero() {
 			pv.SetAgeMs = now.Sub(p.setAt).Milliseconds()
@@ -240,9 +240,9 @@ func (e *engine) status(now time.Time) statusView {
 		if len(p.rotated) > 0 {
 			pv.Headers = slices.Sorted(maps.Keys(p.rotated))
 		}
-		pv.AuthFailed = p.authFailed
+		pv.IsAuthRefused = p.authFailed
 		pv.AnswerSeq = p.seq
-		pv.BaseVersion, pv.AnswerBaseVersion, pv.BaseChanged = p.base, p.answerBase, p.baseReported != ""
+		pv.BaseVersion, pv.AnswerBaseVersion, pv.IsBaseChanged = p.base, p.answerBase, p.baseReported != ""
 		if p.authFailed && !p.authRetryAt.IsZero() {
 			in := p.authRetryAt.Sub(now).Milliseconds()
 			pv.AuthRetryInMs = &in

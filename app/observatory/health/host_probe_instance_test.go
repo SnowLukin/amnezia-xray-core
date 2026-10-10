@@ -20,7 +20,7 @@ import (
 
 type probeView struct {
 	ID        uint64 `json:"id"`
-	Done      bool   `json:"done"`
+	IsDone    bool   `json:"is_done"`
 	End       string `json:"end"`
 	Outbounds []struct {
 		Outbound string `json:"outbound"`
@@ -47,11 +47,11 @@ func TestRequestProbeInRunningCore(t *testing.T) {
 	  ],
 	  "routing": {"rules": [{"domain": ["full:a.test"], "balancerTag": "auto"}],
 	    "balancers": [{"tag": "auto", "selector": ["a", "b"], "fallbackTag": "drop",
-	      "strategy": {"type": "leastCost", "settings": {"costs": [{"match": "a", "value": 1}, {"match": "b", "value": 3}]}}}]},
+	      "strategy": {"type": "leastCost", "settings": {"costs": [{"match": "a", "cost": 1}, {"match": "b", "cost": 3}]}}}]},
 	  "healthObservatory": {
 	    "subjectSelector": ["a", "b"],
 	    "probes": [{"destination": "`+ts.URL+`/204", "timeout": "2s", "progressTimeout": "500ms"}],
-	    "schedule": {"spacing": "10ms"}
+	    "schedule": {"minProbeInterval": "10ms"}
 	  }
 	}`))
 	if err != nil {
@@ -90,13 +90,13 @@ func TestRequestProbeInRunningCore(t *testing.T) {
 		t.Fatalf("status run %q, ticket run %q, %v", status.Run, ticket.Run, err)
 	}
 	var v probeView
-	for deadline := time.Now().Add(10 * time.Second); !v.Done && time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+	for deadline := time.Now().Add(10 * time.Second); !v.IsDone && time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
 		raw, done := obs.ProbeResult(ticket.ID)
-		if err := json.Unmarshal(raw, &v); err != nil || v.Done != done {
+		if err := json.Unmarshal(raw, &v); err != nil || v.IsDone != done {
 			t.Fatalf("result %s, done %v, %v", raw, done, err)
 		}
 	}
-	if !v.Done || v.End != "done" || len(v.Outbounds) != 2 ||
+	if !v.IsDone || v.End != "done" || len(v.Outbounds) != 2 ||
 		v.Outbounds[0].Result != "ok" || v.Outbounds[0].Source != "probe" ||
 		v.Outbounds[1].Result != "failed" || v.Outbounds[1].Source != "probe" {
 		t.Fatalf("request %+v", v)
@@ -104,7 +104,7 @@ func TestRequestProbeInRunningCore(t *testing.T) {
 	if hits.Load() != 1 {
 		t.Fatalf("the probe destination saw %d requests, want the probe of a1", hits.Load())
 	}
-	if err := json.Unmarshal(obs.Status(), &status); err != nil || len(status.ProbeRequests) != 1 || !status.ProbeRequests[0].Done {
+	if err := json.Unmarshal(obs.Status(), &status); err != nil || len(status.ProbeRequests) != 1 || !status.ProbeRequests[0].IsDone {
 		t.Fatalf("status probe_requests %+v, %v", status.ProbeRequests, err)
 	}
 	if raw, _ := obs.ProbeResult(ticket.ID + 1); raw != nil {

@@ -402,7 +402,7 @@ func TestSlowSplicedDownloadIsNotAStall(t *testing.T) {
 func TestRequestOfAnotherRunIsIgnored(t *testing.T) {
 	o, clk := newTestObserver()
 	o.run = "r2"
-	o.e.updateCandidates(o.e.addSelector("auto", newSelectorSettings(&SelectorConfig{StartPinned: "a1"})), []string{"a1", "b1"}, clk.now())
+	o.e.updateCandidates(o.e.addSelector("auto", newSelectorSettings(&SelectorConfig{StartPinnedOutbound: "a1"})), []string{"a1", "b1"}, clk.now())
 	if o.Release("auto", "r1") || o.e.selectors["auto"].pinned != "a1" {
 		t.Fatal("a release meant for the previous run lifted the pin")
 	}

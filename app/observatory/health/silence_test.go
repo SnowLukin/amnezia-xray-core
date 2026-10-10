@@ -23,10 +23,10 @@ type silenceFixture struct {
 func newSilenceFixture(t *testing.T, passive *PassiveConfig, sc *SelectorConfig) *silenceFixture {
 	t.Helper()
 	if sc == nil {
-		sc = &SelectorConfig{Costs: costs("a", 1, "b", 3), SwitchWithoutProbe: true}
+		sc = &SelectorConfig{Costs: costs("a", 1, "b", 3), SkipProbeBeforeSwitch: true}
 	}
 	cfg := &Config{SubjectSelector: []string{"a", "b"}, Passive: passive,
-		Schedule: &ScheduleConfig{PauseWhenIdle: int64(time.Hour)}}
+		Schedule: &ScheduleConfig{IdleAfter: int64(time.Hour)}}
 	f := &silenceFixture{t: t, o: newObserver(context.Background(), cfg), clk: &fakeClock{t: t0}, ended: map[string]bool{}}
 	t.Cleanup(func() { f.o.Close() })
 	f.o.clock = f.clk.now
@@ -160,7 +160,7 @@ func TestSilentConnectionsEndStallTimeoutAfterADown(t *testing.T) {
 		t.Fatalf("wake %v after the decision, want stallTimeout %v", wake.Sub(decided), defaultStallTimeout)
 	}
 	f.check(map[string]bool{"pending": true})
-	if evs := f.events("pending_closed"); len(evs) != 1 || evs[0].Fields["silent"] != nil {
+	if evs := f.events("pending_closed"); len(evs) != 1 || evs[0].Fields["is_silent"] != nil {
 		t.Fatalf("at the decision: %+v, want one pending_closed without silent", evs)
 	}
 
@@ -176,12 +176,12 @@ func TestSilentConnectionsEndStallTimeoutAfterADown(t *testing.T) {
 	_, wake = f.turn()
 	f.check(map[string]bool{"pending": true, "quiet": true, "quiet udp": true})
 	evs := f.events("pending_closed")
-	if len(evs) != 1 || evs[0].Fields["silent"] != true || evs[0].Fields["connections"] != float64(2) ||
+	if len(evs) != 1 || evs[0].Fields["is_silent"] != true || evs[0].Fields["connections"] != float64(2) ||
 		evs[0].Fields["outbound"] != "a1" || evs[0].Fields["reason"] != "traffic" {
 		t.Fatalf("at the check: %+v, want one pending_closed of a1, silent, for two connections", evs)
 	}
 	var report struct {
-		PendingClosed int64 `json:"pending_closed"`
+		PendingClosed int64 `json:"pending_closed_count"`
 	}
 	if err := json.Unmarshal(f.o.Report(), &report); err != nil || report.PendingClosed != 3 {
 		t.Fatalf("report pending_closed %d (%v), want 3: both kinds count there", report.PendingClosed, err)
@@ -209,8 +209,8 @@ func TestSilentConnectionsEndStallTimeoutAfterADown(t *testing.T) {
 // a probe confirmed it), the decision was provisional, the network failed
 // meanwhile, or keepSilentOnDown.
 func TestSilenceKeepsConnectionsWhenItProvesNothing(t *testing.T) {
-	confirmAlways := &SelectorConfig{Costs: costs("a", 1, "b", 3), SwitchWithoutProbe: true, Confirm: ConfirmMode_ALWAYS}
-	confirmNever := &SelectorConfig{Costs: costs("a", 1, "b", 3), SwitchWithoutProbe: true, Confirm: ConfirmMode_NEVER}
+	confirmAlways := &SelectorConfig{Costs: costs("a", 1, "b", 3), SkipProbeBeforeSwitch: true, ConfirmWithProbe: ConfirmMode_ALWAYS}
+	confirmNever := &SelectorConfig{Costs: costs("a", 1, "b", 3), SkipProbeBeforeSwitch: true, ConfirmWithProbe: ConfirmMode_NEVER}
 	strong := func(f *silenceFixture) { f.failStrong("a1") }
 	// confirmed fails the probe that confirms the suspicion.
 	confirmed := func(fail func(*silenceFixture)) func(*silenceFixture) {
@@ -266,7 +266,7 @@ func TestSilenceKeepsConnectionsWhenItProvesNothing(t *testing.T) {
 		{name: "network changed meanwhile", decide: strong, between: func(f *silenceFixture) {
 			f.engine(func(e *engine) { e.onNetworkChange("lte", f.clk.now()) })
 		}},
-		{name: "keepSilentOnDown", passive: &PassiveConfig{KeepSilentOnDown: true}, decide: strong},
+		{name: "keepSilentOnDown", passive: &PassiveConfig{ShouldKeepSilentOnDown: true}, decide: strong},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newSilenceFixture(t, tc.passive, tc.sc)
@@ -319,7 +319,7 @@ func TestSilenceWaitsForTheFailover(t *testing.T) {
 	f.answer(jobs[0], true)
 	f.turn()
 	f.check(map[string]bool{"quiet": true})
-	if evs := f.events("pending_closed"); len(evs) != 1 || evs[0].Fields["silent"] != true {
+	if evs := f.events("pending_closed"); len(evs) != 1 || evs[0].Fields["is_silent"] != true {
 		t.Fatalf("events %+v, want the silent close at the switch", evs)
 	}
 }

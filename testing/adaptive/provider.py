@@ -76,12 +76,12 @@ class Handler(BaseHTTPRequestHandler):
             self.reply(int(parts[1]), headers={"Retry-After": parts[2]} if len(parts) > 2 else None)
         elif mode.startswith("error:"):
             _, status, code = mode.split(":")
-            body = json.dumps({"protocol": 1, "error": code, "message": "bench"}).encode()
+            body = json.dumps({"protocol": 1, "code": code, "message": "bench"}).encode()
             self.reply(int(status), body)
         elif mode == "garbage":
             self.reply(200, b'{"outbounds": [{"tag": ')
         elif mode.startswith("require:") and self.headers.get("Authorization") != "Bearer " + mode.split(":", 1)[1]:
-            body = json.dumps({"protocol": 1, "error": "unauthorized", "message": "bench"}).encode()
+            body = json.dumps({"protocol": 1, "code": "unauthorized", "message": "bench"}).encode()
             self.reply(401, body)
         else:
             with open(ANSWER, "rb") as f:

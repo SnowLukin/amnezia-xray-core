@@ -15,7 +15,7 @@ import (
 // it knows what uses an outbound: the choice of every balancer, the probes
 // it runs or is about to run, the requests of the host and of providers, and
 // the connections the handler gives the proxy (outbound.ProcessObserver). An
-// outbound none of them holds sleeps sleep.after after its last use, at once
+// outbound none of them holds sleeps sleep.afterLastUse after its last use, at once
 // while it rests in quarantine or memory is low; a chosen one never does.
 // The outbound has the last word: the observer follows the connections
 // through the tunnel only of outbounds it judges, and forgets one idle for
@@ -37,7 +37,7 @@ type sleepJob struct {
 	// The uses of the path when the job was planned.
 	uses  uint64
 	sleep bool
-	// idle; before sleep.after has passed, down for an outbound found down
+	// idle; before sleep.afterLastUse has passed, down for an outbound found down
 	// or memory when memory is low.
 	reason string
 	// The job checks the connections of the outbound for silence instead,
@@ -104,7 +104,7 @@ func (e *engine) processStarted(tag string, now time.Time) bool {
 	if p := e.paths[tag]; p != nil {
 		p.processes++
 		// A new connection is a use like any other: the outbound waits
-		// sleep.after from its end, whatever a check ended before.
+		// sleep.afterLastUse from its end, whatever a check ended before.
 		p.idleClosed = false
 	}
 	return woke
@@ -176,10 +176,10 @@ func (e *engine) planSleeps(now time.Time) time.Time {
 		due := maxTime(p.usedAt.Add(after), p.nextSleepTry)
 		if p.idleClosed {
 			// Its idle connections were ended once nothing had chosen it
-			// for sleep.after: their ends and those of the rest restart no
+			// for sleep.afterLastUse: their ends and those of the rest restart no
 			// such wait. The last one may still be closing inside the
 			// tunnel, and the server would repeat its end of it to a
-			// tunnel gone, so the outbound waits the shortest sleep.after.
+			// tunnel gone, so the outbound waits the shortest sleep.afterLastUse.
 			due = maxTime(p.usedAt.Add(minSleepAfter), p.nextSleepTry)
 		}
 		if now.Before(due) {
@@ -239,7 +239,7 @@ func (e *engine) heldAwake(tag string, idle bool) bool {
 		// The choice, a pin included, and the target of a return. While a
 		// failover probes, every candidate it tried as well: one that
 		// passed waits there for the cheaper ones to answer.
-		if s.current() == tag || (s.upgradeTarget == tag && !e.memoryLow) ||
+		if s.current() == tag || (s.returnToCheaperTarget == tag && !e.memoryLow) ||
 			(len(s.failoverProbing) > 0 && (s.failoverProbing[tag] || s.failoverTried[tag])) {
 			return true
 		}
@@ -323,7 +323,7 @@ func (e *engine) onSlept(batch []sleepJob, results []sleepResult, now time.Time)
 // sleepRetry is the wait before an outbound that refused to sleep tries
 // times in a row is asked again. Its next use is not waited for: after the
 // balancer left it there may be none, and the connections it carries end by
-// themselves. Asking every sleep.after for good would not do either.
+// themselves. Asking every sleep.afterLastUse for good would not do either.
 func sleepRetry(after time.Duration, tries int) time.Duration {
 	return doubleRetry(max(after, minSleepRetry), tries)
 }

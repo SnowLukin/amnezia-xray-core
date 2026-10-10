@@ -214,12 +214,12 @@ func startWireGuardWith(t *testing.T, ts *httptest.Server, passive, probe, more 
 	  "routing": {"rules": [{"inboundTag": ["server"], "outboundTag": "behind"},
 	                        {"ip": ["10.10.0.0/24"], "balancerTag": "auto"}],
 	    "balancers": [{"tag": "auto", "selector": ["w"], "fallbackTag": "block",
-	      "strategy": {"type": "leastCost", "settings": {"costs": [{"match": "w1", "value": 1}, {"match": "w2", "value": 2}]}}}]},
+	      "strategy": {"type": "leastCost", "settings": {"costs": [{"match": "w1", "cost": 1}, {"match": "w2", "cost": 2}]}}}]},
 	  "healthObservatory": {
 	    "subjectSelector": ["w"],
 	    "passive": `+passive+`,
 	    "probes": [`+probe+`],
-	    "schedule": {"spacing": "10ms", "suspectCooldown": "1s", "hostProbes": {"reuse": "1ms"}}`+more+`
+	    "schedule": {"minProbeInterval": "10ms", "suspectCooldown": "1s", "hostProbes": {"reuseWindow": "1ms"}}`+more+`
 	  }
 	}`))
 	if err != nil {
@@ -375,7 +375,7 @@ func TestWireGuardOutboundFailsOverWhenItsServerStopsAnswering(t *testing.T) {
 	stopUsers := f.users()
 	defer stopUsers()
 	suspect := f.first(from, "path_state", stateOf("w1", "suspect"))
-	if suspect.Fields["strong"] != true || !strings.Contains(fmt.Sprint(suspect.Fields["kinds"]), "dial_timeout") {
+	if suspect.Fields["is_strong"] != true || !strings.Contains(fmt.Sprint(suspect.Fields["kinds"]), "dial_timeout") {
 		t.Fatalf("suspicion %v, want strong evidence of dial timeouts", suspect.Fields)
 	}
 	f.first(from, "path_state", stateOf("w1", "down"))
@@ -441,7 +441,7 @@ func TestWireGuardProbeWakesThroughALostHandshakeResponse(t *testing.T) {
 	if left := f.w1.loseResponses.Load(); left != 0 {
 		t.Fatalf("the probe woke no tunnel: %d handshake responses left to lose", left)
 	}
-	if result.Fields["ok"] != true {
+	if result.Fields["is_ok"] != true {
 		t.Fatalf("the probe through the woken w1 failed: %v", result.Fields)
 	}
 }
@@ -495,7 +495,7 @@ func TestWireGuardOutboundSleepsOnceItsSilentConnectionsEnd(t *testing.T) {
 		t.Fatalf("switch %v, want failover from w1 to w2", sw.Fields)
 	}
 	closed := f.first(from, "pending_closed", func(e health.Event) bool {
-		return e.Fields["outbound"] == "w1" && e.Fields["silent"] == true
+		return e.Fields["outbound"] == "w1" && e.Fields["is_silent"] == true
 	})
 	if after := time.Duration(closed.Time-down.Time) * time.Millisecond; closed.Fields["connections"] != float64(1) ||
 		after < stall-10*time.Millisecond || after > stall+2*time.Second {
@@ -532,7 +532,7 @@ func TestWireGuardOutboundSleepsOnceItsSilentConnectionsEnd(t *testing.T) {
 func TestWireGuardOutboundFailsOverWhenItsTunnelFreezes(t *testing.T) {
 	ts := targetServer(t)
 	f := startWireGuardFailover(t, ts, `{"dialTimeout": "2s", "firstByteTimeout": "2s", "stallTimeout": "1s",
-	  "failures": 2, "distinctTargets": 2, "successBytes": 1048576, "partialStallMinBytes": 2048, "sweepInterval": "50ms"}`)
+	  "failuresToSuspect": 2, "minDistinctTargets": 2, "successBytes": 1048576, "partialStallMinBytes": 2048, "sweepInterval": "50ms"}`)
 	if err := f.get("10.10.0.1", "/small", 10*time.Second); err != nil {
 		t.Fatal(err)
 	}
@@ -577,7 +577,7 @@ func TestWireGuardOutboundFailsOverWhenItsTunnelFreezes(t *testing.T) {
 	from := f.mark()
 	f.w1.blocked.Store(true)
 	suspect := f.first(from, "path_state", stateOf("w1", "suspect"))
-	if suspect.Fields["strong"] == true || !strings.Contains(fmt.Sprint(suspect.Fields["kinds"]), "partial_stall") {
+	if suspect.Fields["is_strong"] == true || !strings.Contains(fmt.Sprint(suspect.Fields["kinds"]), "partial_stall") {
 		t.Fatalf("suspicion %v, want stalls that need a probe", suspect.Fields)
 	}
 	probe := f.first(from, "probe_start", about("w1"))
@@ -585,7 +585,7 @@ func TestWireGuardOutboundFailsOverWhenItsTunnelFreezes(t *testing.T) {
 		t.Fatalf("probe %v, want one that confirms the suspicion", probe.Fields)
 	}
 	result := f.first(from, "probe_result", about("w1"))
-	if result.Fields["ok"] != false {
+	if result.Fields["is_ok"] != false {
 		t.Fatalf("the probe through the frozen tunnel passed: %v", result.Fields)
 	}
 	f.first(from, "path_state", stateOf("w1", "down"))

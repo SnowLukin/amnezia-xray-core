@@ -27,17 +27,17 @@ func drive(e *engine, from, to time.Time, step time.Duration, each func(now time
 	return now
 }
 
-// A network change while an upgrade probe is in flight: the new upgrade
+// A network change while an returnToCheaper probe is in flight: the new returnToCheaper
 // probe is deduplicated against the stale running one, the stale result is
-// dropped, and upgradeTarget stays set forever.
-func TestUpgradeSurvivesNetworkChangeDuringItsProbe(t *testing.T) {
-	te := newTestEngine(t, &Config{Schedule: quarantine(30 * time.Second)}, upgradeConfig(), "a1", "b1")
+// dropped, and returnToCheaperTarget stays set forever.
+func TestReturnToCheaperSurvivesNetworkChangeDuringItsProbe(t *testing.T) {
+	te := newTestEngine(t, &Config{Schedule: quarantine(30 * time.Second)}, returnToCheaperConfig(), "a1", "b1")
 	failoverToB(t, te, at(0))
 	var inFlight *probeJob
 	for now := at(5 * time.Minute); inFlight == nil && now.Before(at(7*time.Minute)); now = now.Add(time.Second) {
 		jobs, _ := te.tick(now)
 		for _, j := range jobs {
-			if j.reason == reasonUpgrade && j.tag == "a1" {
+			if j.reason == reasonReturnToCheaper && j.tag == "a1" {
 				inFlight = j
 			} else {
 				te.onProbeResult(j, probeResult{ok: true}, now)
@@ -45,7 +45,7 @@ func TestUpgradeSurvivesNetworkChangeDuringItsProbe(t *testing.T) {
 		}
 	}
 	if inFlight == nil {
-		t.Fatal("setup: no upgrade probe started")
+		t.Fatal("setup: no returnToCheaper probe started")
 	}
 	te.onNetworkChange("cafe", at(7*time.Minute))
 	te.tick(at(7*time.Minute + time.Second))
@@ -53,15 +53,15 @@ func TestUpgradeSurvivesNetworkChangeDuringItsProbe(t *testing.T) {
 	end := drive(te.engine, at(7*time.Minute+3*time.Second), at(3*time.Hour), time.Second,
 		func(now time.Time) { te.noteDemand(now) }, nil, func() bool { return te.sel.current() == "a1" })
 	if te.sel.current() != "a1" {
-		t.Fatalf("a1 works in the new network, %v later the balancer is on %q, upgradeTarget %q, upgradeAt %v",
-			end.Sub(at(7*time.Minute)), te.sel.current(), te.sel.upgradeTarget, te.sel.upgradeAt.Sub(t0))
+		t.Fatalf("a1 works in the new network, %v later the balancer is on %q, returnToCheaperTarget %q, returnToCheaperAt %v",
+			end.Sub(at(7*time.Minute)), te.sel.current(), te.sel.returnToCheaperTarget, te.sel.returnToCheaperAt.Sub(t0))
 	}
 }
 
 // The same with a failover probe (onNetworkChange: forget): the balancer
 // waits for a probe that never answers and stays on a dead outbound.
 func TestFailoverSurvivesNetworkChangeDuringItsProbe(t *testing.T) {
-	sc := &SelectorConfig{Costs: costs("a", 1, "b", 3), OnNetworkChange: NetworkChangeMode_FORGET}
+	sc := &SelectorConfig{Costs: costs("a", 1, "b", 3), NetworkChangeAction: NetworkChangeMode_FORGET}
 	te := newTestEngine(t, nil, sc, "a1", "a2", "b1")
 	te.failN(3, "a1", failDial, at(0))
 	jobs, _ := te.tick(at(time.Second))
@@ -157,14 +157,14 @@ func TestNoProbesWhileIdleOnNetworkChange(t *testing.T) {
 }
 
 // A cheaper candidate that appears later (providers, AddOutbound) is never
-// tried: upgradeAt was zero because nothing was cheaper at the last switch.
+// tried: returnToCheaperAt was zero because nothing was cheaper at the last switch.
 func TestCheaperCandidateAddedLaterIsUsed(t *testing.T) {
-	te := newTestEngine(t, &Config{Schedule: quarantine(30 * time.Second)}, upgradeConfig(), "b1")
+	te := newTestEngine(t, &Config{Schedule: quarantine(30 * time.Second)}, returnToCheaperConfig(), "b1")
 	te.updateCandidates(te.sel, []string{"a1", "b1"}, at(time.Second))
 	drive(te.engine, at(2*time.Second), at(2*time.Hour), time.Second,
 		func(now time.Time) { te.noteDemand(now) }, nil, func() bool { return te.sel.current() == "a1" })
 	if te.sel.current() != "a1" {
-		t.Fatalf("cheaper a1 added and working, two hours later still on %q (upgradeAt zero: %v)", te.sel.current(), te.sel.upgradeAt.IsZero())
+		t.Fatalf("cheaper a1 added and working, two hours later still on %q (returnToCheaperAt zero: %v)", te.sel.current(), te.sel.returnToCheaperAt.IsZero())
 	}
 }
 
@@ -196,8 +196,8 @@ func TestFailoverCandidateRemovedDuringItsProbe(t *testing.T) {
 // the next network change a no-op: the previous network's quarantine is kept
 // and no return to the cheaper outbound is scheduled.
 func TestNetworkChangeAfterLongSilenceIsApplied(t *testing.T) {
-	cfg := &Config{Schedule: &ScheduleConfig{Quarantine: &Backoff{Initial: int64(40 * time.Minute), Max: int64(time.Hour), Jitter: 0.0001}}}
-	te := newTestEngine(t, cfg, upgradeConfig(), "a1", "b1")
+	cfg := &Config{Schedule: &ScheduleConfig{Quarantine: &Backoff{InitialDelay: int64(40 * time.Minute), MaxDelay: int64(time.Hour), JitterFraction: 0.0001}}}
+	te := newTestEngine(t, cfg, returnToCheaperConfig(), "a1", "b1")
 	failoverToB(t, te, at(0))
 	// The phone sleeps; a leftover timer or a late failure runs the engine.
 	te.tick(at(31 * time.Minute))
@@ -217,7 +217,7 @@ func TestNetworkChangeAfterLongSilenceIsApplied(t *testing.T) {
 // Strong evidence is ignored while a confirming probe for weak evidence
 // waits; the per-server-name budget can hold that probe for most of a minute.
 func TestStrongEvidenceIsNotMutedByWaitingConfirm(t *testing.T) {
-	te := newTestEngine(t, &Config{Schedule: quarantine(30 * time.Second)}, upgradeConfig(), "a1", "b1")
+	te := newTestEngine(t, &Config{Schedule: quarantine(30 * time.Second)}, returnToCheaperConfig(), "a1", "b1")
 	failoverToB(t, te, at(0))
 	back := drive(te.engine, at(5*time.Minute), at(10*time.Minute), time.Second,
 		func(now time.Time) { te.noteDemand(now) }, nil, func() bool { return te.sel.current() == "a1" })
@@ -245,7 +245,7 @@ func TestStrongEvidenceIsNotMutedByWaitingConfirm(t *testing.T) {
 
 // The return penalty earned in one network delays the return in another.
 func TestPenaltyDoesNotCrossNetworks(t *testing.T) {
-	te := newTestEngine(t, &Config{Schedule: quarantine(30 * time.Second)}, upgradeConfig(), "a1", "b1")
+	te := newTestEngine(t, &Config{Schedule: quarantine(30 * time.Second)}, returnToCheaperConfig(), "a1", "b1")
 	te.onNetworkChange("home", at(0))
 	failoverToB(t, te, at(time.Second))
 	back := drive(te.engine, at(6*time.Minute), at(20*time.Minute), time.Second,
@@ -265,18 +265,18 @@ func TestPenaltyDoesNotCrossNetworks(t *testing.T) {
 
 // penaltyServed survives a switch: the next return skips the penalty.
 func TestPenaltyIsNotSkippedAfterSwitch(t *testing.T) {
-	te := newTestEngine(t, &Config{Schedule: quarantine(30 * time.Second)}, upgradeConfig(), "a1", "b1", "b2")
+	te := newTestEngine(t, &Config{Schedule: quarantine(30 * time.Second)}, returnToCheaperConfig(), "a1", "b1", "b2")
 	failoverToB(t, te, at(0))
 	te.sel.penalty["a1"] = 4
 	te.events.drain()
 	drive(te.engine, at(5*time.Minute), at(6*time.Minute), time.Second, func(now time.Time) { te.noteDemand(now) }, nil, nil)
-	if countEvents(te.eventTypes(), "upgrade_delayed") != 1 {
+	if countEvents(te.eventTypes(), "return_delayed") != 1 {
 		t.Fatal("setup: no delay")
 	}
 	te.failN(3, "b1", failDial, at(6*time.Minute))
 	started := drive(te.engine, at(6*time.Minute), at(20*time.Minute), time.Second,
 		func(now time.Time) { te.noteDemand(now) }, nil,
-		func() bool { return te.sel.upgradeTarget == "a1" })
+		func() bool { return te.sel.returnToCheaperTarget == "a1" })
 	if started.Before(at(20 * time.Minute)) {
 		t.Fatalf("penalty 4 (15 min more) is pending, but after the move to %q the return to a1 started at %v", te.sel.current(), started.Sub(t0))
 	}

@@ -122,11 +122,11 @@ func TestProviderRefreshInRunningCore(t *testing.T) {
 	    "providers": [{
 	      "tag": "fresh", "url": "` + ts.URL + `/set", "headers": {"Authorization": "Bearer t0k"},
 	      "via": ["missing", "dead", "direct"], "timeout": "3s",
-	      "triggers": {"interval": "0s", "minHealthy": 0, "whenExhausted": false, "maxAge": "0s",
-	                   "onNetworkChange": "never"},
-	      "limits": {"exhaustedMinInterval": "10ms", "backoff": {"initial": "50ms"}},
-	      "allowPlainHttp": true,
-	      "apply": {"balancer": "auto", "tagPrefix": "p-", "drain": "300ms", "protocols": ["freedom", "blackhole", "vless", "nosuch"]}
+	      "triggers": {"interval": "0s", "minHealthyOutbounds": 0, "shouldRefreshWhenExhausted": false, "maxAge": "0s",
+	                   "networkChangeMode": "never"},
+	      "limits": {"exhaustedMinInterval": "10ms", "backoff": {"initialDelay": "50ms"}},
+	      "isPlainHttpAllowed": true,
+	      "apply": {"balancer": "auto", "tagPrefix": "p-", "drainTimeout": "300ms", "allowedProtocols": ["freedom", "blackhole", "vless", "nosuch"]}
 	    }]
 	  }
 	}`
@@ -154,13 +154,13 @@ func TestProviderRefreshInRunningCore(t *testing.T) {
 		t.Fatal("provider not found")
 	}
 	ev := w.until("provider_apply", nil)
-	if ev.Fields["ok"] != true || ev.Fields["added"] != 4.0 {
+	if ev.Fields["is_ok"] != true || ev.Fields["added"] != 4.0 {
 		t.Fatalf("first apply %v", ev.Fields)
 	}
 	fetches := w.since(0, "provider_fetch")
 	if len(fetches) != 3 || fetches[0].Fields["error"] != "no such outbound" ||
-		fetches[1].Fields["via"] != "dead" || fetches[1].Fields["ok"] != false ||
-		fetches[2].Fields["via"] != "direct" || fetches[2].Fields["ok"] != true || fetches[2].Fields["trigger"] != "host" {
+		fetches[1].Fields["via"] != "dead" || fetches[1].Fields["is_ok"] != false ||
+		fetches[2].Fields["via"] != "direct" || fetches[2].Fields["is_ok"] != true || fetches[2].Fields["trigger"] != "host" {
 		t.Fatalf("fetches %+v; want the missing via skipped, the dead one failed, then direct", fetches)
 	}
 	if e, _ := fetches[1].Fields["error"].(string); e == "" || strings.Contains(e, "/set") {
@@ -208,7 +208,7 @@ func TestProviderRefreshInRunningCore(t *testing.T) {
 	// request is retried after the backoff without another request.
 	srv.set(`{"outbounds": [{"tag": "x4", "protocol": "freedom"}, {"tag": "x5", "protocol": "nosuch"}]}`)
 	ev = w.until("provider_apply", nil)
-	if ev.Fields["ok"] != false || !strings.Contains(ev.Fields["error"].(string), "build") {
+	if ev.Fields["is_ok"] != false || !strings.Contains(ev.Fields["error"].(string), "build") {
 		t.Fatalf("apply of a set that does not build %v", ev.Fields)
 	}
 	if ohm.GetHandler("p-x4") != nil || ohm.GetHandler("p-x2") != x2 || ohm.GetHandler("p-x3") == nil {
@@ -245,11 +245,11 @@ func TestRefreshUnderLowMemoryTriesOneVia(t *testing.T) {
 	  "healthObservatory": {
 	    "subjectSelector": ["p-"],
 	    "providers": [{
-	      "tag": "fresh", "url": "`+ts.URL+`/set", "allowPlainHttp": true,
+	      "tag": "fresh", "url": "`+ts.URL+`/set", "isPlainHttpAllowed": true,
 	      "via": ["missing", "dead", "direct"], "timeout": "500ms",
-	      "triggers": {"interval": "0s", "minHealthy": 0, "whenExhausted": false, "maxAge": "0s", "onNetworkChange": "never"},
-	      "limits": {"backoff": {"initial": "1h"}},
-	      "apply": {"balancer": "auto", "tagPrefix": "p-", "protocols": ["freedom"]}
+	      "triggers": {"interval": "0s", "minHealthyOutbounds": 0, "shouldRefreshWhenExhausted": false, "maxAge": "0s", "networkChangeMode": "never"},
+	      "limits": {"backoff": {"initialDelay": "1h"}},
+	      "apply": {"balancer": "auto", "tagPrefix": "p-", "allowedProtocols": ["freedom"]}
 	    }]
 	  }
 	}`))
@@ -272,7 +272,7 @@ func TestRefreshUnderLowMemoryTriesOneVia(t *testing.T) {
 	var st struct {
 		Providers []struct {
 			Failures int  `json:"failures"`
-			Fetching bool `json:"fetching"`
+			Fetching bool `json:"is_fetching"`
 		} `json:"providers"`
 	}
 	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
@@ -316,10 +316,10 @@ func twoViaCore(t *testing.T, url string, more ...string) *health.Observer {
 	  "healthObservatory": {
 	    "subjectSelector": ["p-"],
 	    "providers": [{
-	      "tag": "fresh", "url": "`+url+`", "allowPlainHttp": true, "via": ["direct", "direct2"], "timeout": "3s",
-	      "triggers": {"interval": "0s", "minHealthy": 0, "whenExhausted": false, "maxAge": "0s", "onNetworkChange": "never"},
-	      "limits": {"backoff": {"initial": "1h"}},
-	      "apply": {"balancer": "auto", "tagPrefix": "p-", "protocols": ["freedom"]}`+strings.Join(more, "")+`
+	      "tag": "fresh", "url": "`+url+`", "isPlainHttpAllowed": true, "via": ["direct", "direct2"], "timeout": "3s",
+	      "triggers": {"interval": "0s", "minHealthyOutbounds": 0, "shouldRefreshWhenExhausted": false, "maxAge": "0s", "networkChangeMode": "never"},
+	      "limits": {"backoff": {"initialDelay": "1h"}},
+	      "apply": {"balancer": "auto", "tagPrefix": "p-", "allowedProtocols": ["freedom"]}`+strings.Join(more, "")+`
 	    }]
 	  }
 	}`))
@@ -356,10 +356,10 @@ func TestSchemaErrorEndsTheAttempts(t *testing.T) {
 	obs.RequestRefresh("fresh")
 	apply := w.until("provider_apply", nil)
 	fetches := w.since(0, "provider_fetch")
-	if srv.requests() != 1 || len(fetches) != 1 || fetches[0].Fields["ok"] != true || fetches[0].Fields["error"] != nil {
+	if srv.requests() != 1 || len(fetches) != 1 || fetches[0].Fields["is_ok"] != true || fetches[0].Fields["error"] != nil {
 		t.Fatalf("%d requests, fetches %+v; want one that the backend answered", srv.requests(), fetches)
 	}
-	if apply.Fields["ok"] != false || apply.Fields["error"] != `invalid answer: unknown key "dns"` {
+	if apply.Fields["is_ok"] != false || apply.Fields["error"] != `invalid answer: unknown key "dns"` {
 		t.Fatalf("apply %v", apply.Fields)
 	}
 	var report map[string]any
@@ -384,7 +384,7 @@ func TestBrokenJSONTriesNextVia(t *testing.T) {
 	obs.RequestRefresh("fresh")
 	w.until("provider_fetch", func(e health.Event) bool { return e.Fields["via"] == "direct2" })
 	fetches := w.since(0, "provider_fetch")
-	if srv.requests() != 2 || len(fetches) != 2 || fetches[0].Fields["ok"] != false ||
+	if srv.requests() != 2 || len(fetches) != 2 || fetches[0].Fields["is_ok"] != false ||
 		!strings.Contains(fetches[0].Fields["error"].(string), "invalid answer") {
 		t.Fatalf("%d requests, fetches %+v; want both via tried", srv.requests(), fetches)
 	}
@@ -425,7 +425,7 @@ func waitRefreshed(t *testing.T, obs *health.Observer) {
 	var st struct {
 		Providers []struct {
 			Refreshes int  `json:"refreshes"`
-			Fetching  bool `json:"fetching"`
+			Fetching  bool `json:"is_fetching"`
 		} `json:"providers"`
 	}
 	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
@@ -461,9 +461,9 @@ func TestBackendAnswerEndsTheAttempts(t *testing.T) {
 			"Date": behind.Format(http.TimeFormat), "Retry-After": behind.Add(2 * time.Minute).Format(http.TimeFormat)}}, 1,
 			map[string]any{"status": 503.0, "retry_after_ms": 120_000.0}},
 		{"429 with an error body", &replyServer{status: 429, header: map[string]string{"Content-Type": "application/json"},
-			body: `{"protocol": 1, "error": "rate_limited", "message": "slow down"}`}, 1,
+			body: `{"protocol": 1, "code": "rate_limited", "message": "slow down"}`}, 1,
 			map[string]any{"status": 429.0, "code": "rate_limited"}},
-		{"429 with a body of no protocol", &replyServer{status: 429, body: `{"error": "rate_limited"}`}, 2,
+		{"429 with a body of no protocol", &replyServer{status: 429, body: `{"code": "rate_limited"}`}, 2,
 			map[string]any{"status": 429.0}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -523,7 +523,7 @@ func TestEndlessErrorBodyMovesOnSoon(t *testing.T) {
 	obs := twoViaCore(t, ts.URL+"/set", `, "timeout": "10s"`)
 	w := &eventWaiter{t: t, o: obs}
 	obs.RequestRefresh("fresh")
-	if ev := w.until("provider_apply", nil); ev.Fields["ok"] != true {
+	if ev := w.until("provider_apply", nil); ev.Fields["is_ok"] != true {
 		t.Fatalf("apply %v", ev.Fields)
 	}
 	fetches := w.since(0, "provider_fetch")
@@ -553,10 +553,10 @@ func TestSkippedViaKeepsTheFailureBeforeIt(t *testing.T) {
 	defer ts.Close()
 	// The failed host request is retried after the short backoff.
 	obs := twoViaCore(t, ts.URL+"/set", `, "via": ["direct", "missing"],
-	  "limits": {"exhaustedMinInterval": "10ms", "backoff": {"initial": "50ms"}}`)
+	  "limits": {"exhaustedMinInterval": "10ms", "backoff": {"initialDelay": "50ms"}}`)
 	w := &eventWaiter{t: t, o: obs}
 	obs.RequestRefresh("fresh")
-	w.until("provider_apply", func(e health.Event) bool { return e.Fields["ok"] == true })
+	w.until("provider_apply", func(e health.Event) bool { return e.Fields["is_ok"] == true })
 	fetches := w.since(0, "provider_fetch")
 	if len(fetches) < 3 || fetches[0].Fields["status"] != 502.0 || fetches[1].Fields["error"] != "no such outbound" {
 		t.Fatalf("fetches %+v; want a 502 through direct, then missing skipped", fetches)
@@ -596,7 +596,7 @@ func TestSameBodyThroughEveryVia(t *testing.T) {
 	}
 	var body struct {
 		Run     string `json:"run"`
-		Refresh int    `json:"refresh"`
+		Refresh int    `json:"refreshNumber"`
 		Trigger string `json:"trigger"`
 	}
 	if err := json.Unmarshal(srv.bodies[0], &body); err != nil || body.Run == "" || body.Refresh != 1 || body.Trigger != "host" {
@@ -618,7 +618,7 @@ func TestGetSendsNoBody(t *testing.T) {
 	obs := twoViaCore(t, ts.URL+"/set", `, "method": "GET"`)
 	w := &eventWaiter{t: t, o: obs}
 	obs.RequestRefresh("fresh")
-	if ev := w.until("provider_apply", nil); ev.Fields["ok"] != true {
+	if ev := w.until("provider_apply", nil); ev.Fields["is_ok"] != true {
 		t.Fatalf("apply %v", ev.Fields)
 	}
 	srv.mu.Lock()
@@ -680,7 +680,7 @@ func TestLeaseCountsFromDatePlusAgeOfACachedAnswer(t *testing.T) {
 	obs.RequestRefresh("fresh")
 	ev := w.until("provider_apply", nil)
 	skew, _ := ev.Fields["skew_ms"].(float64)
-	if ev.Fields["ok"] != true || ev.Fields["leases"] != 1.0 || ev.Fields["clock"] != "date" || skew < -3000 || skew > 3000 {
+	if ev.Fields["is_ok"] != true || ev.Fields["leases"] != 1.0 || ev.Fields["clock"] != "date" || skew < -3000 || skew > 3000 {
 		t.Fatalf("apply %v; want one lease by the clock of Date plus Age", ev.Fields)
 	}
 	var st struct {
@@ -700,7 +700,7 @@ func TestLeaseCountsFromDatePlusAgeOfACachedAnswer(t *testing.T) {
 // the provider, at once and without the other via.
 func TestOne401Or403WithoutBodyIsNoAuthFailure(t *testing.T) {
 	refusal := func(code string) string {
-		return `{"protocol": 1, "error": "` + code + `", "message": "token refused"}`
+		return `{"protocol": 1, "code": "` + code + `", "message": "token refused"}`
 	}
 	var once sync.Mutex
 	firstSeen := false
@@ -750,21 +750,21 @@ func TestOne401Or403WithoutBodyIsNoAuthFailure(t *testing.T) {
 			}
 			var st struct {
 				Providers []struct {
-					Failures   int  `json:"failures"`
-					AuthFailed bool `json:"auth_failed"`
+					Failures      int  `json:"failures"`
+					IsAuthRefused bool `json:"is_auth_refused"`
 				} `json:"providers"`
 			}
 			if err := json.Unmarshal(obs.Status(), &st); err != nil {
 				t.Fatal(err)
 			}
 			if tc.code == "" {
-				if len(refused) != 0 || st.Providers[0].AuthFailed || st.Providers[0].Failures != map[bool]int{true: 0, false: 1}[tc.applied] {
+				if len(refused) != 0 || st.Providers[0].IsAuthRefused || st.Providers[0].Failures != map[bool]int{true: 0, false: 1}[tc.applied] {
 					t.Fatalf("auth failures %+v, status %+v", refused, st)
 				}
 				return
 			}
 			if len(refused) != 1 || refused[0].Fields["code"] != tc.code || refused[0].Fields["via"] != "direct" ||
-				refused[0].Fields["trigger"] != "host" || !st.Providers[0].AuthFailed || st.Providers[0].Failures != 0 {
+				refused[0].Fields["trigger"] != "host" || !st.Providers[0].IsAuthRefused || st.Providers[0].Failures != 0 {
 				t.Fatalf("auth failures %+v, status %+v", refused, st)
 			}
 		})
@@ -793,12 +793,12 @@ func TestTokenNeverInEventsStatusReportOrBody(t *testing.T) {
 			_, _ = w.Write([]byte(`{"protocol": 1, "outbounds": [{"tag": "x1", "protocol": "freedom"}]}`))
 		default:
 			w.WriteHeader(http.StatusUnauthorized)
-			_, _ = w.Write([]byte(`{"protocol": 1, "error": "unauthorized", "message": "Bearer config-secret is dead"}`))
+			_, _ = w.Write([]byte(`{"protocol": 1, "code": "unauthorized", "message": "Bearer config-secret is dead"}`))
 		}
 	}))
 	defer ts.Close()
 	obs := twoViaCore(t, ts.URL+"/set", `, "headers": {"Authorization": "Bearer config-secret"},
-	  "limits": {"exhaustedMinInterval": "10ms", "backoff": {"initial": "1h"}}`)
+	  "limits": {"exhaustedMinInterval": "10ms", "backoff": {"initialDelay": "1h"}}`)
 	w := &eventWaiter{t: t, o: obs}
 	obs.RequestRefresh("fresh")
 	w.until("provider_auth_failed", nil)
@@ -806,9 +806,9 @@ func TestTokenNeverInEventsStatusReportOrBody(t *testing.T) {
 		t.Fatal(err)
 	}
 	obs.RequestRefresh("fresh")
-	w.until("provider_apply", func(e health.Event) bool { return e.Fields["ok"] == true })
+	w.until("provider_apply", func(e health.Event) bool { return e.Fields["is_ok"] == true })
 	obs.RequestRefresh("fresh")
-	w.until("provider_apply", func(e health.Event) bool { return e.Fields["changed"] == false })
+	w.until("provider_apply", func(e health.Event) bool { return e.Fields["is_changed"] == false })
 	mu.Lock()
 	sent := fmt.Sprint(auths)
 	mu.Unlock()
@@ -825,14 +825,14 @@ func TestTokenNeverInEventsStatusReportOrBody(t *testing.T) {
 	status, report := obs.Status(), obs.Report()
 	var st struct {
 		Providers []struct {
-			Headers    []string `json:"headers"`
-			AuthFailed bool     `json:"auth_failed"`
+			Headers       []string `json:"headers"`
+			IsAuthRefused bool     `json:"is_auth_refused"`
 		} `json:"providers"`
 	}
 	var rep struct {
 		AuthFailed int `json:"provider_auth_failed"`
 	}
-	if json.Unmarshal(status, &st) != nil || fmt.Sprint(st.Providers[0].Headers) != "[Authorization]" || st.Providers[0].AuthFailed ||
+	if json.Unmarshal(status, &st) != nil || fmt.Sprint(st.Providers[0].Headers) != "[Authorization]" || st.Providers[0].IsAuthRefused ||
 		json.Unmarshal(report, &rep) != nil || rep.AuthFailed != 1 {
 		t.Fatalf("status %s, report %s", status, report)
 	}
@@ -852,10 +852,10 @@ func TestTokenNeverInEventsStatusReportOrBody(t *testing.T) {
 func TestBadInitialInTheConfigStartsTheCore(t *testing.T) {
 	for _, initial := range []string{`[]`, `"{}"`, `{"outbounds": [{"tag": "x1", "protocol": "freedom", "pad": "` +
 		strings.Repeat("x", 2<<20) + `"}]}`} {
-		obs := twoViaCore(t, "https://unused.test/set", `, "initial": `+initial)
+		obs := twoViaCore(t, "https://unused.test/set", `, "initialAnswer": `+initial)
 		w := &eventWaiter{t: t, o: obs}
 		ev := w.until("provider_apply", nil)
-		if ev.Fields["trigger"] != "initial" || ev.Fields["ok"] != false {
+		if ev.Fields["trigger"] != "initial" || ev.Fields["is_ok"] != false {
 			t.Fatalf("%.20s: apply %v", initial, ev.Fields)
 		}
 	}
@@ -877,10 +877,10 @@ func TestInitialAppliedBeforeTheFirstConnection(t *testing.T) {
 	  "healthObservatory": {
 	    "subjectSelector": ["p-"],
 	    "providers": [{
-	      "tag": "fresh", "url": "`+ts.URL+`/set", "allowPlainHttp": true, "via": ["direct"],
-	      "triggers": {"interval": "1h", "minHealthy": 0, "whenExhausted": false, "maxAge": "0s", "onNetworkChange": "never"},
-	      "apply": {"balancer": "auto", "tagPrefix": "p-", "protocols": ["freedom"]},
-	      "initial": {"protocol": 1, "version": "v1", "outbounds": [{"tag": "x1", "protocol": "freedom"},
+	      "tag": "fresh", "url": "`+ts.URL+`/set", "isPlainHttpAllowed": true, "via": ["direct"],
+	      "triggers": {"interval": "1h", "minHealthyOutbounds": 0, "shouldRefreshWhenExhausted": false, "maxAge": "0s", "networkChangeMode": "never"},
+	      "apply": {"balancer": "auto", "tagPrefix": "p-", "allowedProtocols": ["freedom"]},
+	      "initialAnswer": {"protocol": 1, "version": "v1", "outbounds": [{"tag": "x1", "protocol": "freedom"},
 	        {"tag": "x2", "protocol": "freedom"}], "headers": {"Authorization": "Bearer saved"}}
 	    }]
 	  }

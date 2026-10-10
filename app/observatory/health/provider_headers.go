@@ -98,7 +98,7 @@ func parseHeaders(raw []byte) (map[string]string, error) {
 	return out, nil
 }
 
-// checkRotation refuses headers of an answer that apply.headers does not
+// checkRotation refuses headers of an answer that apply.acceptedHeaders does not
 // allow; the answer is refused whole, so the backend never takes a token
 // for applied that the core threw away.
 func checkRotation(a *providerAnswer, cfg *providerSettings) error {
@@ -106,11 +106,11 @@ func checkRotation(a *providerAnswer, cfg *providerSettings) error {
 		return nil
 	}
 	if len(cfg.rotate) == 0 {
-		return answerErrorf("headers are not accepted: apply.headers is empty")
+		return answerErrorf("headers are not accepted: apply.acceptedHeaders is empty")
 	}
 	for _, name := range slices.Sorted(maps.Keys(a.headers)) {
 		if !slices.Contains(cfg.rotate, name) {
-			return answerErrorf("header %s is not in apply.headers", name)
+			return answerErrorf("header %s is not in apply.acceptedHeaders", name)
 		}
 	}
 	return nil
@@ -232,7 +232,7 @@ func headerFields(f map[string]any, names []string, stale bool) {
 	}
 	f["headers"] = names
 	if stale {
-		f["headers_stale"] = true
+		f["is_headers_stale"] = true
 	}
 }
 

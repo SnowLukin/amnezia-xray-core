@@ -34,10 +34,10 @@ func (f *wireGuardFailover) within(from int, typ string, match func(health.Event
 // A keep-alive connection through w1 that got its answer and waits, quiet,
 // as the push connections of a phone do, keeps the tunnel of w1 awake once
 // the balancer is on w2: the path works, and nothing else ends it. With
-// sleep.closeIdleAfter, once nothing has chosen w1 for sleep.after and the
+// sleep.closeIdleAfter, once nothing has chosen w1 for sleep.afterLastUse and the
 // connection has received nothing for closeIdleAfter, the observer ends it
 // with idle_closed; w1 then sleeps with reason idle the shortest
-// sleep.after later, once the end of the connection has crossed the tunnel.
+// sleep.afterLastUse later, once the end of the connection has crossed the tunnel.
 // It sends nothing more, and its server at most the one passive keepalive
 // that answers the end: a tunnel gone before it, the server would repeat
 // its end of the connection.
@@ -46,7 +46,7 @@ func TestWireGuardUnchosenOutboundSleepsOnceItsIdleConnectionsEnd(t *testing.T) 
 	ts := targetServer(t)
 	f := startWireGuardWith(t, ts, `{"sweepInterval": "50ms"}`,
 		`{"destination": "http://10.10.0.1/probe", "timeout": "8s", "progressTimeout": "8s"}`,
-		`"sleep": {"after": "10s", "closeIdleAfter": "10s"}`)
+		`"sleep": {"afterLastUse": "10s", "closeIdleAfter": "10s"}`)
 	if err := f.get("10.10.0.1", "/small", 10*time.Second); err != nil {
 		t.Fatal(err)
 	}
@@ -85,7 +85,7 @@ func TestWireGuardUnchosenOutboundSleepsOnceItsIdleConnectionsEnd(t *testing.T) 
 	closed := f.within(from, "idle_closed", about("w1"), 30*time.Second)
 	if after := time.Duration(closed.Time-sw.Time) * time.Millisecond; closed.Fields["connections"] != float64(1) ||
 		after < idle-50*time.Millisecond || after > idle+3*time.Second {
-		t.Fatalf("idle close %v, %v after the switch; want the held connection, sleep.after %v after", closed.Fields, after, idle)
+		t.Fatalf("idle close %v, %v after the switch; want the held connection, sleep.afterLastUse %v after", closed.Fields, after, idle)
 	}
 	for _, e := range f.events.since(from, "outbound_sleep") {
 		if e.Fields["outbound"] == "w1" && e.Time < closed.Time {
@@ -101,10 +101,10 @@ func TestWireGuardUnchosenOutboundSleepsOnceItsIdleConnectionsEnd(t *testing.T) 
 	if slept.Fields["reason"] != "idle" || slept.Time < closed.Time {
 		t.Fatalf("w1 slept with %v at %d, idle close at %d; want reason idle after the close", slept.Fields, slept.Time, closed.Time)
 	}
-	// The shortest sleep.after, which is idle here too.
+	// The shortest sleep.afterLastUse, which is idle here too.
 	if after := time.Duration(slept.Time-closed.Time) * time.Millisecond; after < idle-50*time.Millisecond ||
 		after > idle+3*time.Second {
-		t.Fatalf("w1 slept %v after the idle close, want %v, the shortest sleep.after", after, idle)
+		t.Fatalf("w1 slept %v after the idle close, want %v, the shortest sleep.afterLastUse", after, idle)
 	}
 	sent, answered := f.w1.sent.Load(), f.w1.answered.Load()
 	time.Sleep(5 * time.Second)

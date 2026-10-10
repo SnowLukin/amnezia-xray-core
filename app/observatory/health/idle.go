@@ -8,10 +8,10 @@ import "time"
 // are silent most of the time: on a path that works nothing ends them, and
 // they would keep the tunnel, its keepalives and their battery cost for
 // good. With sleep.closeIdleAfter, once no balancer has chosen such an
-// outbound for sleep.after and nothing but its connections holds it, the
+// outbound for sleep.afterLastUse and nothing but its connections holds it, the
 // observer ends those that have received nothing for closeIdleAfter. Their
 // applications reconnect through the outbound chosen now, and the outbound
-// sleeps soon after the rest are gone: the shortest sleep.after later, as a
+// sleeps soon after the rest are gone: the shortest sleep.afterLastUse later, as a
 // connection that ended may still be closing inside the tunnel.
 //
 // It is the one place where the observer ends connections on a path that
@@ -57,7 +57,7 @@ func (e *engine) networkSettled() (time.Time, bool) {
 // time. A planned check goes into the batch of sleeps.
 func (e *engine) planIdleCheck(tag string, p *path, now time.Time, idle bool) time.Time {
 	if e.heldAwake(tag, idle) {
-		// Chosen again, probed, asked through: it waits sleep.after from
+		// Chosen again, probed, asked through: it waits sleep.afterLastUse from
 		// there, whatever a check ended before.
 		p.idleClosed = false
 		return time.Time{}
@@ -75,7 +75,7 @@ func (e *engine) planIdleCheck(tag string, p *path, now time.Time, idle bool) ti
 }
 
 // idleCheckDue tells when the connections of an outbound held by nothing
-// else are to be checked, and from when the check may end them: sleep.after
+// else are to be checked, and from when the check may end them: sleep.afterLastUse
 // after its last use, which leaving it is, and closeIdleAfter after the
 // network settled, so that silence a network change or an outage caused
 // ends nothing. Once a check ended connections, the ends that follow,

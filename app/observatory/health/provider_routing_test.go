@@ -146,7 +146,7 @@ func TestApplyRoutingWithTheSet(t *testing.T) {
 	}
 }
 
-// Routing off is the choice of the client, not a change the host has to
+// IsRoutingAccepted off is the choice of the client, not a change the host has to
 // restart for: the set applies without it.
 func TestRoutingIgnoredWhenOff(t *testing.T) {
 	f := newApplyFixture(t, time.Minute)
@@ -168,7 +168,7 @@ func TestRoutingIgnoredWhenOff(t *testing.T) {
 			apply = e.Fields
 		}
 	}
-	if called || apply["ok"] != true || apply["changed"] != true || apply["routing_ignored"] != true {
+	if called || apply["is_ok"] != true || apply["is_changed"] != true || apply["is_routing_ignored"] != true {
 		t.Fatalf("routing applied %v; apply %v", called, apply)
 	}
 }

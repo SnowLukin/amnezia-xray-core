@@ -6,8 +6,8 @@ BENCH_FLAP_MIN (10), BENCH_HEALTHY_MIN (30), BENCH_EXPENSIVE_MIN (60),
 BENCH_SOAK_MIN (120), BENCH_DEAD_SITE_SEC (300) and BENCH_AWG_WAKES (6);
 BENCH_AWG_DELAY delays the datagrams of w1 by that many ms on the wakes of
 awg_wake_by_probe that lose nothing. A shorter BENCH_EXPENSIVE_MIN
-judges the cost of one probe instead of a whole hour; BENCH_EXPENSIVE_UPGRADE
-(a duration such as 1m) sets upgrade.interval there, so that a short run sees
+judges the cost of one probe instead of a whole hour; BENCH_EXPENSIVE_RETURN
+(a duration such as 1m) sets returnToCheaper.interval there, so that a short run sees
 probes at all.
 """
 import json
@@ -144,7 +144,7 @@ def failover_evidence(events, since=0):
                      and x["fields"].get("state") == "suspect" and x["fields"].get("failures", 0) > 0
                      and bool(x["fields"].get("kinds")))
                     or (x["type"] == "probe_result" and x["fields"].get("outbound") == left
-                        and x["fields"].get("ok") is False))
+                        and x["fields"].get("is_ok") is False))
                 for x in events)
             if not proven:
                 bad.append(f"{left}->{f['to']}")
@@ -177,7 +177,7 @@ def confirm_chain(events, tag, since=0):
     mine = [e for e in events if e["ts"] / 1000 >= since and e["fields"].get("outbound") == tag]
     started = next((e for e in mine if e["type"] == "probe_start" and e["fields"].get("reason") == "confirm"), None)
     failed = next((e for e in mine if started and e["type"] == "probe_result" and e["ts"] >= started["ts"]
-                   and e["fields"].get("reason") == "confirm" and e["fields"].get("ok") is False), None)
+                   and e["fields"].get("reason") == "confirm" and e["fields"].get("is_ok") is False), None)
     down = next((e for e in mine if failed and e["type"] == "path_state" and e["ts"] >= failed["ts"]
                  and e["fields"].get("state") == "down" and e["fields"].get("reason") == "probe"), None)
     return started, failed, down
@@ -370,7 +370,7 @@ def failover(stand, xray, work, name, port, mode, limit, members=THREE, costs=TH
                     and e["fields"].get("state") == "suspect" and e["ts"] / 1000 >= m["fault"]]
         confirming = [e for e in c.events if e["type"] == "probe_start" and e["fields"].get("outbound") == tag
                       and e["fields"].get("reason") == "confirm" and e["ts"] / 1000 >= m["fault"]]
-        strong = bool(suspects) and all(e["fields"].get("strong") for e in suspects)
+        strong = bool(suspects) and all(e["fields"].get("is_strong") for e in suspects)
         checks.append(check("ruled out on strong evidence, no confirming probe",
                             f"strong={strong}, confirming probes {len(confirming)}", strong and not confirming,
                             "strong, 0 probes"))
@@ -409,7 +409,7 @@ def report_interval(stand, xray, work, name):
                      3 * interval)
     first = c.reports[0] if c.reports else {}
     final = c.final_report or {}
-    window = first.get("window_sec")
+    window = first.get("window_ms", 0) / 1000
     return [
         check("first report", f"{first.get('report_reason')} after {window} s",
               first.get("report_reason") == "interval" and interval <= window <= interval + 3
@@ -586,13 +586,13 @@ def false_down_rescue(stand, xray, work, name):
     that rules a1 out at once. The probe, on its connection from before, still passes after
     the down: it rescues a1, which is back within the probe instead of resting its quarantine,
     and its connections that went silent are kept. The failover the down started still
-    moves the balancer to b1, which returns to a1 once minHold ends, long before
-    upgrade.interval."""
+    moves the balancer to b1, which returns to a1 once minHoldTime ends, long before
+    returnToCheaper.interval."""
     hold, spacing, successes = 15, 3, 2
     probe = {"destination": f"http://probe.test:{bench.TARGET_PORT}/slow/262144/{RESCUE_PROBE + 1}",
-             "minBytes": 262144, "expectStatus": [200], "timeout": "10s", "progressTimeout": "3s"}
-    strategy = {"minHold": f"{hold}s", "upgrade": {"interval": "10m", "randomPhase": False,
-                                                   "successes": successes, "spacing": f"{spacing}s"}}
+             "minBytes": 262144, "expectedStatuses": [200], "timeout": "10s", "progressTimeout": "3s"}
+    strategy = {"minHoldTime": f"{hold}s", "returnToCheaper": {"interval": "10m", "hasRandomPhase": False,
+                                                   "probesToReturn": successes, "probeInterval": f"{spacing}s"}}
     cfg = bench.client_config(CHEAP_EXPENSIVE, CHEAP_EXPENSIVE_COSTS, health={"probes": [probe]}, strategy=strategy)
     m = Marks()
     with bench.Client(xray, cfg, work, name) as c:
@@ -613,7 +613,7 @@ def false_down_rescue(stand, xray, work, name):
             time.sleep(1.5)
             bench.chaos(A0, "pass")
             wait_for(lambda: [e for e in switches_to(c.events, "a1", m["refuse"])
-                              if e["fields"]["reason"] == "upgrade"], 60)
+                              if e["fields"]["reason"] == "return"], 60)
         time.sleep(2)
         st = c.status()
         tr.stop()
@@ -622,10 +622,10 @@ def false_down_rescue(stand, xray, work, name):
         return [check("confirming probe of the weak evidence at the target", "none in 20 s", False, "one"),
                 leak_check(c)]
     a1 = [e for e in c.events if e["ts"] / 1000 >= m["weak"] and e["fields"].get("outbound") == "a1"]
-    story = [("weak suspicion", first_event(a1, "path_state", state="suspect", strong=False)),
+    story = [("weak suspicion", first_event(a1, "path_state", state="suspect", is_strong=False)),
              ("confirm start", first_event(a1, "probe_start", reason="confirm")),
              ("down by traffic", first_event(a1, "path_state", state="down", reason="traffic")),
-             ("confirm ok", first_event(a1, "probe_result", reason="confirm", ok=True)),
+             ("confirm ok", first_event(a1, "probe_result", reason="confirm", is_ok=True)),
              ("rescued", first_event(a1, "path_state", state="up", reason="rescued"))]
     missing = [label for label, e in story if e is None]
     seqs = [e["seq"] for _, e in story if e is not None]
@@ -638,20 +638,20 @@ def false_down_rescue(stand, xray, work, name):
         checks.append(check("a1 out, s (of its quarantine)", f"{round(out, 1)} ({round(rest)})",
                             out <= RESCUE_PROBE + 1, f"<= the probe {RESCUE_PROBE} + 1"))
     silent = [e for e in bench.events_of(c.events, "pending_closed", m["weak"])
-              if e["fields"].get("outbound") == "a1" and e["fields"].get("silent")]
+              if e["fields"].get("outbound") == "a1" and e["fields"].get("is_silent")]
     checks.append(check("silent connections of a1 ended", sum(e["fields"]["connections"] for e in silent),
                         not silent, "== 0"))
     sw = bench.switches(c.events, m["refuse"])
     path = [f"{e['fields']['from']}>{e['fields']['to']}:{e['fields']['reason']}" for e in sw]
-    checks.append(check("switches", path, path == ["a1>b1:failover", "b1>a1:upgrade"],
-                        "a1>b1:failover, b1>a1:upgrade"))
+    checks.append(check("switches", path, path == ["a1>b1:failover", "b1>a1:return"],
+                        "a1>b1:failover, b1>a1:return"))
     if len(sw) == 2:
         took = (sw[1]["ts"] - sw[0]["ts"]) / 1000
         limit = hold + successes * RESCUE_PROBE + (successes - 1) * spacing * 1.3 + 5
         checks.append(check("return to a1 after the failover, s", round(took, 1), hold <= took <= limit,
                             f"{hold} .. {round(limit)}"))
     report = c.final_report or {}
-    checks.append(check("report path_rescued", report.get("path_rescued"), report.get("path_rescued") == 1, "== 1"))
+    checks.append(check("report path_rescued_count", report.get("path_rescued_count"), report.get("path_rescued_count") == 1, "== 1"))
     a1_now = next((p for p in st["paths"] if p["outbound"] == "a1"), {})
     checks.append(check("a1 at the end, active", f"{a1_now.get('state')}, {st['balancers'][0]['active']}",
                         a1_now.get("state") == "up" and st["balancers"][0]["active"] == "a1", "up, a1"))
@@ -720,7 +720,7 @@ def idle_no_probes(stand, xray, work, name):
 def flapping(stand, xray, work, name):
     mins = minutes("BENCH_FLAP_MIN", 10)
     cfg = bench.client_config([("a1", "reality", 0), ("b1", "tcp_tls", 0)], {"a": 1, "b": 3},
-                              strategy={"minHold": "30s", "upgrade": {"interval": "1m", "spacing": "10s"}})
+                              strategy={"minHoldTime": "30s", "returnToCheaper": {"interval": "1m", "probeInterval": "10s"}})
     actions = []
     t = 10
     while t < mins * 60:
@@ -871,8 +871,8 @@ def exhausted(stand, xray, work, name):
     probe_events = [e for e in c.events if until is None or e["type"] != "probe_start" or e["ts"] / 1000 <= until]
     return [check("exhausted after all paths died, s", t_ex and round(t_ex, 1), t_ex is not None and t_ex <= 20,
                   "<= 20"),
-            check("balancer while exhausted: exhausted, active", f"{balancer['exhausted']}, {balancer['active']!r}",
-                  balancer["exhausted"] is True and balancer["active"] == "", "True, ''"),
+            check("balancer while exhausted: exhausted, active", f"{balancer['is_exhausted']}, {balancer['active']!r}",
+                  balancer["is_exhausted"] is True and balancer["active"] == "", "True, ''"),
             check("requests that reached the target while exhausted", len(leaked) + served,
                   not leaked and not served, "== 0"),
             check("failed requests answered at once (block), median s", median and round(median, 2),
@@ -996,10 +996,10 @@ def wait_for(fn, timeout, step=0.5):
 
 
 @scenario()
-def upgrade_after_network_change(stand, xray, work, name):
+def return_after_network_change(stand, xray, work, name):
     spacing, successes = 20, 3
     limit = successes * spacing + 10
-    strategy = {"minHold": "30s", "upgrade": {"spacing": f"{spacing}s", "successes": successes}}
+    strategy = {"minHoldTime": "30s", "returnToCheaper": {"probeInterval": f"{spacing}s", "probesToReturn": successes}}
     cfg = bench.client_config(CHEAP_EXPENSIVE, CHEAP_EXPENSIVE_COSTS, strategy=strategy)
     m = Marks()
     with bench.Client(xray, cfg, work, name) as c:
@@ -1011,22 +1011,22 @@ def upgrade_after_network_change(stand, xray, work, name):
     first_to_b = switches_to(c.events, "b1", m["down"])
     took = back[0]["ts"] / 1000 - m["net"] if back else None
     held = (back[0]["ts"] - first_to_b[0]["ts"]) / 1000 if back and first_to_b else None
-    upgrades = [e for e in c.events if e["type"] == "probe_start" and e["fields"].get("reason") == "upgrade"
+    returns = [e for e in c.events if e["type"] == "probe_start" and e["fields"].get("reason") == "return"
                 and e["ts"] / 1000 >= m["net"]]
     return [check("return after network change, s", took and round(took, 1), took is not None and took <= limit,
                   f"<= {successes} x {spacing} + 10"),
             check("time on the expensive path before return, s", held and round(held, 1),
-                  held is not None and held >= 30, ">= minHold 30"),
-            check("probes before the return", len(upgrades), len(upgrades) == successes, f"== {successes}"),
+                  held is not None and held >= 30, ">= minHoldTime 30"),
+            check("probes before the return", len(returns), len(returns) == successes, f"== {successes}"),
             leak_check(c)]
 
 
 @scenario()
-def upgrade_inside_minhold(stand, xray, work, name):
+def return_inside_minhold(stand, xray, work, name):
     """The cheap path is fixed and the network changes while the expensive one is still
-    inside minHold: the return must wait for minHold to end."""
+    inside minHoldTime: the return must wait for minHoldTime to end."""
     hold, spacing, successes = 30, 5, 3
-    strategy = {"minHold": f"{hold}s", "upgrade": {"spacing": f"{spacing}s", "successes": successes}}
+    strategy = {"minHoldTime": f"{hold}s", "returnToCheaper": {"probeInterval": f"{spacing}s", "probesToReturn": successes}}
     cfg = bench.client_config(CHEAP_EXPENSIVE, CHEAP_EXPENSIVE_COSTS, strategy=strategy)
     m = Marks()
     t_b = None
@@ -1051,16 +1051,16 @@ def upgrade_inside_minhold(stand, xray, work, name):
         return [check("moved to the expensive path and came back", f"b1 {t_b is not None}, a1 {bool(back)}", False,
                       "both")]
     t_back = back[0]["ts"] / 1000
-    starts = [e["ts"] / 1000 for e in c.events if e["type"] == "probe_start" and e["fields"].get("reason") == "upgrade"
+    starts = [e["ts"] / 1000 for e in c.events if e["type"] == "probe_start" and e["fields"].get("reason") == "return"
               and e["ts"] / 1000 >= m["net"]]
     after_hold = t_back - (t_b + hold)
-    return [check("network change came inside minHold, s after the switch", round(m["net"] - t_b, 1),
+    return [check("network change came inside minHoldTime, s after the switch", round(m["net"] - t_b, 1),
                   m["net"] - t_b < hold, f"< {hold}"),
             check("first probe for the return, s after the switch", starts and round(starts[0] - t_b, 1),
-                  bool(starts) and starts[0] - t_b >= hold, f">= minHold {hold}"),
+                  bool(starts) and starts[0] - t_b >= hold, f">= minHoldTime {hold}"),
             check("held on the expensive path at the return, s", round(back[0]["fields"]["held_ms"] / 1000, 1),
-                  back[0]["fields"]["held_ms"] >= hold * 1000, f">= minHold {hold}"),
-            check("return after minHold ended, s", round(after_hold, 1),
+                  back[0]["fields"]["held_ms"] >= hold * 1000, f">= minHoldTime {hold}"),
+            check("return after minHoldTime ended, s", round(after_hold, 1),
                   0 <= after_hold <= successes * spacing + 10, f"0 .. {successes} x {spacing} + 10"),
             check("probes before the return", len(starts), len(starts) == successes, f"== {successes}"),
             leak_check(c)]
@@ -1069,7 +1069,7 @@ def upgrade_inside_minhold(stand, xray, work, name):
 @scenario()
 def home_lte_home(stand, xray, work, name):
     """At home the cheap path works; on LTE it is blocked; back home it works again."""
-    strategy = {"minHold": "30s"}
+    strategy = {"minHoldTime": "30s"}
     cfg = bench.client_config(CHEAP_EXPENSIVE, CHEAP_EXPENSIVE_COSTS, strategy=strategy)
     m = Marks()
 
@@ -1105,7 +1105,7 @@ def home_lte_home_expensive(stand, xray, work, name):
     open. Back home the first choice is the path that last worked there, found with one probe,
     not the cheapest one."""
     spacing = 5
-    strategy = {"minHold": "20s", "upgrade": {"spacing": f"{spacing}s"}}
+    strategy = {"minHoldTime": "20s", "returnToCheaper": {"probeInterval": f"{spacing}s"}}
     cfg = bench.client_config(CHEAP_EXPENSIVE, CHEAP_EXPENSIVE_COSTS, strategy=strategy)
     bench.chaos(A0, "blackhole")
     m = Marks()
@@ -1150,9 +1150,9 @@ def home_lte_home_expensive(stand, xray, work, name):
 def return_penalty(stand, xray, work, name):
     """A cheap path that fails right after the return waits twice as long next time."""
     interval = 40
-    strategy = {"minHold": "20s", "upgrade": {"interval": f"{interval}s", "randomPhase": False, "spacing": "5s",
-                                              "successes": 2, "penaltyWindow": "2m"}}
-    health = {"schedule": {"quarantine": {"initial": "10s", "jitter": 0.1}}}
+    strategy = {"minHoldTime": "20s", "returnToCheaper": {"interval": f"{interval}s", "hasRandomPhase": False, "probeInterval": "5s",
+                                              "probesToReturn": 2, "penaltyWindow": "2m"}}
+    health = {"schedule": {"quarantine": {"initialDelay": "10s", "jitterFraction": 0.1}}}
     cfg = bench.client_config(CHEAP_EXPENSIVE, CHEAP_EXPENSIVE_COSTS, strategy=strategy, health=health)
     with bench.Client(xray, cfg, work, name) as c:
         tr = bench.Traffic(rate=2, big=0.5)
@@ -1173,10 +1173,10 @@ def return_penalty(stand, xray, work, name):
         tr.stop()
     to_b = switches_to(c.events, "b1", t_fault)
     t_b = to_b[0]["ts"] / 1000 if to_b else None
-    penalties = [e for e in c.events if e["type"] == "upgrade_penalty" and first_return
+    penalties = [e for e in c.events if e["type"] == "return_penalty" and first_return
                  and e["ts"] >= first_return[0]["ts"]]
-    delayed = [e for e in c.events if e["type"] == "upgrade_delayed"]
-    starts = [e["ts"] / 1000 for e in c.events if e["type"] == "upgrade_start" and e["fields"]["to"] == "a1"]
+    delayed = [e for e in c.events if e["type"] == "return_delayed"]
+    starts = [e["ts"] / 1000 for e in c.events if e["type"] == "return_start" and e["fields"]["to"] == "a1"]
     # The usual wait runs from the switch to the expensive path; the doubled one from the failed return.
     t_failed = penalties[0]["ts"] / 1000 if penalties else None
     first_start = next((t for t in starts if t_b and t >= t_b), None)
@@ -1201,7 +1201,7 @@ def return_penalty(stand, xray, work, name):
 @scenario()
 def cold_start(stand, xray, work, name):
     """A restart starts on the outbound the host passes, without probing."""
-    cfg = bench.client_config(CHEAP_EXPENSIVE, CHEAP_EXPENSIVE_COSTS, strategy={"startWith": "b1"})
+    cfg = bench.client_config(CHEAP_EXPENSIVE, CHEAP_EXPENSIVE_COSTS, strategy={"startOutbound": "b1"})
     with bench.Client(xray, cfg, work, name) as c:
         tr = bench.Traffic(rate=2, big=0.5)
         start = run_timeline(tr, [], 15)
@@ -1244,12 +1244,12 @@ def expensive_budget(stand, xray, work, name, mode):
     sits on the expensive one: what checking for a return costs per hour. The cost is read
     from the events (bytes above TLS) and from the proxy (everything on the wire, handshakes
     included). BENCH_EXPENSIVE_MIN is the length, an hour by default; a shorter run judges
-    the cost of one probe instead. BENCH_EXPENSIVE_UPGRADE sets upgrade.interval so that a short
+    the cost of one probe instead. BENCH_EXPENSIVE_RETURN sets returnToCheaper.interval so that a short
     run sees probes at all; it takes the count of probes out of the judgement."""
     mins = minutes("BENCH_EXPENSIVE_MIN", 60)
-    knob = os.environ.get("BENCH_EXPENSIVE_UPGRADE")
+    knob = os.environ.get("BENCH_EXPENSIVE_RETURN")
     cfg = bench.client_config(CHEAP_EXPENSIVE, CHEAP_EXPENSIVE_COSTS,
-                              strategy={"upgrade": {"interval": knob}} if knob else None)
+                              strategy={"returnToCheaper": {"interval": knob}} if knob else None)
     m = Marks()
     with bench.Client(xray, cfg, work, name) as c, bench.ConnSampler() as cs:
         tr = bench.Traffic(rate=2, big=0.5)
@@ -1267,8 +1267,8 @@ def expensive_budget(stand, xray, work, name, mode):
     hours = mins / 60
     kb = 1024
     n = len(to_dead)
-    checks = [check("probe results of the dead path", f"{n}, all failed" if all(not e["fields"]["ok"] for e in to_dead)
-                    else f"{n}, some ok", all(not e["fields"]["ok"] for e in to_dead), "all failed")]
+    checks = [check("probe results of the dead path", f"{n}, all failed" if all(not e["fields"]["is_ok"] for e in to_dead)
+                    else f"{n}, some ok", all(not e["fields"]["is_ok"] for e in to_dead), "all failed")]
     if full:
         checks += [check("probe traffic per hour from events, KB", round(events_bytes / hours / kb, 1),
                          events_bytes / hours <= 200 * kb, "<= 200"),
@@ -1351,10 +1351,10 @@ def probe_spacing(stand, xray, work, name):
     distance between them is the pause itself: spacing with its jitter, one probe at a time.
     (A failed probe holds the slot for about two seconds while the dial is retried.)"""
     successes = 8
-    strategy = {"minHold": "10s", "upgrade": {"successes": successes, "spacing": "2s"}}
+    strategy = {"minHoldTime": "10s", "returnToCheaper": {"probesToReturn": successes, "probeInterval": "2s"}}
     # Eight probes of one server name would meet the budget of three a minute; that is not what
     # this scenario looks at.
-    health = {"schedule": {"perServerNamePerMinute": 30, "perMinute": 60}}
+    health = {"schedule": {"probesPerServerNamePerMinute": 30, "probesPerMinute": 60}}
     cfg = bench.client_config(CHEAP_EXPENSIVE, CHEAP_EXPENSIVE_COSTS, strategy=strategy, health=health)
     m = Marks()
     back = None
@@ -1374,10 +1374,10 @@ def probe_spacing(stand, xray, work, name):
         tr.stop()
     if not back:
         return [check("moved to the expensive path and came back", f"b1 {bool(to_b)}, a1 {bool(back)}", False, "both")]
-    upgrades = [e for e in c.events if e["type"] == "probe_start" and e["fields"].get("reason") == "upgrade"
+    returns = [e for e in c.events if e["type"] == "probe_start" and e["fields"].get("reason") == "return"
                 and e["ts"] / 1000 >= m["net"]]
     peak, gap, n = probe_checks(c.events, m["net"])
-    return [check("probes for the return", len(upgrades), len(upgrades) == successes, f"== {successes}"),
+    return [check("probes for the return", len(returns), len(returns) == successes, f"== {successes}"),
             at_once_check(peak),
             spacing_check(gap, need=True),
             jitter_check(c.events, m["net"]),
@@ -1392,7 +1392,7 @@ def pinned_start(stand, xray, work, name):
     failure is visible to the host; nothing switches. After the host releases the balancer it
     works by all the usual rules: it leaves for b1, and returns to a1 once that is fixed."""
     hold, spacing, successes = 20, 5, 3
-    strategy = {"startPinned": "a1", "minHold": f"{hold}s", "upgrade": {"spacing": f"{spacing}s", "successes": successes}}
+    strategy = {"startPinnedOutbound": "a1", "minHoldTime": f"{hold}s", "returnToCheaper": {"probeInterval": f"{spacing}s", "probesToReturn": successes}}
     # The paths have different server names, so the probe budget per name is no part of this: with
     # the same name for the path left and the path returned to, the failover probe and the check
     # after the network change use up the three probes a minute that the return needs.
@@ -1457,7 +1457,7 @@ def pinned_start(stand, xray, work, name):
         checks += [check("return to a1 after the fix and a network change, s", round(took, 1),
                          took <= successes * spacing + 10, f"<= {successes} x {spacing} + 10"),
                    check("held on b1 before the return, s", round(back[0]["fields"]["held_ms"] / 1000, 1),
-                         back[0]["fields"]["held_ms"] >= hold * 1000, f">= minHold {hold}")]
+                         back[0]["fields"]["held_ms"] >= hold * 1000, f">= minHoldTime {hold}")]
     else:
         checks.append(check("return to a1 after the fix and a network change", None, False, "yes"))
     checks.append(leak_check(c))
@@ -1473,7 +1473,7 @@ PROBE_TIMEOUT = 6
 
 def hybrid_config():
     return bench.client_config(THREE, THREE_COSTS,
-                               strategy={"startPinned": "a1", "startPinnedFor": f"{HYBRID_PIN_FOR}s"})
+                               strategy={"startPinnedOutbound": "a1", "startPinTimeout": f"{HYBRID_PIN_FOR}s"})
 
 
 def first_event(events, typ, since=0, **fields):
@@ -1572,7 +1572,7 @@ def hybrid_pin_release(stand, xray, work, name):
 @scenario()
 def hybrid_pin_timer(stand, xray, work, name):
     """Hybrid with Conquest, nobody releases the pin: a1 is dead and traffic stays on it until
-    startPinnedFor after the first connection; then the balancer moves to a2 after one probe."""
+    startPinTimeout after the first connection; then the balancer moves to a2 after one probe."""
     m = Marks()
     with bench.Client(xray, hybrid_config(), work, name) as c, bench.ConnSampler() as cs:
         tr = bench.Traffic(rate=2, big=0.5)
@@ -1622,7 +1622,7 @@ def hybrid_pin_stop(stand, xray, work, name):
     checks = [check("pin of the host", pinned, pinned == {"ok": True}, "ok")]
     for label, c in clients.items():
         downs = bench.events_of(c.events, "pinned_down")
-        marks = sorted({e["fields"].get("start_pinned") is True for e in downs})
+        marks = sorted({e["fields"].get("is_start_pinned") is True for e in downs})
         sw = [f"{e['fields']['to']} ({e['fields']['reason']})" for e in bench.switches(c.events)]
         released = bench.events_of(c.events, "release")
         final = c.final_report
@@ -1700,8 +1700,8 @@ def hybrid_pin_network(stand, xray, work, name):
               len(after) == 1 and first["fields"]["outbound"] == "a1"
               and first["fields"]["reason"] == "network_change" and took <= 3,
               "one: a1 network_change <= 3 (a spacing)"),
-        check("its result (timer)", result and result["fields"].get("ok"),
-              bool(result) and result["fields"].get("ok") is True, "ok"),
+        check("its result (timer)", result and result["fields"].get("is_ok"),
+              bool(result) and result["fields"].get("is_ok") is True, "ok"),
         check("a1 up by traffic under the pin of the host, s after the change", up_in,
               bool(seen_up) and seen_up["ts"] / 1000 < m["release"], "before the release"),
         check("probes after the release by host", after_host, not after_host, "none"),
@@ -1753,7 +1753,7 @@ def host_probe_failover(stand, xray, work, name):
                and e["fields"].get("state") == "down"]
     suspects = [e for e in after if e["type"] == "path_state" and e["fields"].get("state") == "suspect"]
     host_failed = [e for e in after if e["type"] == "probe_result" and e["fields"].get("reason") == "host"
-                   and e["fields"].get("outbound") == "a1" and e["fields"].get("ok") is False
+                   and e["fields"].get("outbound") == "a1" and e["fields"].get("is_ok") is False
                    and e["fields"].get("request") == resp.get("id")]
     ended = [e for e in after if e["type"] == "probe_request" and e["fields"].get("request") == resp.get("id")]
     kept = [r for r in status.get("probe_requests", []) if r["id"] == resp.get("id")]
@@ -1762,7 +1762,7 @@ def host_probe_failover(stand, xray, work, name):
         check("ticket of the run, as in status", f"id {resp.get('id')}, run {resp.get('run') == status.get('run')}",
               resp.get("id") == 1 and resp.get("run") == status.get("run") and bool(kept), "id 1, same run, kept"),
         check("request answered within the wait", f"{request.get('end')} after {round(m['answer'] - m['ask'], 1)} s",
-              request.get("done") is True and request.get("end") == "done", "done"),
+              request.get("is_done") is True and request.get("end") == "done", "done"),
         check("answers", got, got.get("a1") == "failed/probe" and got.get("a2", "").startswith("ok/")
               and got.get("b1", "").startswith("ok/"), "a1 failed/probe, a2 and b1 ok"),
         check("a1 ruled out by the host probe", [e["fields"].get("reason") for e in a1_down],
@@ -1836,7 +1836,7 @@ def soak(stand, xray, work, name):
     mins = minutes("BENCH_SOAK_MIN", 120)
     members = [("a1", "reality", 0), ("a2", "reality", 1), ("b1", "tcp_tls", 0), ("c1", "xhttp", 0)]
     cfg = bench.client_config(members, {"a": 1, "b": 3, "c": 10},
-                              strategy={"minHold": "1m", "upgrade": {"interval": "3m", "spacing": "10s"}})
+                              strategy={"minHoldTime": "1m", "returnToCheaper": {"interval": "3m", "probeInterval": "10s"}})
     if os.environ.get("BENCH_SOAK_PLAIN"):
         # The same faults without the observatory, to tell growth of the
         # mechanism from growth of Xray itself.
@@ -1926,7 +1926,7 @@ def answer_body(stand, body):
 def provider_subnet_ban(stand, xray, work, name):
     """Every address of the set is blocked; the provider brings new ones."""
     stand.answer(FRESH)
-    prov = bench.provider_config(["auto", "direct"], triggers={"whenExhausted": True})
+    prov = bench.provider_config(["auto", "direct"], triggers={"shouldRefreshWhenExhausted": True})
     cfg = bench.client_config(BANNED, {"a": 1, "p-": 1}, providers=[prov])
     banned = ",".join(str(address_port(k, i)) for _, k, i in BANNED)
     m = Marks()
@@ -1937,11 +1937,11 @@ def provider_subnet_ban(stand, xray, work, name):
     t_ex = ex[0]["ts"] / 1000 if ex else None
     rec = bench.recovery(tr.records, t_ex)[0] if t_ex else None
     fetches = bench.events_of(c.events, "provider_fetch", m["ban"])
-    applied = [e for e in bench.events_of(c.events, "provider_apply", m["ban"]) if e["fields"].get("changed")]
+    applied = [e for e in bench.events_of(c.events, "provider_apply", m["ban"]) if e["fields"].get("is_changed")]
     fresh = [e for e in bench.switches(c.events, m["ban"]) if e["fields"]["to"].startswith("p-")]
     reqs = stand.provider_requests(m["ban"])
     first = fetches[0]["fields"] if fetches else {}
-    ok_via = next((e["fields"]["via"] for e in fetches if e["fields"].get("ok")), None)
+    ok_via = next((e["fields"]["via"] for e in fetches if e["fields"].get("is_ok")), None)
     return [
         check("exhausted after the ban, s", t_ex and round(t_ex - m["ban"], 1),
               t_ex is not None and t_ex - m["ban"] <= 20, "<= 20"),
@@ -1966,8 +1966,8 @@ def provider_post_state(stand, xray, work, name):
     the same body. No destination of the user and no address goes out."""
     stand.answer(FRESH)
     banned = [("p-a1", "reality", 0), ("p-a2", "reality", 1)]
-    prov = bench.provider_config(["net", "direct"], triggers={"whenExhausted": True},
-                                 limits={"exhaustedMinInterval": "5s", "backoff": {"initial": "5s"}})
+    prov = bench.provider_config(["net", "direct"], triggers={"shouldRefreshWhenExhausted": True},
+                                 limits={"exhaustedMinInterval": "5s", "backoff": {"initialDelay": "5s"}})
     cfg = bench.client_config(banned, {"p-": 1}, providers=[prov])
     ports = ",".join(str(address_port(k, i)) for _, k, i in banned)
     m = Marks()
@@ -1992,15 +1992,15 @@ def provider_post_state(stand, xray, work, name):
     bal = body.get("balancer", {})
     raw = json.dumps([b.get("body") for b in bodies])
     leaks = [s for s in bench.TARGETS + ["probe.test", bench.HOST, "dead.test"] if s in raw]
-    pair = [(b["body"].get("run"), b["body"].get("refresh")) for b in bodies[:2] if isinstance(b.get("body"), dict)]
-    applied = [e for e in bench.events_of(c.events, "provider_apply", m["ban"]) if e["fields"].get("changed")]
+    pair = [(b["body"].get("run"), b["body"].get("refreshNumber")) for b in bodies[:2] if isinstance(b.get("body"), dict)]
+    applied = [e for e in bench.events_of(c.events, "provider_apply", m["ban"]) if e["fields"].get("is_changed")]
     fresh = [e for e in bench.switches(c.events, m["ban"]) if e["fields"]["to"] in ("p-x1", "p-x2")]
     # The chosen one fails on traffic; the other is found down by its failover
     # probe, which the body tells by class.
     down = {t: (o.get("state"), sorted(o.get("failures", {})) or (o.get("probe") or {}).get("error"))
             for t, o in outs.items()}
     why = [o for o in outs.values() if o.get("state") == "down"
-           and ("dial_timeout" in o.get("failures", {}) or (o.get("probe") or {}).get("ok") is False)]
+           and ("dial_timeout" in o.get("failures", {}) or (o.get("probe") or {}).get("isPassed") is False)]
     return [
         check("posted as JSON", first.get("type"), first.get("type") == "application/json" and bool(body),
               "application/json"),
@@ -2010,8 +2010,8 @@ def provider_post_state(stand, xray, work, name):
               sorted(outs) == ["a1", "a2"] and len(why) == 2
               and any("dial_timeout" in o.get("failures", {}) for o in outs.values()),
               "a1, a2 down: dial_timeout or a failed probe"),
-        check("balancer exhausted, not own", (bal.get("exhausted"), bal.get("own")),
-              bal.get("exhausted") is True and bal.get("own") is False, "(True, False)"),
+        check("balancer exhausted, not own", (bal.get("isExhausted"), bal.get("isOwn")),
+              bal.get("isExhausted") is True and bal.get("isOwn") is False, "(True, False)"),
         check("no destination or address in the body", leaks, not leaks, "none"),
         check("body size, bytes", first.get("bytes"), 0 < (first.get("bytes") or 0) < 4096, "< 4096"),
         check("same run and refresh through both via", pair,
@@ -2037,7 +2037,7 @@ def provider_first_via_dead(stand, xray, work, name):
     applied = [e["fields"] for e in bench.events_of(c.events, "provider_apply", m["refresh"])]
     reqs = stand.provider_requests(m["refresh"])
     took = reqs[0][0] - m["refresh"] if reqs else None
-    order = [(f.get("via"), f.get("ok")) for f in fetches]
+    order = [(f.get("via"), f.get("is_ok")) for f in fetches]
     return [
         check("attempts (via, ok)", order, order == [("spare", False), ("direct", True)],
               "[spare failed, direct ok]"),
@@ -2045,7 +2045,7 @@ def provider_first_via_dead(stand, xray, work, name):
               "timeout"),
         check("trigger in every attempt", sorted({f.get("trigger") for f in fetches}),
               {f.get("trigger") for f in fetches} == {"host"}, "host"),
-        check("set applied", applied and applied[-1].get("ok"), bool(applied) and applied[-1].get("ok") is True, "ok"),
+        check("set applied", applied and applied[-1].get("is_ok"), bool(applied) and applied[-1].get("is_ok") is True, "ok"),
         check("provider requests", len(reqs), len(reqs) == 1, "== 1"),
         check("answer after the first via timed out, s", took and round(took, 1),
               took is not None and 3 <= took <= 5, "timeout 3 .. 5"),
@@ -2056,8 +2056,8 @@ def provider_first_via_dead(stand, xray, work, name):
 def provider_invalid_answer(stand, xray, work, name):
     """A broken answer and a set that does not build change nothing; failures back off."""
     stand.answer(FRESH)
-    limits = {"exhaustedMinInterval": "1s", "maxPerHour": 0,
-              "backoff": {"initial": "2s", "multiplier": 2, "max": "8s", "jitter": 0.3}}
+    limits = {"exhaustedMinInterval": "1s", "maxRefreshesPerHour": 0,
+              "backoff": {"initialDelay": "2s", "multiplier": 2, "maxDelay": "8s", "jitterFraction": 0.3}}
     prov = bench.provider_config(["direct"], limits=limits)
     cfg = bench.client_config(BANNED[:1], {"a": 1, "p-": 1}, providers=[prov])
     m = Marks()
@@ -2079,9 +2079,9 @@ def provider_invalid_answer(stand, xray, work, name):
     applies = bench.events_of(c.events, "provider_apply", m["garbage"])
     fetches = bench.events_of(c.events, "provider_fetch", m["garbage"])
     broken = [e for e in fetches if "invalid answer" in (e["fields"].get("error") or "")]
-    not_built = [e for e in applies if e["ts"] / 1000 >= m["unbuildable"] and e["fields"].get("ok") is False
+    not_built = [e for e in applies if e["ts"] / 1000 >= m["unbuildable"] and e["fields"].get("is_ok") is False
                  and "build" in (e["fields"].get("error") or "")]
-    changed = [e for e in applies if e["fields"].get("changed")]
+    changed = [e for e in applies if e["fields"].get("is_changed")]
     tries = [t for t, _, _ in stand.provider_requests(m["garbage"]) if t < m["unbuildable"]]
     g = gaps(tries)[:3]
     base = [2, 4, 8]
@@ -2124,10 +2124,10 @@ def provider_strict_answer(stand, xray, work, name):
     failed = sum(1 for r in tr.records if not r[1])
     return [
         check("answer with dns refused", refused.get("error"),
-              refused.get("ok") is False and 'unknown key "dns"' in (refused.get("error") or ""), 'unknown key "dns"'),
+              refused.get("is_ok") is False and 'unknown key "dns"' in (refused.get("error") or ""), 'unknown key "dns"'),
         check("provider requests for it", len(reqs), len(reqs) == 1, "== 1"),
-        check("attempts (via, ok)", [(f.get("via"), f.get("ok")) for f in fetches],
-              [(f.get("via"), f.get("ok")) for f in fetches] == [("direct", True)], "[direct ok]"),
+        check("attempts (via, ok)", [(f.get("via"), f.get("is_ok")) for f in fetches],
+              [(f.get("via"), f.get("is_ok")) for f in fetches] == [("direct", True)], "[direct ok]"),
         check("set kept (version, members)", (st.get("version"), st.get("members")),
               st.get("version") == "v1" and st.get("members") == len(FRESH), f"(v1, {len(FRESH)})"),
         check("user requests failed", failed, failed == 0, "== 0"),
@@ -2165,7 +2165,7 @@ def provider_retry_after(stand, xray, work, name):
     fetches = [e["fields"] for e in bench.events_of(c.events, "provider_fetch", m["busy"])]
     busy_fetches = [f for f in fetches if f.get("status") == 429]
     skips = [e for e in bench.events_of(c.events, "provider_skip", m["busy"]) if e["fields"]["reason"] == "retry_after"]
-    applied = [e["fields"] for e in bench.events_of(c.events, "provider_apply", m["ok"]) if e["fields"].get("changed")]
+    applied = [e["fields"] for e in bench.events_of(c.events, "provider_apply", m["ok"]) if e["fields"].get("is_changed")]
     failed = [f for f in fetches if f.get("code")]
     counted = sum(r.get("provider_retry_after", 0) for r in c.reports)
     return [
@@ -2194,7 +2194,7 @@ def provider_refresh_keeps_download(stand, xray, work, name):
     also after the outbound leaves the set, until its drain ends."""
     size, seconds, drain = 16 << 20, 24, 30
     prov = bench.provider_config(["auto", "direct"], limits={"exhaustedMinInterval": "1s"},
-                                 apply={"drain": f"{drain}s"})
+                                 apply={"drainTimeout": f"{drain}s"})
     cfg = bench.client_config([("p-x1", "reality", 1)], {"p-": 1}, providers=[prov])
     m = Marks()
     got = {}
@@ -2220,7 +2220,7 @@ def provider_refresh_keeps_download(stand, xray, work, name):
         dl = threading.Thread(target=long_download, daemon=True)
         run_timeline(tr, [(2, dl.start), (6, m.at("first", first)), (12, m.at("second", second))], 50)
         dl.join(timeout=30)
-    applies = [e["fields"] for e in bench.events_of(c.events, "provider_apply", m["first"]) if e["fields"].get("ok")]
+    applies = [e["fields"] for e in bench.events_of(c.events, "provider_apply", m["first"]) if e["fields"].get("is_ok")]
     one = applies[0] if applies else {}
     two = applies[1] if len(applies) > 1 else {}
     left = [e for e in bench.switches(c.events, m["second"]) if e["fields"]["from"] == "p-x1"]
@@ -2250,9 +2250,9 @@ def provider_limits(stand, xray, work, name):
     """A trigger that wants a refresh every second gets one per minInterval;
     a failing provider is asked again after growing, spread pauses."""
     stand.answer(FRESH, version="v1")
-    prov = bench.provider_config(["direct"], triggers={"interval": "1s", "jitter": 0},
-                                 limits={"minInterval": "4s", "maxPerHour": 0,
-                                         "backoff": {"initial": "5s", "multiplier": 2, "max": "1m", "jitter": 0.3}})
+    prov = bench.provider_config(["direct"], triggers={"interval": "1s", "jitterFraction": 0},
+                                 limits={"minInterval": "4s", "maxRefreshesPerHour": 0,
+                                         "backoff": {"initialDelay": "5s", "multiplier": 2, "maxDelay": "1m", "jitterFraction": 0.3}})
     cfg = bench.client_config(BANNED[:1], {"a": 1, "p-": 1}, providers=[prov])
     m = Marks()
     with bench.Client(xray, cfg, work, name) as c:
@@ -2288,7 +2288,7 @@ def provider_lease_expiry(stand, xray, work, name):
     stand.answer([("x1", "reality", 1), ("x2", "reality", 2)], costs={"x1": 1, "x2": 2},
                  expires={"x1": "@+30s", "x2": "@+300s"}, server_time="@+0s")
     prov = bench.provider_config(["direct"], limits={"exhaustedMinInterval": "1s",
-                                                     "backoff": {"initial": "5s", "max": "5s"}})
+                                                     "backoff": {"initialDelay": "5s", "maxDelay": "5s"}})
     cfg = bench.client_config([("p-x1", "reality", 1)], {"p-": 1}, providers=[prov])
     m = Marks()
     got = {}
@@ -2306,7 +2306,7 @@ def provider_lease_expiry(stand, xray, work, name):
         run_timeline(tr, [(2, m.at("answer", lambda: refresh(c))), (4, dl.start),
                           (10, m.at("down", lambda: bench.provider_mode("status:500")))], 50)
         dl.join(timeout=30)
-    applied = [e for e in bench.events_of(c.events, "provider_apply", m["answer"]) if e["fields"].get("ok")]
+    applied = [e for e in bench.events_of(c.events, "provider_apply", m["answer"]) if e["fields"].get("is_ok")]
     t_apply = applied[0]["ts"] / 1000 if applied else None
     ended = lease_ends(c.events, "p-x1", m["answer"])
     t_end = ended[0]["ts"] / 1000 if ended else None
@@ -2320,8 +2320,8 @@ def provider_lease_expiry(stand, xray, work, name):
     return [
         check("lease of p-x1 ended after the answer, s", t_end and t_apply and round(t_end - t_apply, 1),
               t_end is not None and t_apply is not None and 29 <= t_end - t_apply <= 33, "29 .. 33"),
-        check("expired event (active, renewal)", ended and (ended[0]["fields"]["active"], ended[0]["fields"]["renewal"]),
-              bool(ended) and ended[0]["fields"]["active"] is True and ended[0]["fields"]["renewal"] == "failed",
+        check("expired event (was_active, renewal)", ended and (ended[0]["fields"]["was_active"], ended[0]["fields"]["renewal"]),
+              bool(ended) and ended[0]["fields"]["was_active"] is True and ended[0]["fields"]["renewal"] == "failed",
               "(True, failed)"),
         check("balancer left the expired outbound", left and f"{left[0]['fields']['to']} {left[0]['fields']['reason']}",
               bool(left) and left[0]["fields"]["to"] == "p-x2" and left[0]["fields"]["reason"] == "expired"
@@ -2344,8 +2344,8 @@ def provider_all_expired(stand, xray, work, name):
     asked again with a growing backoff."""
     stand.answer([("x1", "reality", 1)], expires={"x1": "@+10s"}, server_time="@+0s")
     prov = bench.provider_config(["direct"], limits={
-        "exhaustedMinInterval": "1s", "maxPerHour": 0,
-        "backoff": {"initial": "2s", "multiplier": 2, "max": "16s", "jitter": 0.3}})
+        "exhaustedMinInterval": "1s", "maxRefreshesPerHour": 0,
+        "backoff": {"initialDelay": "2s", "multiplier": 2, "maxDelay": "16s", "jitterFraction": 0.3}})
     cfg = bench.client_config([("p-x1", "reality", 1)], {"p-": 1}, providers=[prov])
     m = Marks()
     with bench.Client(xray, cfg, work, name) as c:
@@ -2386,7 +2386,7 @@ def provider_clock_skew(stand, xray, work, name):
         tr = bench.Traffic(rate=1, big=0)
         run_timeline(tr, [(2, m.at("answer", lambda: refresh(c))),
                           (4, lambda: bench.provider_mode("status:500"))], 50)
-    applied = [e for e in bench.events_of(c.events, "provider_apply", m["answer"]) if e["fields"].get("ok")]
+    applied = [e for e in bench.events_of(c.events, "provider_apply", m["answer"]) if e["fields"].get("is_ok")]
     first = applied[0] if applied else {"fields": {}, "ts": 0}
     skew = first["fields"].get("skew_ms")
     ended = lease_ends(c.events, "p-x1", m["answer"])
@@ -2407,13 +2407,13 @@ def provider_lease_renewal(stand, xray, work, name):
     stand.answer(FRESH, version="v1", expires={"x1": "@+40s", "x2": "@+40s"}, server_time="@+0s")
     # The leases come with a host request; the default minInterval of five
     # minutes after it would hold the planned renewal until the urgent point.
-    prov = bench.provider_config(["direct"], triggers={"expiry": {"renewAt": 0.5}}, limits={"minInterval": "1s"})
+    prov = bench.provider_config(["direct"], triggers={"expiry": {"renewAtFraction": 0.5}}, limits={"minInterval": "1s"})
     cfg = bench.client_config(BANNED[:1], {"a": 1, "p-": 1}, providers=[prov])
     m = Marks()
     with bench.Client(xray, cfg, work, name) as c:
         run_timeline(None, [(2, m.at("answer", lambda: refresh(c)))], 50)
         st = c.status()
-    applies = [e for e in bench.events_of(c.events, "provider_apply", m["answer"]) if e["fields"].get("ok")]
+    applies = [e for e in bench.events_of(c.events, "provider_apply", m["answer"]) if e["fields"].get("is_ok")]
     t_apply = applies[0]["ts"] / 1000 if applies else None
     renewals = [e for e in bench.events_of(c.events, "provider_fetch", m["answer"]) if e["fields"].get("trigger") == "expiry"]
     took = renewals[0]["ts"] / 1000 - t_apply if renewals and t_apply else None
@@ -2422,11 +2422,11 @@ def provider_lease_renewal(stand, xray, work, name):
     reqs = stand.provider_requests(m["answer"])
     counted = sum(r.get("provider_renewals", 0) for r in c.reports)
     return [
-        check("core idle throughout", st.get("idle"), st.get("idle") is True, "True"),
+        check("core idle throughout", st.get("is_idle"), st.get("is_idle") is True, "True"),
         check("renewal after the answer, s", took and round(took, 1), took is not None and 17.5 <= took <= 22.5,
               "20 +- 2"),
-        check("renewal applied (changed, renewed)", (second.get("changed"), second.get("renewed")),
-              second.get("changed") is False and second.get("renewed") == 2, "(False, 2)"),
+        check("renewal applied (changed, renewed)", (second.get("is_changed"), second.get("renewed")),
+              second.get("is_changed") is False and second.get("renewed") == 2, "(False, 2)"),
         check("leases ended", len(ended), not ended, "== 0"),
         check("provider requests", len(reqs), len(reqs) == 1 + len(renewals) and len(renewals) <= 3,
               "the answer and the renewals"),
@@ -2441,8 +2441,8 @@ def provider_token_rotation(stand, xray, work, name):
     the token the host hands over on stdin goes with the next request. No
     token shows in events, Status or reports."""
     stand.answer(FRESH, version="v1")
-    prov = bench.provider_config(["direct"], triggers={"interval": "1s", "jitter": 0},
-                                 limits={"minInterval": "1s", "exhaustedMinInterval": "1s", "maxPerHour": 0})
+    prov = bench.provider_config(["direct"], triggers={"interval": "1s", "jitterFraction": 0},
+                                 limits={"minInterval": "1s", "exhaustedMinInterval": "1s", "maxRefreshesPerHour": 0})
     cfg = bench.client_config(BANNED[:1], {"a": 1, "p-": 1}, providers=[prov])
     m = Marks()
     tokens = ["bench-token", "answer-t2", "host-t3"]
@@ -2496,8 +2496,8 @@ def provider_initial(stand, xray, work, name):
     now = time.time()
     initial = {"protocol": 1, "version": "v1", "outbounds": [bench.member(t, k, i, bench.PIN) for t, k, i in FRESH],
                "expiresAt": {"x1": rfc3339(now + 600), "x2": rfc3339(now + 600)}, "serverTime": rfc3339(now)}
-    prov = bench.provider_config(["direct"], triggers={"interval": "10s", "jitter": 0}, limits={"minInterval": "1s"})
-    prov["initial"] = initial
+    prov = bench.provider_config(["direct"], triggers={"interval": "10s", "jitterFraction": 0}, limits={"minInterval": "1s"})
+    prov["initialAnswer"] = initial
     # The outbound of the config is dearer, so the start takes one of the set.
     cfg = bench.client_config(BANNED[:1], {"a": 5, "p-": 1}, providers=[prov])
     with bench.Client(xray, cfg, work, name) as c:
@@ -2547,7 +2547,7 @@ def provider_saved_set(stand, xray, work, name):
     saved = kept.get("set") or {}
     # The backend accepts only the rotated token from now on.
     bench.provider_mode("require:answer-t2")
-    prov2 = bench.provider_config(["direct"], triggers={"interval": "5s", "jitter": 0}) | {"initial": saved}
+    prov2 = bench.provider_config(["direct"], triggers={"interval": "5s", "jitterFraction": 0}) | {"initialAnswer": saved}
     cfg2 = bench.client_config(BANNED[:1], {"a": 5, "p-": 1}, providers=[prov2])
     launched = time.time()
     with bench.Client(xray, cfg2, work, name + "-second") as c2:
@@ -2608,14 +2608,14 @@ def provider_base_changed(stand, xray, work, name):
     failed = sum(1 for r in tr.records if not r[1])
     return [
         check("base changes told (from, to)", told, told == [("b1", "b2"), ("b1", "b2")], "[(b1, b2)] twice"),
-        check("answers applied (ok, base_version)", [(f.get("ok"), f.get("base_version")) for f in applies],
-              [(f.get("ok"), f.get("base_version")) for f in applies] == [(True, b) for b in served],
+        check("answers applied (ok, base_version)", [(f.get("is_ok"), f.get("base_version")) for f in applies],
+              [(f.get("is_ok"), f.get("base_version")) for f in applies] == [(True, b) for b in served],
               "every one, " + ", ".join(served)),
         check("base in the requests", [b.get("baseVersion") for b in bodies],
               len(bodies) == len(served) and all(b.get("baseVersion") == "b1" for b in bodies), "b1 each"),
         check("status (base, answer base, changed)",
-              (st.get("base_version"), st.get("answer_base_version"), st.get("base_changed")),
-              (st.get("base_version"), st.get("answer_base_version"), st.get("base_changed")) == ("b1", "b2", True),
+              (st.get("base_version"), st.get("answer_base_version"), st.get("is_base_changed")),
+              (st.get("base_version"), st.get("answer_base_version"), st.get("is_base_changed")) == ("b1", "b2", True),
               "(b1, b2, True)"),
         check("report provider_base_changed", counted, counted == 2, "== 2"),
         check("user requests failed", failed, failed == 0, "== 0"),
@@ -2641,10 +2641,10 @@ def provider_slots_flow(stand, xray, work, name):
     replaces the dead slot, renews the others and rotates the token. The next
     core starts on the set the host kept: no early request, no refused token."""
     initial = slot_set(SLOTS, {"s1": 1, "s2": 2, "s3": 3}, 300, "v1")
-    # minHealthy 4: a1 of the config and the three slots; the ban leaves three.
-    prov = bench.provider_config(["direct", "net"], triggers={"minHealthy": 4},
-                                 limits={"minInterval": "1s", "exhaustedMinInterval": "1s", "maxPerHour": 0}) | {
-        "initial": initial}
+    # minHealthyOutbounds 4: a1 of the config and the three slots; the ban leaves three.
+    prov = bench.provider_config(["direct", "net"], triggers={"minHealthyOutbounds": 4},
+                                 limits={"minInterval": "1s", "exhaustedMinInterval": "1s", "maxRefreshesPerHour": 0}) | {
+        "initialAnswer": initial}
     cfg = bench.client_config(BANNED[:1], {"a": 5, "p-": 1}, providers=[prov])
     fresh = [("s4", "reality", 0), ("s2", "reality", 2), ("s3", "reality", 3)]
     m = Marks()
@@ -2676,7 +2676,7 @@ def provider_slots_flow(stand, xray, work, name):
     rec = bench.recovery(tr.records, m["ban"])[0]
     left = [e for e in bench.switches(c.events, m["ban"]) if e["fields"]["from"] == "p-s1"]
     t_left = left[0]["ts"] / 1000 if left else None
-    applied = [e for e in bench.events_of(c.events, "provider_apply", m["ban"]) if e["fields"].get("ok")]
+    applied = [e for e in bench.events_of(c.events, "provider_apply", m["ban"]) if e["fields"].get("is_ok")]
     t_applied = applied[0]["ts"] / 1000 if applied else None
     one = applied[0]["fields"] if applied else {}
     bodies = [b for b in stand.provider_bodies(m["ban"]) if isinstance(b.get("body"), dict)]
@@ -2691,7 +2691,7 @@ def provider_slots_flow(stand, xray, work, name):
 
     saved = kept.get("set") or {}
     bench.provider_mode("require:slot-t2")
-    prov2 = bench.provider_config(["direct"], triggers={"interval": "5s", "jitter": 0}) | {"initial": saved}
+    prov2 = bench.provider_config(["direct"], triggers={"interval": "5s", "jitterFraction": 0}) | {"initialAnswer": saved}
     cfg2 = bench.client_config(BANNED[:1], {"a": 5, "p-": 1}, providers=[prov2])
     launched = time.time()
     with bench.Client(xray, cfg2, work, name + "-second") as c2:
@@ -2713,7 +2713,7 @@ def provider_slots_flow(stand, xray, work, name):
         check("first request (trigger, s1 state, failures)",
               (first.get("trigger"), s1.get("state"), sorted(s1.get("failures", {})) or (s1.get("probe") or {})),
               first.get("trigger") == "min_healthy" and s1.get("state") in ("suspect", "down")
-              and ("dial_timeout" in s1.get("failures", {}) or (s1.get("probe") or {}).get("ok") is False),
+              and ("dial_timeout" in s1.get("failures", {}) or (s1.get("probe") or {}).get("isPassed") is False),
               "min_healthy, s1 failed"),
         check("leases in the request", sorted(t for t, o in outs.items() if (o.get("expiresInMs") or 0) > 0),
               sorted(t for t, o in outs.items() if (o.get("expiresInMs") or 0) > 0) == ["s1", "s2", "s3"],
@@ -2757,8 +2757,8 @@ def provider_slots_last_resort(stand, xray, work, name):
     initial = slot_set(slots, {"s1": 1, "s2": 2}, 300, "v1")
     initial["expiresAt"]["s2"] = rfc3339(time.time() + 12)
     prov = bench.provider_config(["direct"], limits={"minInterval": "1s", "exhaustedMinInterval": "1s",
-                                                     "maxPerHour": 0, "backoff": {"initial": "2s", "max": "4s"}})
-    prov["initial"] = initial
+                                                     "maxRefreshesPerHour": 0, "backoff": {"initialDelay": "2s", "maxDelay": "4s"}})
+    prov["initialAnswer"] = initial
     cfg = bench.client_config(BANNED[:1], {"a": 5, "p-": 1}, providers=[prov])
     banned = ",".join(str(address_port(k, i)) for k, i in [("reality", 0), ("reality", 1)])
     m = Marks()
@@ -2781,7 +2781,7 @@ def provider_slots_last_resort(stand, xray, work, name):
     path = next((p for p in st.get("paths", []) if p.get("outbound") == "p-s2"), {})
     return [
         check("lease of the reserve ended, s", t_end and round(t_end - start, 1),
-              t_end is not None and t_end < m["ban"] and ended[0]["fields"]["active"] is False
+              t_end is not None and t_end < m["ban"] and ended[0]["fields"]["was_active"] is False
               and ended[0]["fields"]["renewal"] in ("failed", "pending"), "before the ban, not active"),
         check("probes of the expired reserve before the ban", len(early), not early, "== 0"),
         check("failover to the expired reserve (to, reason)", moved and (moved[0]["fields"]["to"], moved[0]["fields"]["reason"]),
@@ -2791,8 +2791,8 @@ def provider_slots_last_resort(stand, xray, work, name):
         check("exhausted", len(exhausted), not exhausted, "== 0"),
         check("user requests on it", len(after), len(after) >= 20, ">= 20"),
         check("of them failed", failed, failed == 0, "== 0"),
-        check("still on it, expired (active, expired)", (active, path.get("expired")),
-              active == "p-s2" and path.get("expired") is True, "(p-s2, True)"),
+        check("still on it, expired (active, expired)", (active, path.get("is_expired")),
+              active == "p-s2" and path.get("is_expired") is True, "(p-s2, True)"),
     ]
 
 
@@ -2801,7 +2801,7 @@ def provider_slots_last_resort(stand, xray, work, name):
 # No scenario for low memory: SetMemoryLow has no API call or command, only the
 # Go call a host makes.
 
-AWG_SLEEP = 10  # sleep.after: its minimum
+AWG_SLEEP = 10  # sleep.afterLastUse: its minimum
 AWG_MEMBERS = [("v1", "reality", 0), ("w1", "awg", 0)]
 # Wakes of awg_wake_by_probe, and the delay of the datagrams of w1 in ms on those that lose nothing.
 AWG_WAKES = int(os.environ.get("BENCH_AWG_WAKES", "6"))
@@ -2814,11 +2814,11 @@ def awg_config():
     returns to v1 after one probe a few seconds later."""
     return bench.client_config(
         AWG_MEMBERS, {"v": 1, "w": 3},
-        health={"sleep": {"after": f"{AWG_SLEEP}s"},
+        health={"sleep": {"afterLastUse": f"{AWG_SLEEP}s"},
                 # A probe the host asks for must reach w1, not be answered by its last success.
-                "schedule": {"hostProbes": {"reuse": "1s"}}},
-        strategy={"startPinned": "w1", "minHold": "1s",
-                  "upgrade": {"interval": "3s", "randomPhase": False, "successes": 1, "spacing": "1s"}})
+                "schedule": {"hostProbes": {"reuseWindow": "1s"}}},
+        strategy={"startPinnedOutbound": "w1", "minHoldTime": "1s",
+                  "returnToCheaper": {"interval": "3s", "hasRandomPhase": False, "probesToReturn": 1, "probeInterval": "1s"}})
 
 
 def path_status(c, tag):
@@ -2863,15 +2863,15 @@ def awg_away_checks(c, tr, m, away):
     took = away and round(away["ts"] / 1000 - m["release"], 1)
     checks.append(check("switch off w1 after the release, s",
                         away and f"{away['fields']['to']} ({away['fields']['reason']}) {took}",
-                        bool(away) and away["fields"]["to"] == "v1" and away["fields"]["reason"] == "upgrade"
-                        and took <= 10, "v1 (upgrade) <= 10"))
+                        bool(away) and away["fields"]["to"] == "v1" and away["fields"]["reason"] == "return"
+                        and took <= 10, "v1 (return) <= 10"))
     return checks
 
 
 @scenario()
 def awg_sleep(stand, xray, work, name):
     """Traffic goes through the AmneziaWG outbound w1 under a start pin; the host releases it
-    and the balancer returns to the cheaper v1. Unchosen and idle, w1 sleeps sleep.after
+    and the balancer returns to the cheaper v1. Unchosen and idle, w1 sleeps sleep.afterLastUse
     later: outbound_sleep, asleep in Status, and its keepalives stop at the UDP proxy."""
     m = Marks()
     with bench.Client(xray, awg_config(), work, name) as c, bench.ConnSampler() as cs:
@@ -2905,8 +2905,8 @@ def awg_sleep(stand, xray, work, name):
         if routed is not None:
             checks.append(check("user connections to w1 after the switch off it", routed.get("w1", 0),
                                 routed.get("w1", 0) == 0, "== 0"))
-    checks.append(check("Status of w1 after the sleep", f"asleep={status.get('asleep')}",
-                        status.get("asleep") is True, "asleep=True"))
+    checks.append(check("Status of w1 after the sleep", f"asleep={status.get('is_asleep')}",
+                        status.get("is_asleep") is True, "asleep=True"))
     ok, n = requests_ok(tr, m["start"], m["end"])
     checks.append(check("requests answered", f"{ok}/{n}", ok == n, "all"))
     checks.append(leak_check(c))
@@ -2916,7 +2916,7 @@ def awg_sleep(stand, xray, work, name):
 @scenario()
 def awg_wake(stand, xray, work, name):
     """w1 sleeps as in awg_sleep. A probe the host asks for wakes it: the probe passes through
-    a new tunnel, and w1 sleeps again sleep.after later. Then the host pins the balancer to the
+    a new tunnel, and w1 sleeps again sleep.afterLastUse later. Then the host pins the balancer to the
     sleeping w1. The first thing through the new tunnel is one UDP datagram, which nothing
     retries: it must come back. User traffic then flows through w1."""
     m = Marks()
@@ -2956,13 +2956,13 @@ def awg_wake(stand, xray, work, name):
     request = seen["probe"].get("request") or {}
     got = {o["outbound"]: f"{o['result']}/{o.get('source', '')}" for o in request.get("outbounds", [])}
     checks.append(check("probe of the host for w1", f"{got.get('w1')} after {round(m['probed'] - m['probe'], 1)} s",
-                        request.get("done") is True and got.get("w1") == "ok/probe", "ok/probe"))
+                        request.get("is_done") is True and got.get("w1") == "ok/probe", "ok/probe"))
     sockets = cs.between(bench.AWG_ADDRESS, m["probe"] - 0.5, m["probed"] + 0.5)
     up, down = cs.packets(bench.AWG_ADDRESS, m["probe"] - 0.5, m["probed"] + 0.5)
     checks.append(check("the probe at the proxy: new sockets, datagrams up/down", (sockets, up, down),
                         sockets == 1 and up > 0 and down > 0, "1 new, both ways"))
-    checks.append(check("Status of w1 after the probe", f"asleep={seen['after_probe'].get('asleep')}",
-                        not seen["after_probe"].get("asleep"), "awake"))
+    checks.append(check("Status of w1 after the probe", f"asleep={seen['after_probe'].get('is_asleep')}",
+                        not seen["after_probe"].get("is_asleep"), "awake"))
     f = again[0]["fields"] if again else {}
     checks.append(check("outbound_sleep of w1 again after the probe: reason, idle ms",
                         again and f"{f.get('reason')} {f.get('idle_ms')}",
@@ -2971,8 +2971,8 @@ def awg_wake(stand, xray, work, name):
     if not again:
         return checks + [leak_check(c)]
 
-    checks.append(check("pin to the sleeping w1", f"{seen['pin']}, asleep={seen['before_pin'].get('asleep')}",
-                        seen["pin"] == {"ok": True} and seen["before_pin"].get("asleep") is True,
+    checks.append(check("pin to the sleeping w1", f"{seen['pin']}, asleep={seen['before_pin'].get('is_asleep')}",
+                        seen["pin"] == {"ok": True} and seen["before_pin"].get("is_asleep") is True,
                         "ok, asleep=True"))
     early = [e for e in c.events if m["pin"] <= e["ts"] / 1000 <= m["echoed"] and e["type"] == "probe_start"
              and e["fields"].get("outbound") == "w1"]
@@ -2982,8 +2982,8 @@ def awg_wake(stand, xray, work, name):
                         took is not None, "back, no retry"))
     sockets = cs.between(bench.AWG_ADDRESS, m["pin"] - 0.5, m["echoed"] + 0.5)
     checks.append(check("new sockets at the proxy for the wake", sockets, sockets == 1, "== 1"))
-    checks.append(check("Status of w1 after the datagram", f"asleep={seen['after_pin'].get('asleep')}",
-                        not seen["after_pin"].get("asleep"), "awake"))
+    checks.append(check("Status of w1 after the datagram", f"asleep={seen['after_pin'].get('is_asleep')}",
+                        not seen["after_pin"].get("is_asleep"), "awake"))
     ok, n = requests_ok(tr, m["resume"], m["end"])
     checks.append(check("requests answered after the pin", f"{ok}/{n}", n >= 10 and ok == n, "all, >= 10"))
     routed = c.routed(m["resume"])
@@ -3011,9 +3011,9 @@ def awg_wake_by_probe(stand, xray, work, name):
     m = Marks()
     wakes = []
     cfg = awg_config()
-    # A host probe of w1 every sleep.after: room in the budgets of its server name and of the host.
-    cfg["healthObservatory"]["schedule"] |= {"perServerNamePerMinute": 30, "perMinute": 60,
-                                             "hostProbes": {"reuse": "1s", "perMinute": 30}}
+    # A host probe of w1 every sleep.afterLastUse: room in the budgets of its server name and of the host.
+    cfg["healthObservatory"]["schedule"] |= {"probesPerServerNamePerMinute": 30, "probesPerMinute": 60,
+                                             "hostProbes": {"reuseWindow": "1s", "probesPerMinute": 30}}
     with bench.Client(xray, cfg, work, name) as c, bench.ConnSampler(period=0.1) as cs:
         tr = bench.Traffic(rate=2, big=0.5, timeout=5)
         away, slept = awg_to_sleep(c, tr, m)
@@ -3146,7 +3146,7 @@ def awg_failover_blackhole_held(stand, xray, work, name):
         down = next((e for e in bench.events_of(c.events, "path_state", m["fault"])
                      if e["fields"].get("outbound") == "w1" and e["fields"].get("state") == "down"), None)
         silent = [e for e in bench.events_of(c.events, "pending_closed", m["fault"])
-                  if e["fields"].get("outbound") == "w1" and e["fields"].get("silent") is True]
+                  if e["fields"].get("outbound") == "w1" and e["fields"].get("is_silent") is True]
         at = silent and silent[0]["ts"] / 1000
         decided = silent and down and round(at - down["ts"] / 1000, 1)
         checks.append(check("silent close of w1: connections, s after the switch (after the decision)",
@@ -3223,7 +3223,7 @@ def awg_failover_freeze(stand, xray, work, name):
 
 
 # sleep.closeIdleAfter of awg_unchosen_idle_close, and the wait from the end of the last
-# connection to the sleep after an idle close: the shortest sleep.after.
+# connection to the sleep after an idle close: the shortest sleep.afterLastUse.
 AWG_IDLE_CLOSE = 15
 AWG_IDLE_SETTLE = 10
 
@@ -3309,7 +3309,7 @@ def awg_idle_close_phase(xray, work, name, close_idle):
                 # The window in which the close and the sleep would have come, and some.
                 time.sleep(max(0.0, m["away"] + AWG_SLEEP + AWG_IDLE_CLOSE + 10 - time.time()))
                 m["status"] = path_status(c, "w1")
-                # The connection ends at the client: w1 then sleeps sleep.after later.
+                # The connection ends at the client: w1 then sleeps sleep.afterLastUse later.
                 m["hung_up"] = time.time()
                 quiet.close()
                 slept = wait_for(lambda: w1_sleeps(c, m["hung_up"]), AWG_SLEEP + 10)
@@ -3329,11 +3329,11 @@ def awg_unchosen_idle_close(stand, xray, work, name):
     outbound w1 under a start pin; the connection then falls quiet and stays open, as the push
     connections of a phone do, and the host releases the pin, so the balancer returns to v1.
     Unchosen, w1 is held by that connection alone. With closeIdleAfter 15 s the core ends it,
-    at the later of sleep.after after the switch off w1 and 15 s after its last answer, with
+    at the later of sleep.afterLastUse after the switch off w1 and 15 s after its last answer, with
     idle_closed; its client sees the end, w1 sleeps with reason idle 10 s later, once the end
     has crossed the tunnel, and its datagrams stop at the UDP proxy; the server sends at most
     the one passive keepalive that answers the end. With closeIdleAfter 0s nothing is ended and w1 stays awake through
-    the same window, with its keepalives; it sleeps sleep.after after the client hangs up."""
+    the same window, with its keepalives; it sleeps sleep.afterLastUse after the client hangs up."""
     c, cs, tr, quiet, m, away = awg_idle_close_phase(xray, work, f"{name}-on", AWG_IDLE_CLOSE)
     checks = [check(f"{k} (closeIdleAfter {AWG_IDLE_CLOSE}s)", v, ok, lim) for k, v, ok, lim in
               idle_close_on_checks(c, cs, tr, quiet, m, away)]
@@ -3356,11 +3356,11 @@ def idle_close_on_checks(c, cs, tr, quiet, m, away):
     out = idle_close_common(c, tr, quiet, m, away)
     closed = [e for e in bench.events_of(c.events, "idle_closed", m["release"]) if e["fields"].get("outbound") == "w1"]
     at = closed and closed[0]["ts"] / 1000
-    # The core counts sleep.after from the last use of w1, which the connections that were
+    # The core counts sleep.afterLastUse from the last use of w1, which the connections that were
     # still under way at the switch push back by up to the request timeout.
     due = away and quiet.last and max(m["away"] + AWG_SLEEP, quiet.last + AWG_IDLE_CLOSE)
     late = closed and due and round(at - due, 1)
-    out.append(("idle_closed of w1: connections, s after max(switch + sleep.after, last answer + closeIdleAfter)",
+    out.append(("idle_closed of w1: connections, s after max(switch + sleep.afterLastUse, last answer + closeIdleAfter)",
                 closed and f"{closed[0]['fields'].get('connections')}, {late}",
                 len(closed) == 1 and closed[0]["fields"].get("connections") == 1 and bool(due)
                 and -0.5 <= late <= tr.timeout + 1, f"1, 0 .. {tr.timeout + 1}"))
@@ -3385,7 +3385,7 @@ def idle_close_on_checks(c, cs, tr, quiet, m, away):
         out.append((f"datagrams at the proxy in {round(m['end'] - asleep, 1)} s after the sleep, up/down",
                     after, after[0] == 0 and after[1] is not None and after[1] <= 1, "up 0, down <= 1"))
     status = m.get("status", {})
-    out.append(("Status of w1 after the sleep", f"asleep={status.get('asleep')}", status.get("asleep") is True,
+    out.append(("Status of w1 after the sleep", f"asleep={status.get('is_asleep')}", status.get("is_asleep") is True,
                 "asleep=True"))
     ok, n = requests_ok(tr, m["start"], m["end"])
     out.append(("requests answered", f"{ok}/{n}", ok == n, "all"))
@@ -3405,11 +3405,11 @@ def idle_close_off_checks(c, cs, tr, quiet, m, away):
                 quiet.ended is None or quiet.ended >= m["hung_up"], "True"))
     if away:
         kept = cs.packets(bench.AWG_ADDRESS, m["away"] + AWG_SLEEP + 2, m["hung_up"])
-        out.append(("keepalives of w1 past sleep.after, datagrams up/down", kept,
+        out.append(("keepalives of w1 past sleep.afterLastUse, datagrams up/down", kept,
                     kept[0] is not None and kept[0] >= 2, "up >= 2"))
     status = m.get("status", {})
-    out.append(("Status of w1 before the hang-up", f"asleep={bool(status.get('asleep'))}",
-                bool(status) and not status.get("asleep"), "asleep=False"))
+    out.append(("Status of w1 before the hang-up", f"asleep={bool(status.get('is_asleep'))}",
+                bool(status) and not status.get("is_asleep"), "asleep=False"))
     late = [e for e in w1_sleeps(c, m["hung_up"])]
     gap = late and round(late[0]["ts"] / 1000 - m["hung_up"], 1)
     out.append(("outbound_sleep of w1 after the hang-up: reason, s", late and f"{late[0]['fields'].get('reason')} {gap}",

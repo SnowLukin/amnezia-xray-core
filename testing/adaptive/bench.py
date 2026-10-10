@@ -20,7 +20,7 @@ Environment:
   BENCH_TLS=1         user traffic is TLS 1.3 to the target. Only then does
                       XTLS Vision switch to direct copy, which splices on Linux.
   BENCH_LOGLEVEL      log level of the client, debug to see splices.
-  BENCH_CONCURRENT    schedule.concurrent of the client: probes at a time.
+  BENCH_CONCURRENT    schedule.maxConcurrentProbes of the client: probes at a time.
 """
 import datetime
 import http.client
@@ -258,11 +258,11 @@ def provider_config(via, triggers=None, limits=None, apply=None):
     scenario turns it on, so a scenario sees only the trigger it checks."""
     return {
         "tag": "fresh", "url": f"http://{HOST}:{PROVIDER_PORT}/set",
-        "headers": {"Authorization": "Bearer bench-token"}, "via": via, "timeout": "3s", "allowPlainHttp": True,
-        "triggers": {"interval": "0s", "minHealthy": 0, "whenExhausted": False, "maxAge": "0s",
-                     "onNetworkChange": "never"} | (triggers or {}),
+        "headers": {"Authorization": "Bearer bench-token"}, "via": via, "timeout": "3s", "isPlainHttpAllowed": True,
+        "triggers": {"interval": "0s", "minHealthyOutbounds": 0, "shouldRefreshWhenExhausted": False, "maxAge": "0s",
+                     "networkChangeMode": "never"} | (triggers or {}),
         "limits": limits or {},
-        "apply": {"balancer": "auto", "tagPrefix": "p-", "drain": "1m"} | (apply or {}),
+        "apply": {"balancer": "auto", "tagPrefix": "p-", "drainTimeout": "1m"} | (apply or {}),
     }
 
 
@@ -299,7 +299,7 @@ def client_config(members, costs, health=None, strategy=None, burst=None, loglev
                                             "fallbackTag": burst["fallback"]})
         cfg["burstObservatory"] = {"subjectSelector": burst["subjects"], "pingConfig": burst["ping"]}
         return cfg
-    settings = {"costs": [{"match": t, "value": c} for t, c in costs.items()]}
+    settings = {"costs": [{"match": t, "cost": c} for t, c in costs.items()]}
     settings.update(strategy or {})
     subjects = list(selectors)
     if providers:
@@ -310,12 +310,12 @@ def client_config(members, costs, health=None, strategy=None, burst=None, loglev
     h = {
         "subjectSelector": subjects,
         "probes": [{"destination": f"http://probe.test:{TARGET_PORT}/bytes/32768", "minBytes": 32768,
-                    "expectStatus": [200], "timeout": f"{PROBE_TIMEOUT}s", "progressTimeout": "3s"}],
+                    "expectedStatuses": [200], "timeout": f"{PROBE_TIMEOUT}s", "progressTimeout": "3s"}],
         "connectivity": {"outbound": "net", "destination": f"http://{HOST}:{CONNECTIVITY_PORT}/204",
                          "timeout": "2s"},
     }
     if "BENCH_CONCURRENT" in os.environ:
-        h["schedule"] = {"concurrent": CONCURRENT}
+        h["schedule"] = {"maxConcurrentProbes": CONCURRENT}
     for k, v in (health or {}).items():
         if isinstance(v, dict) and isinstance(h.get(k), dict):
             h[k] = h[k] | v
@@ -1112,14 +1112,14 @@ START_REASONS = ("start", "start_pinned", "start_remembered", "start_with")
 def fold_report(events):
     """Adds up events the way the report of the core counts them. Returns the
     counters and whether there was a decision."""
-    keys = ["events", "switches", "exhausted", "path_down", "path_suspect", "path_rescued", "pending_closed",
-            "idle_closed", "probes", "probes_failed", "probe_bytes", "host_probe_requests", "host_probes",
-            "upgrade_attempts",
-            "upgrade_failures", "pinned_down",
-            "network_changes", "network_known", "network_down", "provider_fetches", "provider_fetch_failures",
+    keys = ["events", "switches", "exhausted_count", "path_down_count", "path_suspect_count", "path_rescued_count", "pending_closed_count",
+            "idle_closed_count", "probes", "probes_failed", "probe_bytes", "host_probe_requests", "host_probes",
+            "return_attempts",
+            "return_failures", "pinned_down_count",
+            "network_changes", "network_known", "network_down_count", "provider_fetches", "provider_fetch_failures",
             "provider_retry_after", "provider_applied", "provider_rejected", "provider_restart_needed",
             "provider_expired", "provider_renewals", "provider_auth_failed", "provider_base_changed", "pins",
-            "releases", "memory_low", "outbound_sleeps"]
+            "releases", "memory_low_count", "outbound_sleeps"]
     c = dict.fromkeys(keys, 0)
     c.update(switch_reasons={}, switch_path=[], provider_triggers={})
     decided = False
@@ -1133,47 +1133,47 @@ def fold_report(events):
             c["switch_path"] = (c["switch_path"] + [f"{f.get('from', '')}>{f.get('to', '')}:{reason}"])[-10:]
             decided = decided or reason not in START_REASONS
         elif t in ("exhausted", "pinned_down"):
-            c[t] += 1
-            decided = decided or not f.get("start_pinned")
+            c[t + "_count"] += 1
+            decided = decided or not f.get("is_start_pinned")
         elif t == "path_state" and f.get("state") in ("down", "suspect"):
-            c["path_" + f["state"]] += 1
+            c["path_" + f["state"] + "_count"] += 1
         elif t == "path_state" and f.get("reason") == "rescued":
-            c["path_rescued"] += 1
+            c["path_rescued_count"] += 1
         elif t == "pending_closed":
-            c["pending_closed"] += f.get("connections", 0)
+            c["pending_closed_count"] += f.get("connections", 0)
         elif t == "idle_closed":
-            c["idle_closed"] += f.get("connections", 0)
+            c["idle_closed_count"] += f.get("connections", 0)
         elif t == "probe_result":
             c["probes"] += 1
-            c["probes_failed"] += f.get("ok") is not True
+            c["probes_failed"] += f.get("is_ok") is not True
             c["probe_bytes"] += f.get("bytes", 0)
             c["host_probes"] += f.get("reason") == "host"
         elif t == "probe_request":
             c["host_probe_requests"] += 1
-        elif t == "upgrade_start":
-            c["upgrade_attempts"] += 1
-        elif t == "upgrade_failed":
-            c["upgrade_failures"] += 1
+        elif t == "return_start":
+            c["return_attempts"] += 1
+        elif t == "return_failed":
+            c["return_failures"] += 1
             decided = True
         elif t == "network_change":
             c["network_changes"] += 1
-            c["network_known"] += f.get("known") is True
+            c["network_known"] += f.get("is_known") is True
         elif t == "network_down":
-            c["network_down"] += 1
+            c["network_down_count"] += 1
         elif t == "provider_fetch":
             c["provider_fetches"] += 1
-            c["provider_fetch_failures"] += f.get("ok") is not True
+            c["provider_fetch_failures"] += f.get("is_ok") is not True
             c["provider_retry_after"] += "retry_after_ms" in f
             if "trigger" in f:
                 c["provider_triggers"][f["trigger"]] = c["provider_triggers"].get(f["trigger"], 0) + 1
         elif t == "provider_apply":
-            if f.get("ok") is False:
+            if f.get("is_ok") is False:
                 c["provider_rejected"] += 1
                 decided = True
-            elif f.get("changed") is True and f.get("trigger") != "initial":
+            elif f.get("is_changed") is True and f.get("trigger") != "initial":
                 c["provider_applied"] += 1
                 decided = True
-            if f.get("ok") is True and f.get("renewed", 0) > 0 and f.get("trigger") != "initial":
+            if f.get("is_ok") is True and f.get("renewed", 0) > 0 and f.get("trigger") != "initial":
                 c["provider_renewals"] += 1
         elif t == "provider_restart_needed":
             c["provider_restart_needed"] += 1
@@ -1184,7 +1184,7 @@ def fold_report(events):
         elif t in ("pin", "release"):
             c[t + "s"] += 1
         elif t == "memory_low":
-            c["memory_low"] += f.get("on") is True
+            c["memory_low_count"] += f.get("is_low") is True
         elif t == "outbound_sleep":
             c["outbound_sleeps"] += 1
     return c, decided

@@ -31,6 +31,23 @@ func (f *applyFixture) events(t *testing.T) []Event {
 
 func stamp(t time.Time) string { return t.UTC().Format(time.RFC3339Nano) }
 
+func TestInitialZeroNextRefreshStaysImmediateInProviderSet(t *testing.T) {
+	f, now := initialFixture(t, `{"outbounds":[{"tag":"x1","protocol":"vless","v":1}],"nextRefreshIn":"0s"}`)
+	f.rt.cfg.jitter = 0
+	f.o.applyInitial()
+	if p := f.rt.p; !p.nextAt.Equal(now) || p.nextTrigger != triggerNextRefresh {
+		t.Fatalf("next refresh at %v with trigger %s, want immediate next_refresh", p.nextAt, p.nextTrigger)
+	}
+	raw, _, err := f.o.ProviderSet("fresh", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, err := parseInitial(raw)
+	if err != nil || !a.hasNextRefreshIn || a.nextRefreshIn != 0 || !strings.Contains(string(raw), `"nextRefreshIn":"0s"`) {
+		t.Fatalf("saved set nextRefreshIn: %+v, %v", a, err)
+	}
+}
+
 // A broken initial set is reported, and the core starts on the outbounds
 // of the config with the usual schedule of the provider.
 func TestBrokenInitialKeepsTheCoreRunning(t *testing.T) {
@@ -47,7 +64,7 @@ func TestBrokenInitialKeepsTheCoreRunning(t *testing.T) {
 			f, _ := initialFixture(t, tc.initial)
 			f.o.applyInitial()
 			ev := f.lastApply(t)
-			if ev["trigger"] != "initial" || ev["ok"] != false || !strings.Contains(fmt.Sprint(ev["error"]), tc.want) {
+			if ev["trigger"] != "initial" || ev["is_ok"] != false || !strings.Contains(fmt.Sprint(ev["error"]), tc.want) {
 				t.Fatalf("apply %v, want a refusal about %q", ev, tc.want)
 			}
 			f.o.mu.Lock()
@@ -92,7 +109,7 @@ func TestInitialLeaseClock(t *testing.T) {
 			f.o.clock = func() time.Time { return now }
 			f.rt.cfg.jitter = 0
 			f.o.applyInitial()
-			if ev := f.lastApply(t); ev["ok"] != true || ev["trigger"] != "initial" || ev["clock"] != tc.clock {
+			if ev := f.lastApply(t); ev["is_ok"] != true || ev["trigger"] != "initial" || ev["clock"] != tc.clock {
 				t.Fatalf("apply %v", ev)
 			}
 			f.o.mu.Lock()
@@ -172,7 +189,7 @@ func TestExpiredInitialRefreshesUnderTheStartPin(t *testing.T) {
 	e := f.o.e
 	// The first connection through the balancer starts it on the pin.
 	delete(e.selectors, "auto")
-	s := e.addSelector("auto", newSelectorSettings(&SelectorConfig{Costs: costs("p-", 1), StartPinned: "p-x1"}))
+	s := e.addSelector("auto", newSelectorSettings(&SelectorConfig{Costs: costs("p-", 1), StartPinnedOutbound: "p-x1"}))
 	e.updateCandidates(s, []string{"p-x1"}, now)
 	if s.pinned != "p-x1" {
 		t.Fatalf("setup: pinned %q", s.pinned)
@@ -223,7 +240,7 @@ func TestEndedLeaseOfAFreshInitialIsNotSaved(t *testing.T) {
 func TestInitialThenSameVersionChangesNoHandler(t *testing.T) {
 	f, _ := initialFixture(t, `{"version": "v1", "outbounds": [{"tag": "x1", "protocol": "vless", "v": 1}]}`)
 	f.o.applyInitial()
-	if ev := f.lastApply(t); ev["ok"] != true || ev["changed"] != true || ev["added"] != 1.0 {
+	if ev := f.lastApply(t); ev["is_ok"] != true || ev["is_changed"] != true || ev["added"] != 1.0 {
 		t.Fatalf("initial %v", ev)
 	}
 	x1, created := f.m.GetHandler("p-x1"), len(f.created)
@@ -232,7 +249,7 @@ func TestInitialThenSameVersionChangesNoHandler(t *testing.T) {
 	if changed, err := f.apply(t, a); changed || err != nil {
 		t.Fatalf("the same set: %v, %v", changed, err)
 	}
-	if ev := f.lastApply(t); ev["changed"] != false || ev["trigger"] != "host" {
+	if ev := f.lastApply(t); ev["is_changed"] != false || ev["trigger"] != "host" {
 		t.Fatalf("apply %v", ev)
 	}
 	if len(f.created) != created || f.m.GetHandler("p-x1") != x1 {
@@ -241,7 +258,7 @@ func TestInitialThenSameVersionChangesNoHandler(t *testing.T) {
 }
 
 // The headers of the initial set lie over those of the config, also names
-// that apply.headers does not list: the host saved them and may have set
+// that apply.acceptedHeaders does not list: the host saved them and may have set
 // them itself. Headers the host set before the start lie over them, name by
 // name.
 func TestInitialHeadersOverrideConfig(t *testing.T) {
@@ -268,7 +285,7 @@ func TestInitialHeadersOverrideConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.o.applyInitial()
-	if ev := f.lastApply(t); ev["ok"] != true || ev["headers_stale"] != true {
+	if ev := f.lastApply(t); ev["is_ok"] != true || ev["is_headers_stale"] != true {
 		t.Fatalf("apply %v", ev)
 	}
 	f.o.mu.Lock()
@@ -288,7 +305,7 @@ func TestHostHeaderBeforeTheStartKeepsTheInitialToken(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.o.applyInitial()
-	if ev := f.lastApply(t); ev["ok"] != true || ev["headers_stale"] != nil || fmt.Sprint(ev["headers"]) != "[Authorization]" {
+	if ev := f.lastApply(t); ev["is_ok"] != true || ev["is_headers_stale"] != nil || fmt.Sprint(ev["headers"]) != "[Authorization]" {
 		t.Fatalf("apply %v", ev)
 	}
 	f.o.mu.Lock()
@@ -337,7 +354,7 @@ func TestRejectedInitialIsADecision(t *testing.T) {
 
 // The outbound the host passes to start with is no decision either.
 func TestStartWithIsNoDecision(t *testing.T) {
-	te := newReportEngine(t, nil, &SelectorConfig{Costs: costs("a", 1, "b", 3), StartWith: "b1"}, "a1", "b1")
+	te := newReportEngine(t, nil, &SelectorConfig{Costs: costs("a", 1, "b", 3), StartOutbound: "b1"}, "a1", "b1")
 	if te.sel.current() != "b1" {
 		t.Fatalf("started on %s", te.sel.current())
 	}

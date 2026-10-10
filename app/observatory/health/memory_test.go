@@ -22,7 +22,7 @@ func reasons(jobs []*probeJob) []string {
 // A return to a cheaper outbound waits while memory is low and goes on once
 // it is not.
 func TestMemoryLowPutsReturnsOff(t *testing.T) {
-	te := newTestEngine(t, &Config{Schedule: quarantine(30 * time.Second)}, upgradeConfig(), "a1", "b1")
+	te := newTestEngine(t, &Config{Schedule: quarantine(30 * time.Second)}, returnToCheaperConfig(), "a1", "b1")
 	failoverToB(t, te, at(0))
 	te.setMemoryLow(true, at(time.Minute))
 	for now := at(5 * time.Minute); now.Before(at(20 * time.Minute)); now = now.Add(10 * time.Second) {
@@ -30,8 +30,8 @@ func TestMemoryLowPutsReturnsOff(t *testing.T) {
 			t.Fatalf("probes %v while memory is low", reasons(jobs))
 		}
 	}
-	if n := countEvents(te.eventTypes(), "upgrade_start"); n != 0 || te.sel.upgradeTarget != "" {
-		t.Fatalf("a return started while memory is low: %d upgrade_start, target %q", n, te.sel.upgradeTarget)
+	if n := countEvents(te.eventTypes(), "return_start"); n != 0 || te.sel.returnToCheaperTarget != "" {
+		t.Fatalf("a return started while memory is low: %d return_start, target %q", n, te.sel.returnToCheaperTarget)
 	}
 	te.setMemoryLow(false, at(20*time.Minute))
 	for now := at(20 * time.Minute); now.Before(at(25*time.Minute)) && te.sel.current() != "a1"; now = now.Add(10 * time.Second) {
@@ -44,10 +44,10 @@ func TestMemoryLowPutsReturnsOff(t *testing.T) {
 
 // A return already under way waits for its next probe as well.
 func TestMemoryLowHoldsAReturnUnderWay(t *testing.T) {
-	te := newTestEngine(t, &Config{Schedule: quarantine(30 * time.Second)}, upgradeConfig(), "a1", "b1")
+	te := newTestEngine(t, &Config{Schedule: quarantine(30 * time.Second)}, returnToCheaperConfig(), "a1", "b1")
 	failoverToB(t, te, at(0))
 	jobs, _ := te.tick(at(6 * time.Minute))
-	if len(jobs) != 1 || jobs[0].reason != reasonUpgrade {
+	if len(jobs) != 1 || jobs[0].reason != reasonReturnToCheaper {
 		t.Fatalf("setup: %v", reasons(jobs))
 	}
 	te.setMemoryLow(true, at(6*time.Minute+time.Second))
@@ -56,7 +56,7 @@ func TestMemoryLowHoldsAReturnUnderWay(t *testing.T) {
 		t.Fatalf("probes %v while memory is low", reasons(more))
 	}
 	te.setMemoryLow(false, at(9*time.Minute))
-	if more, _ := te.tick(at(9 * time.Minute)); !slices.Equal(reasons(more), []string{"upgrade:a1"}) {
+	if more, _ := te.tick(at(9 * time.Minute)); !slices.Equal(reasons(more), []string{"return:a1"}) {
 		t.Fatalf("probes %v after memory came back, want the next return probe", reasons(more))
 	}
 }
@@ -148,8 +148,8 @@ func TestMemoryLowStretchesDoubtfulNetworkChecks(t *testing.T) {
 func TestMemoryLowSkipsTimedRefreshes(t *testing.T) {
 	te := newProviderEngine(t, quietProvider(func(p *ProviderConfig) {
 		p.Triggers.Interval = int64(time.Hour)
-		p.Triggers.Jitter = -1
-		p.Triggers.SkipWhenExhausted = false
+		p.Triggers.JitterFraction = -1
+		p.Triggers.SkipRefreshWhenExhausted = false
 	}), &SelectorConfig{Costs: costs("a", 1)}, "a1", "a2")
 	te.setMemoryLow(true, at(time.Minute))
 	expectNoRefresh(t, te, at(2*time.Hour))
@@ -217,7 +217,7 @@ func TestSetMemoryLow(t *testing.T) {
 	o.SetMemoryLow(true)
 	o.SetMemoryLow(true)
 	var st struct {
-		MemoryLow bool `json:"memory_low"`
+		MemoryLow bool `json:"is_memory_low"`
 	}
 	if err := json.Unmarshal(o.Status(), &st); err != nil || !st.MemoryLow {
 		t.Fatalf("status memory_low %v, %v", st.MemoryLow, err)
@@ -231,7 +231,7 @@ func TestSetMemoryLow(t *testing.T) {
 	var on []any
 	for _, e := range evs {
 		if e.Type == "memory_low" {
-			on = append(on, e.Fields["on"])
+			on = append(on, e.Fields["is_low"])
 		}
 	}
 	if !slices.Equal(on, []any{true, false}) {

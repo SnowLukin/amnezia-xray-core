@@ -94,24 +94,24 @@ well.
   "protocol": 1,
   "provider": "fresh",
   "run": "9f2c6a1e5b7d3c40",
-  "refresh": 7,
+  "refreshNumber": 7,
   "trigger": "expiry",
-  "retry": 1,
+  "retryLevel": 1,
   "lastFailure": { "status": 503, "error": "status", "agoMs": 61000 },
   "version": "slots-7781",
   "baseVersion": "cfg-12",
   "clientTime": "2026-10-08T12:00:03Z",
-  "network": { "id": "5d0c1f2a9b3e4c71", "known": false, "up": true },
-  "memoryLow": false,
-  "balancer": { "tag": "auto", "current": "x2", "own": true, "cost": 3, "exhausted": false, "pinned": false,
+  "network": { "id": "5d0c1f2a9b3e4c71", "isKnown": false, "isUp": true },
+  "isMemoryLow": false,
+  "balancer": { "tag": "auto", "current": "x2", "isOwn": true, "cost": 3, "isExhausted": false, "isPinned": false,
                 "heldMs": 840000 },
   "outbounds": [
     { "tag": "x1", "state": "down", "reason": "traffic", "stateMs": 81000, "seenMs": 3600000,
       "quarantineLevel": 2, "quarantineMs": 81000, "failures": { "dial_timeout": 4 },
-      "probe": { "ok": false, "error": "timeout", "agoMs": 30000 },
+      "probe": { "isPassed": false, "error": "timeout", "agoMs": 30000 },
       "connsOk": 12, "connsFailed": 4, "bytesUp": 90112, "bytesDown": 1048576,
       "activeMs": 600000, "ttfbP50Ms": 300, "expiresInMs": 61200000 },
-    { "tag": "x2", "state": "up", "probe": { "ok": true, "rttMs": 180, "agoMs": 840000 },
+    { "tag": "x2", "state": "up", "probe": { "isPassed": true, "rttMs": 180, "agoMs": 840000 },
       "connsOk": 412, "bytesDown": 52428800, "activeMs": 840000, "expiresInMs": 61200000 },
     { "tag": "x3", "state": "unknown", "expiresInMs": -5000 }
   ]
@@ -125,16 +125,16 @@ Fields with zero or empty values are left out, except those marked always.
 | `protocol` | Always 1. |
 | `provider` | Always. The tag of the provider: one backend may serve several providers of one client, for example one per kind of outbound. |
 | `run` | Always. Names the run of the core, hashed for this provider: the first 16 hex digits of SHA-256 of the URL, a zero byte and the run. Stable within a run; two backends cannot match theirs. |
-| `refresh` | Always. Grows with every refresh of the run and is the same in every attempt of one refresh: `run` and `refresh` together tell a request sent again through another `via` from a new one. |
+| `refreshNumber` | Always. Grows with every refresh of the run and is the same in every attempt of one refresh: `run` and `refreshNumber` together tell a request sent again through another `via` from a new one. |
 | `trigger` | Always. Why the core asks, see [When the core asks](#when-the-core-asks). |
-| `retry` | Always. The level of the backoff this refresh waited for: refreshes in a row since the last success that failed, brought an answer the core refused, or, for an exhausted balancer, brought the same set again. A pause the backend asked for with `Retry-After` and refused headers leave it as it is; any other applied answer sets it back to 0. |
+| `retryLevel` | Always. The level of the backoff this refresh waited for: refreshes in a row since the last success that failed, brought an answer the core refused, or, for an exhausted balancer, brought the same set again. A pause the backend asked for with `Retry-After` and refused headers leave it as it is; any other applied answer sets it back to 0. |
 | `lastFailure` | Only when the previous refresh failed: `status`, the HTTP status or 0; `agoMs`, how long ago; `error`, the reason the core refused a well-formed answer (at most 200 bytes, see [Answer](#answer)) or the class of the failure: `timeout`, `network`, `status`, `too_large` or `broken_json`. It is what the last `via` that was asked met. |
 | `version` | The set the core applies now, as the answer named it; none before the first set. |
 | `baseVersion` | The base config the core runs with, see [Base config](#base-config); none without one. |
 | `clientTime` | Always. The clock of the device in RFC 3339, UTC: the backend sees how far off it is. |
-| `network` | Always. `id` names the network the host reported, hashed for this provider like `run` and left out when the host cannot tell networks apart; `known`, always, whether the core remembers an outbound that worked in this network; `up`, always, whether the network works. |
-| `memoryLow` | Always. The host reported that memory is short: the core asks only when it must. |
-| `balancer` | Always. The balancer the provider feeds: `tag`, always; `current`, the outbound it chose without the prefix of the provider and only when it is one of this provider, which `own`, always, tells; `cost`, the cost of the chosen outbound; `exhausted` and `pinned`, always; `heldMs`, how long it has held the chosen outbound. |
+| `network` | Always. `id` names the network the host reported, hashed for this provider like `run` and left out when the host cannot tell networks apart; `isKnown`, always, whether the core remembers an outbound that worked in this network; `isUp`, always, whether the network works. |
+| `isMemoryLow` | Always. The host reported that memory is short: the core asks only when it must. |
+| `balancer` | Always. The balancer the provider feeds: `tag`, always; `current`, the outbound it chose without the prefix of the provider and only when it is one of this provider, which `isOwn`, always, tells; `cost`, the cost of the chosen outbound; `isExhausted` and `isPinned`, always; `heldMs`, how long it has held the chosen outbound. |
 | `outbounds` | Always, maybe empty. The set of the provider in the order of the answer, by tag without the prefix; before the first answer the outbounds of the config with the prefix of the provider. Outbounds that left the set are not listed, ones whose lease ended are. |
 
 Per outbound:
@@ -143,11 +143,11 @@ Per outbound:
 | --- | --- |
 | `tag` | Always. |
 | `state` | Always. `up`, `suspect`, `down`, or `unknown` for an outbound the core knows nothing about yet. |
-| `reason`, `stateMs` | What set the state (`traffic`, `probe`, `upgrade_probe`, `host_probe`, `network_change`, `network_down`, `network_up`, `replaced`, `rescued` for an outbound whose down a probe that was already running proved false, or `chosen` for an outbound a balancer chose again after its rest, judged afresh) and how long ago. |
+| `reason`, `stateMs` | What set the state (`traffic`, `probe`, `return_probe`, `host_probe`, `network_change`, `network_down`, `network_up`, `replaced`, `rescued` for an outbound whose down a probe that was already running proved false, or `chosen` for an outbound a balancer chose again after its rest, judged afresh) and how long ago. |
 | `seenMs` | How long the core has kept the counters of the outbound. |
 | `quarantineLevel`, `quarantineMs` | While the outbound rests after a failure: the level of its rest, which grows with every failure in a row, and how much longer it lasts. |
 | `failures` | Failures of user connections by kind over the life of the outbound: `dial_failed`, `dial_timeout`, `server_unverified` (REALITY did not verify the server), `no_response`, `closed`, `stall`, `partial_stall`. |
-| `probe` | The last probe that finished: `ok`, always; `rttMs` when it passed; `error` as a class when it failed: `timeout`, `no_progress`, `status_<N>`, `short_body`, `reset`, `refused`, `eof`, `tls` or `other`; `agoMs`, always, since its result. |
+| `probe` | The last probe that finished: `isPassed`, always; `rttMs` when it passed; `error` as a class when it failed: `timeout`, `no_progress`, `status_<N>`, `short_body`, `reset`, `refused`, `eof`, `tls` or `other`; `agoMs`, always, since its result. |
 | `connsOk`, `connsFailed`, `bytesUp`, `bytesDown` | User connections and their bytes. |
 | `activeMs` | How long a balancer has chosen the outbound, the current stretch included. |
 | `ttfbP50Ms` | The median time to the first byte. |
@@ -158,6 +158,29 @@ the targets of failures, the text of an error that may name a URL, header
 values, or the raw run and network id. A usual set takes a few kilobytes;
 the size is up to about 500 bytes per outbound besides its tag, some 60 KB
 for the largest set with every counter busy.
+
+## Durations
+
+Human and backend durations are Go strings parsed by `time.ParseDuration`.
+
+| String | Meaning |
+| --- | --- |
+| `"500ms"`, `"6s"`, `"30m"`, `"2h"` | Units are `ms`, `s`, `m` and `h`. |
+| `"30m6s"`, `"1h30m"`, `"2h45m30s"` | Several units together, without spaces. |
+| `"1.5h"` | A fractional unit: 1 h 30 min. |
+| `"0s"`, `"0"` | Exactly zero. |
+| `"1d"` | Invalid: use `"24h"` for a day. |
+| `"30m 6s"` | Invalid: no spaces. |
+| `"30min"`, `"6S"` | Invalid: units and their case matter. |
+| `6` | Invalid: a duration must be a string. |
+
+An omitted key uses its default. Explicit zero disables a period or limit,
+or removes a delay. A request or probe timeout and `returnToCheaper.interval` cannot be zero:
+the config is refused with the name of the key. `startPinTimeout: "0s"` keeps
+the start pin until the host releases it; `drainTimeout: "0s"` closes removed
+outbounds without a drain delay. Durations the core measures
+are integer milliseconds, with `Ms` in provider requests and `_ms` in host
+outputs. `nextRefreshIn` follows this table as well; a number is refused.
 
 ## Answer
 
@@ -183,8 +206,8 @@ A 200 with a JSON object. These are all the keys of protocol 1:
 | `protocol` | The number 1, or no key. | Anything else refuses the answer as `protocol N is not supported`, whatever its other keys. |
 | `outbounds` | Required, at least one. Outbounds in the format of the config file, each with a unique non-empty `tag` and a `protocol` the client allows: by default `vless`, `vmess`, `trojan`, `shadowsocks`, `wireguard`, `hysteria`, `socks` and `http`, never one that sends traffic straight out such as `freedom`. At most as many as the client allows, 64 by default. | The set. Every outbound gets the prefix of the provider. An outbound whose settings did not change keeps its connections; one whose settings changed is replaced under its tag; one that left the set keeps its connections for a while and is then closed. |
 | `costs` | Tag to a number above zero. | Costs of the balancer for these outbounds; tags outside the set are ignored. |
-| `version` | A string; `hash` is its older name. | Names the set. Without it the set is named by a hash of `outbounds`, `costs` and `routing`. |
-| `nextRefreshIn` | A duration such as `"90m"`, or seconds. | Replaces the regular interval until the next refresh. |
+| `version` | A string. | Names the set. Without it the set is named by a hash of `outbounds`, `costs` and `routing`. |
+| `nextRefreshIn` | A Go duration string such as `"90m"`; numbers are refused. | Replaces the regular interval until the next refresh. `"0s"` asks immediately, subject to the provider limits; omission uses the regular interval, `null` is refused. |
 | `expiresAt` | Tag to a time in RFC 3339 with a zone. | Leases, see [Leases](#leases). Tags outside the set are ignored. |
 | `serverTime` | A time in RFC 3339 with a zone. | The clock the leases count from. |
 | `headers` | Header name to value, see [Token](#token). | Headers of the next requests. |
@@ -229,7 +252,7 @@ name the set, so a fresh `serverTime` does not make a new one.
 An answer other than 200 may carry an error body of the protocol:
 
 ```json
-{ "protocol": 1, "error": "rate_limited", "message": "..." }
+{ "protocol": 1, "code": "rate_limited", "message": "..." }
 ```
 
 The codes are `unauthorized`, `forbidden`, `rate_limited`, `unavailable`,
@@ -255,8 +278,8 @@ sent goes on to the next `via`:
 date counted from the `Date` of the same answer, so a wrong clock of the
 device neither stretches nor cuts the pause, or from the clock of the
 device without `Date`. Zero, a date gone by and anything unreadable count
-as none. The core waits at most its `backoff.max`, 30 minutes by default,
-then spreads the pause by up to its `backoff.jitter`, 30%, upward only: no
+as none. The core waits at most its `backoff.maxDelay`, 30 minutes by default,
+then spreads the pause by up to its `backoff.jitterFraction`, 30%, upward only: no
 client comes back sooner than asked, and clients told the same pause come
 back apart. The pause holds every trigger, the host and an exhausted
 balancer too.

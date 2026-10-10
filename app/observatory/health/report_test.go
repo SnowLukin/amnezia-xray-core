@@ -66,7 +66,7 @@ func foldReport(t *testing.T, raw []byte) (reportCounts, bool) {
 			c.IdleClosed += num(f["connections"])
 		case "probe_result":
 			c.Probes++
-			if f["ok"] != true {
+			if f["is_ok"] != true {
 				c.ProbesFailed++
 			}
 			c.ProbeBytes += num(f["bytes"])
@@ -75,24 +75,24 @@ func foldReport(t *testing.T, raw []byte) (reportCounts, bool) {
 			}
 		case "probe_request":
 			c.HostProbeRequests++
-		case "upgrade_start":
-			c.UpgradeAttempts++
-		case "upgrade_failed":
-			c.UpgradeFailures++
+		case "return_start":
+			c.ReturnToCheaperAttempts++
+		case "return_failed":
+			c.ReturnToCheaperFailures++
 			decided = true
 		case "pinned_down":
 			c.PinnedDown++
-			decided = decided || f["start_pinned"] != true
+			decided = decided || f["is_start_pinned"] != true
 		case "network_change":
 			c.NetworkChanges++
-			if f["known"] == true {
+			if f["is_known"] == true {
 				c.NetworkKnown++
 			}
 		case "network_down":
 			c.NetworkDown++
 		case "provider_fetch":
 			c.ProviderFetches++
-			if f["ok"] != true {
+			if f["is_ok"] != true {
 				c.ProviderFetchFailures++
 			}
 			if trigger, ok := f["trigger"].(string); ok {
@@ -102,14 +102,14 @@ func foldReport(t *testing.T, raw []byte) (reportCounts, bool) {
 				c.ProviderRetryAfter++
 			}
 		case "provider_apply":
-			if f["ok"] == false {
+			if f["is_ok"] == false {
 				c.ProviderRejected++
 				decided = true
-			} else if f["changed"] == true && f["trigger"] != "initial" {
+			} else if f["is_changed"] == true && f["trigger"] != "initial" {
 				c.ProviderApplied++
 				decided = true
 			}
-			if f["ok"] == true && num(f["renewed"]) > 0 && f["trigger"] != "initial" {
+			if f["is_ok"] == true && num(f["renewed"]) > 0 && f["trigger"] != "initial" {
 				c.ProviderRenewals++
 			}
 		case "provider_restart_needed":
@@ -129,7 +129,7 @@ func foldReport(t *testing.T, raw []byte) (reportCounts, bool) {
 		case "release":
 			c.Releases++
 		case "memory_low":
-			if f["on"] == true {
+			if f["is_low"] == true {
 				c.MemoryLow++
 			}
 		case "outbound_sleep":
@@ -159,7 +159,7 @@ func reportJSON(t *testing.T, v *reportView) reportView {
 // host read them from the event log.
 func TestReportAddsUpTheEvents(t *testing.T) {
 	cfg := &Config{Schedule: quarantine(30 * time.Second), Events: &EventsConfig{MaxEvents: maxEvents, MaxBytes: maxEventBytes}}
-	te := newReportEngine(t, cfg, upgradeConfig(), "a1", "b1")
+	te := newReportEngine(t, cfg, returnToCheaperConfig(), "a1", "b1")
 	te.onNetworkChange("home", at(0))
 	failoverToB(t, te, at(time.Second))
 	for now := at(5 * time.Minute); now.Before(at(7 * time.Minute)); now = now.Add(time.Second) {
@@ -181,21 +181,21 @@ func TestReportAddsUpTheEvents(t *testing.T) {
 	now := at(17 * time.Minute)
 	te.emit(now, "pending_closed", map[string]any{"outbound": "a1", "connections": 3, "reason": "traffic"})
 	te.emit(now, "pinned_down", map[string]any{"balancer": "auto", "outbound": "a1"})
-	te.emit(now, "pinned_down", map[string]any{"balancer": "auto", "outbound": "a1", "start_pinned": true})
+	te.emit(now, "pinned_down", map[string]any{"balancer": "auto", "outbound": "a1", "is_start_pinned": true})
 	te.emit(now, "exhausted", map[string]any{"balancer": "auto", "from": "a1", "candidates": 2})
 	te.emit(now, "provider_fetch", map[string]any{"provider": "p", "trigger": "host", "retry": 0, "attempt": 1,
-		"via": "", "outbound": "", "ok": true, "status": 200, "ms": int64(40), "bytes": 900})
+		"via": "", "outbound": "", "is_ok": true, "status": 200, "ms": int64(40), "bytes": 900})
 	te.emit(now, "provider_fetch", map[string]any{"provider": "p", "trigger": "exhausted", "retry": 1, "attempt": 1,
-		"via": "auto", "outbound": "", "ok": false, "error": "balancer exhausted"})
+		"via": "auto", "outbound": "", "is_ok": false, "error": "balancer exhausted"})
 	te.emit(now, "provider_fetch", map[string]any{"provider": "p", "trigger": "exhausted", "retry": 1, "attempt": 1,
-		"via": "", "outbound": "", "ok": false, "status": 429, "retry_after_ms": int64(60000), "error": "status 429"})
-	te.emit(now, "provider_apply", map[string]any{"provider": "p", "trigger": "host", "ok": false, "error": "bad"})
-	te.emit(now, "provider_apply", map[string]any{"provider": "p", "trigger": "host", "ok": true, "changed": false})
-	te.emit(now, "provider_apply", map[string]any{"provider": "p", "trigger": "expiry", "ok": true, "changed": false,
+		"via": "", "outbound": "", "is_ok": false, "status": 429, "retry_after_ms": int64(60000), "error": "status 429"})
+	te.emit(now, "provider_apply", map[string]any{"provider": "p", "trigger": "host", "is_ok": false, "error": "bad"})
+	te.emit(now, "provider_apply", map[string]any{"provider": "p", "trigger": "host", "is_ok": true, "is_changed": false})
+	te.emit(now, "provider_apply", map[string]any{"provider": "p", "trigger": "expiry", "is_ok": true, "is_changed": false,
 		"leases": 2, "renewed": 2, "expired": 0})
-	te.emit(now, "provider_apply", map[string]any{"provider": "p", "trigger": "host", "ok": true, "changed": true})
+	te.emit(now, "provider_apply", map[string]any{"provider": "p", "trigger": "host", "is_ok": true, "is_changed": true})
 	te.emit(now, "provider_restart_needed", map[string]any{"provider": "p", "version": "1", "sections": []string{"dns"}})
-	te.emit(now, "provider_expired", map[string]any{"provider": "p", "outbound": "p-x1", "active": true, "renewal": "failed"})
+	te.emit(now, "provider_expired", map[string]any{"provider": "p", "outbound": "p-x1", "was_active": true, "renewal": "failed"})
 	te.emit(now, "provider_auth_failed", map[string]any{"provider": "p", "trigger": "host", "status": 401, "via": "direct",
 		"code": "unauthorized"})
 	te.emit(now, "provider_base_changed", map[string]any{"provider": "p", "from": "b1", "to": "b2"})
@@ -230,7 +230,7 @@ func TestReportDoesNotNeedTheEventLog(t *testing.T) {
 	te := newReportEngine(t, &Config{Events: &EventsConfig{MaxEvents: 1}}, nil, "a1", "b1")
 	emit := func(n int, now time.Time) {
 		for i := 0; i < n; i++ {
-			te.emit(now, "probe_result", map[string]any{"outbound": "a1", "ok": i%2 == 0, "bytes": int64(10)})
+			te.emit(now, "probe_result", map[string]any{"outbound": "a1", "is_ok": i%2 == 0, "bytes": int64(10)})
 		}
 	}
 	emit(100, at(time.Second))
@@ -264,28 +264,28 @@ func TestReportDecisions(t *testing.T) {
 		}, false},
 		{"start with", []emitted{{"switch", map[string]any{"from": "", "to": "b1", "reason": "start_with"}}}, false},
 		{"initial set", []emitted{
-			{"provider_apply", map[string]any{"trigger": "initial", "ok": true, "changed": true, "renewed": 0}},
+			{"provider_apply", map[string]any{"trigger": "initial", "is_ok": true, "is_changed": true, "renewed": 0}},
 			{"provider_headers", map[string]any{"provider": "p", "by": "initial"}},
 			{"provider_expired", map[string]any{"provider": "p", "renewal": "saved"}},
 		}, false},
-		{"initial set refused", []emitted{{"provider_apply", map[string]any{"trigger": "initial", "ok": false, "error": "x"}}}, true},
+		{"initial set refused", []emitted{{"provider_apply", map[string]any{"trigger": "initial", "is_ok": false, "error": "x"}}}, true},
 		{"suspicion and probes", []emitted{
 			{"path_state", map[string]any{"outbound": "a1", "state": "suspect"}},
-			{"probe_result", map[string]any{"outbound": "a1", "ok": false}},
-			{"upgrade_start", map[string]any{"balancer": "auto"}},
-			{"memory_low", map[string]any{"on": true}},
+			{"probe_result", map[string]any{"outbound": "a1", "is_ok": false}},
+			{"return_start", map[string]any{"balancer": "auto"}},
+			{"memory_low", map[string]any{"is_low": true}},
 		}, false},
-		{"same provider set", []emitted{{"provider_apply", map[string]any{"ok": true, "changed": false}}}, false},
-		{"leases renewed", []emitted{{"provider_apply", map[string]any{"ok": true, "changed": false, "renewed": 2}}}, false},
+		{"same provider set", []emitted{{"provider_apply", map[string]any{"is_ok": true, "is_changed": false}}}, false},
+		{"leases renewed", []emitted{{"provider_apply", map[string]any{"is_ok": true, "is_changed": false, "renewed": 2}}}, false},
 		{"failover", []emitted{{"switch", map[string]any{"from": "a1", "to": "b1", "reason": "failover"}}}, true},
 		{"exhausted", []emitted{{"exhausted", map[string]any{"balancer": "auto"}}}, true},
-		{"failed return", []emitted{{"upgrade_failed", map[string]any{"balancer": "auto"}}}, true},
+		{"failed return", []emitted{{"return_failed", map[string]any{"balancer": "auto"}}}, true},
 		{"pinned down", []emitted{{"pinned_down", map[string]any{"balancer": "auto"}}}, true},
 		{"pinned down under the start pin", []emitted{
-			{"pinned_down", map[string]any{"balancer": "auto", "start_pinned": true}},
+			{"pinned_down", map[string]any{"balancer": "auto", "is_start_pinned": true}},
 		}, false},
-		{"provider rejected", []emitted{{"provider_apply", map[string]any{"ok": false, "error": "x"}}}, true},
-		{"provider applied", []emitted{{"provider_apply", map[string]any{"ok": true, "changed": true}}}, true},
+		{"provider rejected", []emitted{{"provider_apply", map[string]any{"is_ok": false, "error": "x"}}}, true},
+		{"provider applied", []emitted{{"provider_apply", map[string]any{"is_ok": true, "is_changed": true}}}, true},
 		{"restart needed", []emitted{{"provider_restart_needed", map[string]any{"provider": "p"}}}, true},
 		{"lease ended", []emitted{{"provider_expired", map[string]any{"provider": "p", "renewal": "refused"}}}, true},
 		{"headers refused", []emitted{{"provider_auth_failed", map[string]any{"provider": "p", "status": 401}}}, true},
@@ -319,7 +319,7 @@ func TestPinnedDownUnderTheStartPinIsNoDecision(t *testing.T) {
 		{"pin of the host over the start pin", "a1", true, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			sc := &SelectorConfig{Costs: costs("a", 1, "b", 3), StartPinned: tc.start, StartPinnedFor: int64(30 * time.Second)}
+			sc := &SelectorConfig{Costs: costs("a", 1, "b", 3), StartPinnedOutbound: tc.start, StartPinTimeout: int64(30 * time.Second)}
 			te := newReportEngine(t, nil, sc, "a1", "b1")
 			if tc.host {
 				te.pin("auto", "a1", at(time.Second))
@@ -366,7 +366,7 @@ func TestReportIsDueOnceAWindowWithDecisionsIsLongEnough(t *testing.T) {
 	// The window is past the interval, so a decision goes with the next call.
 	failoverEvent(te, at(3*time.Hour+time.Minute))
 	v := te.takeReport(false, at(3*time.Hour+2*time.Minute))
-	if v == nil || v.Reason != reportInterval || v.Index != 1 || v.WindowSec != 3*3600+120 || v.Switches != 2 {
+	if v == nil || v.Reason != reportInterval || v.Index != 1 || v.WindowMs != (3*3600+120)*1000 || v.Switches != 2 {
 		t.Fatalf("first report %+v", v)
 	}
 	failoverEvent(te, at(3*time.Hour+10*time.Minute))
@@ -374,7 +374,7 @@ func TestReportIsDueOnceAWindowWithDecisionsIsLongEnough(t *testing.T) {
 		t.Fatalf("due before the window is an hour long: %+v", v)
 	}
 	v = te.takeReport(false, at(4*time.Hour+2*time.Minute))
-	if v == nil || v.Reason != reportInterval || v.Index != 2 || v.WindowSec != 3600 || v.Switches != 1 {
+	if v == nil || v.Reason != reportInterval || v.Index != 2 || v.WindowMs != 3600000 || v.Switches != 1 {
 		t.Fatalf("second report %+v", v)
 	}
 	if v := te.takeReport(false, at(9*time.Hour)); v != nil {
@@ -520,8 +520,8 @@ func TestReportWallClockGoesBack(t *testing.T) {
 	te := newReportEngine(t, nil, nil, "a1", "b1")
 	failoverEvent(te, at(time.Second))
 	v := te.snapshotReport(t0.Add(-time.Hour))
-	if v.WindowSec != 0 || v.SessionSec != 0 {
-		t.Fatalf("window %d s, session %d s", v.WindowSec, v.SessionSec)
+	if v.WindowMs != 0 || v.SessionMs != 0 {
+		t.Fatalf("window %d s, session %d s", v.WindowMs, v.SessionMs)
 	}
 }
 
@@ -529,7 +529,7 @@ func TestReportWallClockGoesBack(t *testing.T) {
 // call with nothing due allocates nothing.
 func TestReportStaysBounded(t *testing.T) {
 	te := newReportEngine(t, nil, nil, "a1", "b1")
-	reasons := []string{"failover", "upgrade", "recovered", "candidates_changed", "retired"}
+	reasons := []string{"failover", "return", "recovered", "candidates_changed", "retired"}
 	for i := 0; i < 100_000; i++ {
 		te.emit(at(time.Second), "switch", map[string]any{
 			"from": fmt.Sprintf("p-%d", i), "to": fmt.Sprintf("p-%d", i+1), "reason": reasons[i%len(reasons)],
@@ -569,7 +569,7 @@ func TestObserverReport(t *testing.T) {
 		t.Fatal(err)
 	}
 	if snap["health_run"] != o.run || snap["report_reason"] != "snapshot" || snap["report_index"] != 1.0 ||
-		snap["window_sec"] != 1800.0 || snap["provider_restart_needed"] != 1.0 {
+		snap["window_ms"] != 1800000.0 || snap["provider_restart_needed"] != 1.0 {
 		t.Fatalf("snapshot %v", snap)
 	}
 	clock = clock.Add(30 * time.Minute)
@@ -577,7 +577,7 @@ func TestObserverReport(t *testing.T) {
 	if err := json.Unmarshal(o.TakeReport(false), &taken); err != nil {
 		t.Fatal(err)
 	}
-	if taken["report_reason"] != "interval" || taken["report_index"] != 1.0 || taken["window_sec"] != 3600.0 {
+	if taken["report_reason"] != "interval" || taken["report_index"] != 1.0 || taken["window_ms"] != 3600000.0 {
 		t.Fatalf("report %v", taken)
 	}
 	clock = clock.Add(time.Minute)
@@ -585,7 +585,7 @@ func TestObserverReport(t *testing.T) {
 	if err := json.Unmarshal(o.TakeReport(true), &final); err != nil {
 		t.Fatal(err)
 	}
-	if final["report_reason"] != "stop" || final["report_index"] != 2.0 || final["session_sec"] != 3660.0 ||
+	if final["report_reason"] != "stop" || final["report_index"] != 2.0 || final["session_ms"] != 3660000.0 ||
 		final["provider_restart_needed"] != 0.0 || final["health_run"] != o.run {
 		t.Fatalf("final report %v", final)
 	}
@@ -613,11 +613,11 @@ func readmeEventRow(t *testing.T, typ string) string {
 // A network change no balancer forgets on keeps the generation and tells
 // so, as the README describes.
 func TestIgnoredNetworkChangeDocumented(t *testing.T) {
-	te := newTestEngine(t, nil, &SelectorConfig{Costs: costs("a", 1, "b", 3), OnNetworkChange: NetworkChangeMode_IGNORE}, "a1", "b1")
+	te := newTestEngine(t, nil, &SelectorConfig{Costs: costs("a", 1, "b", 3), NetworkChangeAction: NetworkChangeMode_IGNORE}, "a1", "b1")
 	gen := te.generation
 	te.onNetworkChange("x", at(time.Second))
 	ev := te.lastOf(t, "network_change")
-	if ev.Fields["ignored"] != true || te.generation != gen {
+	if ev.Fields["is_ignored"] != true || te.generation != gen {
 		t.Fatalf("network_change %v at generation %d, want it ignored at %d", ev.Fields, te.generation, gen)
 	}
 	row := readmeEventRow(t, "network_change")
@@ -636,7 +636,7 @@ func TestReportFieldsDocumented(t *testing.T) {
 	}
 	te := newReportEngine(t, connectivityConfig(), nil, "a1", "b1")
 	failoverEvent(te, at(time.Second))
-	te.emit(at(time.Second), "provider_fetch", map[string]any{"trigger": "host", "ok": true})
+	te.emit(at(time.Second), "provider_fetch", map[string]any{"trigger": "host", "is_ok": true})
 	raw, _ := json.Marshal(te.snapshotReport(at(time.Second)))
 	var top map[string]json.RawMessage
 	_ = json.Unmarshal(raw, &top)

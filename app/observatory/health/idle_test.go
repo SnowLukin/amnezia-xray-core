@@ -31,8 +31,8 @@ type idleConn struct {
 
 func newIdleFixture(t *testing.T, after, closeIdle time.Duration) *idleFixture {
 	t.Helper()
-	cfg := &Config{Sleep: &SleepConfig{After: int64(after), CloseIdleAfter: int64(closeIdle)}}
-	sf := newSleepFixture(t, cfg, &SelectorConfig{Costs: costs("a", 1, "w", 3), SwitchWithoutProbe: true}, "a1", "w1")
+	cfg := &Config{Sleep: &SleepConfig{AfterLastUse: int64(after), CloseIdleAfter: int64(closeIdle)}}
+	sf := newSleepFixture(t, cfg, &SelectorConfig{Costs: costs("a", 1, "w", 3), SkipProbeBeforeSwitch: true}, "a1", "w1")
 	sf.o.sweeping = true
 	f := &idleFixture{sleepFixture: sf, t: t, conns: map[string]*idleConn{}}
 	f.engine(func(e *engine) { e.switchTo(e.selectors["auto"], "w1", "failover", t0) })
@@ -71,7 +71,7 @@ func (f *idleFixture) splice(name string, conn gonet.Conn) *idleConn {
 // leave moves the balancer off w1 at now.
 func (f *idleFixture) leave(now time.Time) {
 	f.now = now
-	f.engine(func(e *engine) { e.switchTo(e.selectors["auto"], "a1", "upgrade", now) })
+	f.engine(func(e *engine) { e.switchTo(e.selectors["auto"], "a1", "return", now) })
 }
 
 // finish ends at now, as the handler reports it, every connection the
@@ -117,14 +117,14 @@ func (f *idleFixture) events(typ string) []Event {
 	return out
 }
 
-// Once no balancer has chosen the outbound for sleep.after, its connections
+// Once no balancer has chosen the outbound for sleep.afterLastUse, its connections
 // that received nothing for closeIdleAfter are ended, TCP and UDP alike,
 // also one that never received anything and one past the bytes whose time
 // the tracker takes: as one idle_closed, counted in the report. Those that
 // received within closeIdleAfter are kept and ended once they fall silent
 // that long, each at the one wake planned for it. The outbound sleeps with
-// reason idle the shortest sleep.after after the last is gone, not
-// sleep.after: the ends restart no such wait. Then no wake is left.
+// reason idle the shortest sleep.afterLastUse after the last is gone, not
+// sleep.afterLastUse: the ends restart no such wait. Then no wake is left.
 func TestIdleConnectionsEndOnceLeftAndSilent(t *testing.T) {
 	const after, n = 5 * time.Minute, 2 * time.Minute
 	f := newIdleFixture(t, after, n)
@@ -142,7 +142,7 @@ func TestIdleConnectionsEndOnceLeftAndSilent(t *testing.T) {
 	f.leave(left)
 	closeAt := left.Add(after)
 	if wake := f.turn(left); !wake.Equal(closeAt) {
-		t.Fatalf("wake %v after the switch off w1, want sleep.after %v", wake.Sub(left), after)
+		t.Fatalf("wake %v after the switch off w1, want sleep.afterLastUse %v", wake.Sub(left), after)
 	}
 	f.now = left.Add(4 * time.Minute)
 	talking.r.Add(1)
@@ -157,8 +157,8 @@ func TestIdleConnectionsEndOnceLeftAndSilent(t *testing.T) {
 		t.Fatalf("idle_closed %+v, want one for the four silent connections of w1", evs)
 	}
 	var report struct {
-		IdleClosed    int64 `json:"idle_closed"`
-		PendingClosed int64 `json:"pending_closed"`
+		IdleClosed    int64 `json:"idle_closed_count"`
+		PendingClosed int64 `json:"pending_closed_count"`
 		Decisions     int64 `json:"switches"`
 	}
 	// The report shows once there was a decision: the switch off w1 is one.
@@ -172,7 +172,7 @@ func TestIdleConnectionsEndOnceLeftAndSilent(t *testing.T) {
 		t.Fatalf("wake %v after the switch, want %v: talking silent for closeIdleAfter", wake.Sub(left), want.Sub(left))
 	}
 
-	// The ends restart neither the wait for sleep.after nor the silence.
+	// The ends restart neither the wait for sleep.afterLastUse nor the silence.
 	f.finish(closeAt.Add(100 * time.Millisecond))
 	if wake := f.turn(f.now); !wake.Equal(left.Add(4*time.Minute + n)) {
 		t.Fatalf("after the ends: wake %v after the switch", wake.Sub(left))
@@ -200,7 +200,7 @@ func TestIdleConnectionsEndOnceLeftAndSilent(t *testing.T) {
 		t.Fatal("the end of the last connection did not turn the loop")
 	}
 	if wake := f.turn(ended); !wake.Equal(ended.Add(minSleepAfter)) {
-		t.Fatalf("wake %v after the last end, want the shortest sleep.after %v", wake.Sub(ended), minSleepAfter)
+		t.Fatalf("wake %v after the last end, want the shortest sleep.afterLastUse %v", wake.Sub(ended), minSleepAfter)
 	}
 	f.turn(ended.Add(minSleepAfter - time.Millisecond))
 	if len(f.sleeps(t)) != 0 {
@@ -215,7 +215,7 @@ func TestIdleConnectionsEndOnceLeftAndSilent(t *testing.T) {
 	}
 }
 
-// The check comes at the later of sleep.after after the outbound was left
+// The check comes at the later of sleep.afterLastUse after the outbound was left
 // and closeIdleAfter after the silence of the connection began, not before.
 func TestIdleCloseWaitsForBothThresholds(t *testing.T) {
 	for _, tc := range []struct {
@@ -224,7 +224,7 @@ func TestIdleCloseWaitsForBothThresholds(t *testing.T) {
 		lastRead   time.Duration
 		wantFromLt time.Duration
 	}{
-		{"sleep.after last", 5 * time.Minute, 2 * time.Minute, -5 * time.Second, 5 * time.Minute},
+		{"sleep.afterLastUse last", 5 * time.Minute, 2 * time.Minute, -5 * time.Second, 5 * time.Minute},
 		{"silence last", time.Minute, 2 * time.Minute, -5 * time.Second, 2*time.Minute - 5*time.Second},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -249,9 +249,9 @@ func TestIdleCloseWaitsForBothThresholds(t *testing.T) {
 	}
 }
 
-// A use of the outbound restarts the wait for sleep.after, here the end of
+// A use of the outbound restarts the wait for sleep.afterLastUse, here the end of
 // another connection through it: the check it brings notes the connections
-// at once and ends nothing, also one long silent, before sleep.after after
+// at once and ends nothing, also one long silent, before sleep.afterLastUse after
 // the use.
 func TestIdleCloseWaitsSleepAfterAfterAUse(t *testing.T) {
 	f := newIdleFixture(t, 5*time.Minute, time.Minute)
@@ -266,7 +266,7 @@ func TestIdleCloseWaitsSleepAfterAfterAUse(t *testing.T) {
 	other.tr.Finished(nil)
 	f.o.ProcessEnded("w1")
 	if wake := f.turn(used); !wake.Equal(used.Add(5 * time.Minute)) {
-		t.Fatalf("wake %v after the use, want sleep.after", wake.Sub(used))
+		t.Fatalf("wake %v after the use, want sleep.afterLastUse", wake.Sub(used))
 	}
 	f.turn(left.Add(5 * time.Minute))
 	f.check()
@@ -314,7 +314,7 @@ func TestIdleCloseKeepsWhatIsHeld(t *testing.T) {
 			}
 		}},
 		{"return target", func(t *testing.T, e *engine, s *selector, now time.Time) {
-			s.upgradeTarget = "w1"
+			s.returnToCheaperTarget = "w1"
 		}},
 		{"tried by a failover under way", func(t *testing.T, e *engine, s *selector, now time.Time) {
 			s.failoverTried = map[string]bool{"w1": true, "w2": true}
@@ -362,7 +362,7 @@ func TestIdleCloseKeepsWhatIsHeld(t *testing.T) {
 }
 
 // A balancer that chooses the outbound again and leaves it restarts the
-// wait: the check comes sleep.after after the second switch off it.
+// wait: the check comes sleep.afterLastUse after the second switch off it.
 func TestIdleCloseCountsFromTheLastSwitchOff(t *testing.T) {
 	f := newIdleFixture(t, time.Minute, time.Minute)
 	f.now = at(time.Second)
@@ -376,7 +376,7 @@ func TestIdleCloseCountsFromTheLastSwitchOff(t *testing.T) {
 	left := at(80 * time.Second)
 	f.leave(left)
 	if wake := f.turn(left); !wake.Equal(left.Add(time.Minute)) {
-		t.Fatalf("wake %v after the second switch off, want sleep.after", wake.Sub(left))
+		t.Fatalf("wake %v after the second switch off, want sleep.afterLastUse", wake.Sub(left))
 	}
 	f.turn(at(10*time.Second + time.Minute))
 	f.check()
@@ -488,7 +488,7 @@ func TestIdleCloseOfSplicedConnectionsByTheKernel(t *testing.T) {
 
 // Once a check ended its idle connections, the outbound sleeps soon after
 // the rest are gone. A new connection through it is a use like any other:
-// after its end the outbound waits sleep.after again.
+// after its end the outbound waits sleep.afterLastUse again.
 func TestIdleCloseThenANewConnectionWaitsSleepAfter(t *testing.T) {
 	f := newIdleFixture(t, time.Minute, time.Minute)
 	f.now = at(time.Second)
@@ -508,14 +508,14 @@ func TestIdleCloseThenANewConnectionWaitsSleepAfter(t *testing.T) {
 	f.conns["new"].tr.Finished(context.Canceled)
 	f.o.ProcessEnded("w1")
 	if wake := f.turn(ended); !wake.Equal(ended.Add(time.Minute)) {
-		t.Fatalf("wake %v after the end of the new connection, want sleep.after", wake.Sub(ended))
+		t.Fatalf("wake %v after the end of the new connection, want sleep.afterLastUse", wake.Sub(ended))
 	}
 	if len(f.sleeps(t)) != 0 {
 		t.Fatal("slept at once after a new connection")
 	}
 	f.turn(ended.Add(time.Minute))
 	if slept := f.sleeps(t); len(slept) != 1 || slept[0].Fields["reason"] != "idle" {
-		t.Fatalf("sleeps %+v, want one sleep.after after the new connection", slept)
+		t.Fatalf("sleeps %+v, want one sleep.afterLastUse after the new connection", slept)
 	}
 }
 
@@ -559,8 +559,8 @@ func TestIdleCloseTakenAfterThePlan(t *testing.T) {
 
 // An outbound that cannot sleep keeps its connections.
 func TestIdleCloseOnlyForSleepers(t *testing.T) {
-	cfg := &Config{Sleep: &SleepConfig{After: int64(time.Minute), CloseIdleAfter: int64(time.Minute)}}
-	f := newSleepFixture(t, cfg, &SelectorConfig{Costs: costs("a", 1, "w", 3), SwitchWithoutProbe: true}, "a1", "a2", "w1")
+	cfg := &Config{Sleep: &SleepConfig{AfterLastUse: int64(time.Minute), CloseIdleAfter: int64(time.Minute)}}
+	f := newSleepFixture(t, cfg, &SelectorConfig{Costs: costs("a", 1, "w", 3), SkipProbeBeforeSwitch: true}, "a1", "a2", "w1")
 	f.o.sweeping = true
 	f.engine(func(e *engine) { e.switchTo(e.selectors["auto"], "a2", "failover", t0) })
 	f.turn(t0)
@@ -571,7 +571,7 @@ func TestIdleCloseOnlyForSleepers(t *testing.T) {
 	r.Add(100)
 	f.o.ProcessStarted("a2")
 	f.now = at(10 * time.Second)
-	f.engine(func(e *engine) { e.switchTo(e.selectors["auto"], "a1", "upgrade", f.now) })
+	f.engine(func(e *engine) { e.switchTo(e.selectors["auto"], "a1", "return", f.now) })
 	for _, now := range []time.Time{at(10 * time.Second), at(time.Hour)} {
 		if wake := f.turn(now); !wake.IsZero() {
 			t.Fatalf("a wake %v for an outbound that cannot sleep", wake.Sub(now))

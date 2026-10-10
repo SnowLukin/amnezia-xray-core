@@ -4,8 +4,6 @@ import (
 	"encoding/json"
 	"testing"
 	"time"
-
-	"github.com/xtls/xray-core/app/router"
 )
 
 var t0 = time.Unix(1_800_000_000, 0)
@@ -52,16 +50,28 @@ func (te *testEngine) failN(n int, tag string, kind failureKind, now time.Time) 
 	}
 }
 
-func costs(pairs ...any) []*router.StrategyWeight {
-	var out []*router.StrategyWeight
+func costs(pairs ...any) []*CostEntry {
+	var out []*CostEntry
 	for i := 0; i < len(pairs); i += 2 {
-		out = append(out, &router.StrategyWeight{Match: pairs[i].(string), Value: float32(pairs[i+1].(int))})
+		out = append(out, &CostEntry{Match: pairs[i].(string), Cost: float32(pairs[i+1].(int))})
 	}
 	return out
 }
 
 func quarantine(d time.Duration) *ScheduleConfig {
-	return &ScheduleConfig{Quarantine: &Backoff{Initial: int64(d)}, PauseWhenIdle: int64(time.Hour)}
+	return &ScheduleConfig{Quarantine: &Backoff{InitialDelay: int64(d)}, IdleAfter: int64(time.Hour)}
+}
+
+func TestZeroSuspectCooldownStaysOffAfterFalseAlarms(t *testing.T) {
+	te := newTestEngine(t, &Config{Schedule: &ScheduleConfig{SuspectCooldown: -1}}, nil, "a1")
+	p := te.path("a1")
+	for i := range 3 {
+		now := at(time.Duration(i+1) * time.Second)
+		te.backOffWeakEvidence(p, now)
+		if p.cooldownUntil.After(now) {
+			t.Fatalf("false alarm %d set cooldown to %v", i+1, p.cooldownUntil.Sub(now))
+		}
+	}
 }
 
 // run ticks the engine at now, answers every started probe with the given
@@ -110,7 +120,7 @@ func TestStartPicksCheapestWithoutProbing(t *testing.T) {
 }
 
 func TestStartWithPassedOutbound(t *testing.T) {
-	te := newTestEngine(t, nil, &SelectorConfig{Costs: costs("a", 1, "b", 3), StartWith: "b1"}, "a1", "b1")
+	te := newTestEngine(t, nil, &SelectorConfig{Costs: costs("a", 1, "b", 3), StartOutbound: "b1"}, "a1", "b1")
 	if te.sel.current() != "b1" || te.sel.pinned != "" {
 		t.Fatalf("start %q pinned %q, want b1 unpinned", te.sel.current(), te.sel.pinned)
 	}
@@ -246,7 +256,7 @@ func TestDownOutboundAsksToEndWaitingConnections(t *testing.T) {
 }
 
 func TestWaitingConnectionsAreKeptWhenAskedOrWhenTheNetworkIsInDoubt(t *testing.T) {
-	cfg := &Config{Passive: &PassiveConfig{KeepPendingOnDown: true}}
+	cfg := &Config{Passive: &PassiveConfig{ShouldKeepPendingOnDown: true}}
 	te := newTestEngine(t, cfg, &SelectorConfig{Costs: costs("a", 1, "b", 3)}, "a1", "b1")
 	te.failN(3, "a1", failDial, at(0))
 	te.run(t, at(time.Second), nil)
@@ -308,7 +318,7 @@ func TestWeakEvidenceOnOutboundNotChosenIsDropped(t *testing.T) {
 
 func TestChosenAgainAfterQuarantineIsJudgedAgain(t *testing.T) {
 	cfg := &Config{Schedule: quarantine(30 * time.Second)}
-	te := newTestEngine(t, cfg, &SelectorConfig{Costs: costs("a", 1, "b", 3), SwitchWithoutProbe: true}, "a1", "b1")
+	te := newTestEngine(t, cfg, &SelectorConfig{Costs: costs("a", 1, "b", 3), SkipProbeBeforeSwitch: true}, "a1", "b1")
 	te.failN(3, "a1", failDial, at(0))
 	if te.sel.current() != "b1" {
 		t.Fatalf("setup: want b1, got %q", te.sel.current())
@@ -347,7 +357,7 @@ func TestSharedCandidateAnswersEveryBalancer(t *testing.T) {
 }
 
 func TestExhaustedThenRecheckRecovers(t *testing.T) {
-	cfg := &Config{Schedule: &ScheduleConfig{Quarantine: &Backoff{Initial: int64(30 * time.Second), Multiplier: 2, Max: int64(time.Hour)}}}
+	cfg := &Config{Schedule: &ScheduleConfig{Quarantine: &Backoff{InitialDelay: int64(30 * time.Second), Multiplier: 2, MaxDelay: int64(time.Hour)}}}
 	te := newTestEngine(t, cfg, &SelectorConfig{Costs: costs("a", 1, "b", 3)}, "a1", "b1")
 	te.failN(3, "a1", failDial, at(0))
 	te.run(t, at(time.Second), map[string]bool{"b1": false})
@@ -371,7 +381,7 @@ func TestExhaustedThenRecheckRecovers(t *testing.T) {
 }
 
 func TestIdleExhaustedDoesNotProbe(t *testing.T) {
-	cfg := &Config{Schedule: &ScheduleConfig{PauseWhenIdle: int64(time.Minute), Quarantine: &Backoff{Initial: int64(10 * time.Second)}}}
+	cfg := &Config{Schedule: &ScheduleConfig{IdleAfter: int64(time.Minute), Quarantine: &Backoff{InitialDelay: int64(10 * time.Second)}}}
 	te := newTestEngine(t, cfg, &SelectorConfig{Costs: costs("a", 1)}, "a1")
 	te.failN(3, "a1", failDial, at(0))
 	if jobs, _ := te.tick(at(2 * time.Hour)); len(jobs) != 0 {
@@ -379,18 +389,18 @@ func TestIdleExhaustedDoesNotProbe(t *testing.T) {
 	}
 }
 
-func upgradeConfig() *SelectorConfig {
+func returnToCheaperConfig() *SelectorConfig {
 	return &SelectorConfig{
-		Costs:   costs("a", 1, "b", 3),
-		MinHold: int64(time.Minute),
-		Upgrade: &UpgradeConfig{
+		Costs:       costs("a", 1, "b", 3),
+		MinHoldTime: int64(time.Minute),
+		ReturnToCheaper: &ReturnToCheaperConfig{
 			Interval:          int64(5 * time.Minute),
-			FixedPhase:        true,
-			Successes:         3,
-			Spacing:           int64(20 * time.Second),
+			SkipRandomPhase:   true,
+			ProbesToReturn:    3,
+			ProbeInterval:     int64(20 * time.Second),
 			PenaltyWindow:     int64(5 * time.Minute),
 			PenaltyMultiplier: 2,
-			MaxPenalty:        int64(time.Hour),
+			MaxPenaltyDelay:   int64(time.Hour),
 		},
 	}
 }
@@ -404,30 +414,30 @@ func failoverToB(t *testing.T, te *testEngine, now time.Time) {
 	}
 }
 
-func TestUpgradeNeedsSuccessesInARow(t *testing.T) {
-	te := newTestEngine(t, &Config{Schedule: quarantine(30 * time.Second)}, upgradeConfig(), "a1", "b1")
+func TestReturnToCheaperNeedsSuccessesInARow(t *testing.T) {
+	te := newTestEngine(t, &Config{Schedule: quarantine(30 * time.Second)}, returnToCheaperConfig(), "a1", "b1")
 	failoverToB(t, te, at(0))
 	// Before the interval nothing happens.
 	if jobs, _ := te.tick(at(4 * time.Minute)); len(jobs) != 0 {
-		t.Fatalf("upgrade before interval: %+v", jobs)
+		t.Fatalf("returnToCheaper before interval: %+v", jobs)
 	}
-	var upgrades []time.Time
+	var returnToCheapers []time.Time
 	for now := at(5 * time.Minute); now.Before(at(10*time.Minute)) && te.sel.current() != "a1"; now = now.Add(time.Second) {
 		for _, j := range te.run(t, now, nil) {
-			if j.reason == reasonUpgrade {
-				upgrades = append(upgrades, now)
+			if j.reason == reasonReturnToCheaper {
+				returnToCheapers = append(returnToCheapers, now)
 			}
 		}
 	}
 	if te.sel.current() != "a1" {
 		t.Fatalf("did not return to a1")
 	}
-	if len(upgrades) != 3 {
-		t.Fatalf("returned after %d probes, want 3", len(upgrades))
+	if len(returnToCheapers) != 3 {
+		t.Fatalf("returned after %d probes, want 3", len(returnToCheapers))
 	}
-	for i := 1; i < len(upgrades); i++ {
-		if gap := upgrades[i].Sub(upgrades[i-1]); gap < 13*time.Second {
-			t.Fatalf("upgrade probes %v apart, want about 20s", gap)
+	for i := 1; i < len(returnToCheapers); i++ {
+		if gap := returnToCheapers[i].Sub(returnToCheapers[i-1]); gap < 13*time.Second {
+			t.Fatalf("returnToCheaper probes %v apart, want about 20s", gap)
 		}
 	}
 	if te.sel.returnedTo != "a1" {
@@ -435,8 +445,8 @@ func TestUpgradeNeedsSuccessesInARow(t *testing.T) {
 	}
 }
 
-func TestUpgradeFailureQuarantinesAndPenaltyDelaysNextReturn(t *testing.T) {
-	te := newTestEngine(t, &Config{Schedule: quarantine(30 * time.Second)}, upgradeConfig(), "a1", "b1")
+func TestReturnToCheaperFailureQuarantinesAndPenaltyDelaysNextReturn(t *testing.T) {
+	te := newTestEngine(t, &Config{Schedule: quarantine(30 * time.Second)}, returnToCheaperConfig(), "a1", "b1")
 	failoverToB(t, te, at(0))
 	now := at(6 * time.Minute)
 	for i := 0; i < 10 && te.sel.current() != "a1"; i++ {
@@ -456,7 +466,7 @@ func TestUpgradeFailureQuarantinesAndPenaltyDelaysNextReturn(t *testing.T) {
 	for now := failAt.Add(time.Minute); now.Before(failAt.Add(20 * time.Minute)); now = now.Add(time.Second) {
 		te.tick(now)
 		for _, ev := range te.eventTypes() {
-			if ev == "upgrade_delayed" {
+			if ev == "return_delayed" {
 				delayed = true
 			}
 		}
@@ -470,7 +480,7 @@ func TestUpgradeFailureQuarantinesAndPenaltyDelaysNextReturn(t *testing.T) {
 }
 
 func TestPenaltyClearsAfterReturnHolds(t *testing.T) {
-	te := newTestEngine(t, &Config{Schedule: quarantine(30 * time.Second)}, upgradeConfig(), "a1", "b1")
+	te := newTestEngine(t, &Config{Schedule: quarantine(30 * time.Second)}, returnToCheaperConfig(), "a1", "b1")
 	te.sel.penalty["a1"] = 4
 	te.sel.returnedTo = "a1"
 	te.sel.returnedAt = at(0)
@@ -484,12 +494,12 @@ func TestPenaltyClearsAfterReturnHolds(t *testing.T) {
 	}
 }
 
-func TestUpgradeTargetLeavingCandidatesIsDropped(t *testing.T) {
-	te := newTestEngine(t, &Config{Schedule: quarantine(30 * time.Second)}, upgradeConfig(), "a1", "b1")
+func TestReturnToCheaperTargetLeavingCandidatesIsDropped(t *testing.T) {
+	te := newTestEngine(t, &Config{Schedule: quarantine(30 * time.Second)}, returnToCheaperConfig(), "a1", "b1")
 	failoverToB(t, te, at(0))
 	te.run(t, at(6*time.Minute), nil)
-	if te.sel.upgradeTarget != "a1" {
-		t.Fatalf("setup: upgrade target %q", te.sel.upgradeTarget)
+	if te.sel.returnToCheaperTarget != "a1" {
+		t.Fatalf("setup: returnToCheaper target %q", te.sel.returnToCheaperTarget)
 	}
 	te.updateCandidates(te.sel, []string{"b1"}, at(6*time.Minute+time.Second))
 	for now := at(6 * time.Minute); now.Before(at(8 * time.Minute)); now = now.Add(5 * time.Second) {
@@ -527,38 +537,38 @@ func TestNetworkChangeForgetsAndRemembersPerNetwork(t *testing.T) {
 	}
 }
 
-func TestUnknownNetworkSchedulesUpgradeKnownDoesNot(t *testing.T) {
-	sc := &SelectorConfig{Costs: costs("a", 1, "b", 3), MinHold: int64(time.Second),
-		Upgrade: &UpgradeConfig{Successes: 1}}
+func TestUnknownNetworkSchedulesReturnToCheaperKnownDoesNot(t *testing.T) {
+	sc := &SelectorConfig{Costs: costs("a", 1, "b", 3), MinHoldTime: int64(time.Second),
+		ReturnToCheaper: &ReturnToCheaperConfig{ProbesToReturn: 1}}
 	te := newTestEngine(t, nil, sc, "a1", "b1")
 	failoverToB(t, te, at(0))
 	soon := func(now time.Time) bool {
-		return !te.sel.upgradeAt.IsZero() && !te.sel.upgradeAt.After(now.Add(time.Second))
+		return !te.sel.returnToCheaperAt.IsZero() && !te.sel.returnToCheaperAt.After(now.Add(time.Second))
 	}
 	te.onNetworkChange("cafe", at(time.Minute))
 	if !soon(at(time.Minute)) {
-		t.Fatalf("unknown network did not schedule an upgrade at once")
+		t.Fatalf("unknown network did not schedule an returnToCheaper at once")
 	}
 	// b1 works in the cafe, so the cafe becomes a known network.
 	te.onSuccess("b1", at(70*time.Second))
 	te.onNetworkChange("office", at(2*time.Minute))
 	te.onNetworkChange("cafe", at(3*time.Minute))
 	if soon(at(3 * time.Minute)) {
-		t.Fatalf("known network scheduled an upgrade at once")
+		t.Fatalf("known network scheduled an returnToCheaper at once")
 	}
-	if te.sel.upgradeAt.IsZero() {
-		t.Fatalf("known network lost the regular upgrade timer")
+	if te.sel.returnToCheaperAt.IsZero() {
+		t.Fatalf("known network lost the regular returnToCheaper timer")
 	}
-	sc.Upgrade.AllNetworks = true
+	sc.ReturnToCheaper.TryOnAllNetworks = true
 	te.addSelector("auto", newSelectorSettings(sc))
 	te.onNetworkChange("cafe", at(4*time.Minute))
 	if !soon(at(4 * time.Minute)) {
-		t.Fatalf("with allNetworks a known network did not schedule an upgrade at once")
+		t.Fatalf("with allNetworks a known network did not schedule an returnToCheaper at once")
 	}
 }
 
 func TestIgnoreNetworkChangeKeepsState(t *testing.T) {
-	te := newTestEngine(t, nil, &SelectorConfig{Costs: costs("a", 1, "b", 3), OnNetworkChange: NetworkChangeMode_IGNORE}, "a1", "b1")
+	te := newTestEngine(t, nil, &SelectorConfig{Costs: costs("a", 1, "b", 3), NetworkChangeAction: NetworkChangeMode_IGNORE}, "a1", "b1")
 	te.failN(3, "b1", failDial, at(0))
 	te.onNetworkChange("x", at(time.Second))
 	if te.path("b1").status != statusDown {
@@ -567,7 +577,7 @@ func TestIgnoreNetworkChangeKeepsState(t *testing.T) {
 }
 
 func TestIgnoreNetworkChangeKeepsProbesInFlight(t *testing.T) {
-	te := newTestEngine(t, nil, &SelectorConfig{Costs: costs("a", 1, "b", 3), OnNetworkChange: NetworkChangeMode_IGNORE}, "a1", "b1")
+	te := newTestEngine(t, nil, &SelectorConfig{Costs: costs("a", 1, "b", 3), NetworkChangeAction: NetworkChangeMode_IGNORE}, "a1", "b1")
 	suspectWeak(te, "a1", 0)
 	jobs, _ := te.tick(at(3 * time.Second))
 	if len(jobs) != 1 || jobs[0].reason != reasonConfirm {
@@ -581,7 +591,7 @@ func TestIgnoreNetworkChangeKeepsProbesInFlight(t *testing.T) {
 }
 
 func TestProbeBudget(t *testing.T) {
-	cfg := &Config{Schedule: &ScheduleConfig{Spacing: int64(2 * time.Second), SpacingJitter: 0.0001, PerServerNamePerMinute: 3, PerMinute: 100}}
+	cfg := &Config{Schedule: &ScheduleConfig{MinProbeInterval: int64(2 * time.Second), ProbeJitterFraction: 0.0001, ProbesPerServerNamePerMinute: 3, ProbesPerMinute: 100}}
 	tags := []string{"a1", "a2", "a3", "a4", "a5"}
 	te := newTestEngine(t, cfg, &SelectorConfig{}, tags...)
 	// Five addresses behind one server name, as several IPs of one variant.
@@ -623,7 +633,7 @@ func TestProbeBudget(t *testing.T) {
 }
 
 func TestPinnedStaysUntilRelease(t *testing.T) {
-	te := newTestEngine(t, nil, &SelectorConfig{Costs: costs("a", 1, "b", 3), StartPinned: "a1"}, "a1", "b1")
+	te := newTestEngine(t, nil, &SelectorConfig{Costs: costs("a", 1, "b", 3), StartPinnedOutbound: "a1"}, "a1", "b1")
 	te.failN(3, "a1", failDial, at(0))
 	te.run(t, at(time.Second), nil)
 	if te.sel.current() != "a1" {
@@ -637,7 +647,7 @@ func TestPinnedStaysUntilRelease(t *testing.T) {
 }
 
 func TestStartPinReleasesItselfAfterItsTime(t *testing.T) {
-	sc := &SelectorConfig{Costs: costs("a", 1, "b", 3), StartPinned: "a1", StartPinnedFor: int64(30 * time.Second)}
+	sc := &SelectorConfig{Costs: costs("a", 1, "b", 3), StartPinnedOutbound: "a1", StartPinTimeout: int64(30 * time.Second)}
 	te := newTestEngine(t, nil, sc, "a1", "b1")
 	te.failN(3, "a1", failDial, at(time.Second))
 	te.run(t, at(10*time.Second), nil)
@@ -974,7 +984,7 @@ func TestStatusIsJSON(t *testing.T) {
 
 func TestProtoZeroValuesMatchJSONDefaults(t *testing.T) {
 	s := newSelectorSettings(&SelectorConfig{})
-	if !s.switchAfterProbe || !s.upgrade.randomPhase || !s.upgrade.onNetworkChange || !s.upgrade.unknownNetworksOnly {
+	if !s.switchAfterProbe || !s.returnToCheaper.randomPhase || !s.returnToCheaper.onNetworkChange || !s.returnToCheaper.unknownNetworksOnly {
 		t.Fatalf("zero config: %+v", s)
 	}
 	if !newSettings(&Config{}).remember {

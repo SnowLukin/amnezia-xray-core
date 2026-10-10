@@ -173,8 +173,9 @@ type refreshOutcome struct {
 	ok  bool
 	err string
 	// The set differs from the previous one and was applied.
-	changed       bool
-	nextRefreshIn time.Duration
+	changed          bool
+	nextRefreshIn    time.Duration
+	hasNextRefreshIn bool
 	// The backend asked to wait this long, at most backoff.max.
 	retryAfter time.Duration
 	// The HTTP status of the last attempt or 0, and the class of the
@@ -210,7 +211,7 @@ func (e *engine) tickProviders(now time.Time) ([]*refreshJob, time.Time) {
 		if !p.started {
 			p.started = true
 			p.setAt = now
-			e.scheduleRefresh(p, 0, now)
+			e.scheduleRefresh(p, 0, false, now)
 		}
 		// A lease ends during a request as well.
 		soonest(e.tickLeases(p, now, idle))
@@ -499,16 +500,16 @@ func (e *engine) beginRefresh(p *provider, t refreshTrigger, now time.Time) *ref
 // the host kept is as old as it was when it was saved: maxAge and
 // nextRefreshIn count from when the backend sent it, so an old set is
 // refreshed soon and a fresh one is not asked for again at the start.
-func (e *engine) startFromInitial(p *provider, age, nextRefreshIn time.Duration, now time.Time) {
+func (e *engine) startFromInitial(p *provider, age, nextRefreshIn time.Duration, hasNextRefreshIn bool, now time.Time) {
 	p.started = true
 	p.setAt = now.Add(-age)
-	e.scheduleRefresh(p, max(nextRefreshIn-age, 0), now)
+	e.scheduleRefresh(p, max(nextRefreshIn-age, 0), hasNextRefreshIn, now)
 }
 
-func (e *engine) scheduleRefresh(p *provider, hint time.Duration, now time.Time) {
+func (e *engine) scheduleRefresh(p *provider, hint time.Duration, hasHint bool, now time.Time) {
 	p.nextAt = time.Time{}
 	switch {
-	case hint > 0:
+	case hasHint || hint > 0:
 		p.nextAt = now.Add(e.jitter(hint, p.cfg.jitter))
 		p.nextTrigger = triggerNextRefresh
 	case p.cfg.interval > 0:
@@ -532,7 +533,7 @@ func (e *engine) onRefreshDone(j *refreshJob, r refreshOutcome, now time.Time) {
 		if !p.aboveSince.IsZero() {
 			p.aboveSince = now
 		}
-		e.scheduleRefresh(p, r.nextRefreshIn, now)
+		e.scheduleRefresh(p, r.nextRefreshIn, r.hasNextRefreshIn, now)
 		// The same dead set again: back off as after a failure, so an
 		// exhausted balancer does not fetch it every exhaustedMinInterval.
 		if r.changed || j.trigger != triggerExhausted {

@@ -11,8 +11,8 @@ import (
 
 // parallelConfig allows n probes at a time; an outbound found down rests a minute.
 func parallelConfig(n int) *Config {
-	return &Config{Schedule: &ScheduleConfig{Concurrent: int32(n), Quarantine: &Backoff{Initial: int64(time.Minute)},
-		PauseWhenIdle: int64(time.Hour)}}
+	return &Config{Schedule: &ScheduleConfig{MaxConcurrentProbes: int32(n), Quarantine: &Backoff{InitialDelay: int64(time.Minute)},
+		IdleAfter: int64(time.Hour)}}
 }
 
 func (te *testEngine) serverNames(names map[string]string) {
@@ -81,7 +81,7 @@ func TestFailoverProbesCandidatesOfDifferentServerNamesTogether(t *testing.T) {
 func TestOneServerNameIsNeverProbedTwiceAtOnce(t *testing.T) {
 	cfg := parallelConfig(2)
 	// Room in the budget of the server name for the probes of the host too.
-	cfg.Schedule.PerServerNamePerMinute = 10
+	cfg.Schedule.ProbesPerServerNamePerMinute = 10
 	te := newTestEngine(t, cfg, &SelectorConfig{Costs: costs("a", 1, "b", 3)}, "a1", "a2", "a3", "b1")
 	te.serverNames(map[string]string{"a1": "r.example", "a2": "r.example", "a3": "r.example", "b1": "b.example"})
 	suspectWeak(te, "a1", 0)
@@ -206,7 +206,7 @@ func TestOneProbeAtATimeTriesCandidatesInTurn(t *testing.T) {
 // name is not passed by a dearer one.
 func TestOneProbeAtATimeKeepsTheTurnOfACandidateWaitingForItsBudget(t *testing.T) {
 	cfg := parallelConfig(1)
-	cfg.Schedule.PerServerNamePerMinute = 1
+	cfg.Schedule.ProbesPerServerNamePerMinute = 1
 	te := newTestEngine(t, cfg, &SelectorConfig{Costs: costs("a", 1, "b", 3)}, "a1", "a2", "b1")
 	te.serverNames(map[string]string{"a1": "r.example", "a2": "r.example", "b1": "b1.example"})
 	suspectWeak(te, "a1", 0)
@@ -229,7 +229,7 @@ func TestOneProbeAtATimeKeepsTheTurnOfACandidateWaitingForItsBudget(t *testing.T
 }
 
 func TestLazyCandidateWaitsForEverythingCheaperInParallel(t *testing.T) {
-	sc := &SelectorConfig{Costs: costs("a", 1, "b", 3, "c", 50), Lazy: []string{"c"}}
+	sc := &SelectorConfig{Costs: costs("a", 1, "b", 3, "c", 50), LazyOutbounds: []string{"c"}}
 	te := newTestEngine(t, parallelConfig(3), sc, "a1", "a2", "b1", "c1")
 	te.serverNames(map[string]string{"a1": "a1.example", "a2": "a2.example", "b1": "b1.example", "c1": "c1.example"})
 	te.failN(3, "a1", failDial, at(0))
@@ -266,10 +266,10 @@ func TestPinDuringFailoverProbeHolds(t *testing.T) {
 // The host pins the outbound the balancer is on while a return to a cheaper
 // one is being probed: the probes that pass do not move it off the pin.
 func TestPinDuringReturnProbeHolds(t *testing.T) {
-	te := newTestEngine(t, &Config{Schedule: quarantine(30 * time.Second)}, upgradeConfig(), "a1", "b1")
+	te := newTestEngine(t, &Config{Schedule: quarantine(30 * time.Second)}, returnToCheaperConfig(), "a1", "b1")
 	failoverToB(t, te, at(0))
 	jobs, _ := te.tick(at(6 * time.Minute))
-	if len(jobs) != 1 || jobs[0].reason != reasonUpgrade || jobs[0].tag != "a1" {
+	if len(jobs) != 1 || jobs[0].reason != reasonReturnToCheaper || jobs[0].tag != "a1" {
 		t.Fatalf("setup: probes %+v, want the return to a1", jobs)
 	}
 	te.pin("auto", "b1", at(6*time.Minute+time.Second))
@@ -285,7 +285,7 @@ func TestPinDuringReturnProbeHolds(t *testing.T) {
 // A pin drops the failover probes still waiting for their turn.
 func TestPinDropsWaitingFailoverProbes(t *testing.T) {
 	cfg := parallelConfig(2)
-	cfg.Schedule.PerMinute = 1
+	cfg.Schedule.ProbesPerMinute = 1
 	te := newTestEngine(t, cfg, &SelectorConfig{Costs: costs("a", 1, "b", 3)}, "a1", "a2", "b1")
 	te.serverNames(map[string]string{"a1": "a1.example", "a2": "a2.example", "b1": "b1.example"})
 	te.failN(3, "a1", failDial, at(0))
@@ -302,7 +302,7 @@ func TestPinDropsWaitingFailoverProbes(t *testing.T) {
 // is not probed any more.
 func TestWaitingCandidateIsDroppedAfterTheSwitch(t *testing.T) {
 	cfg := parallelConfig(2)
-	cfg.Schedule.PerMinute = 1
+	cfg.Schedule.ProbesPerMinute = 1
 	te := newTestEngine(t, cfg, &SelectorConfig{Costs: costs("a", 1, "b", 3)}, "a1", "a2", "b1")
 	te.serverNames(map[string]string{"a1": "a1.example", "a2": "a2.example", "b1": "b1.example"})
 	te.failN(3, "a1", failDial, at(0))
@@ -376,12 +376,12 @@ func brief(t *testing.T, te *testEngine) []string {
 		case "probe_start":
 			out = append(out, fmt.Sprintf("start %v %v", f["reason"], f["outbound"]))
 		case "probe_result":
-			out = append(out, fmt.Sprintf("result %v %v %v", f["reason"], f["outbound"], f["ok"]))
+			out = append(out, fmt.Sprintf("result %v %v %v", f["reason"], f["outbound"], f["is_ok"]))
 		case "connectivity":
-			out = append(out, fmt.Sprintf("connectivity %v", f["ok"]))
+			out = append(out, fmt.Sprintf("connectivity %v", f["is_ok"]))
 		case "switch":
 			out = append(out, fmt.Sprintf("switch %v>%v %v", f["from"], f["to"], f["reason"]))
-		case "exhausted", "pinned_down", "upgrade_penalty", "upgrade_delayed", "upgrade_start":
+		case "exhausted", "pinned_down", "return_penalty", "return_delayed", "return_start":
 			out = append(out, ev.Type)
 		}
 	}
@@ -440,8 +440,8 @@ func TestConfirmingProbeThatPassesAfterTheDownRescuesThePath(t *testing.T) {
 			t.Fatalf("at %v connections of a1 were marked to end: %+v", now.Sub(t0), downs)
 		}
 	}
-	hold, spread := te.sel.cfg.minHold, min(te.sel.cfg.upgrade.interval, returnSpread)
-	if wait := te.sel.upgradeAt.Sub(switched); wait < hold || wait > hold+spread {
+	hold, spread := te.sel.cfg.minHold, min(te.sel.cfg.returnToCheaper.interval, returnSpread)
+	if wait := te.sel.returnToCheaperAt.Sub(switched); wait < hold || wait > hold+spread {
 		t.Fatalf("return %v after the failover, want within %v after minHold %v", wait, spread, hold)
 	}
 }
@@ -534,11 +534,11 @@ func TestRescueRestoresTheQuarantineLevel(t *testing.T) {
 
 // A balancer that moved away on the false down stays where it moved. It
 // returns as any return does: after minHold, at once with a fixed phase,
-// and through the upgrade probes, without the penalty the down gave the
+// and through the returnToCheaper probes, without the penalty the down gave the
 // return it had just made to a1.
 func TestRescueLeavesTheBalancerWhereItMoved(t *testing.T) {
-	sc := upgradeConfig()
-	sc.SwitchWithoutProbe = true
+	sc := returnToCheaperConfig()
+	sc.SkipProbeBeforeSwitch = true
 	te := newTestEngine(t, nil, sc, "a1", "b1")
 	// The balancer has just returned to a1.
 	te.sel.returnedTo, te.sel.returnedAt = "a1", t0
@@ -558,14 +558,14 @@ func TestRescueLeavesTheBalancerWhereItMoved(t *testing.T) {
 		t.Fatalf("penalty of a1 %v, return %q at %v; want none, as before the down", te.sel.penaltyFor("a1"),
 			te.sel.returnedTo, te.sel.returnedAt.Sub(t0))
 	}
-	// The failover planned the return for upgrade.interval later; a1 did
+	// The failover planned the return for returnToCheaper.interval later; a1 did
 	// not fail, so it waits only for minHold.
-	hold, spacing := time.Duration(sc.MinHold), time.Duration(sc.Upgrade.Spacing)
+	hold, spacing := time.Duration(sc.MinHoldTime), time.Duration(sc.ReturnToCheaper.ProbeInterval)
 	var back time.Time
 	probes := 0
 	for now := at(4 * time.Second); now.Before(at(5*time.Minute)) && back.IsZero(); now = now.Add(time.Second) {
 		for _, j := range te.run(t, now, nil) {
-			if j.reason != reasonUpgrade {
+			if j.reason != reasonReturnToCheaper {
 				continue
 			}
 			if now.Before(moved.Add(hold)) {
@@ -578,7 +578,7 @@ func TestRescueLeavesTheBalancerWhereItMoved(t *testing.T) {
 		}
 	}
 	got := brief(t, te)
-	if back.IsZero() || probes != int(sc.Upgrade.Successes) || slices.Contains(got, "upgrade_delayed") {
+	if back.IsZero() || probes != int(sc.ReturnToCheaper.ProbesToReturn) || slices.Contains(got, "return_delayed") {
 		t.Fatalf("back on a1 %v after the move, %d return probes; events %v", back.Sub(moved), probes, got)
 	}
 	if took := back.Sub(moved); took > hold+3*spacing+10*time.Second {
@@ -677,8 +677,8 @@ func TestReturnAfterARescueIsSpread(t *testing.T) {
 			waits := map[time.Duration]bool{}
 			const seeds = 8
 			for seed := int64(1); seed <= seeds; seed++ {
-				sc := &SelectorConfig{Costs: costs("a", 1, "b", 3), SwitchWithoutProbe: tc.moved,
-					Upgrade: &UpgradeConfig{FixedPhase: tc.fixed}}
+				sc := &SelectorConfig{Costs: costs("a", 1, "b", 3), SkipProbeBeforeSwitch: tc.moved,
+					ReturnToCheaper: &ReturnToCheaperConfig{SkipRandomPhase: tc.fixed}}
 				te := newSeededTestEngine(t, seed, nil, sc, "a1", "b1")
 				confirm := confirmRunning(t, te)
 				strongDown(t, te, at(3*time.Second))
@@ -689,8 +689,8 @@ func TestReturnAfterARescueIsSpread(t *testing.T) {
 				if te.sel.current() != "b1" {
 					t.Fatalf("seed %d: setup: the balancer is on %q, want b1", seed, te.sel.current())
 				}
-				hold, spread := te.sel.cfg.minHold, min(te.sel.cfg.upgrade.interval, returnSpread)
-				wait := te.sel.upgradeAt.Sub(te.sel.activeSince)
+				hold, spread := te.sel.cfg.minHold, min(te.sel.cfg.returnToCheaper.interval, returnSpread)
+				wait := te.sel.returnToCheaperAt.Sub(te.sel.activeSince)
 				if wait < hold || wait > hold+spread || tc.fixed && wait != hold {
 					t.Fatalf("seed %d: return %v after the move, want within %v after minHold %v", seed, wait, spread, hold)
 				}

@@ -263,7 +263,7 @@ func (e *engine) expireLeases(p *provider, now time.Time) bool {
 		l.expired = true
 		e.expired[tag] = true
 		e.emit(now, "provider_expired", map[string]any{"provider": p.cfg.tag, "outbound": tag,
-			"active": e.active(tag), "renewal": renewalOf(p, l)})
+			"was_active": e.active(tag), "renewal": renewalOf(p, l)})
 	}
 	return true
 }

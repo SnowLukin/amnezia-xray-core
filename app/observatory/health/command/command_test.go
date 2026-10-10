@@ -51,9 +51,9 @@ func TestGetReport(t *testing.T) {
 	  "outbounds": [{"tag": "direct", "protocol": "freedom"}, {"tag": "block", "protocol": "blackhole"}],
 	  "routing": {"balancers": [{"tag": "auto", "selector": ["p-"], "strategy": {"type": "leastCost"}, "fallbackTag": "block"}]},
 	  "healthObservatory": {"subjectSelector": ["p-"], "providers": [{
-	    "tag": "fresh", "url": "`+ts.URL+`", "via": ["direct"], "allowPlainHttp": true,
-	    "triggers": {"interval": "0s", "minHealthy": 0, "whenExhausted": false, "maxAge": "0s", "onNetworkChange": "never"},
-	    "apply": {"balancer": "auto", "tagPrefix": "p-", "protocols": ["freedom"]}}]}
+	    "tag": "fresh", "url": "`+ts.URL+`", "via": ["direct"], "isPlainHttpAllowed": true,
+	    "triggers": {"interval": "0s", "minHealthyOutbounds": 0, "shouldRefreshWhenExhausted": false, "maxAge": "0s", "networkChangeMode": "never"},
+	    "apply": {"balancer": "auto", "tagPrefix": "p-", "allowedProtocols": ["freedom"]}}]}
 	}`)
 	ctx := context.Background()
 	get := func(r *command.GetReportRequest) map[string]any {
@@ -136,7 +136,7 @@ func TestProbe(t *testing.T) {
 	}
 	type result struct {
 		ID        uint64 `json:"id"`
-		Done      bool   `json:"done"`
+		IsDone    bool   `json:"is_done"`
 		Outbounds []struct {
 			Result string `json:"result"`
 		} `json:"outbounds"`
@@ -157,21 +157,21 @@ func TestProbe(t *testing.T) {
 	ctx := context.Background()
 	// The probe of b1 fails after a second without progress.
 	resp, res, took := probe(ctx, &command.ProbeRequest{Balancer: "auto", Outbounds: []string{"b1"}})
-	if resp.Id != 1 || resp.Run == "" || res.Done || took > 100*time.Millisecond {
+	if resp.Id != 1 || resp.Run == "" || res.IsDone || took > 100*time.Millisecond {
 		t.Fatalf("without a wait: %+v %+v after %v", resp, res, took)
 	}
 	short, cancel := context.WithTimeout(ctx, 600*time.Millisecond)
 	resp, res, took = probe(short, &command.ProbeRequest{Balancer: "auto", Outbounds: []string{"b1"}, WaitMs: 10_000})
 	cancel()
-	if resp.Id != 1 || res.Done || took >= 600*time.Millisecond {
+	if resp.Id != 1 || res.IsDone || took >= 600*time.Millisecond {
 		t.Fatalf("a wait cut by the deadline: %+v %+v after %v", resp, res, took)
 	}
 	resp, res, _ = probe(ctx, &command.ProbeRequest{Balancer: "auto", Outbounds: []string{"b1"}, WaitMs: 10_000})
-	if resp.Id != 1 || !res.Done || res.Outbounds[0].Result != "failed" {
+	if resp.Id != 1 || !res.IsDone || res.Outbounds[0].Result != "failed" {
 		t.Fatalf("with a wait: %+v %+v", resp, res)
 	}
 	resp, res, _ = probe(ctx, &command.ProbeRequest{Balancer: "auto", WaitMs: 10_000})
-	if resp.Id != 2 || !res.Done || len(res.Outbounds) != 2 || res.Outbounds[0].Result != "ok" || res.Outbounds[1].Result != "down" {
+	if resp.Id != 2 || !res.IsDone || len(res.Outbounds) != 2 || res.Outbounds[0].Result != "ok" || res.Outbounds[1].Result != "down" {
 		t.Fatalf("a request for the balancer: %+v %+v", resp, res)
 	}
 	if _, err := s.Probe(ctx, &command.ProbeRequest{Balancer: "auto", Outbounds: []string{"x1"}}); err == nil {
@@ -200,7 +200,7 @@ func TestSetProviderHeaders(t *testing.T) {
 	  "routing": {"balancers": [{"tag": "auto", "selector": ["p-"], "strategy": {"type": "leastCost"}, "fallbackTag": "block"}]},
 	  "healthObservatory": {"subjectSelector": ["p-"], "providers": [{
 	    "tag": "fresh", "url": "https://provider.test/set", "headers": {"Authorization": "Bearer config"},
-	    "triggers": {"interval": "0s", "minHealthy": 0, "whenExhausted": false, "maxAge": "0s", "onNetworkChange": "never"},
+	    "triggers": {"interval": "0s", "minHealthyOutbounds": 0, "shouldRefreshWhenExhausted": false, "maxAge": "0s", "networkChangeMode": "never"},
 	    "apply": {"balancer": "auto", "tagPrefix": "p-"}}]}
 	}`)
 	ctx := context.Background()
@@ -252,9 +252,9 @@ func TestGetProviderSet(t *testing.T) {
 	  "outbounds": [{"tag": "direct", "protocol": "freedom"}, {"tag": "block", "protocol": "blackhole"}],
 	  "routing": {"balancers": [{"tag": "auto", "selector": ["p-"], "strategy": {"type": "leastCost"}, "fallbackTag": "block"}]},
 	  "healthObservatory": {"subjectSelector": ["p-"], "providers": [{
-	    "tag": "fresh", "url": "`+ts.URL+`", "via": ["direct"], "allowPlainHttp": true,
-	    "triggers": {"interval": "0s", "minHealthy": 0, "whenExhausted": false, "maxAge": "0s", "onNetworkChange": "never"},
-	    "apply": {"balancer": "auto", "tagPrefix": "p-", "protocols": ["freedom"]}}]}
+	    "tag": "fresh", "url": "`+ts.URL+`", "via": ["direct"], "isPlainHttpAllowed": true,
+	    "triggers": {"interval": "0s", "minHealthyOutbounds": 0, "shouldRefreshWhenExhausted": false, "maxAge": "0s", "networkChangeMode": "never"},
+	    "apply": {"balancer": "auto", "tagPrefix": "p-", "allowedProtocols": ["freedom"]}}]}
 	}`)
 	ctx := context.Background()
 	get := func(after uint64) *command.GetProviderSetResponse {

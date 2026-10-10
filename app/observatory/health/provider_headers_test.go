@@ -12,12 +12,12 @@ import (
 // an error body that refuses the headers.
 var refused = refreshOutcome{err: "status 401", status: 401, class: "status", code: "unauthorized", via: "direct"}
 
-// An answer sets only the names apply.headers allows, with values HTTP
+// An answer sets only the names apply.acceptedHeaders allows, with values HTTP
 // takes, and replaces the header of the config whatever the case of its name.
 func TestAnswerRotatesOnlyAllowedHeaders(t *testing.T) {
 	allowed := newProviderSettings(quietProvider(nil))
 	none := newProviderSettings(quietProvider(func(p *ProviderConfig) { p.Apply.FixedHeaders = true }))
-	two := newProviderSettings(quietProvider(func(p *ProviderConfig) { p.Apply.Headers = []string{"x-api-key", "Authorization"} }))
+	two := newProviderSettings(quietProvider(func(p *ProviderConfig) { p.Apply.AcceptedHeaders = []string{"x-api-key", "Authorization"} }))
 	if fmt.Sprint(allowed.rotate, none.rotate, two.rotate) != "[Authorization] [] [X-Api-Key Authorization]" {
 		t.Fatalf("names an answer may set: %v, %v, %v", allowed.rotate, none.rotate, two.rotate)
 	}
@@ -30,8 +30,8 @@ func TestAnswerRotatesOnlyAllowedHeaders(t *testing.T) {
 		cfg     *providerSettings
 		want    string
 	}{
-		{`{"X-Api-Key": "k"}`, allowed, "header X-Api-Key is not in apply.headers"},
-		{`{"Authorization": "Bearer a"}`, none, "headers are not accepted: apply.headers is empty"},
+		{`{"X-Api-Key": "k"}`, allowed, "header X-Api-Key is not in apply.acceptedHeaders"},
+		{`{"Authorization": "Bearer a"}`, none, "headers are not accepted: apply.acceptedHeaders is empty"},
 		{`{}`, none, "headers are not accepted"},
 		{`{"Authorization": "Bearer a\r\nX-Evil: 1"}`, allowed, "header Authorization has a value that is not valid"},
 		{`{"Authorization": "Bearer \u0000"}`, allowed, "has a value that is not valid"},
@@ -88,7 +88,7 @@ func TestAnswerRotatesOnlyAllowedHeaders(t *testing.T) {
 // refused whole and changes nothing, so ProviderSet stays a valid initial
 // set and the host can still replace a header.
 func TestRotatedHeadersBoundedTogether(t *testing.T) {
-	f := newApplyFixture(t, time.Minute, func(p *ProviderConfig) { p.Apply.Headers = []string{"Authorization", "X-Extra"} })
+	f := newApplyFixture(t, time.Minute, func(p *ProviderConfig) { p.Apply.AcceptedHeaders = []string{"Authorization", "X-Extra"} })
 	host := map[string]string{}
 	for i := range maxRotatedHeaders - 1 {
 		host[fmt.Sprintf("X-H%d", i)] = "v"
@@ -148,7 +148,7 @@ func TestInitialHeadersBoundedWithThoseOfTheHost(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.o.applyInitial()
-	if ev := f.lastApply(t); ev["ok"] != false || !strings.Contains(fmt.Sprint(ev["error"]), "headers: 9 with those set before") {
+	if ev := f.lastApply(t); ev["is_ok"] != false || !strings.Contains(fmt.Sprint(ev["error"]), "headers: 9 with those set before") {
 		t.Fatalf("apply %v", ev)
 	}
 	f.o.mu.Lock()
@@ -198,7 +198,7 @@ func TestRejectedAnswerKeepsTheToken(t *testing.T) {
 	if _, err := f.apply(t, good); err != nil {
 		t.Fatal(err)
 	}
-	if ev := f.lastApply(t); fmt.Sprint(ev["headers"]) != "[Authorization]" || ev["headers_stale"] != nil {
+	if ev := f.lastApply(t); fmt.Sprint(ev["headers"]) != "[Authorization]" || ev["is_headers_stale"] != nil {
 		t.Fatalf("apply %v", ev)
 	}
 	f.o.mu.Lock()
@@ -229,7 +229,7 @@ func TestHostHeadersWinOverAnAnswerInFlight(t *testing.T) {
 			t.Fatal(err)
 		}
 		ev := f.lastApply(t)
-		if ev["ok"] != true || ev["changed"] != !same || ev["headers_stale"] != true {
+		if ev["is_ok"] != true || ev["is_changed"] != !same || ev["is_headers_stale"] != true {
 			t.Fatalf("same set %v: apply %v", same, ev)
 		}
 		f.o.mu.Lock()
@@ -246,7 +246,7 @@ func TestHostHeadersWinOverAnAnswerInFlight(t *testing.T) {
 // grows no backoff.
 func TestAuthFailureHoldsAllButTheHost(t *testing.T) {
 	te := newProviderEngine(t, quietProvider(func(p *ProviderConfig) {
-		p.Triggers.SkipWhenExhausted = false
+		p.Triggers.SkipRefreshWhenExhausted = false
 		p.Limits.ExhaustedMinInterval = int64(time.Second)
 	}), nil, "a1")
 	te.exhaust(te.sel, t0)
@@ -272,7 +272,7 @@ func TestAuthFailureHoldsAllButTheHost(t *testing.T) {
 		skips[0].Fields["wait_ms"] != float64(p.authRetryAt.Sub(at(3*time.Second)).Milliseconds()) {
 		t.Fatalf("skips %+v, want one auth skip", skips)
 	}
-	if st := te.status(at(time.Minute)).Providers[0]; !st.AuthFailed || st.AuthRetryInMs == nil ||
+	if st := te.status(at(time.Minute)).Providers[0]; !st.IsAuthRefused || st.AuthRetryInMs == nil ||
 		*st.AuthRetryInMs != p.authRetryAt.Sub(at(time.Minute)).Milliseconds() {
 		t.Fatalf("status %+v", st)
 	}
@@ -319,9 +319,9 @@ func TestAuthRetryOnceAfterTheHold(t *testing.T) {
 func TestAuthRetryOffWaitsForNewHeaders(t *testing.T) {
 	te := newProviderEngine(t, quietProvider(func(p *ProviderConfig) {
 		p.Triggers.Interval = int64(time.Minute)
-		p.Triggers.Jitter = -1
+		p.Triggers.JitterFraction = -1
 		p.Limits.MinInterval = -1
-		p.Limits.AuthRetry = -1
+		p.Limits.AuthRetryDelay = -1
 	}), nil, "a1")
 	j := expectRefresh(t, te, at(time.Minute), "interval")
 	te.onRefreshDone(j, refused, at(time.Minute))
@@ -366,7 +366,7 @@ func TestStale401RetriesWithNewHeaders(t *testing.T) {
 func TestSetProviderHeadersClearsAuthButNotRetryAfter(t *testing.T) {
 	te := newProviderEngine(t, quietProvider(func(p *ProviderConfig) {
 		p.Triggers.Interval = int64(time.Minute)
-		p.Triggers.Jitter = -1
+		p.Triggers.JitterFraction = -1
 		p.Limits.MinInterval = -1
 	}), nil, "a1")
 	j := expectRefresh(t, te, at(time.Minute), "interval")

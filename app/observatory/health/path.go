@@ -177,7 +177,7 @@ func (p *path) setStatus(s pathStatus, reason string, now time.Time) bool {
 	return changed
 }
 
-// addFailure records f and reports whether it is new evidence. Protocols retry
+// addFailure records f and reports whether it is new evidence. AllowedProtocols retry
 // a failed dial several times for one user connection; only the first
 // failure of a connection counts.
 func (p *path) addFailure(f failure, window time.Duration) bool {
