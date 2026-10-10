@@ -180,6 +180,16 @@ def probe_windows(events, names):
     return peak
 
 
+def scheduled_server_names(status):
+    names = {tag: bench.SERVER_NAMES["tcp_tls"] for tag in RELAY}
+    names[CDN] = bench.SERVER_NAMES["ws"]
+    for path in status["paths"]:
+        tag, actual = path["outbound"], path.get("server_name")
+        if tag in names and actual:
+            names[tag] = actual
+    return names
+
+
 def parse_server_handshakes(lines):
     """Pair native server TLS begin/end records by ID, including failed calls.
 
@@ -302,7 +312,7 @@ def measured_checks(c, cs, marks, selected, banned, switch, rec):
     failed_others = [e for e in failed if e["fields"]["outbound"] != selected]
     failed_candidates = {e["fields"]["outbound"] for e in failed_others}
     failed_dials = cs.between(ports(failed_candidates), fault, marks["end"]) if failed_candidates else 0
-    names = {p["outbound"]: p.get("server_name") or p["outbound"] for p in marks["status"]["paths"]}
+    names = scheduled_server_names(marks["status"])
     peak = probe_windows(c.events, names)
     relay_sni = names.get(selected, bench.SERVER_NAMES["tcp_tls"])
     cdn_sni = names.get(CDN, bench.SERVER_NAMES["ws"])

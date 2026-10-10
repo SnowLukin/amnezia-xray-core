@@ -3,7 +3,7 @@
 import json
 import unittest
 
-from group_scenarios import handshake_window, parse_server_handshakes
+from group_scenarios import handshake_window, parse_server_handshakes, probe_windows, scheduled_server_names
 
 
 def record(ident, stamp, phase, name="", error=""):
@@ -13,6 +13,18 @@ def record(ident, stamp, phase, name="", error=""):
 
 
 class HandshakeTraceTest(unittest.TestCase):
+    def test_probe_overlap_uses_config_when_status_has_no_server_name(self):
+        status = {"paths": [{"outbound": "relay-01", "server_name": ""},
+                            {"outbound": "relay-02"}]}
+        names = scheduled_server_names(status)
+        events = [{"ts": 1000, "type": "probe_start", "fields": {"outbound": "relay-01"}},
+                  {"ts": 1100, "type": "probe_start", "fields": {"outbound": "relay-02"}},
+                  {"ts": 2000, "type": "probe_result", "fields": {"outbound": "relay-01"}},
+                  {"ts": 2100, "type": "probe_result", "fields": {"outbound": "relay-02"}}]
+        self.assertEqual(probe_windows(events, names)["std.example.com"], 2)
+        status["paths"][1]["server_name"] = "actual.example.com"
+        self.assertEqual(scheduled_server_names(status)["relay-02"], "actual.example.com")
+
     def test_late_sni_and_failed_overlap(self):
         lines = ["unrelated Xray log\n", record(1, 1_000_000_000, "begin"),
                  record(2, 1_500_000_000, "begin"),
