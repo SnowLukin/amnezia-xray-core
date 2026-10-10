@@ -15,7 +15,7 @@ def cost_above_immediate(stand, xray, work, name):
                ("p-expensive", "tcp_tls", 0)]
     costs = {"p-cheap": 1, "p-expensive": 50}
     prov = bench.provider_config(
-        ["direct"], triggers={"whenCostAbove": {"cost": 10, "after": "0s"}},
+        ["net"], triggers={"whenCostAbove": {"cost": 10, "after": "0s"}},
         limits={"minInterval": "1h", "exhaustedMinInterval": "2s", "maxRefreshesPerHour": 0})
     cfg = bench.client_config(
         members, costs, providers=[prov],
@@ -68,7 +68,7 @@ def expensive_revoke(stand, xray, work, name):
         initial = [("cheap", "reality", 2), ("expensive", "tcp_tls", 0)]
         stand.answer(initial, costs={"cheap": 1, "expensive": 50}, version="both", next_refresh="3s")
         prov = bench.provider_config(
-            ["direct"], limits={"minInterval": "0s", "exhaustedMinInterval": "0s",
+            ["net"], limits={"minInterval": "0s", "exhaustedMinInterval": "0s",
                                "maxRefreshesPerHour": 0}, apply={"drainTimeout": "4s"})
         cfg = bench.client_config(members, {"p-cheap": 1, "p-expensive": 50}, providers=[prov],
                                   strategy={"startOutbound": "p-expensive" if selected else "p-cheap"})
