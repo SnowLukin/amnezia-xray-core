@@ -1097,7 +1097,7 @@ The benchmark uses the real tracker and checks its final public report;
 it excludes network I/O, initialization and concurrent flows. UDP accounting
 uses a short per-flow mutex and lifecycle coordination in addition to
 atomic counters, so its cost is measured rather than described as one
-atomic operation. The functional live matrix covered REALITY, relay, local WS,
+atomic operation. The functional live matrix covered REALITY, TCP forwarding, local WS,
 local XHTTP and AWG, with focused controls for unanswered flows and mux reconnect.
 Long duration and performance acceptance were excluded by the project decision.
 
@@ -1226,7 +1226,7 @@ kernel lifetime minimum; S2 `Srtt` is a coarse load indicator. Linux RX ratios
 use packets, Darwin RX ratios use bytes. RX out-of-order is an indicator, not
 a packet-loss percentage. Windows and transports without an individual raw
 socket supply no TCP_INFO fields; counted TTFB and speed can still be available.
-CDN sockets measure the path to the CDN edge. Witness can reach different
+Fronting sockets measure the path to the edge server. Witness can reach different
 destinations, so absolute witness and path RTTs need not be comparable.
 
 Reports carry optional `quality` segments and nonzero
