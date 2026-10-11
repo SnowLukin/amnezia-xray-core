@@ -1097,7 +1097,9 @@ The benchmark uses the real tracker and checks its final public report;
 it excludes network I/O, initialization and concurrent flows. UDP accounting
 uses a short per-flow mutex and lifecycle coordination in addition to
 atomic counters, so its cost is measured rather than described as one
-atomic operation. The full live UDP/XUDP matrix is still required.
+atomic operation. The functional live matrix covered REALITY, relay, local WS,
+local XHTTP and AWG, with focused controls for unanswered flows and mux reconnect.
+Long duration and performance acceptance were excluded by the project decision.
 
 | Field | Meaning |
 | --- | --- |
@@ -1135,10 +1137,10 @@ atomic operation. The full live UDP/XUDP matrix is still required.
 | `lone_probe_count`, `lone_probe_failed_count` | Started lone probes and completed failed lone probes, including stale results; canceled probes have no result count. |
 | `lone_probes`, `lone_probes_failed` | The same lone counters for this outbound in the report window. A failed current lone probe contributes one `downs_strong`; a stale completion contributes no down. |
 | `downs_strong`, `downs_weak` | New downs backed by strong or weak passive evidence for that outbound in this window. They include failed current lone probes paired with a dial failure, but exclude pure wake and network-change probe failures. Use `wake_probe_count` and `wake_probe_failed_count` for the wake failure rate; passive down counters are not its denominator. |
-| `udp_flows`, `udp_flows_unanswered` | Routed UDP associations that ended in this window; unanswered means at least one uplink buffer and no downlink bytes. An association still open at an interval report belongs to the window where it ends. Final stop ends all open associations. |
-| `udp_bytes_up`, `udp_bytes_down`, `udp_writes`, `udp_reads` | Payload bytes and nonempty buffers at the logical outbound link. Each buffer is approximately one UDP packet. These fields do not include proxy framing or AWG handshakes; the existing mixed `bytes_up/down` and `conns_ok/failed` keep their transport semantics. |
-| `udp_first_reply_p50_ms` | Median time from the first uplink buffer to the first downlink buffer for associations ending in this window, at the histogram bucket upper bound; 0 without samples. |
-| `udp_ports` | Nonzero `dns` (53), `quic` (443), `stun` (3478-3479 and 19302), `rtc` (50000-65535), and `other` buckets. Each contains `flows` and `unanswered`. The first routed destination port fixes the bucket for the whole association, even if later packets name other destinations. |
+| `udp_flows`, `udp_flows_unanswered` | Routed UDP link trackers that ended in this window; unanswered means at least one uplink buffer and no downlink bytes. A SOCKS UDP association can create more than one routed link after mux reconnect. An open tracker belongs to the window where it ends; final stop ends all open trackers. |
+| `udp_bytes_up`, `udp_bytes_down`, `udp_writes`, `udp_reads` | Payload bytes and nonempty buffers at the logical outbound link. Each buffer is approximately one UDP packet. Downlink is counted before the underlying writer, so bytes received by the core do not imply that the application read them. These fields do not include proxy framing or AWG handshakes; the existing mixed `bytes_up/down` and `conns_ok/failed` keep their transport semantics. |
+| `udp_first_reply_p50_ms` | Median time from the first uplink buffer to the first downlink buffer for routed links ending in this window, at the histogram bucket upper bound; 0 without samples. |
+| `udp_ports` | Nonzero `dns` (53), `quic` (443), `stun` (3478-3479 and 19302), `rtc` (50000-65535), and `other` buckets. Each contains `flows` and `unanswered`. The first routed destination port fixes the bucket for the whole routed link, even if later packets name other destinations. |
 | `groups` | Current explicit-group summaries as described in Outbound groups. |
 
 Per-outbound fields `audits`, `audits_passed`, `lone_probes`, `lone_probes_failed`,
