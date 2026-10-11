@@ -163,7 +163,7 @@ def legacy_proof_checks(data, meta, expected, report_sha, terminal):
     valid_terminal = valid_terminal and len(summary) == 1 and int(summary[0][0]) == checks_count - failed
     valid_terminal = valid_terminal and int(summary[0][1]) == checks_count
     if summary:
-        valid_terminal = valid_terminal and os.path.abspath(summary[0][2]) == os.path.abspath(meta.get("report_path", ""))
+        valid_terminal = valid_terminal and os.path.realpath(summary[0][2]) == os.path.realpath(meta.get("report_path", ""))
     valid_terminal = valid_terminal and h.strict_count(receipt.get("checks_total"), checks_count)
     valid_terminal = valid_terminal and h.strict_count(receipt.get("checks_failed"), failed)
     valid_terminal = valid_terminal and h.strict_count(receipt.get("scenario_count"), len(catalog))

@@ -244,6 +244,31 @@ class LegacyProofTest(unittest.TestCase):
         self.assertTrue(any(not row["ok"] for row in self.rows(terminal="1/1 checks passed, report /frozen/report.json\n")))
         self.assertTrue(any(not row["ok"] for row in self.rows(terminal=self.terminal.replace("1/1", "2/2"))))
 
+    def test_report_path_alias_preserves_raw_failure(self):
+        with tempfile.TemporaryDirectory() as root:
+            real = os.path.join(root, "reports")
+            alias = os.path.join(root, "alias")
+            os.mkdir(real)
+            os.symlink(real, alias, target_is_directory=True)
+            data = copy.deepcopy(self.data)
+            data[0]["checks"][0].update(ok=False)
+            meta = copy.deepcopy(self.meta)
+            meta["report_path"] = os.path.join(real, "report.json")
+            meta["terminal"].update(checks_failed=1, exit_code=1)
+            terminal = "FAIL ordinary real check 1 1\n0/1 checks passed, report " + os.path.join(alias, "report.json") + "\n"
+            rows = self.rows(data, meta, terminal)
+            receipt = next(row for row in rows if row["check"] == "Терминал, exit и точное число выполненных проверок")
+            raw = next(row for row in rows if row["check"] == "Все красные обычного стенда сохранены")
+            self.assertTrue(receipt["ok"])
+            self.assertFalse(raw["ok"])
+
+    def test_different_report_paths_do_not_bind(self):
+        meta = copy.deepcopy(self.meta)
+        meta["report_path"] = "/frozen/different-report.json"
+        rows = self.rows(meta=meta)
+        receipt = next(row for row in rows if row["check"] == "Терминал, exit и точное число выполненных проверок")
+        self.assertFalse(receipt["ok"])
+
     def test_red_baseline_is_preserved_without_whitelist(self):
         data = copy.deepcopy(self.data)
         data[0]["checks"][0].update(ok=False, value=2.1, limit="2%")
