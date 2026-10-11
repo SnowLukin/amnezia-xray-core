@@ -45,7 +45,7 @@ func TestQualityEndCutoffClosesAdmissionBeforeCounterSnapshot(t *testing.T) {
 		t.Fatal("completion sampled bytes beyond its fixed byte cutoff")
 	}
 	bytesDown.Add(4 << 20)
-	if q.beginMarkSample(bytesDown.Load()) || q.beginFirstSample() {
+	if q.beginMarkSample(bytesDown.Load()) || q.beginFirstSample(false) {
 		t.Fatal("completion admitted a sample after its byte cutoff")
 	}
 	if _, ready := q.requestEnd(qualityEndRequest{}, load); ready || loads != 1 {

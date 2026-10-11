@@ -101,7 +101,18 @@ func (q *connectionQuality) snapshot(o *Observer) tcpQualitySnapshot {
 }
 
 func (q *connectionQuality) firstRead(o *Observer, now, bytes, ttfb int64) bool {
-	if q == nil || !q.beginFirstSample() {
+	return q.firstReply(o, now, bytes, ttfb, false)
+}
+
+// firstKernelRead is used only when the existing splice sweep observes actual
+// receive progress on an open socket. It does not use the final byte counter
+// as a first-reply timestamp or introduce another socket poll.
+func (q *connectionQuality) firstKernelRead(o *Observer, now, bytes, ttfb int64) bool {
+	return q.firstReply(o, now, bytes, ttfb, true)
+}
+
+func (q *connectionQuality) firstReply(o *Observer, now, bytes, ttfb int64, kernelProgress bool) bool {
+	if q == nil || !q.beginFirstSample(kernelProgress) {
 		return false
 	}
 	defer q.publishedSample()
@@ -164,8 +175,8 @@ func (q *connectionQuality) onSpliced() {
 		q.next.Store(math.MaxUint64)
 		// Its counter may next report all spliced bytes after the socket
 		// closed. That is no timestamp of the first answer.
-		if q.first.Load() == nil {
-			q.firstClaim.Store(true)
+		if q.first.Load() == nil && q.firstClaim.CompareAndSwap(false, true) {
+			q.life.splicedFirstSuppressed = true
 		}
 	}
 }

@@ -1193,6 +1193,11 @@ The legacy TTFB fields remain lifetime counters with their existing semantics.
 S1 is read from the open server socket on the first reply, before the observer
 lock. Successful dials count only when they return an individual raw socket.
 TTFB is measured from the first request write, or from the dial without a write.
+After splice starts, S1 and TTFB remain available when the existing passive
+socket sweep observes actual receive progress on an eligible open socket.
+An aggregate counter update at completion never provides a first-reply time.
+Witness connections have no such socket sweep; a witness spliced before its
+first counted reply can therefore have no S1 or TTFB. Quality adds no polling.
 S2 is read at counted download marks of 1, 4, 16 and 64 MiB. A read that crosses
 several marks uses one clock read and one S2. Download speed is decimal Kbit/s
 between the first reply and the last observed mark; the tail and the time until

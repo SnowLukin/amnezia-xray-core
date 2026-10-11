@@ -21,13 +21,21 @@ type qualityLifecycle struct {
 	inFlight     int
 	closed       bool
 	endCollected bool
-	end          qualityEndRequest
+	// The splice marker suppresses a later aggregate counter update, while
+	// preserving one first reply already observable by the legacy socket sweep.
+	splicedFirstSuppressed bool
+	end                    qualityEndRequest
 }
 
-func (q *connectionQuality) beginFirstSample() bool {
+func (q *connectionQuality) beginFirstSample(kernelProgress bool) bool {
 	q.life.mu.Lock()
 	defer q.life.mu.Unlock()
-	if q.life.closed || q.firstClaim.Swap(true) {
+	if q.life.closed {
+		return false
+	}
+	if kernelProgress && q.life.splicedFirstSuppressed {
+		q.life.splicedFirstSuppressed = false
+	} else if q.firstClaim.Swap(true) {
 		return false
 	}
 	q.life.inFlight++

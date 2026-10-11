@@ -179,7 +179,7 @@ func (t *connTracker) sweepSpliced(now int64) bool {
 			if from == 0 {
 				from = t.dialed.Load()
 			}
-			t.quality.firstRead(t.o, now, t.bytesRead.Load(), now-from)
+			t.quality.firstKernelRead(t.o, now, t.bytesRead.Load(), now-from)
 			t.o.answered(t)
 		}
 	}

@@ -219,6 +219,11 @@ Inside quality, an absent field means it was not measured. A measured zero is
 included, including `bytesDown`, `tcpRttMinMs`, `bulkKbpsMax`,
 `bulkSplicedCount`, `rxOutOfOrderFraction`, and `txRetransmitFraction`.
 
+A spliced path may retain S1 and TTFB when its existing passive socket sweep
+observes real receive progress. Completion byte accounting never creates a
+first-reply timestamp or download speed. A witness spliced before its first
+counted reply has no socket sweep and may omit S1 and TTFB.
+
 | Quality field | Meaning |
 | --- | --- |
 | `bytesDown`, `bytesDownOverflow` | Bytes of completed connections; the optional true overflow flag says the value saturated at int64 maximum. |
