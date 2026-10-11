@@ -1097,8 +1097,8 @@ The benchmark uses the real tracker and checks its final public report;
 it excludes network I/O, initialization and concurrent flows. UDP accounting
 uses a short per-flow mutex and lifecycle coordination in addition to
 atomic counters, so its cost is measured rather than described as one
-atomic operation. The functional live matrix covered REALITY, relay, local WS,
-local XHTTP and AWG, with focused controls for unanswered flows and mux reconnect.
+atomic operation. The functional live matrix covered the configured transports, with focused
+controls for unanswered flows and mux reconnect.
 Long duration and performance acceptance were excluded by the project decision.
 
 | Field | Meaning |
