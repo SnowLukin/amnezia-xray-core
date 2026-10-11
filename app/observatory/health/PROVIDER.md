@@ -124,7 +124,8 @@ well.
 }
 ```
 
-Fields with zero or empty values are left out, except those marked always.
+Legacy fields with zero or empty values are left out, except those marked always.
+Inside quality, measured zeros remain present; unavailable measurements are omitted.
 
 | Field | Meaning |
 | --- | --- |
@@ -194,6 +195,53 @@ the start pin until the host releases it; `drainTimeout: "0s"` closes removed
 outbounds without a drain delay. Durations the core measures
 are integer milliseconds, with `Ms` in provider requests and `_ms` in host
 outputs. `nextRefreshIn` follows this table as well; a number is refused.
+
+
+### Quality measurements
+
+Protocol 1 requests may include `networkType` (`wifi`, `eth`, `other`, `cell`,
+or `unknown`), optional `networkOperator` (a five- or six-digit cell operator
+code), optional `witnessQuality`, and optional `qualitySamplesDropped`.
+`outbounds[].quality` is present only for measured members of this provider's
+registered set. Lookup uses the exact internal tag before removing its provider
+prefix for the body. No measurement of another provider's outbound is disclosed.
+
+Quality covers the current network since its last change, independently of
+report windows. `qualitySamplesDropped` counts meaningful phases rejected across
+the current collection when its 64-tag or 16 KiB copied-tag budget is full. The
+backend must consider this partial coverage alongside each histogram count.
+The witness is the aggregate of configured witness outbounds, not a member of
+the provider set. These measurements create no refresh trigger or client policy.
+All fields are additions to request protocol 1; a backend must ignore unknown
+request fields. Answers and their accepted keys are unchanged.
+
+Inside quality, an absent field means it was not measured. A measured zero is
+included, including `bytesDown`, `tcpRttMinMs`, `bulkKbpsMax`,
+`bulkSplicedCount`, `rxOutOfOrderFraction`, and `txRetransmitFraction`.
+
+| Quality field | Meaning |
+| --- | --- |
+| `bytesDown`, `bytesDownOverflow` | Bytes of completed connections; the optional true overflow flag says the value saturated at int64 maximum. |
+| `ttfbCount`, `ttfbP50Ms`, `ttfbP90Ms` | TCP first-reply samples and millisecond quantiles. |
+| `dialCount`, `dialP50Ms`, `dialP90Ms` | Successful own-socket dial samples and millisecond quantiles. |
+| `tcpCount`, `tcpRttP50Ms`, `tcpRttP90Ms`, `tcpRttMinMs` | S1 TCP RTT samples and quantiles, plus exact measured minimum in milliseconds. |
+| `bulkCount`, `bulkKbpsP50`, `bulkKbpsP90`, `bulkKbpsMax` | Counted bulk-download speeds in decimal Kbit/s; the maximum is exact. |
+| `bulkRttP50Ms` | S2 RTT under load, even when bulk speed could not be measured. |
+| `bulkSplicedCount` | Bulk completions whose transfer used splice, with no speed sample. |
+| `rxOutOfOrderFraction` | Weighted S1-to-S2 out-of-order/received counter deltas; unavailable or decreasing counter pairs are omitted. |
+| `txRetransmitFraction` | Weighted retransmitted/sent totals from the last successful socket snapshot of each completed connection. |
+
+The fingerprint stays in the existing provider-specific `network.id` hash.
+Quality exposes only parsed transport type and cell operator, never an opaque
+suffix, a user destination, or a server address. Unsupported TCP fields are
+omitted. Witness and path absolute RTTs may reach different sites; compare
+relative load growth, retransmissions, and bulk speed with sufficient counts.
+
+The legacy state/counter part has its existing 64 KiB test budget, apart from
+tags and version chosen by the backend. Quality adds at most 64 measured path
+records and one witness record. The combined request fixture uses a 128 KiB core
+budget; tags and version still have no bound of their own. Actual serialized
+sizes must be recorded by the size tests on the supported runtime.
 
 ## Answer
 

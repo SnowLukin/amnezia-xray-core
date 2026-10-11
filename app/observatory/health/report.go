@@ -126,16 +126,15 @@ type reportView struct {
 	WindowMs  int64  `json:"window_ms"`
 	SessionMs int64  `json:"session_ms"`
 	reportCounts
-	Active              map[string]string     `json:"active"`
-	IsBalancerExhausted bool                  `json:"is_balancer_exhausted"`
-	IsNetworkUp         bool                  `json:"is_network_up"`
-	IsQuietSample       bool                  `json:"is_quiet_sample"`
-	Connectivity        string                `json:"connectivity,omitempty"`
-	Groups              []groupStatusView     `json:"groups,omitempty"`
-	Paths               map[string]reportPath `json:"paths"`
-	// Stage 2 keeps the measurements internal. Stage 3 adds the wire tags.
-	Quality                []qualitySegmentView `json:"-"`
-	QualitySegmentsDropped uint64               `json:"-"`
+	Active                 map[string]string     `json:"active"`
+	IsBalancerExhausted    bool                  `json:"is_balancer_exhausted"`
+	IsNetworkUp            bool                  `json:"is_network_up"`
+	IsQuietSample          bool                  `json:"is_quiet_sample"`
+	Connectivity           string                `json:"connectivity,omitempty"`
+	Groups                 []groupStatusView     `json:"groups,omitempty"`
+	Paths                  map[string]reportPath `json:"paths"`
+	Quality                []qualitySegmentView  `json:"quality,omitempty"`
+	QualitySegmentsDropped uint64                `json:"quality_segments_dropped,omitempty"`
 }
 
 // pathTotals are the counters of a path that a report shows as growth since
