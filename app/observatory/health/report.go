@@ -133,6 +133,9 @@ type reportView struct {
 	Connectivity        string                `json:"connectivity,omitempty"`
 	Groups              []groupStatusView     `json:"groups,omitempty"`
 	Paths               map[string]reportPath `json:"paths"`
+	// Stage 2 keeps the measurements internal. Stage 3 adds the wire tags.
+	Quality                []qualitySegmentView `json:"-"`
+	QualitySegmentsDropped uint64               `json:"-"`
 }
 
 // pathTotals are the counters of a path that a report shows as growth since
@@ -471,6 +474,9 @@ func (e *engine) reportView(reason string, now time.Time, take bool) *reportView
 		Paths:         map[string]reportPath{},
 	}
 	v.EventsDropped = e.events.droppedTotal - r.droppedBefore
+	// This builder is reached only when the outer report actually exists.
+	// Snapshot preserves the window; successful take resets only its quality.
+	v.Quality, v.QualitySegmentsDropped = e.quality.report(now, take)
 	if !take {
 		v.SwitchReasons = maps.Clone(v.SwitchReasons)
 		v.SwitchPath = slices.Clone(v.SwitchPath)

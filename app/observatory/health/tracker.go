@@ -141,7 +141,6 @@ func (t *connTracker) Dialed(conn net.Conn, err error, read, write stats.Counter
 }
 
 func (t *connTracker) onSpliced() {
-	t.quality.onSpliced()
 	if t.spliced.Swap(true) {
 		return
 	}
@@ -410,7 +409,10 @@ func (c *trackerReadCounter) Add(n int64) int64 {
 }
 
 // Spliced is called before bytes start to move without per-read counting.
-func (c *trackerReadCounter) Spliced() { c.t.onSpliced() }
+func (c *trackerReadCounter) Spliced() {
+	c.t.quality.onSpliced()
+	c.t.onSpliced()
+}
 
 type trackerWriteCounter struct{ t *connTracker }
 
@@ -511,6 +513,7 @@ func (t *witnessTracker) Dialed(conn net.Conn, err error, read, write stats.Coun
 
 func (t *witnessTracker) Finished(error) {
 	if t.quality != nil && !t.finished.Swap(true) {
+		t.o.qualityWitnessFinished(t)
 		t.quality.socket.Store(nil)
 	}
 }
@@ -544,7 +547,9 @@ func (c *witnessCounter) Add(n int64) int64 {
 			if from == 0 {
 				from = c.t.dialedAt.Load()
 			}
-			q.firstRead(c.t.o, now, total, now-from)
+			if q.firstRead(c.t.o, now, total, now-from) {
+				c.t.o.qualityWitnessAnswered(c.t)
+			}
 		}
 		if q.needsMark(total) {
 			if now == 0 {
@@ -593,7 +598,8 @@ func (c *witnessWriteCounter) Add(n int64) int64 {
 	return 0
 }
 
-func (c *witnessWriteCounter) Spliced() { c.t.quality.onSpliced() }
+// Upload splice does not remove the timing of counted download reads.
+func (c *witnessWriteCounter) Spliced() {}
 
 type probeContextKey struct{}
 

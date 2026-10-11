@@ -48,6 +48,7 @@ type qualityEndSample struct {
 
 // connectionQuality holds measurements only. No path decision reads it.
 type connectionQuality struct {
+	life       qualityLifecycle
 	network    uint64
 	started    int64
 	dial       atomic.Int64
@@ -99,13 +100,16 @@ func (q *connectionQuality) snapshot(o *Observer) tcpQualitySnapshot {
 	return tcpQualitySnapshot{}
 }
 
-func (q *connectionQuality) firstRead(o *Observer, now, bytes, ttfb int64) {
-	if q == nil || q.firstClaim.Swap(true) {
-		return
+func (q *connectionQuality) firstRead(o *Observer, now, bytes, ttfb int64) bool {
+	if q == nil || !q.beginFirstSample() {
+		return false
 	}
+	defer q.publishedSample()
 	// This syscall runs before answered takes the observer lock.
 	p := &qualityFirstPoint{at: now, bytes: bytes, ttfb: time.Duration(max(ttfb, 0)), tcp: q.snapshot(o)}
-	q.first.CompareAndSwap(nil, p)
+	// Success is returned only after the immutable point is visible. The
+	// witness winner may now consume the initial sample under the lock.
+	return q.first.CompareAndSwap(nil, p)
 }
 
 func (q *connectionQuality) needsMark(total int64) bool {
@@ -113,29 +117,15 @@ func (q *connectionQuality) needsMark(total int64) bool {
 }
 
 func (q *connectionQuality) mark(o *Observer, now, total int64) {
-	if q == nil {
+	if !q.needsMark(total) {
 		return
 	}
-	boundary := q.next.Load()
-	if uint64(total) < boundary {
+	// Admission and the milestone claim are one private critical section.
+	// Finish cannot miss a claimed sampler before it registers in flight.
+	if !q.beginMarkSample(total) {
 		return
 	}
-	// A single counted read can cross several milestones. They are the same
-	// observation, so use one clock reading and one socket snapshot for it.
-	// The next mark is the first milestone beyond the observed byte total.
-	next := uint64(math.MaxUint64)
-	for _, boundary := range qualityMilestones {
-		if boundary > uint64(total) {
-			next = boundary
-			break
-		}
-	}
-	for !q.next.CompareAndSwap(boundary, next) {
-		boundary = q.next.Load()
-		if uint64(total) < boundary {
-			return
-		}
-	}
+	defer q.publishedSample()
 	// Successful snapshots have their own ordering. A newer byte/time mark
 	// may have failed to read TCP_INFO while an earlier successful one was
 	// still in flight. Neither may discard the other's measurements.
@@ -165,6 +155,11 @@ func (q *connectionQuality) mark(o *Observer, now, total int64) {
 
 func (q *connectionQuality) onSpliced() {
 	if q != nil {
+		q.life.mu.Lock()
+		defer q.life.mu.Unlock()
+		if q.life.closed {
+			return
+		}
 		q.spliced.Store(true)
 		q.next.Store(math.MaxUint64)
 		// Its counter may next report all spliced bytes after the socket

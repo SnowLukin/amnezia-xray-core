@@ -135,6 +135,10 @@ func newObserver(ctx context.Context, config *Config) *Observer {
 	o.runCtx, o.stopRun = context.WithCancel(ctx)
 	o.newHandler = o.createHandler
 	o.e.report.begin(o.clock())
+	if !s.passive.skipQuality {
+		o.e.quality = newQualitySummary(o.e.report.started)
+	}
+	o.qualityEpoch.Store(o.e.qualityEpoch)
 	// The number of the kept set starts from the wall clock in
 	// milliseconds, so it grows across runs too: a host that asks with the
 	// number it kept from the run before gets the set of this one.
@@ -573,6 +577,7 @@ func (o *Observer) failure(t *connTracker, kind failureKind) {
 
 func (o *Observer) answered(t *connTracker) {
 	o.mu.Lock()
+	o.collectQualityInitial(t.quality, t.tag, false)
 	if t.network == o.e.generation {
 		p := o.e.pathAt(t.tag, o.now())
 		p.lastAnsweredStart = max(p.lastAnsweredStart, t.started)
@@ -608,6 +613,7 @@ func (o *Observer) witnessed() {
 
 func (o *Observer) finished(t *connTracker) {
 	o.mu.Lock()
+	o.collectQualityEnd(t.quality, t.tag, false, &t.bytesRead)
 	now := o.now()
 	st := &o.e.pathAt(t.tag, now).stats
 	if t.bytesRead.Load() > 0 {
@@ -753,7 +759,7 @@ func (o *Observer) NetworkChanged(id string) {
 	o.mu.Lock()
 	o.e.onNetworkChange(id, o.now())
 	o.generation.Store(o.e.generation)
-	o.qualityEpoch.Add(1)
+	o.qualityEpoch.Store(o.e.qualityEpoch)
 	o.mu.Unlock()
 	o.wake()
 }
