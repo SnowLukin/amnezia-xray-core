@@ -40,6 +40,7 @@ import time
 import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+CHAOS_SCRIPT = os.environ.get("BENCH_CHAOS_SCRIPT", os.path.join(HERE, "chaos.py"))
 CERT_DIR = os.path.join(HERE, "certs")
 TARGET_CERT = os.path.join(CERT_DIR, "target.crt")
 TARGET_KEY = os.path.join(CERT_DIR, "target.key")
@@ -384,7 +385,7 @@ class Stand:
         specs = [f"{address_port(k, i)}:{server_port(k)}" for k in TRANSPORTS for i in range(ADDRESSES)]
         specs.append(f"{CONNECTIVITY_PORT}:{TARGET_PORT}")
         specs += [f"udp:{p}:{AWG_PORT}" for p in AWG_ADDRESSES]
-        self.procs.append(subprocess.Popen(["python3", os.path.join(HERE, "chaos.py"), str(CHAOS_CONTROL)] + specs,
+        self.procs.append(subprocess.Popen(["python3", CHAOS_SCRIPT, str(CHAOS_CONTROL)] + specs,
                                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
         self.answer([("n1", "reality", 2)], {"n1": 1})
         open(self.provider_log, "w").close()
