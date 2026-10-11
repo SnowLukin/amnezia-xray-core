@@ -231,7 +231,8 @@ class Nodes:
 
     def client_config(self, stand, reserve=False, legacy=False):
         profile = self.profile(reserve, legacy)
-        cfg = h.config(health={"probes": [profile], "passive": {"dialTimeout": "3s",
+        cfg = h.config(schedule={"hostProbes": {"reuseWindow": "0s"}},
+            health={"probes": [profile], "passive": {"dialTimeout": "3s",
             "firstByteTimeout": "3s", "loneFailureAfter": "0s"}}, strategy={"networkChangeAction": "recheck",
             "minHoldTime": "5s", "returnToCheaper": {"interval": "10s", "hasRandomPhase": False,
                 "probesToReturn": 3, "probeInterval": "2s", "penaltyWindow": "5m"}})
@@ -261,9 +262,42 @@ def state(client, tag=A):
 
 
 def probe(client, tag=A):
-    start = time.time()
     response = client.api("-t", "35", "probe", "auto", tag, timeout=40)
-    result = h.wait_for(lambda: h.events(client, "probe_result", tag, since=start), 5)[-1]
+    request = response.get("request")
+    safe = {key: response[key] for key in ("id", "run") if key in response}
+    if isinstance(request, dict):
+        safe["request"] = {key: request[key] for key in
+            ("id", "balancer", "age_ms", "is_done", "end") if key in request}
+        safe["request"]["outbounds"] = [{key: item[key] for key in
+            ("outbound", "result", "source", "probe_reason", "rtt_ms", "age_ms", "quarantine_ms")
+            if key in item} for item in request.get("outbounds", []) if isinstance(item, dict)]
+    else:
+        safe["request"] = None
+    request_id = response.get("id")
+    name = os.path.splitext(os.path.basename(client.path))[0]
+    saved_id = str(request_id) if type(request_id) is int else "invalid"
+    h.save(os.path.dirname(client.path), name + "-host-probe-request-" + saved_id, safe)
+    if type(request_id) is not int or request_id <= 0 or not isinstance(request, dict):
+        raise RuntimeError("Host probe API: отсутствует request или корректный id")
+    if type(request.get("id")) is not int or request.get("id") != request_id or request.get("is_done") is not True:
+        raise RuntimeError("Host probe API: request не завершён или id не совпадает")
+    items = [item for item in request.get("outbounds", []) if item.get("outbound") == tag]
+    if len(items) != 1 or items[0].get("source") != "probe" or items[0].get("result") not in ("ok", "failed"):
+        raise RuntimeError("Host probe API: нужна выполненная probe для %s, получено %r" % (tag, items))
+
+    def matching_events():
+        starts = [e for e in h.events(client, "probe_start", tag, "host")
+                  if type(e["fields"].get("request")) is int and e["fields"]["request"] == request_id]
+        results = [e for e in h.events(client, "probe_result", tag, "host")
+                   if type(e["fields"].get("request")) is int and e["fields"]["request"] == request_id
+                   and e["fields"].get("is_stale") is False]
+        return results if starts else None
+
+    try:
+        result = h.wait_for(matching_events, 5)[-1]
+    except RuntimeError as exc:
+        raise RuntimeError("Host probe request %s: нет связанных start/result events для %s за 5 с" %
+                           (request_id, tag)) from exc
     return result, response
 
 

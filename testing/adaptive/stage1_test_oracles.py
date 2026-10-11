@@ -10,6 +10,7 @@ import run_stage1_checks as runner
 import unittest
 
 import stage1_helpers as h
+import stage1_probe_step_scenarios as steps
 from run_stage1_checks import LEGACY_TIMINGS, LEGACY_HARNESS_FILES, legacy_proof_checks, legacy_reference_checks
 
 
@@ -467,6 +468,97 @@ class LegacyReuseScopeTest(unittest.TestCase):
             with self.subTest(mode=mode), self.assertRaises(ValueError):
                 runner.source_manifest(manifest)
 
+
+
+class HostStepProbeFixtureTest(unittest.TestCase):
+    def response(self, result="ok", source="probe"):
+        return {"id": 7, "run": "fake-run", "request": {"id": 7, "is_done": True,
+                "outbounds": [{"outbound": steps.A, "source": source, "result": result}]}}
+
+    def client(self, response):
+        return SimpleNamespace(path="/tmp/client-fake.json", api=lambda *args, **kwargs: response)
+
+    def events(self, request=7, reason="host", stale=False):
+        return [event(1, "probe_start", 0, outbound=steps.A, request=request, reason=reason),
+                event(2, "probe_result", 0, outbound=steps.A, request=request, reason=reason, is_stale=stale)]
+
+    def run_probe(self, response, events):
+        def select(client, typ, tag, reason, since=0):
+            return [e for e in events if e["type"] == typ and e["fields"]["outbound"] == tag
+                    and e["fields"]["reason"] == reason and e["ts"] / 1000 >= since]
+        def wait(predicate, timeout):
+            self.assertEqual(timeout, 5)
+            value = predicate()
+            if not value:
+                raise RuntimeError("fake missing event")
+            return value
+        with patch.object(h, "events", side_effect=select), patch.object(h, "wait_for", side_effect=wait):
+            return steps.probe(self.client(response))
+
+    def test_zero_reuse_preserves_schedule_and_profiles(self):
+        nodes = object.__new__(steps.Nodes)
+        nodes.http = SimpleNamespace(port=12345)
+        nodes.domain, nodes.name, nodes.ports = "probe.test", "fake", [12346, 12347]
+        with tempfile.TemporaryDirectory() as work:
+            cfg = nodes.client_config(SimpleNamespace(provider_answer=os.path.join(work, "answer.json")))
+        health = cfg["healthObservatory"]
+        self.assertEqual(health["schedule"]["hostProbes"], {"reuseWindow": "0s"})
+        self.assertEqual(health["schedule"]["minProbeInterval"], "1s")
+        self.assertEqual(health["schedule"]["idleAfter"], "1h")
+        self.assertEqual(health["schedule"]["quarantine"]["maxDelay"], "30m")
+        self.assertEqual(health["probes"], [nodes.profile()])
+
+    def test_recent_rejected_before_wait(self):
+        with patch.object(h, "save") as save, patch.object(h, "wait_for") as wait:
+            with self.assertRaisesRegex(RuntimeError, "выполненная probe"):
+                steps.probe(self.client(self.response(source="recent")))
+        save.assert_called_once()
+        wait.assert_not_called()
+
+    def test_completed_ok_and_failed_host_request(self):
+        for result in ("ok", "failed"):
+            with self.subTest(result=result), patch.object(h, "save"):
+                actual, response = self.run_probe(self.response(result), self.events())
+                self.assertEqual(actual["fields"]["request"], response["id"])
+                self.assertNotIn("probe_reason", response["request"]["outbounds"][0])
+
+    def test_same_millisecond_event_matches_request_id(self):
+        events = self.events()
+        for item in events:
+            item["ts"] = 1000123
+        with patch.object(steps.time, "time", return_value=1000.1239), patch.object(h, "save"):
+            actual, response = self.run_probe(self.response(), events)
+        self.assertEqual(actual["ts"], 1000123)
+        self.assertEqual(actual["fields"]["request"], response["id"])
+
+    def test_wrong_request_reason_or_stale_rejected(self):
+        for events in (self.events(request=8), self.events(reason="confirm"), self.events(stale=True)):
+            with self.subTest(events=events), patch.object(h, "save"):
+                with self.assertRaisesRegex(RuntimeError, "нет связанных"):
+                    self.run_probe(self.response(), events)
+
+    def test_missing_or_pending_request_rejected(self):
+        responses = [dict(self.response(), request=None), self.response(), self.response()]
+        responses[1]["request"]["is_done"] = False
+        responses[2]["request"]["outbounds"] = []
+        for response in responses:
+            with self.subTest(response=response), patch.object(h, "save"), patch.object(h, "wait_for") as wait:
+                with self.assertRaises(RuntimeError):
+                    steps.probe(self.client(response))
+                wait.assert_not_called()
+
+    def test_response_saved_before_missing_event_without_credentials(self):
+        response = self.response()
+        response["credentials"] = "secret"
+        response["request"]["outbounds"][0]["password"] = "secret"
+        saved = []
+        with patch.object(h, "save", side_effect=lambda *args: saved.append(args)):
+            with self.assertRaisesRegex(RuntimeError, "нет связанных"):
+                self.run_probe(response, [])
+        self.assertEqual(len(saved), 1)
+        self.assertEqual(saved[0][:2], ("/tmp", "client-fake-host-probe-request-7"))
+        self.assertEqual(saved[0][2]["id"], 7)
+        self.assertNotIn("secret", json.dumps(saved[0][2]))
 
 if __name__ == "__main__":
     unittest.main()
