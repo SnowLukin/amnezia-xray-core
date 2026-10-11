@@ -58,6 +58,9 @@ type Observer struct {
 
 	// The engine's network generation, readable without the lock.
 	generation atomic.Uint64
+	// Measurements have an epoch even when routing ignores a network change.
+	qualityEpoch atomic.Uint64
+	qualityInfo  qualitySocketReader
 	// Names this run of the core, so that a host request meant for a
 	// previous run is told apart.
 	run string
@@ -357,11 +360,22 @@ func (o *Observer) StartDial(ctx context.Context, tag string, server net.Destina
 	}
 	if !o.s.observes(tag) {
 		if o.s.witness(tag) {
-			return &witnessTracker{o: o}
+			w := &witnessTracker{o: o}
+			if !o.s.passive.skipQuality {
+				_, udp := targetFrom(ctx)
+				if !udp {
+					w.quality = o.newConnectionQuality(false, 0)
+					w.quality.started = o.nowNano()
+				}
+			}
+			return w
 		}
 		return nil
 	}
 	target, udp := targetFrom(ctx)
+	// Capture the measurement epoch before the start timestamp. A network
+	// change during construction must not label an older dial as new traffic.
+	quality := o.newConnectionQuality(udp, 0)
 	t := &connTracker{
 		o:       o,
 		tag:     tag,
@@ -373,6 +387,10 @@ func (o *Observer) StartDial(ctx context.Context, tag string, server net.Destina
 		started: o.nowNano(),
 		network: o.generation.Load(),
 	}
+	if quality != nil {
+		quality.started = t.started
+	}
+	t.quality = quality
 	if _, ok := o.e.lastServer.Load(tag); !ok && t.server != "" {
 		o.e.lastServer.Store(tag, t.server)
 	}
@@ -735,6 +753,7 @@ func (o *Observer) NetworkChanged(id string) {
 	o.mu.Lock()
 	o.e.onNetworkChange(id, o.now())
 	o.generation.Store(o.e.generation)
+	o.qualityEpoch.Add(1)
 	o.mu.Unlock()
 	o.wake()
 }

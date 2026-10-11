@@ -49,6 +49,7 @@ type HealthPassiveConfig struct {
 	PartialStallMinBytes      int64              `json:"partialStallMinBytes"`
 	ShouldKeepPendingOnDown   bool               `json:"shouldKeepPendingOnDown"`
 	ShouldKeepSilentOnDown    bool               `json:"shouldKeepSilentOnDown"`
+	ShouldSkipQuality         bool               `json:"shouldSkipQuality"`
 }
 
 type HealthProbeConfig struct {
@@ -517,6 +518,7 @@ func (c *HealthObservatoryConfig) Build() (proto.Message, error) {
 			PartialStallMinBytes:      p.PartialStallMinBytes,
 			ShouldKeepPendingOnDown:   p.ShouldKeepPendingOnDown,
 			ShouldKeepSilentOnDown:    p.ShouldKeepSilentOnDown,
+			ShouldSkipQuality:         p.ShouldSkipQuality,
 		}
 	}
 	probeNames := map[string]bool{}

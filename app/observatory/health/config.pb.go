@@ -406,8 +406,11 @@ type PassiveConfig struct {
 	// Without recent proof of life, one path failure asks for a probe.
 	// Zero uses the default; a negative value disables this check.
 	LoneFailureAfter int64 `protobuf:"varint,16,opt,name=lone_failure_after,json=loneFailureAfter,proto3" json:"lone_failure_after,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	// Only measure path quality from user TCP traffic; this disables the
+	// measurements without changing evidence, probes or routing decisions.
+	ShouldSkipQuality bool `protobuf:"varint,32,opt,name=should_skip_quality,json=shouldSkipQuality,proto3" json:"should_skip_quality,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *PassiveConfig) Reset() {
@@ -550,6 +553,13 @@ func (x *PassiveConfig) GetLoneFailureAfter() int64 {
 		return x.LoneFailureAfter
 	}
 	return 0
+}
+
+func (x *PassiveConfig) GetShouldSkipQuality() bool {
+	if x != nil {
+		return x.ShouldSkipQuality
+	}
+	return false
 }
 
 type ProbeProfile struct {
@@ -2377,7 +2387,7 @@ const file_app_observatory_health_config_proto_rawDesc = "" +
 	"\n" +
 	"WakeConfig\x12\x1c\n" +
 	"\tfreshness\x18\x01 \x01(\x03R\tfreshness\x12!\n" +
-	"\fmin_interval\x18\x02 \x01(\x03R\vminInterval\"\xf3\x05\n" +
+	"\fmin_interval\x18\x02 \x01(\x03R\vminInterval\"\xa3\x06\n" +
 	"\rPassiveConfig\x12\x16\n" +
 	"\x06window\x18\x01 \x01(\x03R\x06window\x12!\n" +
 	"\fdial_timeout\x18\x02 \x01(\x03R\vdialTimeout\x12,\n" +
@@ -2396,7 +2406,8 @@ const file_app_observatory_health_config_proto_rawDesc = "" +
 	"\x17partial_stall_min_bytes\x18\r \x01(\x03R\x14partialStallMinBytes\x12<\n" +
 	"\x1bshould_keep_pending_on_down\x18\x0e \x01(\bR\x17shouldKeepPendingOnDown\x12:\n" +
 	"\x1ashould_keep_silent_on_down\x18\x0f \x01(\bR\x16shouldKeepSilentOnDown\x12,\n" +
-	"\x12lone_failure_after\x18\x10 \x01(\x03R\x10loneFailureAfter\"\xae\x02\n" +
+	"\x12lone_failure_after\x18\x10 \x01(\x03R\x10loneFailureAfter\x12.\n" +
+	"\x13should_skip_quality\x18  \x01(\bR\x11shouldSkipQuality\"\xae\x02\n" +
 	"\fProbeProfile\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12 \n" +
 	"\vdestination\x18\x02 \x01(\tR\vdestination\x12\x16\n" +

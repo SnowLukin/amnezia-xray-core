@@ -79,6 +79,9 @@ message PassiveConfig {
   // Without recent proof of life, one path failure asks for a probe.
   // Zero uses the default; a negative value disables this check.
   int64 lone_failure_after = 16;
+  // Only measure path quality from user TCP traffic; this disables the
+  // measurements without changing evidence, probes or routing decisions.
+  bool should_skip_quality = 32;
 }
 
 message ProbeProfile {
