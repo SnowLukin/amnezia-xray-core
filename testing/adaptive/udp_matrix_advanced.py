@@ -3,6 +3,7 @@
 import contextlib
 import hashlib
 import os
+import re
 import socket
 import time
 
@@ -27,6 +28,18 @@ def _source_access(path, flows):
         matching = [line for line in lines if f"{flow.source} " in line]
         by_source[flow.source] = {"count": len(matching), "lines": matching}
     return {"path": path, "by_source": by_source}
+
+
+def _routed_starts(access, flows, tag):
+    identities = {(flow.source, flow.first_destination) for flow in flows if flow.tag == tag}
+    starts = []
+    pattern = re.compile(r"(?:^| )from udp:(\S+) accepted udp:(\S+) \[socks -> ([^\]]+)\]$")
+    for source, evidence in access.get("by_source", {}).items():
+        for line in evidence["lines"]:
+            match = pattern.search(line)
+            if match and match[3] == tag and (match[1], match[2]) in identities and match[1] == source:
+                starts.append({"source": match[1], "destination": match[2], "tag": tag, "raw": line})
+    return starts
 
 
 def mux_two_flows(stand, xray, work):
@@ -93,11 +106,15 @@ def reconnect_flow(stand, xray, work):
                     pass
                 time.sleep(1)
         workers = bench.chaos_stats()[port][0] - before
-    comparison = reconcile_flows(ledger.flows, client.final_report or {}, tag)
+    access = _source_access(access_path, ledger.flows)
+    starts = _routed_starts(access, ledger.flows, tag)
+    comparison = reconcile_flows(ledger.flows, client.final_report or {}, tag, routed_starts=starts)
     result = {"first_ok": first_ok, "recovered": recovered, "physical_connections": workers,
-              "fault": fault, "source_access": _source_access(access_path, ledger.flows),
-              "reconcile_assumption": "One association equals one tracker across RST: unverified hypothesis",
-              "udp": comparison, "ok": first_ok and recovered and workers >= 2 and comparison["ok"]}
+              "fault": fault, "source_access": access, "routed_starts": starts,
+              "association_count": len(ledger.flows), "routed_start_count": len(starts),
+              "udp": comparison, "ok": first_ok and recovered and len(ledger.flows) == 1 and
+              workers >= 2 and len(starts) >= 2 and
+              comparison["actual"].get("udp_flows_unanswered") == 0 and comparison["ok"]}
     save_json(os.path.join(work, "mux-reconnect.json"), result)
     return result
 
@@ -225,7 +242,7 @@ def awg_cold_case(stand, xray, work, answered):
     before = bench.chaos_stats()[bench.AWG_ADDRESS][3]
     with bench.Client(xray, config, work, name) as client:
         prior_to_user = bench.chaos_stats()[bench.AWG_ADDRESS][3] - before
-        with SocksUDP(ledger, tag, name) as channel:
+        with SocksUDP(ledger, tag, name, controlled_no_reply=not answered) as channel:
             target_port = HELPER_PORTS["echo"] if answered else HELPER_PORTS["blackhole"]
             payload = os.urandom(12)
             channel.send(destination_host("awg"), target_port, payload)

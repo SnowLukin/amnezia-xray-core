@@ -112,6 +112,7 @@ class Flow:
     received: list = field(default_factory=list)
     closed_ns: int | None = None
     window_index: int | None = None
+    controlled_no_reply: bool = False
 
     @property
     def first_port(self):
@@ -120,13 +121,14 @@ class Flow:
     def expected(self):
         if self.closed_ns is None:
             return None
-        return {"bucket": bucket(self.first_port), "unanswered": bool(self.sent and not self.received)}
+        return {"bucket": bucket(self.first_port), "application_no_receive": bool(self.sent and not self.received)}
 
     def as_json(self):
         return {"name": self.name, "tag": self.tag, "source": self.source,
                 "first_destination": self.first_destination, "opened_ns": self.opened_ns,
                 "closed_ns": self.closed_ns, "window_index": self.window_index,
-                "sent": self.sent, "received": self.received, "expected": self.expected()}
+                "sent": self.sent, "received": self.received, "controlled_no_reply": self.controlled_no_reply,
+                "expected": self.expected()}
 
 
 class Ledger:
@@ -136,8 +138,9 @@ class Ledger:
         self.notes = []
         self.lock = threading.Lock()
 
-    def new_flow(self, name, tag, source, destination):
-        flow = Flow(name, tag, source, destination, time.monotonic_ns())
+    def new_flow(self, name, tag, source, destination, controlled_no_reply=False):
+        flow = Flow(name, tag, source, destination, time.monotonic_ns(),
+                    controlled_no_reply=controlled_no_reply)
         with self.lock:
             self.flows.append(flow)
         return flow
@@ -201,12 +204,14 @@ def read_socks_address(sock, atyp):
 class SocksUDP:
     """One real SOCKS UDP association: the TCP control stays open until close."""
 
-    def __init__(self, ledger, tag, name, timeout=5):
+    def __init__(self, ledger, tag, name, timeout=5, controlled_no_reply=False):
         self.ledger, self.tag, self.name, self.timeout = ledger, tag, name, timeout
+        self.controlled_no_reply = controlled_no_reply
         self.control = None
         self.packet = None
         self.flow = None
         self.relay = None
+        self.last_source = None
 
     def __enter__(self):
         if bench.ADB_SERIAL:
@@ -228,9 +233,13 @@ class SocksUDP:
         return self
 
     def send(self, host, port, payload, sequence=None):
+        if self.controlled_no_reply and (port != HELPER_PORTS["blackhole"] or
+                                         host not in ("127.0.0.1", bench.TUNNEL_TARGET)):
+            raise ValueError("No-reply control requires the controlled blackhole target")
         if self.flow is None:
             source = f"{self.packet.getsockname()[0]}:{self.packet.getsockname()[1]}"
-            self.flow = self.ledger.new_flow(self.name, self.tag, source, f"{host}:{port}")
+            self.flow = self.ledger.new_flow(self.name, self.tag, source, f"{host}:{port}",
+                                              controlled_no_reply=self.controlled_no_reply)
         frame = b"\x00\x00\x00" + socks_address(host, port) + payload
         when = time.monotonic_ns()
         self.packet.sendto(frame, self.relay)
@@ -257,8 +266,9 @@ class SocksUDP:
             source_host = frame[5:5 + frame[4]].decode("ascii")
         source_port = struct.unpack("!H", frame[pos - 2:pos])[0]
         payload = frame[pos:]
+        self.last_source = f"{source_host}:{source_port}"
         self.flow.received.append({"when_ns": time.monotonic_ns(), "source":
-                                   f"{source_host}:{source_port}", "bytes": len(payload)})
+                                   self.last_source, "bytes": len(payload)})
         return payload
 
     def __exit__(self, *_):
@@ -402,6 +412,65 @@ def dns_question(name):
     return b"".join(bytes([len(label)]) + label.encode("ascii") for label in labels) + b"\x00\x00\x01\x00\x01"
 
 
+def dns_exchange(channel, name, txid, sequence, timeout=4, prior_ids=()):
+    request = txid + b"\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00" + dns_question(name)
+    started = time.monotonic()
+    deadline = started + timeout
+    responses = []
+    transport_error = None
+    try:
+        channel.send("1.1.1.1", 53, request, sequence)
+    except OSError as error:
+        transport_error = repr(error)
+    valid, expired = False, False
+    rcode, answer_count = None, 0
+    while transport_error is None and time.monotonic() < deadline:
+        try:
+            response = channel.receive(timeout=max(0, deadline - time.monotonic()))
+        except socket.timeout:
+            expired = True
+            break
+        except OSError as error:
+            transport_error = repr(error)
+            break
+        elapsed = time.monotonic() - started
+        response_id = response[:2] if len(response) >= 2 else None
+        flags = struct.unpack("!H", response[2:4])[0] if len(response) >= 4 else None
+        code = flags & 0xf if flags is not None else None
+        answers = struct.unpack("!H", response[6:8])[0] if len(response) >= 8 else None
+        if elapsed > timeout:
+            classification = "late"
+        elif channel.last_source != "1.1.1.1:53":
+            classification = "foreign_source"
+        elif response_id != txid:
+            classification = "stale_id" if response_id in prior_ids else "foreign_id"
+        elif len(response) < 12 or not flags & 0x8000:
+            classification = "invalid"
+        elif code != 0 or not answers:
+            classification = "dns_error"
+        else:
+            classification = "valid"
+        responses.append({"hex": response.hex(), "sha256": hashlib.sha256(response).hexdigest(),
+                          "bytes": len(response), "received_txid": response_id.hex() if response_id else None,
+                          "flags": flags, "qr": bool(flags & 0x8000) if flags is not None else None,
+                          "rcode": code, "answer_count": answers,
+                          "source": channel.last_source, "elapsed_ms": elapsed * 1000,
+                          "classification": classification})
+        if response_id == txid:
+            rcode, answer_count = code, answers or 0
+        if classification == "valid":
+            valid = True
+            break
+    if not valid and time.monotonic() >= deadline:
+        expired = True
+    status = ("valid" if valid else "transport_error" if transport_error else "invalid_response" if any(r["classification"] in
+              ("invalid", "dns_error") for r in responses) else "foreign_or_late" if responses else "timeout")
+    return {"id": txid.hex(), "name": name, "valid": valid, "rcode": rcode,
+            "answer_count": answer_count, "status": status, "deadline_expired": expired,
+            "timeout_seconds": timeout, "responses": responses, "error": transport_error,
+            "rtt_ms": responses[-1]["elapsed_ms"] if valid else None}
+
+
 def dns_case(ledger, tag, attempts=5):
     records = []
     names = ("one.one.one.one", "cloudflare.com", "example.com", "iana.org", "dns.google")
@@ -411,22 +480,9 @@ def dns_case(ledger, tag, attempts=5):
             txid = os.urandom(2)
             while txid in used_ids:
                 txid = os.urandom(2)
+            record = dns_exchange(channel, names[i % len(names)], txid, i, prior_ids=used_ids)
             used_ids.add(txid)
-            name = names[i % len(names)]
-            request = txid + b"\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00" + dns_question(name)
-            started = time.monotonic_ns()
-            channel.send("1.1.1.1", 53, request, i)
-            try:
-                response = channel.receive()
-                answered = len(response) >= 12 and response[:2] == txid and response[2] & 0x80 != 0
-                rcode = response[3] & 0x0f if answered else None
-                answer_count = struct.unpack("!H", response[6:8])[0] if answered else 0
-                valid = answered and rcode == 0 and answer_count > 0
-            except socket.timeout:
-                valid, rcode, answer_count = False, None, 0
-            records.append({"id": txid.hex(), "name": name, "valid": valid, "rcode": rcode,
-                            "answer_count": answer_count,
-                            "rtt_ms": (time.monotonic_ns() - started) / 1e6 if valid else None})
+            records.append(record)
     return {"destination": "1.1.1.1:53", "external": True, "valid": sum(r["valid"] for r in records),
             "records": records}
 
@@ -567,7 +623,7 @@ def association_cases(ledger, tag, target_host):
             channel.send(target_host, HELPER_PORTS["echo"], token, index)
             replies += channel.receive() == token
         results["answered_five"] = replies
-    with SocksUDP(ledger, tag, "unanswered") as channel:
+    with SocksUDP(ledger, tag, "unanswered", controlled_no_reply=True) as channel:
         channel.send(target_host, HELPER_PORTS["blackhole"], os.urandom(12))
         try:
             channel.receive(timeout=1)
@@ -612,34 +668,76 @@ def import_pion_flows(ledger, tag, mode, result):
     return [flow.name for flow in imported]
 
 
-def reconcile_flows(flows, report, tag):
+def reconcile_flows(flows, report, tag, *, routed_starts=None):
     relevant = [f for f in flows if f.tag == tag and f.closed_ns is not None]
     expected = collections.Counter(f.expected()["bucket"] for f in relevant)
-    unanswered = collections.Counter(f.expected()["bucket"] for f in relevant if f.expected()["unanswered"])
-    actual = report.get("paths", {}).get(tag, {})
-    ports = actual.get("udp_ports", {})
+    upper = collections.Counter(f.expected()["bucket"] for f in relevant if f.expected()["application_no_receive"])
+    lower = collections.Counter(f.expected()["bucket"] for f in relevant
+                                if f.controlled_no_reply and f.sent)
+    paths = report.get("paths", {}) if isinstance(report, dict) else {}
+    actual = paths.get(tag, {}) if isinstance(paths, dict) else {}
     issues = []
-    if actual.get("udp_flows") != len(relevant):
-        issues.append(f"udp_flows={actual.get('udp_flows')} expected={len(relevant)}")
-    if actual.get("udp_flows_unanswered") != sum(unanswered.values()):
-        issues.append("udp_flows_unanswered differs from association ledger")
+    if not isinstance(actual, dict):
+        issues.append("reported path must be an object")
+        actual = {}
+    ports = actual.get("udp_ports", {})
+    if any(f.controlled_no_reply and f.received for f in relevant):
+        issues.append("controlled no-reply flow received a packet")
+    if routed_starts is not None:
+        identities = {(f.source, f.first_destination, f.tag) for f in relevant}
+        if (not routed_starts or any((r.get("source"), r.get("destination"), r.get("tag")) not in identities
+                                     for r in routed_starts)):
+            issues.append("routed starts do not match the association ledger")
+        expected = collections.Counter(bucket(int(r["destination"].rsplit(":", 1)[1]))
+                                       for r in routed_starts if
+                                       (r.get("source"), r.get("destination"), r.get("tag")) in identities)
+    expected_count = sum(expected.values())
+    def count(value, name):
+        if type(value) is not int or value < 0:
+            issues.append(f"{name} must be a nonnegative integer")
+            return None
+        return value
+    total = count(actual.get("udp_flows"), "udp_flows")
+    unanswered = count(actual.get("udp_flows_unanswered"), "udp_flows_unanswered")
+    if total != expected_count:
+        issues.append(f"udp_flows={total} expected={expected_count}")
+    if unanswered is not None and not sum(lower.values()) <= unanswered <= sum(upper.values()):
+        issues.append("udp_flows_unanswered outside controlled/application bounds")
+    sum_flows = sum_unanswered = 0
+    if not isinstance(ports, dict):
+        issues.append("udp_ports must be an object")
+        ports = {}
     for name in set(expected) | set(ports):
         observed = ports.get(name, {})
-        if observed.get("flows", 0) != expected[name] or observed.get("unanswered", 0) != unanswered[name]:
-            issues.append(f"udp_ports.{name}={observed} expected=({expected[name]},{unanswered[name]})")
+        if not isinstance(observed, dict):
+            issues.append(f"udp_ports.{name} must be an object")
+            observed = {}
+        observed_flows = count(observed.get("flows"), f"udp_ports.{name}.flows")
+        observed_unanswered = count(observed.get("unanswered"), f"udp_ports.{name}.unanswered")
+        if observed_flows != expected[name]:
+            issues.append(f"udp_ports.{name}.flows={observed_flows} expected={expected[name]}")
+        if observed_unanswered is not None and not lower[name] <= observed_unanswered <= upper[name]:
+            issues.append(f"udp_ports.{name}.unanswered outside [{lower[name]}, {upper[name]}]")
+        sum_flows += observed_flows or 0
+        sum_unanswered += observed_unanswered or 0
+    if sum_flows != total or sum_unanswered != unanswered:
+        issues.append("UDP bucket sums differ from totals")
     sent = sum(len(f.sent) for f in relevant)
     received = sum(len(f.received) for f in relevant)
     sent_bytes = sum(item["bytes"] for flow in relevant for item in flow.sent)
     received_bytes = sum(item["bytes"] for flow in relevant for item in flow.received)
-    if actual.get("udp_writes", -1) < sent or actual.get("udp_reads", -1) < received:
-        issues.append("UDP packet counters below application ledger; inspect packet boundary")
-    if actual.get("udp_bytes_up", -1) < sent_bytes or actual.get("udp_bytes_down", -1) < received_bytes:
-        issues.append("UDP byte counters below application ledger; inspect payload boundary")
+    for name, minimum in (("udp_writes", sent), ("udp_reads", received),
+                          ("udp_bytes_up", sent_bytes), ("udp_bytes_down", received_bytes)):
+        observed = count(actual.get(name), name)
+        if observed is not None and observed < minimum:
+            issues.append(f"{name} below application ledger minimum {minimum}")
     first_reply_ms = sorted((flow.received[0]["when_ns"] - flow.sent[0]["when_ns"]) / 1e6
                             for flow in relevant if flow.sent and flow.received
                             and flow.received[0]["when_ns"] >= flow.sent[0]["when_ns"])
-    return {"ok": not issues, "issues": issues, "expected_flows": len(relevant),
-            "expected_ports": dict(expected), "expected_unanswered": dict(unanswered),
+    return {"ok": not issues, "issues": issues, "expected_flows": expected_count,
+            "association_count": len(relevant), "expected_ports": dict(expected),
+            "unanswered_lower": dict(lower), "unanswered_upper": dict(upper),
+            "unanswered_total_bounds": [sum(lower.values()), sum(upper.values())],
             "minimum_udp_writes": sent, "minimum_udp_reads": received,
             "minimum_udp_bytes_up": sent_bytes, "minimum_udp_bytes_down": received_bytes,
             "ledger_first_reply_p50_ms": first_reply_ms[len(first_reply_ms) // 2] if first_reply_ms else None,

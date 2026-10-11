@@ -304,13 +304,16 @@ class AdvancedFixtureTest(unittest.TestCase):
              mock.patch.object(advanced.bench, "chaos", side_effect=lambda _port, mode: modes.append(mode)), \
              mock.patch.object(advanced, "_echo", side_effect=echo), \
              mock.patch.object(advanced, "_source_access", return_value={}), \
-             mock.patch.object(advanced, "reconcile_flows", return_value={"ok": False}) as reconcile, \
+             mock.patch.object(advanced, "_routed_starts", return_value=[{}, {}]) as starts, \
+             mock.patch.object(advanced, "reconcile_flows", return_value={"ok": False, "actual": {
+                 "udp_flows_unanswered": 0}}) as reconcile, \
              mock.patch.object(advanced, "save_json"):
             result = advanced.reconnect_flow(None, "fake-xray", "/matrix/work")
         self.assertEqual(observed, ["pass", "reset_after:1", "pass"])
         self.assertEqual(modes, ["reset_after:1", "pass"])
         association.assert_called_once()
-        reconcile.assert_called_once_with(ledger.flows, client.final_report, "matrix-reality")
+        reconcile.assert_called_once_with(ledger.flows, client.final_report, "matrix-reality",
+                                          routed_starts=starts.return_value)
         self.assertTrue(result["first_ok"] and result["recovered"])
         self.assertEqual(result["physical_connections"], 2)
         self.assertFalse(result["ok"])
@@ -392,6 +395,146 @@ class AdvancedFixtureTest(unittest.TestCase):
         self.assertEqual(evidence["by_source"]["127.0.0.1:4000"],
                          {"count": 2, "lines": lines.splitlines()[:2]})
         self.assertEqual(evidence["by_source"]["127.0.0.1:4001"]["count"], 1)
+
+
+class FollowUpOracleTest(unittest.TestCase):
+    def flow(self, name, answered=False, controlled=False, port=40011):
+        flow = matrix.Flow(name, "tested", "127.0.0.1:4000", f"127.0.0.1:{port}", 1,
+                           closed_ns=4, controlled_no_reply=controlled)
+        flow.sent = [{"bytes": 12, "when_ns": 2}]
+        flow.received = [{"bytes": 12, "when_ns": 3}] if answered else []
+        return flow
+
+    def report(self, count, unanswered, writes=None, reads=0):
+        return {"paths": {"tested": {"udp_flows": count, "udp_flows_unanswered": unanswered,
+                 "udp_ports": {"other": {"flows": count, "unanswered": unanswered}},
+                 "udp_writes": count if writes is None else writes, "udp_reads": reads,
+                 "udp_bytes_up": 12 * (count if writes is None else writes), "udp_bytes_down": 12 * reads}}}
+
+    def test_unread_application_socket_is_not_controlled_no_reply(self):
+        flows = [self.flow("blackhole", controlled=True), self.flow("pion-register-a"),
+                 self.flow("pion-register-b"), self.flow("answered", answered=True)]
+        result = matrix.reconcile_flows(flows, self.report(4, 2, reads=1), "tested")
+        self.assertTrue(result["ok"], result["issues"])
+        self.assertEqual(result["unanswered_total_bounds"], [1, 3])
+        self.assertFalse(flows[1].controlled_no_reply)
+
+    def test_bounds_counts_buckets_numeric_fields_and_sums_fail_closed(self):
+        flows = [self.flow("blackhole", controlled=True), self.flow("unread")]
+        base = self.report(2, 1)
+        variants = []
+        for value in (0, 3):
+            report = copy.deepcopy(base)
+            report["paths"]["tested"]["udp_flows_unanswered"] = value
+            report["paths"]["tested"]["udp_ports"]["other"]["unanswered"] = value
+            variants.append(report)
+        for name in ("udp_flows", "udp_flows_unanswered", "udp_writes", "udp_reads",
+                     "udp_bytes_up", "udp_bytes_down"):
+            for value in (None, -1, True, 1.0, "2"):
+                report = copy.deepcopy(base)
+                report["paths"]["tested"][name] = value
+                variants.append(report)
+            report = copy.deepcopy(base)
+            del report["paths"]["tested"][name]
+            variants.append(report)
+        report = copy.deepcopy(base)
+        report["paths"]["tested"]["udp_ports"] = {"dns": {"flows": 2, "unanswered": 1}}
+        variants.append(report)
+        report = copy.deepcopy(base)
+        report["paths"]["tested"]["udp_ports"]["other"]["unanswered"] = 2
+        variants.append(report)
+        report = copy.deepcopy(base)
+        del report["paths"]["tested"]["udp_ports"]["other"]["unanswered"]
+        variants.append(report)
+        for name in ("flows", "unanswered"):
+            for value in (None, -1, True, 1.0, "2"):
+                report = copy.deepcopy(base)
+                report["paths"]["tested"]["udp_ports"]["other"][name] = value
+                variants.append(report)
+        variants.append(self.report(2, 1, writes=1))
+        for i, report in enumerate(variants):
+            with self.subTest(variant=i):
+                self.assertFalse(matrix.reconcile_flows(flows, report, "tested")["ok"])
+
+    def test_isolated_controls_detect_compensation_hidden_by_aggregate_bounds(self):
+        blackhole, unread = self.flow("blackhole", controlled=True), self.flow("unread")
+        self.assertTrue(matrix.reconcile_flows([blackhole, unread], self.report(2, 1), "tested")["ok"])
+        self.assertFalse(matrix.reconcile_flows([blackhole], self.report(1, 0), "tested")["ok"])
+        answered = self.flow("answered", answered=True)
+        self.assertFalse(matrix.reconcile_flows([answered], self.report(1, 1, reads=1), "tested")["ok"])
+        self.assertTrue(matrix.reconcile_flows([blackhole], self.report(1, 1), "tested")["ok"])
+        self.assertTrue(matrix.reconcile_flows([answered], self.report(1, 0, reads=1), "tested")["ok"])
+
+    def test_mux_requires_exact_udp_source_target_tag_routed_starts(self):
+        flow = self.flow("mux", answered=True, port=matrix.HELPER_PORTS["echo"])
+        flow.sent *= 3
+        flow.received *= 2
+        route = f"from udp:{flow.source} accepted udp:{flow.first_destination} [socks -> tested]"
+        raw = ["time1 " + route, "time2 " + route,
+               route.replace("udp:", "tcp:"), route.replace("tested", "foreign"),
+               route.replace(flow.source, "127.0.0.1:4001"),
+               route.replace(flow.first_destination, "127.0.0.1:55555")]
+        access = {"by_source": {flow.source: {"lines": raw}}}
+        starts = advanced._routed_starts(access, [flow], "tested")
+        self.assertEqual(len(starts), 2)
+        result = matrix.reconcile_flows([flow], self.report(2, 0, writes=3, reads=2), "tested", routed_starts=starts)
+        self.assertTrue(result["ok"], result["issues"])
+        self.assertEqual((result["association_count"], result["expected_flows"]), (1, 2))
+        self.assertFalse(matrix.reconcile_flows([flow], self.report(1, 0, writes=3, reads=2),
+                                               "tested", routed_starts=starts)["ok"])
+        self.assertFalse(matrix.reconcile_flows([flow], self.report(2, 0, writes=3, reads=2),
+                                               "tested", routed_starts=[])["ok"])
+
+    def dns(self, responses):
+        channel, clock = mock.Mock(last_source="1.1.1.1:53"), FakeClock()
+        def receive(timeout):
+            if not responses:
+                clock.sleep(timeout)
+                raise socket.timeout()
+            delay, response = responses.pop(0)
+            clock.sleep(delay)
+            return response
+        channel.receive.side_effect = receive
+        with mock.patch.object(matrix.time, "monotonic", side_effect=clock.monotonic):
+            result = matrix.dns_exchange(channel, "example.com", b"\x00\x02", 0, prior_ids={b"\x00\x01"})
+        return result, channel, clock
+
+    def test_dns_stale_id_then_valid_response_preserves_raw_and_deadline(self):
+        header = b"\x81\x80\x00\x01\x00\x01\x00\x00\x00\x00"
+        stale, valid = b"\x00\x01" + header, b"\x00\x02" + header
+        result, channel, clock = self.dns([(1, stale), (1, valid)])
+        self.assertTrue(result["valid"])
+        self.assertEqual([r["classification"] for r in result["responses"]], ["stale_id", "valid"])
+        self.assertEqual(result["responses"][0]["hex"], stale.hex())
+        self.assertEqual(result["responses"][1]["sha256"], hashlib.sha256(valid).hexdigest())
+        self.assertEqual(channel.receive.call_args_list, [mock.call(timeout=4), mock.call(timeout=3)])
+
+    def test_dns_invalid_is_not_timeout_and_late_response_cannot_pass(self):
+        invalid = b"\x00\x02\x01\x00" + bytes(8)
+        result, channel, clock = self.dns([(1, invalid)])
+        self.assertFalse(result["valid"])
+        self.assertEqual(result["status"], "invalid_response")
+        self.assertTrue(result["deadline_expired"])
+        self.assertEqual(clock.now, 4)
+        valid = b"\x00\x02\x81\x80\x00\x01\x00\x01" + bytes(4)
+        result, channel, clock = self.dns([(4.1, valid)])
+        self.assertFalse(result["valid"])
+        self.assertEqual(result["responses"][0]["classification"], "late")
+        self.assertEqual(channel.receive.call_count, 1)
+
+    def test_dns_transport_error_is_preserved_and_no_reply_marker_is_scoped(self):
+        channel = mock.Mock()
+        channel.send.side_effect = OSError("send failed")
+        result = matrix.dns_exchange(channel, "example.com", b"\x00\x01", 0)
+        self.assertEqual(result["status"], "transport_error")
+        self.assertIn("send failed", result["error"])
+        self.assertFalse(result["deadline_expired"])
+        channel.receive.assert_not_called()
+        controlled = matrix.SocksUDP(mock.Mock(), "tested", "control", controlled_no_reply=True)
+        for host, port in (("1.1.1.1", matrix.HELPER_PORTS["blackhole"]),
+                           ("127.0.0.1", matrix.HELPER_PORTS["echo"])):
+            with self.assertRaisesRegex(ValueError, "controlled blackhole"):
+                controlled.send(host, port, b"payload")
 
 
 class MatrixRunModeTest(unittest.TestCase):
