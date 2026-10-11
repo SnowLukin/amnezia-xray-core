@@ -142,6 +142,8 @@ class TLSProxy:
         self.listener = None
         self.stop = threading.Event()
         self.threads = []
+        self.sockets = set()
+        self.socket_lock = threading.Lock()
 
     def _normalized_key(self):
         key_path = os.path.join(self.work, f"{self.kind}-proxy.key")
@@ -167,12 +169,59 @@ class TLSProxy:
         return self
 
     def __exit__(self, *_):
-        self.stop.set()
-        self.thread.join(timeout=3)
+        with self.socket_lock:
+            self.stop.set()
+            sockets = list(self.sockets)
         self.listener.close()
+        self._shutdown(*sockets)
+        deadline = time.monotonic() + 6
+        self.thread.join(timeout=max(0, deadline - time.monotonic()))
         for worker in self.threads:
-            worker.join(timeout=3)
+            worker.join(timeout=max(0, deadline - time.monotonic()))
         save_json(os.path.join(self.work, f"{self.kind}-proxy.json"), self.records)
+
+    @staticmethod
+    def _shutdown(*sockets):
+        for sock in sockets:
+            if sock is not None:
+                try:
+                    sock.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+
+    def _register(self, sock):
+        with self.socket_lock:
+            if not self.stop.is_set():
+                self.sockets.add(sock)
+                return
+        self._shutdown(sock)
+        sock.close()
+        raise OSError("TLS proxy stopped")
+
+    def _release(self, sock):
+        if sock is None:
+            return
+        with self.socket_lock:
+            self.sockets.discard(sock)
+        self._shutdown(sock)
+        sock.close()
+
+    def _wrap_socket(self, context, raw, **kwargs):
+        # Wrapping detaches the raw descriptor, so stop must see its replacement.
+        with self.socket_lock:
+            if self.stop.is_set():
+                raise OSError("TLS proxy stopped")
+            wrapped = context.wrap_socket(raw, do_handshake_on_connect=False, **kwargs)
+            self.sockets.discard(raw)
+            self.sockets.add(wrapped)
+        try:
+            wrapped.settimeout(5)
+            wrapped.do_handshake()
+            wrapped.settimeout(None)
+        except Exception:
+            self._release(wrapped)
+            raise
+        return wrapped
 
     def _accept(self):
         while not self.stop.is_set():
@@ -180,40 +229,48 @@ class TLSProxy:
                 incoming, address = self.listener.accept()
             except socket.timeout:
                 continue
+            except OSError:
+                if self.stop.is_set():
+                    return
+                raise
+            try:
+                self._register(incoming)
+            except OSError:
+                return
             worker = threading.Thread(target=self._connection, args=(incoming, address), daemon=True)
-            worker.start()
             self.threads.append(worker)
+            worker.start()
 
     def _connection(self, incoming, address):
         row = {"opened_ns": time.monotonic_ns(), "source": address, "up_bytes": 0,
                "down_bytes": 0, "kind": self.kind}
         self.records.append(row)
+        client = plain = server = None
         try:
-            with self.context.wrap_socket(incoming, server_side=True) as client:
-                row["client_alpn"] = client.selected_alpn_protocol()
-                upstream = ssl.create_default_context()
-                upstream.check_hostname = False
-                upstream.verify_mode = ssl.CERT_NONE
-                upstream.set_alpn_protocols([row["client_alpn"] or "http/1.1"])
-                with socket.create_connection(("127.0.0.1", self.target_port), 5) as plain:
-                    with upstream.wrap_socket(plain, server_hostname=bench.SERVER_NAMES[self.kind]) as server:
-                        row["server_alpn"] = server.selected_alpn_protocol()
-                        if (row["client_alpn"] or "http/1.1") != (row["server_alpn"] or "http/1.1"):
-                            raise RuntimeError("ALPN differs across local proxy")
-                        done = threading.Event()
-                        copy = threading.Thread(target=self._pipe, args=(client, server, row, "up_bytes", done),
-                                                daemon=True)
-                        copy.start()
-                        self._pipe(server, client, row, "down_bytes", done)
-                        copy.join(timeout=2)
+            client = self._wrap_socket(self.context, incoming, server_side=True)
+            row["client_alpn"] = client.selected_alpn_protocol()
+            upstream = ssl.create_default_context()
+            upstream.check_hostname = False
+            upstream.verify_mode = ssl.CERT_NONE
+            upstream.set_alpn_protocols([row["client_alpn"] or "http/1.1"])
+            plain = socket.create_connection(("127.0.0.1", self.target_port), 5)
+            self._register(plain)
+            server = self._wrap_socket(upstream, plain, server_hostname=bench.SERVER_NAMES[self.kind])
+            row["server_alpn"] = server.selected_alpn_protocol()
+            if (row["client_alpn"] or "http/1.1") != (row["server_alpn"] or "http/1.1"):
+                raise RuntimeError("ALPN differs across local proxy")
+            done = threading.Event()
+            copy = threading.Thread(target=self._pipe, args=(client, server, row, "up_bytes", done),
+                                    daemon=True)
+            copy.start()
+            self._pipe(server, client, row, "down_bytes", done)
+            copy.join(timeout=2)
         except Exception as error:
             row["error"] = repr(error)
         finally:
+            for sock in (incoming, client, plain, server):
+                self._release(sock)
             row["closed_ns"] = time.monotonic_ns()
-            try:
-                incoming.close()
-            except OSError:
-                pass
 
     @staticmethod
     def _pipe(source, target, row, counter, done):
@@ -224,10 +281,11 @@ class TLSProxy:
                     return
                 target.sendall(data)
                 row[counter] += len(data)
-        except OSError:
-            pass
+        except OSError as error:
+            row[f"{counter}_error"] = repr(error)
         finally:
             done.set()
+            TLSProxy._shutdown(source, target)
 
 
 def matrix_config(path):

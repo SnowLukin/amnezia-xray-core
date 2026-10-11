@@ -7,6 +7,7 @@ import os
 import socket
 import struct
 import subprocess
+import threading
 import unittest
 from unittest import mock
 
@@ -58,6 +59,135 @@ class TLSProxyFixtureTest(unittest.TestCase):
                 ssl_context.return_value.load_cert_chain.assert_not_called()
                 listener.assert_not_called()
                 thread.assert_not_called()
+
+
+class BlockingProxySocket:
+    def __init__(self):
+        self.reading = threading.Event()
+        self.released = threading.Event()
+        self.closed = False
+
+    def recv(self, _size):
+        self.reading.set()
+        if not self.released.wait(2):
+            raise AssertionError("Blocked proxy read was not released")
+        return b""
+
+    def shutdown(self, how):
+        assert how == socket.SHUT_RDWR
+        self.released.set()
+
+    def close(self):
+        self.closed = True
+
+
+class TLSProxyLifecycleTest(unittest.TestCase):
+    def test_eof_and_receive_or_send_error_shutdown_both_directions(self):
+        for mode in ("eof", "recv_error", "send_error"):
+            with self.subTest(mode=mode):
+                source, target = mock.Mock(), mock.Mock()
+                source.recv.return_value = b"" if mode == "eof" else b"payload"
+                error = OSError("pipe failed")
+                if mode == "recv_error":
+                    source.recv.side_effect = error
+                elif mode == "send_error":
+                    target.sendall.side_effect = error
+                row, done = {"up_bytes": 0}, threading.Event()
+                topology.TLSProxy._pipe(source, target, row, "up_bytes", done)
+                self.assertTrue(done.is_set())
+                source.shutdown.assert_called_once_with(socket.SHUT_RDWR)
+                target.shutdown.assert_called_once_with(socket.SHUT_RDWR)
+                self.assertEqual(row["up_bytes"], 0)
+                if mode == "eof":
+                    self.assertNotIn("up_bytes_error", row)
+                else:
+                    self.assertEqual(row["up_bytes_error"], repr(error))
+
+    def test_eof_releases_opposite_blocked_read(self):
+        blocked = BlockingProxySocket()
+        eof = mock.Mock()
+        eof.recv.side_effect = lambda _size: b"" if blocked.reading.wait(1) else self.fail("No read")
+        done, row = threading.Event(), {"up_bytes": 0, "down_bytes": 0}
+        worker = threading.Thread(target=topology.TLSProxy._pipe,
+                                  args=(blocked, eof, row, "up_bytes", done))
+        worker.start()
+        topology.TLSProxy._pipe(eof, blocked, row, "down_bytes", done)
+        worker.join(timeout=1)
+        self.assertFalse(worker.is_alive())
+        self.assertTrue(blocked.released.is_set())
+
+    def test_explicit_stop_releases_both_blocked_reads(self):
+        proxy = topology.TLSProxy("ws", "/matrix/work")
+        first, second = BlockingProxySocket(), BlockingProxySocket()
+        for sock in (first, second):
+            proxy._register(sock)
+        done, row = threading.Event(), {"up_bytes": 0, "down_bytes": 0}
+        def forward(source, target, counter):
+            try:
+                proxy._pipe(source, target, row, counter, done)
+            finally:
+                proxy._release(source)
+        proxy.threads = [threading.Thread(target=forward, args=(first, second, "up_bytes")),
+                         threading.Thread(target=forward, args=(second, first, "down_bytes"))]
+        proxy.listener, proxy.thread = mock.Mock(), mock.Mock()
+        for worker in proxy.threads:
+            worker.start()
+        self.assertTrue(first.reading.wait(1))
+        self.assertTrue(second.reading.wait(1))
+        with mock.patch.object(topology, "save_json"):
+            proxy.__exit__()
+        self.assertTrue(proxy.stop.is_set())
+        self.assertTrue(all(not worker.is_alive() for worker in proxy.threads))
+        self.assertTrue(first.closed and second.closed)
+        self.assertEqual(proxy.sockets, set())
+        proxy.listener.close.assert_called_once()
+
+    def test_registration_after_stop_closes_new_socket(self):
+        proxy = topology.TLSProxy("ws", "/matrix/work")
+        proxy.stop.set()
+        sock = mock.Mock()
+        with self.assertRaisesRegex(OSError, "TLS proxy stopped"):
+            proxy._register(sock)
+        sock.shutdown.assert_called_once_with(socket.SHUT_RDWR)
+        sock.close.assert_called_once()
+        self.assertEqual(proxy.sockets, set())
+
+    def test_wrap_replaces_registered_socket_before_handshake_and_clears_timeout(self):
+        for kind in ("ws", "xhttp"):
+            with self.subTest(kind=kind):
+                proxy = topology.TLSProxy(kind, "/matrix/work")
+                for kwargs in ({"server_side": True}, {"server_hostname": "example.test"}):
+                    raw, wrapped, context = mock.Mock(), mock.Mock(), mock.Mock()
+                    proxy._register(raw)
+                    def wrap(sock, **options):
+                        self.assertTrue(proxy.socket_lock.locked())
+                        self.assertIn(raw, proxy.sockets)
+                        self.assertIs(sock, raw)
+                        self.assertEqual(options, dict(kwargs, do_handshake_on_connect=False))
+                        return wrapped
+                    def handshake():
+                        self.assertFalse(proxy.socket_lock.locked())
+                        self.assertNotIn(raw, proxy.sockets)
+                        self.assertIn(wrapped, proxy.sockets)
+                    context.wrap_socket.side_effect = wrap
+                    wrapped.do_handshake.side_effect = handshake
+                    self.assertIs(proxy._wrap_socket(context, raw, **kwargs), wrapped)
+                    self.assertEqual(wrapped.settimeout.call_args_list, [mock.call(5), mock.call(None)])
+                    wrapped.do_handshake.assert_called_once()
+                    proxy._release(wrapped)
+                self.assertEqual(proxy.sockets, set())
+
+    def test_failed_handshake_releases_wrapped_socket(self):
+        proxy = topology.TLSProxy("ws", "/matrix/work")
+        raw, wrapped, context = mock.Mock(), mock.Mock(), mock.Mock()
+        proxy._register(raw)
+        context.wrap_socket.return_value = wrapped
+        wrapped.do_handshake.side_effect = socket.timeout("handshake deadline")
+        with self.assertRaises(socket.timeout):
+            proxy._wrap_socket(context, raw, server_side=True)
+        wrapped.shutdown.assert_called_once_with(socket.SHUT_RDWR)
+        wrapped.close.assert_called_once()
+        self.assertEqual(proxy.sockets, set())
 
 
 class STUNBindingOracleTest(unittest.TestCase):
