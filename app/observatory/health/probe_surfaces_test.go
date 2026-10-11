@@ -14,7 +14,7 @@ func TestProbeSurfacesShowCurrentNetworkResultAndSafeStepFields(t *testing.T) {
 	p := te.path("p-x2")
 	p.lastProbeEnd = at(3 * time.Second)
 	p.lastProbeResult = probeResult{
-		ok: true, profile: "full", state: statusDegraded,
+		ok: true, profile: "full", reason: "confirm", state: statusDegraded,
 		steps: []probeStepResult{
 			{name: "transport", ok: true, connect: 820 * time.Millisecond, elapsed: 1400 * time.Millisecond, bytes: 32768, destination: 0},
 			{name: "egress", connect: 790 * time.Millisecond, elapsed: 310 * time.Millisecond, destination: -1, class: "closed"},
@@ -41,7 +41,7 @@ func TestProbeSurfacesShowCurrentNetworkResultAndSafeStepFields(t *testing.T) {
 	}
 	probe := statusPath["probe"].(map[string]any)
 	steps := probe["steps"].([]any)
-	if statusPath["state"] != "degraded" || probe["state"] != "degraded" || probe["profile"] != "full" || probe["ago_ms"] != 4000.0 ||
+	if statusPath["state"] != "degraded" || probe["state"] != "degraded" || probe["profile"] != "full" || probe["reason"] != "confirm" || probe["ago_ms"] != 4000.0 ||
 		steps[0].(map[string]any)["destination"] != 0.0 || steps[0].(map[string]any)["connect_ms"] != 820.0 ||
 		steps[1].(map[string]any)["destination"] != nil || steps[1].(map[string]any)["error"] != "closed" {
 		t.Fatalf("status probe: %s", statusRaw)
@@ -60,7 +60,7 @@ func TestProbeSurfacesShowCurrentNetworkResultAndSafeStepFields(t *testing.T) {
 	}
 	providerProbe := outbound["probe"].(map[string]any)
 	providerSteps := providerProbe["steps"].([]any)
-	if providerProbe["isPassed"] != true || providerProbe["state"] != "degraded" || providerProbe["rttMs"] != 1400.0 ||
+	if providerProbe["isPassed"] != true || providerProbe["state"] != "degraded" || providerProbe["reason"] != "confirm" || providerProbe["rttMs"] != 1400.0 ||
 		providerProbe["error"] != nil || providerSteps[0].(map[string]any)["destination"] != 0.0 ||
 		providerSteps[1].(map[string]any)["destination"] != nil || providerSteps[1].(map[string]any)["error"] != "closed" {
 		t.Fatalf("provider probe: %s", body)
@@ -152,6 +152,63 @@ func TestStaleProbeStepsCountWithoutReplacingCurrentNetworkSnapshot(t *testing.T
 	v := te.takeReport(true, at(5*time.Second))
 	if v == nil || !reflect.DeepEqual(v.Paths["a1"].ProbeSteps, []reportProbeStep{{Name: "transport", Passed: 1}}) {
 		t.Fatalf("stale probe missing from report: %+v", v)
+	}
+}
+
+func TestProbeSnapshotReasonComesFromCurrentJob(t *testing.T) {
+	for _, reason := range []probeReason{reasonHost, reasonConfirm, reasonRecheck, reasonNetwork} {
+		t.Run(reason.String(), func(t *testing.T) {
+			te := newReportEngine(t, nil, nil, "a1", "b1")
+			j := te.enqueue("a1", reason, "auto", t0)
+			te.begin(j, t0)
+			te.onProbeResult(j, probeResult{ok: true, profile: "full", reason: "untrusted", state: statusUp}, at(time.Second))
+			p := te.path("a1")
+			status := p.statusProbe(at(2 * time.Second))
+			provider := describeOutbound(p, "a1", 0, at(2*time.Second)).Probe
+			if status == nil || status.Reason != reason.String() || provider == nil || provider.Reason != reason.String() {
+				t.Fatalf("job reason %q lost: status=%+v provider=%+v", reason, status, provider)
+			}
+		})
+	}
+}
+
+func TestStaleAndCanceledProbesKeepCurrentSnapshotReason(t *testing.T) {
+	for _, scenario := range []string{"invalidated", "old_generation", "canceled"} {
+		t.Run(scenario, func(t *testing.T) {
+			te := newReportEngine(t, nil, nil, "a1", "b1")
+			first := te.enqueue("a1", reasonRecheck, "auto", t0)
+			te.begin(first, t0)
+			te.onProbeResult(first, probeResult{ok: true, profile: "full", state: statusUp}, at(time.Second))
+			p := te.path("a1")
+			beforeStatus := p.statusProbe(at(4 * time.Second))
+			beforeProvider := describeOutbound(p, "a1", 0, at(4*time.Second)).Probe
+			late := te.enqueue("a1", reasonHost, "auto", at(2*time.Second))
+			te.begin(late, at(2*time.Second))
+			result := probeResult{profile: "full", reason: "untrusted", state: statusDown, class: "timeout"}
+			switch scenario {
+			case "invalidated":
+				late.invalidated = true
+			case "old_generation":
+				late.generation--
+			case "canceled":
+				result.canceled = true
+			}
+			te.onProbeResult(late, result, at(3*time.Second))
+			afterStatus := p.statusProbe(at(4 * time.Second))
+			afterProvider := describeOutbound(p, "a1", 0, at(4*time.Second)).Probe
+			if beforeStatus == nil || beforeStatus.Reason != "recheck" || beforeProvider == nil || beforeProvider.Reason != "recheck" ||
+				!reflect.DeepEqual(beforeStatus, afterStatus) || !reflect.DeepEqual(beforeProvider, afterProvider) {
+				t.Fatalf("%s replaced snapshot: status=%+v -> %+v provider=%+v -> %+v", scenario, beforeStatus, afterStatus, beforeProvider, afterProvider)
+			}
+			events := te.eventsOf(t, "probe_result")
+			if scenario == "canceled" {
+				if len(events) != 1 {
+					t.Fatalf("canceled probe produced a result event: %+v", events)
+				}
+			} else if len(events) != 2 || events[1].Fields["reason"] != "host" || events[1].Fields["is_stale"] != true {
+				t.Fatalf("stale event lost its own job reason: %+v", events)
+			}
+		})
 	}
 }
 

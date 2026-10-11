@@ -14,6 +14,7 @@ type statusProbeStepView struct {
 
 type statusProbeView struct {
 	Profile string                `json:"profile"`
+	Reason  string                `json:"reason,omitempty"`
 	State   string                `json:"state"`
 	AgoMs   int64                 `json:"ago_ms"`
 	Steps   []statusProbeStepView `json:"steps"`
@@ -36,6 +37,7 @@ func (p *path) statusProbe(now time.Time) *statusProbeView {
 	r := p.lastProbeResult
 	v := &statusProbeView{
 		Profile: r.profile,
+		Reason:  r.reason,
 		State:   r.pathState().String(),
 		AgoMs:   max(now.Sub(p.lastProbeEnd).Milliseconds(), 0),
 		Steps:   make([]statusProbeStepView, 0, len(r.steps)),

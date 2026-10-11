@@ -10,6 +10,7 @@ type probeResult struct {
 	class    string
 	canceled bool
 	profile  string
+	reason   string
 	state    pathStatus
 	steps    []probeStepResult
 }

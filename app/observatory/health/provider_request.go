@@ -95,6 +95,7 @@ type requestOutbound struct {
 
 type requestProbe struct {
 	Profile  *string             `json:"profile,omitempty"`
+	Reason   string              `json:"reason,omitempty"`
 	State    string              `json:"state,omitempty"`
 	Steps    *[]requestProbeStep `json:"steps,omitempty"`
 	IsPassed bool                `json:"isPassed"`
@@ -236,6 +237,7 @@ func describeOutbound(p *path, tag string, active time.Duration, now time.Time) 
 			o.Probe.Steps = &steps
 			o.Probe.IsPassed = r.pathState() != statusDown
 		}
+		o.Probe.Reason = r.reason
 		if o.Probe.IsPassed {
 			o.Probe.RTTMs = p.lastRTT.Milliseconds()
 		} else {

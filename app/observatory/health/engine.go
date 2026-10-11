@@ -1829,6 +1829,7 @@ func (e *engine) onProbeResult(j *probeJob, r probeResult, now time.Time) {
 	if !stale {
 		p.probing = false
 		p.lastProbeEnd = now
+		r.reason = j.reason.String()
 		p.lastProbeResult = r.snapshot()
 		if !r.ok {
 			p.lastError = r.err

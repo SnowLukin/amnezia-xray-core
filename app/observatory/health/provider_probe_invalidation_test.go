@@ -27,7 +27,7 @@ func TestReplacedHandlerInvalidatesOldProbe(t *testing.T) {
 			p.lastSuccess = t0
 			p.lastAnsweredStart = 91
 			p.lastProbeEnd = t0
-			p.lastProbeResult = probeResult{ok: true, state: statusUp, profile: "light"}
+			p.lastProbeResult = probeResult{ok: true, state: statusUp, profile: "light", reason: "confirm"}
 			old := te.enqueue("p-x", reasonHost, "auto", t0)
 			te.running[old.id] = old
 			p.probing = true
@@ -36,7 +36,7 @@ func TestReplacedHandlerInvalidatesOldProbe(t *testing.T) {
 				tags: []string{"p-x", "p-y"}, paths: providerPaths("light"), reset: []string{"p-x"},
 			}, at(time.Second))
 			if !old.invalidated || slices.Contains(te.queue, queued) || p.status != statusUnknown ||
-				!p.lastProbeEnd.IsZero() || p.lastProbeResult.profile != "" || !p.lastSuccess.IsZero() || p.lastAnsweredStart != 0 || p.probing {
+				!p.lastProbeEnd.IsZero() || p.lastProbeResult.profile != "" || p.lastProbeResult.reason != "" || !p.lastSuccess.IsZero() || p.lastAnsweredStart != 0 || p.probing {
 				t.Fatalf("replacement kept old proof or job: state=%v result=%+v old=%+v", p.status, p.lastProbeResult, old)
 			}
 			r := probeResult{state: oldState, profile: "light", class: "timeout", err: "old handler"}
@@ -45,7 +45,7 @@ func TestReplacedHandlerInvalidatesOldProbe(t *testing.T) {
 				r.profile = "light"
 			}
 			te.onProbeResult(old, r, at(2*time.Second))
-			if p.status != statusUnknown || p.quarantined(at(2*time.Second)) || p.lastProbeResult.profile != "" || !p.lastProbeEnd.IsZero() {
+			if p.status != statusUnknown || p.quarantined(at(2*time.Second)) || p.lastProbeResult.profile != "" || p.lastProbeResult.reason != "" || !p.lastProbeEnd.IsZero() {
 				t.Fatalf("old result judged new handler: state=%v result=%+v", p.status, p.lastProbeResult)
 			}
 			events := te.eventsOf(t, "probe_result")
@@ -54,7 +54,7 @@ func TestReplacedHandlerInvalidatesOldProbe(t *testing.T) {
 			}
 			fresh := &probeJob{id: old.id + 100, tag: "p-x", reason: reasonHost, generation: te.generation}
 			te.onProbeResult(fresh, probeResult{ok: true, state: statusUp, profile: "light"}, at(3*time.Second))
-			if p.status != statusUp || p.lastProbeResult.profile != "light" || !p.lastProbeEnd.Equal(at(3*time.Second)) {
+			if p.status != statusUp || p.lastProbeResult.profile != "light" || p.lastProbeResult.reason != "host" || !p.lastProbeEnd.Equal(at(3*time.Second)) {
 				t.Fatalf("new handler result was not accepted: state=%v result=%+v", p.status, p.lastProbeResult)
 			}
 		})
@@ -67,7 +67,7 @@ func TestProfileChangeInvalidatesOldQualityWithoutReplacingHandler(t *testing.T)
 	p.setStatus(statusUp, "probe", t0)
 	p.lastSuccess = t0
 	p.lastProbeEnd = t0
-	p.lastProbeResult = probeResult{ok: true, state: statusUp, profile: "light"}
+	p.lastProbeResult = probeResult{ok: true, state: statusUp, profile: "light", reason: "confirm"}
 	p.uses = 7
 	p.sleeper = sleeperYes
 	old := te.enqueue("p-x", reasonHost, "auto", t0)
@@ -76,17 +76,17 @@ func TestProfileChangeInvalidatesOldQualityWithoutReplacingHandler(t *testing.T)
 	te.applyProviderSet(te.prov(), providerChange{
 		tags: []string{"p-x", "p-y"}, paths: providerPaths("full"),
 	}, at(time.Second))
-	if p.status != statusUnknown || p.reason != "probe_changed" || p.lastProbeResult.profile != "" ||
+	if p.status != statusUnknown || p.reason != "probe_changed" || p.lastProbeResult.profile != "" || p.lastProbeResult.reason != "" ||
 		!p.lastProbeEnd.IsZero() || !old.invalidated || p.probing || p.uses != 7 || p.sleeper != sleeperYes {
 		t.Fatalf("profile change kept old quality or reset handler: state=%v result=%+v uses=%d sleeper=%v", p.status, p.lastProbeResult, p.uses, p.sleeper)
 	}
 	te.onProbeResult(old, degradedProbe(), at(2*time.Second))
-	if p.status != statusUnknown || p.lastProbeResult.profile != "" {
+	if p.status != statusUnknown || p.lastProbeResult.profile != "" || p.lastProbeResult.reason != "" {
 		t.Fatalf("old light probe restored quality: state=%v result=%+v", p.status, p.lastProbeResult)
 	}
 	fresh := &probeJob{id: old.id + 100, tag: "p-x", reason: reasonHost, generation: te.generation}
 	te.onProbeResult(fresh, degradedProbe(), at(3*time.Second))
-	if p.status != statusDegraded || p.lastProbeResult.profile != "full" || !p.lastProbeEnd.Equal(at(3*time.Second)) {
+	if p.status != statusDegraded || p.lastProbeResult.profile != "full" || p.lastProbeResult.reason != "host" || !p.lastProbeEnd.Equal(at(3*time.Second)) {
 		t.Fatalf("new full probe was not applied: state=%v result=%+v", p.status, p.lastProbeResult)
 	}
 }

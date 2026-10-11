@@ -150,11 +150,11 @@ Per outbound:
 | --- | --- |
 | `tag` | Always. |
 | `state` | Always. `up`, `degraded`, `suspect`, `down`, or `unknown` for an outbound the core knows nothing about yet. `degraded` means required probe steps passed but an optional step failed; an `up` candidate is preferred before cost is considered. |
-| `reason`, `stateMs` | What set the state (`traffic`, `probe`, `return_probe`, `host_probe`, `network_change`, `network_down`, `network_up`, `replaced`, `rescued` for an outbound whose down a probe that was already running proved false, or `chosen` for an outbound a balancer chose again after its rest, judged afresh) and how long ago. |
+| `reason`, `stateMs` | What set the state (`traffic`, `probe`, `return_probe`, `host_probe`, `network_change`, `network_down`, `network_up`, `replaced`, `rescued` for an outbound whose down a confirmation already running or an assigned audit proved false, or `chosen` for an outbound a balancer chose again after its rest, judged afresh) and how long ago. The `path_state` event distinguishes rescues with `by: confirm` or `by: audit`. |
 | `seenMs` | How long the core has kept the counters of the outbound. |
 | `quarantineLevel`, `quarantineMs` | While the outbound rests after a failure: the level of its rest, which grows with every failure in a row, and how much longer it lasts. |
 | `failures` | Failures of user connections by kind over the life of the outbound: `dial_failed`, `dial_timeout`, `server_unverified` (REALITY did not verify the server), `no_response`, `closed`, `stall`, `partial_stall`. |
-| `probe` | The last probe that finished: an actual snapshot includes `profile` (including an empty built-in name), `state`, and attempted `steps` with `name`, `isPassed`, `connectMs` (connection establishment), `ms` (whole step), `bytes`, a `destination` index on success (including zero), or an `error` class on failure. If only legacy result fields exist, `profile`, `state`, and `steps` are absent. The compatibility fields remain: `isPassed` means state other than `down`, `rttMs` when it passed, `error` as a class when it failed, and `agoMs` since its result. Failure classes include `dial_failed`, `dial_timeout`, `server_unverified`, `closed`, `timeout`, `no_progress`, `status_<N>`, `short_body` and `other`; addresses and error text are never sent. A network change clears the snapshot unless the configured action is IGNORE. |
+| `probe` | The last current probe that finished: an actual snapshot includes `profile` (including an empty built-in name), `reason` (the probe job's reason), `state`, and attempted `steps` with `name`, `isPassed`, `connectMs` (connection establishment), `ms` (whole step), `bytes`, a `destination` index on success (including zero), or an `error` class on failure. If only legacy result fields exist, `profile`, `reason`, `state`, and `steps` are absent. The compatibility fields remain: `isPassed` means state other than `down`, `rttMs` when it passed, `error` as a class when it failed, and `agoMs` since its result. Failure classes include `dial_failed`, `dial_timeout`, `server_unverified`, `closed`, `timeout`, `no_progress`, `status_<N>`, `short_body` and `other`; addresses and error text are never sent. Stale or canceled probes do not replace the snapshot. A network change clears it unless the configured action is IGNORE. |
 | `connsOk`, `connsFailed`, `bytesUp`, `bytesDown` | User connections and their bytes. |
 | `activeMs` | How long a balancer has chosen the outbound, the current stretch included. |
 | `ttfbP50Ms` | The median time to the first byte. |
@@ -165,9 +165,9 @@ the targets of failures, the text of an error that may name a URL, header
 values, or the raw run and network id. A usual set takes a few kilobytes.
 The legacy fixture with 128 outbounds and busy counters stays below 64 KiB,
 excluding backend-chosen tags and version. The fixture with four raw probe
-steps per outbound has a separate ceiling of 150 KiB: 64 KiB plus
-128 * (44 bytes of snapshot metadata + 4 * (160 bytes of step metadata +
-one separator)). JSON-escaped profile and step-name contents are excluded
+steps per outbound has a separate ceiling of 150 KiB, including the longest
+probe-job reason. Snapshot metadata takes 70 bytes with empty profile and
+steps; each step's fixed metadata takes up to 160 bytes. JSON-escaped profile and step-name contents are excluded
 as caller-chosen text. Actual probe measurements are retained in full.
 These are regression-fixture ceilings, not runtime truncation limits for
 arbitrary values.

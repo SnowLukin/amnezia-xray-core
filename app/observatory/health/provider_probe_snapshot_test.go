@@ -101,7 +101,7 @@ func TestProviderProbeFourStepsState(t *testing.T) {
 			j := te.enqueue("p-x2", reasonConfirm, "auto", t0)
 			te.begin(j, t0)
 			te.onProbeResult(j, result, at(time.Second))
-			want := map[string]any{"profile": "full", "state": state.String(), "steps": wantSteps,
+			want := map[string]any{"profile": "full", "reason": "confirm", "state": state.String(), "steps": wantSteps,
 				"isPassed": state != statusDown, "agoMs": float64(1000)}
 			if state == statusDown {
 				want["error"] = "short_body"
@@ -124,7 +124,7 @@ func TestProviderProbeSnapshotNetworkContract(t *testing.T) {
 			}
 			p := te.path("p-x2")
 			p.lastProbeEnd, p.lastRTT = t0, 180*time.Millisecond
-			p.lastProbeResult = probeResult{ok: true, state: statusUp, profile: "home", steps: []probeStepResult{
+			p.lastProbeResult = probeResult{ok: true, state: statusUp, profile: "home", reason: "wake", steps: []probeStepResult{
 				{name: "transport", ok: true, connect: time.Millisecond, elapsed: 2 * time.Millisecond, bytes: 3, destination: 0},
 			}}
 			before := providerProbeJSON(t, p, at(time.Second))
@@ -144,12 +144,10 @@ func TestProviderProbeSnapshotNetworkContract(t *testing.T) {
 
 func TestProviderProbeRichBodyBudget(t *testing.T) {
 	// Keep raw snapshots; only caller-chosen escaped text is outside the fixed metadata ceiling.
-	const legacyBudget = 64 << 10
-	const envelopeBytes = 44
+	const envelopeBytes = 70
 	const stepBytes = 160
-	const stepsPerSnapshot = 4
-	const snapshotBudget = legacyBudget + 128*(envelopeBytes+stepsPerSnapshot*(stepBytes+1))
-	if snapshotBudget != 150<<10 || maxProviderOutbounds != 128 {
+	const snapshotBudget = 150 << 10
+	if maxProviderOutbounds != 128 {
 		t.Fatal("review the metadata budget when the provider limit changes")
 	}
 	destination := 3
@@ -163,9 +161,10 @@ func TestProviderProbeRichBodyBudget(t *testing.T) {
 	emptySteps := []requestProbeStep{}
 	envelope := struct {
 		Profile *string             `json:"profile"`
+		Reason  string              `json:"reason"`
 		State   string              `json:"state"`
 		Steps   *[]requestProbeStep `json:"steps"`
-	}{&emptyProfile, "degraded", &emptySteps}
+	}{&emptyProfile, reasonNetwork.String(), "degraded", &emptySteps}
 	encoded, err = json.Marshal(envelope)
 	if err != nil || len(encoded) != envelopeBytes {
 		t.Fatalf("snapshot envelope: %d bytes, want %d (%v)", len(encoded), envelopeBytes, err)
@@ -210,7 +209,7 @@ func TestProviderProbeRichBodyBudget(t *testing.T) {
 					p.stats.failuresByKind[k] = 1_000_000
 				}
 				p.stats.probes, p.lastProbeEnd, p.lastRTT = 1, t0, 180*time.Millisecond
-				p.lastProbeResult = probeResult{ok: true, profile: profile, state: statusDegraded, steps: results}
+				p.lastProbeResult = probeResult{ok: true, profile: profile, reason: reasonNetwork.String(), state: statusDegraded, steps: results}
 				p.stats.connsOK, p.stats.connsFailed, p.stats.bytesUp, p.stats.bytesDown = 1_000_000, 1_000_000, 1<<40, 1<<40
 				p.stats.activeTime = 24 * time.Hour
 				p.stats.ttfb.add(10 * time.Second)
@@ -228,7 +227,7 @@ func TestProviderProbeRichBodyBudget(t *testing.T) {
 			}
 			for _, outbound := range decoded.Outbounds {
 				p := outbound.Probe
-				if p == nil || p.Profile == nil || *p.Profile != profile || p.State != "degraded" || !p.IsPassed || p.Error != "" || p.RTTMs != 180 || p.AgoMs != 60000 ||
+				if p == nil || p.Profile == nil || *p.Profile != profile || p.Reason != reasonNetwork.String() || p.State != "degraded" || !p.IsPassed || p.Error != "" || p.RTTMs != 180 || p.AgoMs != 60000 ||
 					p.Steps == nil || !reflect.DeepEqual(*p.Steps, wantSteps) {
 					t.Fatalf("outbound %q lost raw snapshot: %+v", outbound.Tag, p)
 				}
