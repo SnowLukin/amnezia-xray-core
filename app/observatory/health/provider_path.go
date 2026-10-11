@@ -125,7 +125,7 @@ func validateAnswerPaths(cfg *providerSettings, a *providerAnswer) error {
 	a.paths = nil
 	for _, head := range a.heads {
 		where := fmt.Sprintf("outbound %s path", head.Tag)
-		obj, err := answerObject(head.Path, where, map[string]bool{"balancer": true, "group": true, "cost": true, "isLazy": true, "returnInterval": true, "probe": true})
+		obj, err := answerObject(head.Path, where, map[string]bool{"balancer": true, "group": true, "cost": true, "isLazy": true, "returnInterval": true, "probe": true, "isProbeOnly": true})
 		if err != nil {
 			return err
 		}
@@ -141,6 +141,11 @@ func validateAnswerPaths(cfg *providerSettings, a *providerAnswer) error {
 			return fmt.Errorf("%s.group needs nonempty name", where)
 		}
 		p := &PathDefinition{Tag: cfg.prefix + head.Tag, Balancer: balancer}
+		if raw := obj["isProbeOnly"]; len(raw) > 0 {
+			if json.Unmarshal(raw, &p.IsProbeOnly) != nil {
+				return fmt.Errorf("%s.isProbeOnly must be a boolean", where)
+			}
+		}
 		if group != "" {
 			g := groups[group]
 			if g == nil {

@@ -16,6 +16,7 @@ import cost_scenarios
 import return_interval_scenarios
 import path_scenarios
 import phase_timeout_scenarios
+import probe_only_scenarios
 
 
 def main():
@@ -27,7 +28,8 @@ def main():
     work = bench.workdir()
     print(f"workdir {work}", flush=True)
     results = []
-    with bench.Stand(xray, work) as stand:
+    with bench.Stand(xray, work, probe_credentials=not wanted or any(
+            name.startswith("probe_only_") for name in wanted)) as stand:
         for sc in scenarios.ALL:
             if wanted and sc.name not in wanted:
                 continue

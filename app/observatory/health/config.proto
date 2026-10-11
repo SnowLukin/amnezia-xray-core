@@ -156,6 +156,14 @@ message ScheduleConfig {
   int64 suspect_cooldown = 8;
   // Probes the host asks for.
   HostProbesConfig host_probes = 9;
+  ProbeOnlyConfig probe_only = 10;
+}
+
+message ProbeOnlyConfig {
+  // Verified probe-only outbounds to keep ready, default 1, at most 4.
+  int32 keep_verified = 1;
+  // Recheck a verified probe-only outbound this often, default 15 minutes.
+  int64 recheck_interval = 2;
 }
 
 // HostProbesConfig limits probes the host asks for on top of the probe
@@ -219,6 +227,7 @@ message PathDefinition {
   bool is_lazy = 5;
   int64 return_interval = 6;
   string probe = 7;
+  bool is_probe_only = 8;
 }
 
 message PathGroup {

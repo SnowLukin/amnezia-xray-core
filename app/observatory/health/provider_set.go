@@ -951,7 +951,16 @@ func (o *Observer) applySet(rt *providerRuntime, a *providerAnswer, j *refreshJo
 	if err != nil {
 		return fail(err)
 	}
-	if a.version == rt.version {
+	o.mu.Lock()
+	modeChanged := false
+	for _, path := range a.paths {
+		if o.e.isProbeOnly(path.Tag) != path.IsProbeOnly {
+			modeChanged = true
+			break
+		}
+	}
+	o.mu.Unlock()
+	if a.version == rt.version && !modeChanged {
 		// The version names the set, not the answer: the most common answer
 		// while leases run is the same set with later ends, which renews
 		// them without rebuilding anything. Its outbounds are checked all
@@ -994,7 +1003,7 @@ func (o *Observer) applySet(rt *providerRuntime, a *providerAnswer, j *refreshJo
 		if _, present := o.s.paths.Load(path.Tag); present {
 			continue
 		}
-		o.s.paths.Store(path.Tag, "")
+		o.s.paths.Store(path.Tag, pathSettings{isProbeOnly: path.IsProbeOnly})
 		staged = append(staged, path.Tag)
 	}
 	defer func() {
@@ -1078,12 +1087,43 @@ func (o *Observer) applySet(rt *providerRuntime, a *providerAnswer, j *refreshJo
 	for _, c := range replaced {
 		reset = append(reset, c.tag)
 	}
+	demoted := map[string]pathSettings{}
+	wasRetiring := map[string]bool{}
 	o.mu.Lock()
 	o.e.replacingTags(reset)
+	for _, path := range a.paths {
+		metadata, exists := o.s.paths.Load(path.Tag)
+		if !exists || !path.IsProbeOnly {
+			continue
+		}
+		old := metadata.(pathSettings)
+		if old.isProbeOnly {
+			continue
+		}
+		demoted[path.Tag] = old
+		wasRetiring[path.Tag] = o.e.retiring[path.Tag]
+		// Select reads the mode without a lock, before the handler can be replaced.
+		o.s.paths.Store(path.Tag, pathSettings{probe: old.probe, isProbeOnly: true})
+		o.e.retiring[path.Tag] = true
+	}
+	if len(demoted) > 0 {
+		o.e.refreshCandidates(o.now())
+	}
 	o.mu.Unlock()
 	if err := o.registerSet(added, replaced); err != nil {
 		o.mu.Lock()
 		clear(o.e.replacing)
+		for tag, old := range demoted {
+			o.s.paths.Store(tag, old)
+			if wasRetiring[tag] {
+				o.e.retiring[tag] = true
+			} else {
+				delete(o.e.retiring, tag)
+			}
+		}
+		if len(demoted) > 0 {
+			o.e.refreshCandidates(o.now())
+		}
 		o.mu.Unlock()
 		return fail(err)
 	}
@@ -1106,6 +1146,11 @@ func (o *Observer) applySet(rt *providerRuntime, a *providerAnswer, j *refreshJo
 	}
 	for _, tag := range removed {
 		o.startDrain(rt, tag, owned[tag], true)
+	}
+	for _, path := range a.paths {
+		if _, ok := demoted[path.Tag]; ok {
+			revive = append(revive, path.Tag)
+		}
 	}
 	rt.version = a.version
 	// Outside the observer lock: rebuilt leastCost balancers ask the observer
@@ -1272,6 +1317,16 @@ func (o *Observer) buildSet(rt *providerRuntime, a *providerAnswer) ([]*outbound
 	if err := validateAnswerProbes(o.s, a); err != nil {
 		return nil, nil, err
 	}
+	modes := make(map[string]bool, len(a.paths))
+	for _, path := range a.paths {
+		modes[path.Tag] = path.IsProbeOnly
+	}
+	o.mu.Lock()
+	changedModes := make(map[string]bool, len(a.paths))
+	for tag, mode := range modes {
+		changedModes[tag] = o.e.isProbeOnly(tag) != mode
+	}
+	o.mu.Unlock()
 	var changes []*outboundChange
 	var unchanged []string
 	closeAll := func() {
@@ -1281,7 +1336,8 @@ func (o *Observer) buildSet(rt *providerRuntime, a *providerAnswer) ([]*outbound
 	}
 	for i, cfg := range configs {
 		cfg.Tag = tags[i]
-		if h := o.ohm.GetHandler(cfg.Tag); h != nil && sameOutbound(h, rt.built[cfg.Tag], cfg) {
+		cfg.IsProbeOnly = modes[cfg.Tag]
+		if h := o.ohm.GetHandler(cfg.Tag); h != nil && !changedModes[cfg.Tag] && sameOutbound(h, rt.built[cfg.Tag], cfg) {
 			unchanged = append(unchanged, cfg.Tag)
 			continue
 		}

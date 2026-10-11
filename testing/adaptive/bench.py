@@ -45,6 +45,9 @@ TARGET_CERT = os.path.join(CERT_DIR, "target.crt")
 TARGET_KEY = os.path.join(CERT_DIR, "target.key")
 
 UUID = "5f88c4df-2a2d-4b68-9b27-5d21339abb60"
+PROBE_UUID = "80d6d02c-fef0-4fd3-a318-a586684b12c7"
+PROBE_EMAIL = "bench-probe-only"
+USER_EMAIL = "bench-user"
 REALITY_PRIVATE = "ODyRd0nJyxk9us_UzqG_jJM4NLTSPPLZfkpcCzuCvUk"
 REALITY_PUBLIC = "SFQq-6EUyhY12O_zOjI9pVdY1b7y3aVaevZJg8JDaEw"
 
@@ -149,20 +152,23 @@ def ensure_cert(xray):
     return out.strip().split("=", 1)[1]
 
 
-def server_config():
+def server_config(probe_credentials=False, access_log=None):
     tls = {"certificates": [{"certificateFile": os.path.join(CERT_DIR, "example.crt"),
                              "keyFile": os.path.join(CERT_DIR, "example.key")}]}
 
     def inbound(kind, stream, flow=None):
         client = {"id": UUID}
+        if probe_credentials:
+            client["email"] = USER_EMAIL
         if flow:
             client["flow"] = flow
         return {"tag": kind, "listen": "127.0.0.1", "port": server_port(kind), "protocol": "vless",
-                "settings": {"clients": [client], "decryption": "none"}, "streamSettings": stream}
+                "settings": {"clients": [client] + ([dict(client, id=PROBE_UUID, email=PROBE_EMAIL)]
+                           if probe_credentials else []), "decryption": "none"}, "streamSettings": stream}
 
     hosts = {t: "127.0.0.1" for t in TARGETS + ["probe.test", "dead.test"]}
     return {
-        "log": {"loglevel": "warning"},
+        "log": {"loglevel": "warning"} | ({"access": access_log} if access_log else {}),
         "dns": {"hosts": hosts},
         "inbounds": [
             inbound("tcp_tls", {"network": "tcp", "security": "tls", "tlsSettings": tls}),
@@ -176,10 +182,13 @@ def server_config():
                              "grpcSettings": {"serviceName": "svc"}}),
         ],
         "outbounds": [
-            {"protocol": "freedom", "settings": {"domainStrategy": "UseIPv4", "finalRules": [{"action": "allow"}]}},
+            {"tag": "allow", "protocol": "freedom", "settings": {"domainStrategy": "UseIPv4", "finalRules": [{"action": "allow"}]}},
             {"tag": "dead", "protocol": "blackhole"},
         ],
-        "routing": {"rules": [{"domain": ["full:dead.test"], "outboundTag": "dead"}]},
+        "routing": {"rules": ([
+            {"user": [PROBE_EMAIL], "domain": ["full:probe.test"], "port": str(TARGET_PORT), "outboundTag": "allow"},
+            {"user": [PROBE_EMAIL], "outboundTag": "dead"},
+        ] if probe_credentials else []) + [{"domain": ["full:dead.test"], "outboundTag": "dead"}]},
     }
 
 
@@ -246,6 +255,12 @@ def member(tag, kind, index=0, pin=None):
     return {"tag": tag, "protocol": "vless",
             "settings": {"vnext": [{"address": HOST, "port": address_port(kind, index), "users": [user]}]},
             "streamSettings": streams[kind]}
+
+
+def set_probe_only(outbound, is_probe_only):
+    outbound["path"]["isProbeOnly"] = is_probe_only
+    outbound["settings"]["vnext"][0]["users"][0]["id"] = PROBE_UUID if is_probe_only else UUID
+    return outbound
 
 
 def plain(cfg, outbound):
@@ -351,11 +366,13 @@ PIN = None
 class Stand:
     """Starts the target, the servers and the chaos proxy; stops them on exit."""
 
-    def __init__(self, xray, workdir):
+    def __init__(self, xray, workdir, probe_credentials=False):
         global PIN
         self.xray = xray
         self.workdir = workdir
         self.procs = []
+        self.probe_credentials = probe_credentials
+        self.server_access_log = os.path.join(workdir, "server-access.log")
         PIN = ensure_cert(xray)
         self.target_log = os.path.join(workdir, "target.log")
         self.provider_answer = os.path.join(workdir, "provider-answer.json")
@@ -374,7 +391,8 @@ class Stand:
             ["python3", os.path.join(HERE, "target.py"), str(TARGET_PORT), self.target_log, str(TARGET_TLS_PORT),
              TARGET_CERT, TARGET_KEY, str(UDP_ECHO_PORT)],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
-        for name, config in (("server", server_config()), ("server-awg", awg_server_config())):
+        for name, config in (("server", server_config(self.probe_credentials, self.server_access_log if self.probe_credentials else None)),
+                             ("server-awg", awg_server_config())):
             path = os.path.join(self.workdir, f"{name}.json")
             with open(path, "w") as f:
                 json.dump(config, f)
@@ -417,6 +435,7 @@ class Stand:
         open(self.target_log, "w").close()
         open(self.provider_log, "w").close()
         open(self.provider_bodies_log, "w").close()
+        open(self.provider_log + ".responses", "w").close()
         provider_mode("ok")
 
     def answer(self, members, costs, version=None, next_refresh=None, expires=None, server_time=None,
@@ -1166,7 +1185,8 @@ def fold_report(events):
             "network_changes", "network_known", "network_down_count", "provider_fetches", "provider_fetch_failures",
             "provider_retry_after", "provider_applied", "provider_rejected", "provider_restart_needed",
             "provider_expired", "provider_renewals", "provider_auth_failed", "provider_base_changed", "pins",
-            "releases", "memory_low_count", "outbound_sleeps"]
+            "releases", "memory_low_count", "outbound_sleeps", "candidate_probes", "candidate_probes_failed",
+            "probe_only_promoted_count", "fresh_path_down_count"]
     c = dict.fromkeys(keys, 0)
     c.update(switch_reasons={}, switch_path=[], provider_triggers={})
     decided = False
@@ -1197,6 +1217,11 @@ def fold_report(events):
             c["probes_failed"] += f.get("is_ok") is not True
             c["probe_bytes"] += f.get("bytes", 0)
             c["host_probes"] += f.get("reason") == "host"
+            c["candidate_probes_failed"] += f.get("reason") == "candidate" and f.get("is_ok") is not True
+        elif t == "probe_start" and f.get("reason") == "candidate":
+            c["candidate_probes"] += 1
+        elif t in ("probe_only_promoted", "fresh_path_down"):
+            c[t + "_count"] += 1
         elif t == "probe_request":
             c["host_probe_requests"] += 1
         elif t == "return_start":

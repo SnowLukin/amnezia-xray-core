@@ -24,6 +24,7 @@ const (
 	reasonRemembered
 	reasonRecheck
 	reasonLone
+	reasonCandidate
 	reasonAudit
 	reasonGroup
 	reasonReturnToCheaper
@@ -57,6 +58,8 @@ func (r probeReason) String() string {
 		return "recheck"
 	case reasonLone:
 		return "lone"
+	case reasonCandidate:
+		return "candidate"
 	case reasonAudit:
 		return "audit"
 	case reasonGroup:
@@ -79,6 +82,9 @@ type probeJob struct {
 	selector       string
 	notBefore      time.Time
 	generation     uint64
+	candidateEpoch uint64
+	profile        *probeSettings
+	isProbeOnly    bool
 	invalidated    bool
 	forgotten      bool
 	evidenceStrong bool
@@ -126,10 +132,11 @@ type engine struct {
 	requests  []*probeRequest
 	requestID uint64
 
-	generation uint64
-	networkID  string
-	networks   map[string]map[string]string
-	netOrder   []string
+	candidateEpoch uint64
+	generation     uint64
+	networkID      string
+	networks       map[string]map[string]string
+	netOrder       []string
 	// The network was remembered when the host reported it.
 	networkKnown bool
 
@@ -323,7 +330,7 @@ func (e *engine) active(tag string) bool {
 // ---- passive evidence -----------------------------------------------------
 
 func (e *engine) onFailure(tag string, kind failureKind, target string, conn uint32, now time.Time) {
-	if e.networkDown {
+	if e.networkDown || e.isProbeOnly(tag) {
 		return
 	}
 	if e.s.passive.dialOnly && !kind.pathLevel() {
@@ -382,6 +389,9 @@ func (e *engine) awaiting(tag string) bool {
 }
 
 func (e *engine) onSuccess(tag string, now time.Time) {
+	if e.isProbeOnly(tag) {
+		return
+	}
 	p := e.pathAt(tag, now)
 	e.cancelLoneFailure(tag)
 	e.cancelWakeProbe(tag)
@@ -583,6 +593,11 @@ func (e *engine) markDown(p *path, reason string, now time.Time) {
 		}
 		return
 	}
+	if !e.isProbeOnly(p.tag) && !p.realSince.IsZero() && !p.freshDownReported &&
+		now.Sub(p.realSince) >= 0 && now.Sub(p.realSince) <= 5*time.Minute {
+		p.freshDownReported = true
+		e.emit(now, "fresh_path_down", map[string]any{"outbound": p.tag})
+	}
 	p.downID++
 	// The assigned confirmation or audit may yet undo this down.
 	p.rescue = e.rescueMarkFor(p.tag, p.quarantineLevel)
@@ -708,9 +723,11 @@ type selector struct {
 	groups     map[string]*outboundGroup
 	groupOrder []string
 
-	candidates []string
-	snapshot   atomic.Pointer[[]string]
-	active     atomic.Pointer[string]
+	inventory       []string
+	candidates      []string
+	probeOnlyActive bool
+	snapshot        atomic.Pointer[[]string]
+	active          atomic.Pointer[string]
 
 	started     bool
 	activeSince time.Time
@@ -888,6 +905,7 @@ func (e *engine) updateCandidates(s *selector, candidates []string, now time.Tim
 			return
 		}
 	}
+	s.inventory = make([]string, 0, len(candidates))
 	s.candidates = make([]string, 0, len(candidates))
 	// The router hands us an alphabetic prefix match. Restore the declaration
 	// order and discard outbounds that did not declare a path.
@@ -898,7 +916,7 @@ func (e *engine) updateCandidates(s *selector, candidates []string, now time.Tim
 	selected := map[string]bool{}
 	for _, c := range s.cfg.baseOrder {
 		if available[c] && !e.retiring[c] && !selected[c] {
-			s.candidates = append(s.candidates, c)
+			s.inventory = append(s.inventory, c)
 			selected[c] = true
 		}
 	}
@@ -908,12 +926,25 @@ func (e *engine) updateCandidates(s *selector, candidates []string, now time.Tim
 		}
 		for _, c := range p.tags {
 			if available[c] && !e.retiring[c] && s.cfg.paths[c] != nil && !selected[c] {
-				s.candidates = append(s.candidates, c)
+				s.inventory = append(s.inventory, c)
 				selected[c] = true
 			}
 		}
 	}
+	for _, c := range s.inventory {
+		if !e.isProbeOnly(c) && !s.cfg.isProbeOnly(c) {
+			s.candidates = append(s.candidates, c)
+		}
+	}
 	e.syncGroups(s)
+	for _, tag := range s.candidates {
+		p := e.paths[tag]
+		if p != nil && p.status == statusUp && p.lastProbeResult.reason == reasonCandidate.String() &&
+			p.lastProbeResult.ok && !p.lastProbeResult.canceled && p.candidateEpoch == e.candidateEpoch &&
+			!p.lastProbeEnd.IsZero() && !now.Before(p.lastProbeEnd) && now.Sub(p.lastProbeEnd) <= e.s.schedule.hostProbes.reuse {
+			e.groupSuccess(tag, now)
+		}
+	}
 	snap := append([]string(nil), candidates...)
 	s.snapshot.Store(&snap)
 	lostProbe := false
@@ -929,7 +960,20 @@ func (e *engine) updateCandidates(s *selector, candidates []string, now time.Tim
 	if s.returnToCheaperTarget != "" && !s.hasCandidate(s.returnToCheaperTarget) {
 		s.returnToCheaperTarget = ""
 	}
+	if s.pinned != "" && (e.isProbeOnly(s.pinned) || s.cfg.isProbeOnly(s.pinned)) {
+		e.releaseBy(s.tag, "outbound_removed", now)
+	}
 	cur := s.current()
+	if s.pinned == "" && (s.exhausted || cur != "" && e.path(cur).status == statusDown) {
+		for _, tag := range e.ranked(s, now, nil) {
+			p := e.path(tag)
+			if p.status == statusUp && p.lastProbeResult.reason == reasonCandidate.String() && p.lastProbeResult.ok &&
+				!p.lastProbeEnd.IsZero() && now.Sub(p.lastProbeEnd) <= e.s.schedule.hostProbes.reuse {
+				e.switchTo(s, tag, "promoted", now)
+				return
+			}
+		}
+	}
 	switch {
 	case !s.started:
 		s.started = true
@@ -937,6 +981,9 @@ func (e *engine) updateCandidates(s *selector, candidates []string, now time.Tim
 	case s.pinned != "":
 	case cur != "" && e.leaving(cur) && slices.Contains(candidates, cur):
 		e.leaveOutbound(s, now)
+	case cur != "" && e.isProbeOnly(cur):
+		e.exhaust(s, now)
+		e.failover(s, now)
 	case cur != "" && !s.hasCandidate(cur):
 		e.failover(s, now)
 	case s.exhausted:
@@ -980,6 +1027,9 @@ func (e *engine) start(s *selector, now time.Time) {
 }
 
 func (e *engine) switchTo(s *selector, tag string, reason string, now time.Time) {
+	if tag == "" || e.isProbeOnly(tag) || s.cfg.isProbeOnly(tag) || !s.hasCandidate(tag) {
+		return
+	}
 	from := s.current()
 	if from != "" && from != tag && !s.activeSince.IsZero() {
 		e.path(from).stats.activeTime += now.Sub(s.activeSince)
@@ -1345,7 +1395,7 @@ func (e *engine) invalidateProbeJobs(tag string, now time.Time) {
 		}
 	}
 	for _, previous := range old {
-		if previous.reason == reasonAudit || previous.reason == reasonLone || previous.reason == reasonWake {
+		if previous.reason == reasonAudit || previous.reason == reasonLone || previous.reason == reasonWake || previous.reason == reasonCandidate {
 			continue
 		}
 		if previous.reason == reasonConfirm && (p == nil || p.status != statusSuspect) {
@@ -1367,7 +1417,7 @@ func (e *engine) enqueue(tag string, reason probeReason, selectorTag string, at 
 		return nil
 	}
 	e.nextID++
-	j := &probeJob{id: e.nextID, tag: tag, reason: reason, selector: selectorTag, notBefore: at, generation: e.generation}
+	j := &probeJob{id: e.nextID, tag: tag, reason: reason, selector: selectorTag, notBefore: at, generation: e.generation, candidateEpoch: e.candidateEpoch}
 	e.queue = append(e.queue, j)
 	return j
 }
@@ -1384,6 +1434,13 @@ func (e *engine) enqueueConnectivity(now time.Time) {
 // -1 while it waits for a running probe to end: all probe slots are busy or
 // one probes its server name.
 func (e *engine) budgetWait(j *probeJob, now time.Time) time.Duration {
+	if j.reason == reasonCandidate {
+		for _, r := range e.running {
+			if r.reason == reasonCandidate {
+				return -1
+			}
+		}
+	}
 	if len(e.running) >= e.s.schedule.concurrent {
 		return -1
 	}
@@ -1485,6 +1542,9 @@ func (e *engine) tick(now time.Time) ([]*probeJob, time.Time) {
 		}
 	}
 
+	for _, s := range e.sortedSelectors() {
+		soonest(e.updateProbeOnly(s, now))
+	}
 	if !e.networkDown {
 		for _, s := range e.sortedSelectors() {
 			if s.returnedTo != "" && now.Sub(s.returnedAt) >= s.cfg.returnToCheaper.penaltyWindow {
@@ -1524,6 +1584,12 @@ func (e *engine) tick(now time.Time) ([]*probeJob, time.Time) {
 	sort.SliceStable(e.queue, func(i, j int) bool { return e.queue[i].reason.priority() < e.queue[j].reason.priority() })
 	kept := e.queue[:0]
 	for _, j := range e.queue {
+		if j.reason == reasonCandidate && !e.candidateCurrent(j) {
+			continue
+		}
+		if e.isProbeOnly(j.tag) && j.reason != reasonCandidate && j.reason != reasonConnectivity {
+			continue
+		}
 		if j.reason == reasonWake && !e.wakeProbeCurrent(j, now) {
 			continue
 		}
@@ -1668,6 +1734,9 @@ func (e *engine) begin(j *probeJob, now time.Time) {
 		p.lastAuditAt = now
 		p.stats.audits++
 	}
+	j.profile = e.s.probeFor(j.tag)
+	j.isProbeOnly = j.profile.isProbeOnly
+	j.candidateEpoch = e.candidateEpoch
 	p.probing = true
 	p.lastProbe = now
 	e.used(j.tag, now)
@@ -1775,7 +1844,7 @@ func (e *engine) maybeReturnToCheaper(s *selector, now time.Time) time.Time {
 }
 
 func (e *engine) onProbeResult(j *probeJob, r probeResult, now time.Time) {
-	if (j.reason == reasonLone || j.reason == reasonWake) && e.running[j.id] != j {
+	if (j.reason == reasonLone || j.reason == reasonWake || j.reason == reasonCandidate) && e.running[j.id] != j {
 		return
 	}
 	delete(e.running, j.id)
@@ -1806,6 +1875,14 @@ func (e *engine) onProbeResult(j *probeJob, r probeResult, now time.Time) {
 	}
 	p := e.path(j.tag)
 	stale := j.invalidated || j.generation != e.generation
+	if j.reason == reasonCandidate {
+		stale = stale || !e.candidateCurrent(j)
+		if stale && !j.invalidated && j.generation == e.generation && j.candidateEpoch == e.candidateEpoch {
+			p.probing = false
+		}
+	} else if e.isProbeOnly(j.tag) {
+		stale = true
+	}
 	if j.reason == reasonWake && !e.wakeProbeCurrent(j, now) {
 		stale = true
 		if !j.invalidated && j.generation == e.generation {
@@ -1854,6 +1931,10 @@ func (e *engine) onProbeResult(j *probeJob, r probeResult, now time.Time) {
 	}
 	e.emit(now, "probe_result", f)
 	if stale {
+		return
+	}
+	if j.reason == reasonCandidate {
+		e.onCandidateResult(j, r, p, now)
 		return
 	}
 	if r.ok {
@@ -2249,6 +2330,15 @@ func (e *engine) resumePending(now time.Time) {
 
 // onNetworkChange forgets what was learned in the previous network.
 func (e *engine) onNetworkChange(id string, now time.Time) {
+	e.candidateEpoch++
+	e.cancelCandidates("")
+	for tag := range e.paths {
+		if e.isProbeOnly(tag) {
+			e.resetProbeOnly(tag)
+			e.paths[tag].clearProbeSnapshot()
+			e.paths[tag].setStatus(statusUnknown, "network_change", now)
+		}
+	}
 	e.cancelLoneFailures()
 	e.cancelWakeProbes()
 	known := false
@@ -2381,7 +2471,7 @@ func (e *engine) setMemoryLow(low bool, now time.Time) bool {
 }
 
 func (e *engine) remember(tag string) {
-	if !e.s.remember || e.networkID == "" {
+	if !e.s.remember || e.networkID == "" || e.isProbeOnly(tag) {
 		return
 	}
 	for _, s := range e.selectors {
@@ -2408,12 +2498,16 @@ func (e *engine) rememberedFor(s *selector) string {
 	if !e.s.remember || e.networkID == "" {
 		return ""
 	}
-	return e.networks[e.networkID][s.tag]
+	tag := e.networks[e.networkID][s.tag]
+	if e.isProbeOnly(tag) || s.cfg.isProbeOnly(tag) {
+		return ""
+	}
+	return tag
 }
 
 func (e *engine) pin(selectorTag, tag string, now time.Time) bool {
 	s := e.selectors[selectorTag]
-	if s == nil || !s.hasCandidate(tag) {
+	if s == nil || !s.hasCandidate(tag) || e.isProbeOnly(tag) || s.cfg.isProbeOnly(tag) {
 		return false
 	}
 	e.cancelWakeProbe(s.current())

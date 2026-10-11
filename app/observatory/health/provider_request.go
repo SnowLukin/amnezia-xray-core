@@ -75,6 +75,7 @@ type requestBalancer struct {
 
 type requestOutbound struct {
 	Tag             string           `json:"tag"`
+	IsProbeOnly     bool             `json:"isProbeOnly"`
 	State           string           `json:"state"`
 	Reason          string           `json:"reason,omitempty"`
 	StateMs         int64            `json:"stateMs,omitempty"`
@@ -184,6 +185,7 @@ func (e *engine) providerRequest(p *provider, j *refreshJob, now time.Time) *pro
 			continue
 		}
 		o := describeOutbound(e.paths[tag], strings.TrimPrefix(tag, p.cfg.prefix), active[tag], now)
+		o.IsProbeOnly = e.isProbeOnly(tag)
 		if l := p.leases[tag]; l != nil {
 			left := l.left(now).Milliseconds()
 			o.ExpiresInMs = &left

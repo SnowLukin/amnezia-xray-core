@@ -456,6 +456,42 @@ the same summary with camelCase names, omit `balancer`, and count only
 members owned by that provider; the position still belongs to the full ring.
 A down group contributes no usable members to `minHealthyOutbounds`.
 
+## Outbounds used only for probes
+
+`path.isProbeOnly` is an outbound property, including for members of an explicit
+group. It defaults to false. An outbound with this flag never receives new user
+connections through leastCost, never enters the group's selection ring, and does
+not count toward `minHealthyOutbounds`. Startup choices and host pins cannot name
+it. Network memory and returns to cheaper paths select real outbounds only.
+The outbound handler retains its credential mode for its lifetime and checks both
+that mode and the current tag before dispatch, so a stale handler reference cannot
+use probe credentials after promotion. Existing processed links keep draining.
+
+While real healthy outbounds fall below a provider's `minHealthyOutbounds`, the
+core checks these candidates sequentially, in cost and declaration order, with
+reason `candidate`. The flag uses all mandatory steps of its path profile and
+skips optional steps; its result cannot be degraded. Real outbounds retain the
+full profile. Profiles and modes are captured together before a probe starts.
+
+`schedule.probeOnly` accepts `keepVerified` (default 1, from 1 to 4) and
+`recheckInterval` (default `15m`). A verified candidate is rechecked at that
+interval while capacity remains below the threshold. Candidate probes obey the
+shared interval, global and server-name budgets and run after confirmation and
+failover, before returns. A recovered real set stops candidate work; a network
+change forgets candidate verification even with the IGNORE selection action.
+
+The `min_healthy` request waits for a passed candidate or for every candidate to
+fail; an exhausted balancer can ask immediately. The backend promotes an address
+by returning the same tag with `isProbeOnly: false` and real credentials. A current
+passed probe within `hostProbes.reuseWindow` can bring it into a dead or exhausted
+balancer immediately. A healthy current choice stays when the promoted path is
+not preferred. Demotion to true removes the path from new traffic while existing
+connections retain the configured provider drain timeout.
+
+Probe credentials must permit only the probe destination and must not consume a
+real user slot. Backend capacity and the old slot's drain lease remain backend
+responsibilities; see PROVIDER.md.
+
 ## Providers
 
 A provider fetches a fresh set of outbounds over HTTP and puts it into a
@@ -1007,11 +1043,13 @@ Every event is `{"seq": n, "ts": unix_ms, "type": "...", "fields": {...}}`.
 
 | Type | Fields | When |
 | --- | --- | --- |
-| `switch` | `balancer`, `from`, `to`, `reason`, `held_ms`, `cost` | New connections go to another outbound. `reason`: `start`, `start_pinned`, `start_remembered`, `start_with`, `failover`, `return`, `recovered`, `remembered`, `network_change`, `network_up` (the network check passed again and brought back outbounds ruled out while it failed, to a balancer that had nothing usable), `candidates_changed`, `pin`, `retired` (the previous one left its provider set), `expired` (the lease of the previous one ended; one that failed as well is left with `failover`). `held_ms` is the time on the previous one. |
+| `switch` | `balancer`, `from`, `to`, `reason`, `held_ms`, `cost` | New connections go to another outbound. `reason`: `start`, `start_pinned`, `start_remembered`, `start_with`, `failover`, `return`, `recovered`, `remembered`, `network_change`, `network_up` (the network check passed again and brought back outbounds ruled out while it failed, to a balancer that had nothing usable), `candidates_changed`, `promoted` (a fresh passed candidate became real and recovered a dead or exhausted choice), `pin`, `retired` (the previous one left its provider set), `expired` (the lease of the previous one ended; one that failed as well is left with `failover`). `held_ms` is the time on the previous one. |
 | `path_state` | `outbound`, `state`, `reason`; for `suspect` also `failures`, `targets`, `kinds`, `is_strong`; for `down` also `quarantine_ms`, `quarantine_level` and `is_provisional` when it was ruled out while the network check was failing; for `rescued` also `by`: `confirm` or `audit` | An outbound became `up`, `degraded`, `suspect`, `down` or `unknown`. For `degraded`, `reason` is the first failed optional step. Other reasons: `traffic`, `probe`, `return_probe`, `host_probe`, `network_change`, `network_down`, `network_up`, `replaced` (a provider
 changed its settings), `probe_changed` (a provider changed the profile of an unchanged outbound), `rescued` (a confirmation already running or an audit assigned to the down proved it false, see How it decides). `kinds` counts failures by kind: `dial_failed`, `dial_timeout`, `server_unverified`, `no_response`, `closed`, `stall`, `partial_stall`. For an outbound with a tunnel, `dial_failed` and `dial_timeout` tell that the tunnel could not be set up or that its server did not answer a connection, see How it decides. |
-| `probe_start` | `outbound`, `reason`, `balancer`, `running`, `request` | A probe started. `reason`: `confirm`, `failover`, `network_change`, `wake`, `remembered`, `recheck`, `lone`, `audit`, `return`, `group_recheck`, `host`. `running` counts the outbound probes running now, this one included. `request` is the id of the request a `host` probe is for. |
+| `probe_start` | `outbound`, `reason`, `balancer`, `running`, `request` | A probe started. `reason`: `confirm`, `failover`, `network_change`, `wake`, `remembered`, `recheck`, `lone`, `audit`, `return`, `group_recheck`, `candidate`, `host`. `running` counts the outbound probes running now, this one included. `request` is the id of the request a `host` probe is for. |
 | `probe_result` | `outbound`, `reason`, `balancer`, `is_ok`, `rtt_ms`, `bytes`, `error`, `is_stale`, `request`, `profile`, `state`, `steps` | A probe finished. `steps` lists only attempted steps with `name`, `is_passed`, `connect_ms`, `ms`, `bytes`, a `destination` index on success or an `error` class on failure. `bytes` counts both directions above TLS. `is_stale` means the network, handler or probe profile changed while it ran, so its result did not change the path. Its attempted steps still count in the report. |
+| `probe_only_promoted` | `outbound`, `provider` | A provider made a fresh verified candidate real. |
+| `fresh_path_down` | `outbound` | A new real provider handler was first judged down within five minutes of activation. |
 | `group_state` | `balancer`, `group`, `state`, `members`, `failed`, `quarantine_ms` | An explicit group became `down` after consecutive failures or `up` after a successful recovery check. Unvisited members of a down group are skipped. |
 | `probe_request` | `request`, `balancer`, `outbounds`, `end`, `ms`, `probed`, `reused`, `ok`, `failed`, `down`, `skipped`, `expired`, `gone` | A request of the host that waited for a probe ended; one answered at once writes none. `end`: `done`, `timeout`, `network_change`, `gone`. The counts are by result; `probed` and `reused` count the answers of a probe and of a recent proof. |
 | `exhausted` | `balancer`, `from`, `candidates` | No usable candidate is left; traffic goes to `fallbackTag`. |
@@ -1134,6 +1172,9 @@ Long duration and performance acceptance were excluded by the project decision.
 | `active`, `is_balancer_exhausted`, `is_network_up`, `connectivity` | At the time of the report: the chosen outbound by balancer, whether a balancer is exhausted, and the network as in Status. |
 | `paths` | The first 64 outbounds by tag. `state` and `ttfb_p50_ms` (over the whole life of the outbound, 0 without samples) as they are now; `active_ms`, `degraded_ms`, `bytes_up`, `bytes_down`, `conns_ok`, `conns_failed`, `probes` and `probe_bytes` cover this report window. `probe_steps` gives `name`, `passed` and `failed` for steps actually attempted in the window, including stale probes. Steps follow the current profile order; names from an earlier profile in the same window follow in their first observed order. An outbound forgotten and seen again counts from zero. |
 | `wake_probe_count`, `wake_probe_failed_count`, `wake_skipped_count` | Started wake probes, completed failed wake probes (including stale results), and eligible unique selected paths skipped per host call because proof is fresh or the wake interval/job limit applies. A queued cancellation has no start count; a canceled probe has no result count. Other probe work, pins, exhausted balancers, or unavailable networks add no skip count. |
+| `candidate_probes`, `candidate_probes_failed` | Started candidate probes and completed failed candidate probes, including stale results. Canceled probes have no completion count. |
+| `probe_only_promoted_count` | Passed candidates the provider made real while their verification remained within the reuse window. |
+| `fresh_path_down_count` | New or replaced real provider outbounds first judged down within five minutes of activation, once per incarnation. |
 | `lone_probe_count`, `lone_probe_failed_count` | Started lone probes and completed failed lone probes, including stale results; canceled probes have no result count. |
 | `lone_probes`, `lone_probes_failed` | The same lone counters for this outbound in the report window. A failed current lone probe contributes one `downs_strong`; a stale completion contributes no down. |
 | `downs_strong`, `downs_weak` | New downs backed by strong or weak passive evidence for that outbound in this window. They include failed current lone probes paired with a dial failure, but exclude pure wake and network-change probe failures. Use `wake_probe_count` and `wake_probe_failed_count` for the wake failure rate; passive down counters are not its denominator. |
@@ -1147,6 +1188,10 @@ Per-outbound fields `audits`, `audits_passed`, `lone_probes`, `lone_probes_faile
 `downs_strong`, `downs_weak` and all `udp_*` fields belong to `paths.<tag>`.
 
 ## Status
+
+Paths include `is_probe_only` in both modes. Each provider includes
+`probe_only_verified`, the number of currently verified probe-only members of its set.
+
 
 `Status()` returns the run of the core (`run`), the network (`network`, `is_network_up`, `connectivity`:
 `ok`, `paused`, `doubt` or `ignored`, `generation`, `is_idle`), whether memory is low (`is_memory_low`), probe queue sizes, per outbound the state and its age, failures in

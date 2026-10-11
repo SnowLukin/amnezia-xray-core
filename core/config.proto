@@ -54,4 +54,6 @@ message OutboundHandlerConfig {
   int64 expire = 4;
   // Comment of this outbound handler. Not used for now.
   string comment = 5;
+  // The credentials of this handler permit only core probe traffic.
+  bool is_probe_only = 6;
 }

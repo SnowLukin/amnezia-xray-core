@@ -45,6 +45,10 @@ type reportCounts struct {
 	WakeSkipped             int64            `json:"wake_skipped_count"`
 	LoneProbeCount          int64            `json:"lone_probe_count"`
 	LoneProbeFailed         int64            `json:"lone_probe_failed_count"`
+	CandidateProbes         int64            `json:"candidate_probes"`
+	CandidateProbesFailed   int64            `json:"candidate_probes_failed"`
+	ProbeOnlyPromoted       int64            `json:"probe_only_promoted_count"`
+	FreshPathDown           int64            `json:"fresh_path_down_count"`
 	PendingClosed           int64            `json:"pending_closed_count"`
 	IdleClosed              int64            `json:"idle_closed_count"`
 	Probes                  int64            `json:"probes"`
@@ -224,6 +228,10 @@ func (r *report) count(typ string, f map[string]any) {
 				}
 			}
 		}
+	case "probe_only_promoted":
+		c.ProbeOnlyPromoted++
+	case "fresh_path_down":
+		c.FreshPathDown++
 	case "pending_closed":
 		c.PendingClosed += number(f["connections"])
 	case "idle_closed":
@@ -233,6 +241,9 @@ func (r *report) count(typ string, f map[string]any) {
 		c.Probes++
 		if f["is_ok"] != true {
 			c.ProbesFailed++
+			if f["reason"] == "candidate" {
+				c.CandidateProbesFailed++
+			}
 			if f["reason"] == "wake" {
 				c.WakeProbeFailed++
 			}
@@ -246,6 +257,9 @@ func (r *report) count(typ string, f map[string]any) {
 		}
 		r.countProbeSteps(f)
 	case "probe_start":
+		if f["reason"] == "candidate" {
+			c.CandidateProbes++
+		}
 		if f["reason"] == "wake" {
 			c.WakeProbeCount++
 		}

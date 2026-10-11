@@ -1194,7 +1194,7 @@ func TestProviderDefaultsAndOff(t *testing.T) {
 	if s.observes("p-x1") {
 		t.Fatal("unannounced provider outbound is observed")
 	}
-	s.paths.Store("p-x1", "")
+	s.paths.Store("p-x1", pathSettings{})
 	if !s.observes("p-x1") {
 		t.Fatal("declared provider outbound is not observed")
 	}

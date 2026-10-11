@@ -125,7 +125,7 @@ func TestReportCountsAttemptedStepsAndDegradedWindowTime(t *testing.T) {
 	}
 	probeEvent(at(6*time.Second), false, []map[string]any{{"name": "transport", "is_passed": true}, {"name": "egress", "is_passed": false}})
 	te.s.probes = append(te.s.probes, probeSettings{name: "new", steps: []probeStepSettings{{name: "new_egress"}, {name: "transport"}}})
-	te.s.paths.Store("a1", "new")
+	te.s.paths.Store("a1", pathSettings{probe: "new"})
 	probeEvent(at(6500*time.Millisecond), false, []map[string]any{{"name": "transport", "is_passed": true}, {"name": "new_egress", "is_passed": true}})
 	p.setStatus(statusUp, "probe", at(7*time.Second))
 	te.emit(at(7*time.Second), "switch", map[string]any{"from": "b1", "to": "a1", "reason": "return"})

@@ -123,8 +123,14 @@ type path struct {
 	lastError    string
 	// The class of lastError, which a provider may see: the error itself may
 	// carry the URL of the probe.
-	lastClass       string
-	lastProbeResult probeResult
+	lastClass           string
+	lastProbeResult     probeResult
+	candidateChecked    bool
+	candidateVerifiedAt time.Time
+	candidateEpoch      uint64
+
+	realSince         time.Time
+	freshDownReported bool
 
 	serverName string
 	stats      pathStats

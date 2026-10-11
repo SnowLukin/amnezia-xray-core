@@ -25,6 +25,13 @@ type ConnectionObserver interface {
 	StartDial(ctx context.Context, tag string, server net.Destination, abort func()) DialTracker
 }
 
+// DispatchGuard rejects a routed link before DNS, mux or proxy processing.
+// It is optional for a ConnectionObserver and also protects a handler replaced
+// after a router selected its tag. Implementations must not block.
+type DispatchGuard interface {
+	AllowDispatch(ctx context.Context, tag string, handlerProbeOnly bool) bool
+}
+
 // UDPFlowObserver follows a routed UDP link independently of the physical
 // connection used by its outbound. A mux worker may carry several such links.
 type UDPFlowObserver interface {

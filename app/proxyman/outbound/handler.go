@@ -71,6 +71,7 @@ type Handler struct {
 	uplinkCounter   stats.Counter
 	downlinkCounter stats.Counter
 	observer        outbound.ConnectionObserver
+	isProbeOnly     bool
 }
 
 // NewHandler creates a new Handler based on the given configuration.
@@ -83,6 +84,7 @@ func NewHandler(ctx context.Context, config *core.OutboundHandlerConfig) (outbou
 		uplinkCounter:   uplinkCounter,
 		downlinkCounter: downlinkCounter,
 		observer:        observerOf(v, config.Tag),
+		isProbeOnly:     config.IsProbeOnly,
 	}
 
 	if config.SenderSettings != nil {
@@ -182,6 +184,14 @@ func (h *Handler) Tag() string {
 
 // Dispatch implements proxy.Outbound.Dispatch.
 func (h *Handler) Dispatch(ctx context.Context, link *transport.Link) {
+	guard, guarded := h.observer.(outbound.DispatchGuard)
+	if h.isProbeOnly && !guarded || guarded && !guard.AllowDispatch(ctx, h.tag, h.isProbeOnly) {
+		session.SubmitOutboundErrorToOriginator(ctx, errors.New("outbound permits only probe traffic"))
+		common.Interrupt(link.Writer)
+		common.Interrupt(link.Reader)
+		return
+	}
+
 	outbounds := session.OutboundsFromContext(ctx)
 	ob := outbounds[len(outbounds)-1]
 	var outboundSocketMark uint32

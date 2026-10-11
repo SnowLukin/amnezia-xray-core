@@ -9,6 +9,7 @@ import (
 
 type pathStatusView struct {
 	Outbound        string           `json:"outbound"`
+	IsProbeOnly     bool             `json:"is_probe_only"`
 	State           string           `json:"state"`
 	Reason          string           `json:"reason,omitempty"`
 	ForMs           int64            `json:"for_ms"`
@@ -51,21 +52,22 @@ type balancerStatusView struct {
 }
 
 type providerStatusView struct {
-	Provider       string `json:"provider"`
-	Method         string `json:"method"`
-	Version        string `json:"version,omitempty"`
-	Members        int    `json:"members"`
-	Draining       int    `json:"draining"`
-	IsFetching     bool   `json:"is_fetching"`
-	Refreshes      int64  `json:"refreshes"`
-	Failures       int    `json:"failures"`
-	LastError      string `json:"last_error,omitempty"`
-	SetAgeMs       int64  `json:"set_age_ms"`
-	NextTrigger    string `json:"next_trigger,omitempty"`
-	NextInMs       *int64 `json:"next_in_ms,omitempty"`
-	BackoffMs      int64  `json:"backoff_ms,omitempty"`
-	RetryAfterMs   int64  `json:"retry_after_ms,omitempty"`
-	AttemptsInHour int    `json:"attempts_last_hour"`
+	Provider          string `json:"provider"`
+	Method            string `json:"method"`
+	Version           string `json:"version,omitempty"`
+	Members           int    `json:"members"`
+	ProbeOnlyVerified int    `json:"probe_only_verified"`
+	Draining          int    `json:"draining"`
+	IsFetching        bool   `json:"is_fetching"`
+	Refreshes         int64  `json:"refreshes"`
+	Failures          int    `json:"failures"`
+	LastError         string `json:"last_error,omitempty"`
+	SetAgeMs          int64  `json:"set_age_ms"`
+	NextTrigger       string `json:"next_trigger,omitempty"`
+	NextInMs          *int64 `json:"next_in_ms,omitempty"`
+	BackoffMs         int64  `json:"backoff_ms,omitempty"`
+	RetryAfterMs      int64  `json:"retry_after_ms,omitempty"`
+	AttemptsInHour    int    `json:"attempts_last_hour"`
 	// The next renewal of a lease, below zero while it waits; leases that
 	// ended; and how far the clock the last answer counts from is ahead of
 	// the device, by which clock.
@@ -155,6 +157,7 @@ func (e *engine) status(now time.Time) statusView {
 		p := e.paths[tag]
 		pv := pathStatusView{
 			Outbound:     tag,
+			IsProbeOnly:  e.isProbeOnly(tag),
 			State:        p.status.String(),
 			Reason:       p.reason,
 			Failures:     len(p.failures),
@@ -208,6 +211,11 @@ func (e *engine) status(now time.Time) statusView {
 			Refreshes:  p.refreshes,
 			Failures:   p.failures,
 			LastError:  p.lastError,
+		}
+		for _, tag := range p.tags {
+			if e.isProbeOnly(tag) && e.candidateVerified(e.paths[tag], now) {
+				pv.ProbeOnlyVerified++
+			}
 		}
 		if !p.setAt.IsZero() {
 			pv.SetAgeMs = now.Sub(p.setAt).Milliseconds()

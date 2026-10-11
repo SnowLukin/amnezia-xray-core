@@ -334,7 +334,7 @@ func (e *engine) wantedRefresh(p *provider, now time.Time) ([triggerCount]bool, 
 		if p.cfg.minHealthy > 0 {
 			if e.healthy(s) >= p.cfg.minHealthy {
 				p.minHealthyArmed = true
-			} else if p.minHealthyArmed {
+			} else if p.minHealthyArmed && (s.exhausted || e.probeOnlyRefreshReady(s, now)) {
 				want[triggerMinHealthy] = true
 			}
 		}
@@ -396,7 +396,7 @@ func (e *engine) wantedRefresh(p *provider, now time.Time) ([triggerCount]bool, 
 func (e *engine) healthy(s *selector) int {
 	n := 0
 	for _, c := range s.candidates {
-		if e.expired[c] || s.groupDown(c) {
+		if e.isProbeOnly(c) || e.expired[c] || s.groupDown(c) {
 			continue
 		}
 		p := e.paths[c]
@@ -640,10 +640,11 @@ type providerChange struct {
 // outbounds.
 func (e *engine) applyProviderSet(p *provider, c providerChange, now time.Time) {
 	clear(e.replacing)
-	oldProfiles := map[string]string{}
+	oldPaths := map[string]pathSettings{}
+	promoted := map[string]*path{}
 	for _, tag := range c.tags {
 		if profile, ok := e.s.paths.Load(tag); ok {
-			oldProfiles[tag] = profile.(string)
+			oldPaths[tag] = profile.(pathSettings)
 		}
 	}
 	if s := e.selectors[p.cfg.balancer]; s != nil {
@@ -661,27 +662,29 @@ func (e *engine) applyProviderSet(p *provider, c providerChange, now time.Time) 
 			s.cfg.paths[tag] = path
 		}
 	}
-	newTags := map[string]bool{}
-	for _, tag := range c.tags {
-		newTags[tag] = true
-	}
-	for _, tag := range p.tags {
-		if newTags[tag] {
-			e.s.paths.Delete(tag)
-		}
-	}
 	groups := map[string]*PathGroup{}
 	for _, g := range c.groups {
 		groups[g.Name] = g
 	}
-	newProfiles := map[string]string{}
+	newPaths := map[string]pathSettings{}
 	for _, path := range c.paths {
 		probe := path.Probe
 		if g := groups[path.Group]; g != nil {
 			probe = g.Probe
 		}
-		newProfiles[path.Tag] = probe
-		e.s.paths.Store(path.Tag, probe)
+		next := pathSettings{probe: probe, isProbeOnly: path.IsProbeOnly}
+		newPaths[path.Tag] = next
+		if old, ok := oldPaths[path.Tag]; ok && old.isProbeOnly && !next.isProbeOnly && old.probe == next.probe {
+			q := e.paths[path.Tag]
+			if q != nil && q.candidateEpoch == e.candidateEpoch && !q.candidateVerifiedAt.IsZero() &&
+				!now.Before(q.candidateVerifiedAt) && now.Sub(q.candidateVerifiedAt) < e.s.schedule.hostProbes.reuse &&
+				q.lastProbeResult.ok && !q.lastProbeResult.canceled && q.lastProbeResult.reason == "candidate" {
+				snapshot := *q
+				snapshot.lastProbeResult = q.lastProbeResult.snapshot()
+				promoted[path.Tag] = &snapshot
+			}
+		}
+		e.s.paths.Store(path.Tag, next)
 	}
 	p.pathDefs, p.groupDefs = c.paths, c.groups
 	for _, tag := range c.retire {
@@ -690,21 +693,50 @@ func (e *engine) applyProviderSet(p *provider, c providerChange, now time.Time) 
 	for _, tag := range c.revive {
 		delete(e.retiring, tag)
 	}
-	for _, tag := range c.reset {
-		e.resetPath(tag, now)
-	}
 	reset := make(map[string]bool, len(c.reset))
 	for _, tag := range c.reset {
 		reset[tag] = true
 	}
-	for tag, current := range newProfiles {
-		if old, ok := oldProfiles[tag]; ok && old != current && !reset[tag] {
+	for tag, current := range newPaths {
+		if old, ok := oldPaths[tag]; ok && old.isProbeOnly != current.isProbeOnly {
+			reset[tag] = true
+		}
+	}
+	for tag := range reset {
+		e.resetPath(tag, now)
+	}
+	for tag, current := range newPaths {
+		old, known := oldPaths[tag]
+		if known && old.probe != current.probe && !reset[tag] {
 			e.resetProbeProfile(tag, now)
+		}
+		if current.isProbeOnly {
+			if q := e.paths[tag]; q != nil {
+				q.realSince = time.Time{}
+				q.freshDownReported = false
+			}
+		} else if slices.Contains(c.added, tag) || reset[tag] {
+			q := e.pathAt(tag, now)
+			q.realSince, q.freshDownReported = now, false
+		}
+		if snapshot := promoted[tag]; snapshot != nil {
+			q := e.pathAt(tag, now)
+			q.lastProbe, q.lastProbeEnd = snapshot.lastProbe, snapshot.lastProbeEnd
+			q.lastRTT, q.lastError, q.lastClass = snapshot.lastRTT, snapshot.lastError, snapshot.lastClass
+			q.lastProbeResult = snapshot.lastProbeResult
+			q.lastSuccess = snapshot.candidateVerifiedAt
+			if q.setStatus(statusUp, "candidate", now) {
+				e.emitPath(q, now)
+			}
+			e.emit(now, "probe_only_promoted", map[string]any{"provider": p.cfg.tag, "tag": tag})
 		}
 	}
 	p.expect = ""
-	if len(c.added) > 0 {
-		p.expect = c.added[0]
+	for _, tag := range c.added {
+		if !e.isProbeOnly(tag) {
+			p.expect = tag
+			break
+		}
 	}
 	p.tags = c.tags
 	e.refreshCandidates(now)
@@ -728,7 +760,12 @@ func (e *engine) replacingTags(tags []string) {
 
 // resetPath forgets what was learned about an outbound whose settings changed.
 func (e *engine) resetPath(tag string, now time.Time) {
+	e.resetProbeOnly(tag)
 	for _, s := range e.selectors {
+		delete(s.penalty, tag)
+		if s.returnedTo == tag {
+			s.returnedTo = ""
+		}
 		if g := s.groupFor(tag); g != nil {
 			if g.lastWorking == tag {
 				g.lastWorking = ""
@@ -742,6 +779,8 @@ func (e *engine) resetPath(tag string, now time.Time) {
 			}
 		}
 	}
+	e.downs = slices.DeleteFunc(e.downs, func(d downMark) bool { return d.tag == tag })
+	e.silences = slices.DeleteFunc(e.silences, func(c silenceCheck) bool { return c.mark.tag == tag })
 	// The new settings may point to another server.
 	e.lastServer.Delete(tag)
 	p := e.paths[tag]
@@ -774,6 +813,7 @@ func (e *engine) resetPath(tag string, now time.Time) {
 }
 
 func (e *engine) resetProbeProfile(tag string, now time.Time) {
+	e.resetProbeOnly(tag)
 	p := e.paths[tag]
 	if p == nil {
 		e.invalidateProbeJobs(tag, now)

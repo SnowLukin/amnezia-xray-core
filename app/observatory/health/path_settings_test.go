@@ -61,3 +61,66 @@ func TestProbeStepsNormalization(t *testing.T) {
 		t.Fatalf("built-in steps %+v", builtin.steps)
 	}
 }
+
+func TestProbeOnlyRunsAllMandatorySteps(t *testing.T) {
+	s := newSettings(&Config{
+		Paths: []*PathDefinition{{Tag: "candidate", Probe: "full", IsProbeOnly: true}, {Tag: "real", Probe: "full"}},
+		Probes: []*ProbeProfile{{Name: "full", Steps: []*ProbeStep{
+			{Name: "transport", Destinations: []string{"http://node.test/check"}, MinBytes: 32768},
+			{Name: "transport-second", Destinations: []string{"http://other.test/check"}, MinBytes: 8192},
+			{Name: "egress", Destinations: []string{"https://egress.test/204"}, IsOptional: true},
+		}}},
+	})
+	candidate := s.probeFor("candidate")
+	if !candidate.isProbeOnly || !s.isProbeOnly("candidate") || len(candidate.steps) != 2 ||
+		candidate.steps[0].name != "transport" || candidate.steps[0].minBytes != 32768 ||
+		candidate.steps[1].name != "transport-second" || candidate.steps[1].minBytes != 8192 {
+		t.Fatalf("candidate profile %+v", candidate)
+	}
+	for _, step := range candidate.steps {
+		if step.isOptional {
+			t.Fatalf("candidate kept optional step %+v", step)
+		}
+	}
+	real := s.probeFor("real")
+	if real.isProbeOnly || s.isProbeOnly("real") || len(real.steps) != 3 || !real.steps[2].isOptional {
+		t.Fatalf("real profile %+v", real)
+	}
+}
+
+func TestProbeOnlyProfileSnapshotSurvivesModeSwitch(t *testing.T) {
+	s := newSettings(&Config{
+		Paths: []*PathDefinition{{Tag: "same", Probe: "full", IsProbeOnly: true}},
+		Probes: []*ProbeProfile{{Name: "full", Steps: []*ProbeStep{
+			{Name: "transport", Destinations: []string{"http://node.test/check"}},
+			{Name: "egress", Destinations: []string{"https://egress.test/204"}, IsOptional: true},
+		}}},
+	})
+	candidate := s.probeFor("same")
+	s.paths.Store("same", pathSettings{probe: "full"})
+	real := s.probeFor("same")
+	if !candidate.isProbeOnly || len(candidate.steps) != 1 || real.isProbeOnly || len(real.steps) != 2 {
+		t.Fatalf("promotion changed snapshots: candidate %+v, real %+v", candidate, real)
+	}
+	s.paths.Store("same", pathSettings{probe: "full", isProbeOnly: true})
+	demoted := s.probeFor("same")
+	if !demoted.isProbeOnly || len(demoted.steps) != 1 || real.isProbeOnly || len(real.steps) != 2 {
+		t.Fatalf("demotion changed snapshots: demoted %+v, real %+v", demoted, real)
+	}
+}
+
+func TestProbeOnlyLegacyAndBuiltinRemainFullTransportChecks(t *testing.T) {
+	s := newSettings(&Config{
+		Paths:  []*PathDefinition{{Tag: "builtin", IsProbeOnly: true}, {Tag: "legacy", Probe: "old", IsProbeOnly: true}},
+		Probes: []*ProbeProfile{{Name: "old", Destination: "http://node.test/check", MinBytes: 32768}},
+	})
+	for _, tag := range []string{"builtin", "legacy"} {
+		p := s.probeFor(tag)
+		if !p.isProbeOnly || len(p.steps) != 1 || p.steps[0].isOptional || p.steps[0].method != "GET" {
+			t.Fatalf("%s profile %+v", tag, p)
+		}
+	}
+	if step := s.probeFor("legacy").steps[0]; step.destinations[0] != "http://node.test/check" || step.minBytes != 32768 {
+		t.Fatalf("legacy transport %+v", step)
+	}
+}

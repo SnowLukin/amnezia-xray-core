@@ -14,10 +14,17 @@ GET /control?mode=<mode>     changes how /set answers:
   require:T     401 with the error body unauthorized unless the request
                 carries Authorization: Bearer T; with it the answer file
   hang          never answers
+A fixture may contain _probeOnlyBench: generation, capacity, promote,
+probeUUID, userUUID, responseDelay, drainSeconds and promoteOnExhausted. This private fixture
+section never goes to the core. A passed probe in the POST promotes that
+same tag, a down real tag is demoted when capacity is full. An exhausted
+balancer may ask without candidate proof; promoteOnExhausted supplies its slot. Old real slots
+are retained for drainSeconds; response audits go to <log file>.responses.
 Every /set request is logged as "time authorization path" to the log file,
 and the body of a POST as a JSON line {ts, auth, type, bytes, body} to the bodies
 file; a body that is not JSON is kept as a string.
 """
+import copy
 import json
 import re
 import sys
@@ -31,6 +38,8 @@ LOCK = threading.Lock()
 ANSWER = None
 LOG = None
 BODIES = None
+RESPONSES = None
+SLOTS = None
 
 
 MOMENT = re.compile(rb'"@([+-]\d+)s"')
@@ -41,6 +50,68 @@ def moments(body):
     now = time.time()
     return MOMENT.sub(lambda m: b'"' + time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now + int(m.group(1))))
                       .encode() + b'"', body)
+
+
+class ProbeOnlySlots:
+    """A backend promotes proof from the POST, or supplies a slot on exhaustion."""
+    def __init__(self, document):
+        self.policy = document["_probeOnlyBench"]
+        self.generation = self.policy["generation"]
+        self.answer = copy.deepcopy(document)
+        self.answer.pop("_probeOnlyBench")
+        self.held = {}
+        self.retired = set()
+        self.promotions = []
+        self.capacity = self.policy["capacity"]
+        if not 1 <= self.capacity <= 4 or self.real_count() > self.capacity:
+            raise ValueError("invalid real-slot capacity")
+
+    def real_count(self):
+        return sum(o["path"]["isProbeOnly"] is False for o in self.answer["outbounds"])
+
+    def respond(self, body, now):
+        inventory = {o["tag"]: o for o in (body or {}).get("outbounds", [])}
+        self.held = {tag: until for tag, until in self.held.items() if until > now}
+        for outbound in self.answer["outbounds"]:
+            tag = outbound["tag"]
+            if (outbound["path"]["isProbeOnly"] is True and inventory.get(tag, {}).get("isProbeOnly") is False
+                    and tag not in self.retired):
+                self.held[tag] = now + self.policy.get("drainSeconds", 30)
+                self.retired.add(tag)
+        promoted = None
+        exhausted_bypass = self.policy.get("promoteOnExhausted") is True and (body or {}).get("balancer", {}).get("isExhausted") is True
+        if self.policy.get("promote"):
+            for outbound in self.answer["outbounds"]:
+                tag = outbound["tag"]
+                evidence = inventory.get(tag, {})
+                if (outbound["path"]["isProbeOnly"] is not True or evidence.get("isProbeOnly") is not True
+                        or (evidence.get("probe", {}).get("isPassed") is not True and not exhausted_bypass)):
+                    continue
+                real = [o for o in self.answer["outbounds"] if o["path"]["isProbeOnly"] is False]
+                if len(real) >= self.capacity:
+                    retiring = next((o for o in real if inventory.get(o["tag"], {}).get("state") == "down"), None)
+                    if retiring is None:
+                        break
+                    self.held[retiring["tag"]] = now + self.policy.get("drainSeconds", 30)
+                    self.retired.add(retiring["tag"])
+                    retiring["path"]["isProbeOnly"] = True
+                    retiring["settings"]["vnext"][0]["users"][0]["id"] = self.policy["probeUUID"]
+                self.retired.discard(tag)
+                self.held.pop(tag, None)
+                outbound["path"]["isProbeOnly"] = False
+                outbound["settings"]["vnext"][0]["users"][0]["id"] = self.policy["userUUID"]
+                promoted = tag
+                self.promotions.append({"tag": tag, "at": now, "proof": copy.deepcopy(evidence)})
+                self.answer["version"] = self.generation + "-promoted-" + str(len(self.promotions))
+                break
+        if self.real_count() > self.capacity:
+            raise ValueError("backend exceeded real-slot capacity")
+        answer = copy.deepcopy(self.answer)
+        audit = {"at": now, "promoted": promoted, "capacity": self.capacity,
+                 "realSlots": self.real_count(), "heldForDrain": dict(self.held),
+                 "isExhaustedBypass": exhausted_bypass,
+                 "outbounds": copy.deepcopy(answer["outbounds"])}
+        return answer, audit
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -59,9 +130,13 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self):
+        global SLOTS
         url = urlparse(self.path)
         if url.path == "/control":
             MODE[0] = parse_qs(url.query)["mode"][0]
+            if MODE[0] == "ok":
+                with LOCK:
+                    SLOTS = None
             self.reply(200, b"{}")
             return
         auth = (self.headers.get("Authorization") or "-").replace(" ", "_")
@@ -86,6 +161,20 @@ class Handler(BaseHTTPRequestHandler):
         else:
             with open(ANSWER, "rb") as f:
                 answer = moments(f.read())
+            try:
+                doc = json.loads(answer)
+            except ValueError:
+                doc = None
+            if isinstance(doc, dict) and "_probeOnlyBench" in doc:
+                policy = doc["_probeOnlyBench"]
+                time.sleep(policy.get("responseDelay", 0))
+                with LOCK:
+                    if SLOTS is None or SLOTS.generation != policy["generation"]:
+                        SLOTS = ProbeOnlySlots(doc)
+                    doc, audit = SLOTS.respond(getattr(self, "request_body", None), time.time())
+                    RESPONSES.write(json.dumps(audit) + "\n")
+                    RESPONSES.flush()
+                answer = json.dumps(doc).encode()
             if mode.startswith("rotate:"):
                 doc = json.loads(answer)
                 doc["headers"] = {"Authorization": "Bearer " + mode.split(":", 1)[1]}
@@ -98,6 +187,7 @@ class Handler(BaseHTTPRequestHandler):
             body = json.loads(raw)
         except ValueError:
             body = raw.decode(errors="replace")
+        self.request_body = body if isinstance(body, dict) else None
         line = {"ts": round(time.time(), 3), "auth": self.headers.get("Authorization"),
                 "type": self.headers.get("Content-Type"), "bytes": len(raw), "body": body}
         with LOCK:
@@ -107,11 +197,12 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
-    global ANSWER, LOG, BODIES
+    global ANSWER, LOG, BODIES, RESPONSES
     port = int(sys.argv[1])
     ANSWER = sys.argv[2]
     LOG = open(sys.argv[3], "a", buffering=1)
     BODIES = open(sys.argv[3] + ".bodies", "a", buffering=1)
+    RESPONSES = open(sys.argv[3] + ".responses", "a", buffering=1)
     ThreadingHTTPServer.daemon_threads = True
     ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
 

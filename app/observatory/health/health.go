@@ -333,7 +333,7 @@ func (o *Observer) runProbe(j *probeJob) {
 			destination: c.destination, method: "GET", timeout: c.timeout, progressTimeout: c.timeout,
 		})
 	} else {
-		r = o.probe(j.tag, o.s.probeFor(j.tag))
+		r = o.probe(j.tag, j.profile)
 	}
 	o.mu.Lock()
 	o.e.onProbeResult(j, r, o.now())
@@ -348,6 +348,10 @@ func (o *Observer) runProbe(j *probeJob) {
 // probes have to be told apart from user traffic.
 func (o *Observer) Observes(tag string) bool {
 	return o.s.observes(tag) || o.s.witness(tag) || (o.s.connectivity != nil && tag == o.s.connectivity.outbound)
+}
+
+func (o *Observer) AllowDispatch(ctx context.Context, tag string, handlerProbeOnly bool) bool {
+	return !(handlerProbeOnly || o.s.isProbeOnly(tag)) || probeStateFrom(ctx) != nil
 }
 
 // StartDial implements outbound.ConnectionObserver.
@@ -711,7 +715,11 @@ func (h *selectorHandle) Select(candidates []string) string {
 		h.o.mu.Unlock()
 		h.o.wake()
 	}
-	return h.s.current()
+	tag := h.s.current()
+	if h.o.s.isProbeOnly(tag) {
+		return ""
+	}
+	return tag
 }
 
 func equalStrings(a, b []string) bool {

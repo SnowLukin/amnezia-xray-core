@@ -132,6 +132,20 @@ type HealthScheduleConfig struct {
 	ProbesPerMinute              int32                   `json:"probesPerMinute"`
 	SuspectCooldown              *duration.Duration      `json:"suspectCooldown"`
 	HostProbes                   *HealthHostProbesConfig `json:"hostProbes"`
+	ProbeOnly                    *HealthProbeOnlyConfig  `json:"probeOnly"`
+}
+
+type HealthProbeOnlyConfig struct {
+	KeepVerified    *int32             `json:"keepVerified"`
+	RecheckInterval *duration.Duration `json:"recheckInterval"`
+}
+
+func (p *HealthProbeOnlyConfig) UnmarshalJSON(raw []byte) error {
+	if err := rejectNullFields(raw, "healthObservatory: schedule.probeOnly", map[string]bool{"keepVerified": true, "recheckInterval": true}); err != nil {
+		return err
+	}
+	type plain HealthProbeOnlyConfig
+	return json.Unmarshal(raw, (*plain)(p))
 }
 
 type HealthHostProbesConfig struct {
@@ -650,6 +664,18 @@ func (c *HealthObservatoryConfig) Build() (proto.Message, error) {
 			ProbesPerMinute:              s.ProbesPerMinute,
 			SuspectCooldown:              optionalDuration(s.SuspectCooldown),
 		}
+		if po := s.ProbeOnly; po != nil {
+			if po.KeepVerified != nil && (*po.KeepVerified < 1 || *po.KeepVerified > 4) {
+				return nil, errors.New("healthObservatory: schedule.probeOnly.keepVerified must be from 1 to 4")
+			}
+			if err := requirePositiveDuration("healthObservatory: schedule.probeOnly.recheckInterval", po.RecheckInterval); err != nil {
+				return nil, err
+			}
+			out.Schedule.ProbeOnly = &health.ProbeOnlyConfig{RecheckInterval: optionalDuration(po.RecheckInterval)}
+			if po.KeepVerified != nil {
+				out.Schedule.ProbeOnly.KeepVerified = *po.KeepVerified
+			}
+		}
 		if hp := s.HostProbes; hp != nil {
 			out.Schedule.HostProbes = &health.HostProbesConfig{
 				ProbesPerMinute: hp.ProbesPerMinute,
@@ -756,7 +782,7 @@ func rejectNullFields(raw []byte, where string, allowed map[string]bool) error {
 }
 
 func (p *OutboundPathConfig) UnmarshalJSON(raw []byte) error {
-	if err := rejectNullFields(raw, "path", map[string]bool{"balancer": true, "group": true, "cost": true, "isLazy": true, "returnInterval": true, "probe": true}); err != nil {
+	if err := rejectNullFields(raw, "path", map[string]bool{"balancer": true, "group": true, "cost": true, "isLazy": true, "returnInterval": true, "probe": true, "isProbeOnly": true}); err != nil {
 		return err
 	}
 	var fields map[string]json.RawMessage
@@ -838,6 +864,16 @@ func (v *strategyLeastCostConfig) Build() (proto.Message, error) {
 			IsLazy: g.IsLazy != nil && *g.IsLazy, ReturnInterval: optionalDuration(g.ReturnInterval),
 			Probe: derefString(g.Probe), FailedInRowToLeave: limit})
 	}
+	for _, p := range v.Paths {
+		if p.IsProbeOnly {
+			if p.Tag == v.StartOutbound {
+				return nil, errors.New("leastCost: startOutbound ", p.Tag, " is probe-only")
+			}
+			if p.Tag == v.StartPinnedOutbound {
+				return nil, errors.New("leastCost: startPinnedOutbound ", p.Tag, " is probe-only")
+			}
+		}
+	}
 	out := &health.SelectorConfig{
 		Paths:                 v.Paths,
 		Groups:                groups,
@@ -915,6 +951,7 @@ type OutboundPathConfig struct {
 	IsLazy         *bool              `json:"isLazy"`
 	ReturnInterval *duration.Duration `json:"returnInterval"`
 	Probe          *string            `json:"probe"`
+	IsProbeOnly    bool               `json:"isProbeOnly"`
 	groupPresent   bool
 }
 
@@ -1032,7 +1069,7 @@ func checkLeastCost(c *Config) error {
 			}
 		}
 		def := &health.PathDefinition{Tag: o.Tag, Balancer: p.Balancer, Group: p.Group, IsLazy: p.IsLazy != nil && *p.IsLazy,
-			ReturnInterval: optionalDuration(p.ReturnInterval), Probe: derefString(p.Probe)}
+			ReturnInterval: optionalDuration(p.ReturnInterval), Probe: derefString(p.Probe), IsProbeOnly: p.IsProbeOnly}
 		if p.Cost != nil {
 			def.Cost = *p.Cost
 		}

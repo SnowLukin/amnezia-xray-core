@@ -46,6 +46,9 @@ const (
 	defaultHostReuse                    = 15 * time.Second
 	defaultHostMaxOutbounds             = 8
 	defaultHostTimeout                  = 2 * time.Minute
+	defaultProbeOnlyKeepVerified        = 1
+	defaultProbeOnlyRecheckInterval     = 15 * time.Minute
+	maxProbeOnlyKeepVerified            = 4
 	maxSuspectCooldown                  = time.Hour
 	defaultMaxEvents                    = 1000
 	defaultReportInterval               = 24 * time.Hour
@@ -205,6 +208,7 @@ type passiveSettings struct {
 }
 
 type probeSettings struct {
+	isProbeOnly     bool
 	name            string
 	destination     string
 	method          string
@@ -265,6 +269,17 @@ type scheduleSettings struct {
 	perMinute                    int
 	suspectCooldown              time.Duration
 	hostProbes                   hostProbeSettings
+	probeOnly                    probeOnlySettings
+}
+
+type probeOnlySettings struct {
+	keepVerified    int
+	recheckInterval time.Duration
+}
+
+type pathSettings struct {
+	probe       string
+	isProbeOnly bool
 }
 
 type hostProbeSettings struct {
@@ -494,7 +509,7 @@ func newSettings(c *Config) *settings {
 	s := &settings{baseOrder: map[string][]string{}}
 	s.wake = wakeSettings{freshness: dur(c.GetWake().GetFreshness(), defaultWakeFreshness), minInterval: dur(c.GetWake().GetMinInterval(), defaultWakeMinInterval)}
 	for _, p := range c.GetPaths() {
-		s.paths.Store(p.Tag, p.Probe)
+		s.paths.Store(p.Tag, pathSettings{probe: p.Probe, isProbeOnly: p.IsProbeOnly})
 		s.baseOrder[p.Balancer] = append(s.baseOrder[p.Balancer], p.Tag)
 	}
 	p := c.GetPassive()
@@ -577,6 +592,11 @@ func newSettings(c *Config) *settings {
 		perMinute:                    num(sc.GetProbesPerMinute(), defaultPerMinute),
 		suspectCooldown:              dur(sc.GetSuspectCooldown(), defaultSuspectCooldown),
 	}
+	po := sc.GetProbeOnly()
+	s.schedule.probeOnly = probeOnlySettings{
+		keepVerified:    min(num(po.GetKeepVerified(), defaultProbeOnlyKeepVerified), maxProbeOnlyKeepVerified),
+		recheckInterval: dur(max(po.GetRecheckInterval(), 0), defaultProbeOnlyRecheckInterval),
+	}
 	hp := sc.GetHostProbes()
 	s.schedule.hostProbes = hostProbeSettings{
 		// The observer keeps at least half of the budget for finding failures.
@@ -616,16 +636,35 @@ func (s *settings) witness(tag string) bool {
 	return s.connectivity != nil && len(s.connectivity.witnesses) > 0 && matchesAny(tag, s.connectivity.witnesses)
 }
 
+func (s *settings) isProbeOnly(tag string) bool {
+	value, _ := s.paths.Load(tag)
+	path, _ := value.(pathSettings)
+	return path.isProbeOnly
+}
+
 func (s *settings) probeFor(tag string) *probeSettings {
-	name, _ := s.paths.Load(tag)
-	if name != "" {
+	value, _ := s.paths.Load(tag)
+	path, _ := value.(pathSettings)
+	if path.probe != "" {
 		for i := range s.probes {
-			if s.probes[i].name == name {
-				return &s.probes[i]
+			if s.probes[i].name == path.probe {
+				if !path.isProbeOnly {
+					return &s.probes[i]
+				}
+				profile := s.probes[i]
+				profile.isProbeOnly = true
+				profile.steps = nil
+				for _, step := range s.probes[i].steps {
+					if !step.isOptional {
+						profile.steps = append(profile.steps, step)
+					}
+				}
+				return &profile
 			}
 		}
 	}
 	return &probeSettings{
+		isProbeOnly:     path.isProbeOnly,
 		destination:     defaultProbeDestination,
 		method:          "GET",
 		expectStatus:    defaultExpectStatus,
@@ -660,6 +699,7 @@ type costEntrySettings struct {
 	lazy           bool
 	returnInterval int64
 	probe          string
+	isProbeOnly    bool
 }
 
 type returnToCheaperSettings struct {
@@ -683,7 +723,7 @@ func newSelectorSettings(c *SelectorConfig) *selectorSettings {
 	paths := map[string]*costEntrySettings{}
 	order := make([]string, 0, len(c.GetPaths()))
 	for _, p := range c.GetPaths() {
-		entry := &costEntrySettings{cost: float64(p.Cost), lazy: p.IsLazy, returnInterval: p.ReturnInterval, probe: p.Probe}
+		entry := &costEntrySettings{cost: float64(p.Cost), lazy: p.IsLazy, returnInterval: p.ReturnInterval, probe: p.Probe, isProbeOnly: p.IsProbeOnly}
 		if g := groups[p.Group]; g != nil && p.Group != "" {
 			entry.groupName = g.Name
 			entry.groupLimit = min(max(num(g.FailedInRowToLeave, 3), 1), 16)
@@ -747,6 +787,10 @@ func (s *selectorSettings) penaltyLimit() float64 {
 		base = time.Nanosecond
 	}
 	return max(1, float64(s.returnToCheaper.maxPenalty)/float64(base))
+}
+
+func (s *selectorSettings) isProbeOnly(tag string) bool {
+	return s.paths[tag] != nil && s.paths[tag].isProbeOnly
 }
 
 func (s *selectorSettings) isLazy(tag string) bool {

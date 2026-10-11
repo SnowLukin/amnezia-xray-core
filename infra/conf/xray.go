@@ -370,6 +370,7 @@ func (c *OutboundDetourConfig) Build() (*core.OutboundHandlerConfig, error) {
 	return &core.OutboundHandlerConfig{
 		SenderSettings: serial.ToTypedMessage(senderSettings),
 		Tag:            c.Tag,
+		IsProbeOnly:    c.Path != nil && c.Path.IsProbeOnly,
 		ProxySettings:  serial.ToTypedMessage(ts),
 	}, nil
 }

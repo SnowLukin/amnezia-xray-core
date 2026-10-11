@@ -67,6 +67,38 @@ limits live in the memory of the core: a host that restarts the core in a
 loop resets them, so a backend must limit requests by token on its side as
 well.
 
+## Probe-only capacity
+
+An answer may mark any member `path.isProbeOnly: true`, including members of a
+group. It is excluded from user selection and the real-member healthy threshold.
+Every request outbound carries `isProbeOnly`, including false. Below
+`minHealthyOutbounds`, the core sends `min_healthy` after the first candidate
+passes or after all candidates fail. Exhaustion can request a set immediately.
+The trigger rearms only when enough real members recover; a backend limited to
+one real slot at threshold two receives one request rather than a refresh storm.
+
+Candidates use the mandatory steps of their path profile, with ordinary probe
+budgets. Optional egress steps are skipped; real members use the full profile.
+`schedule.probeOnly.keepVerified` defaults to 1 (maximum 4), and
+`recheckInterval` to 15 minutes. Probe snapshots in the body identify the
+`candidate` reason and the steps actually attempted.
+
+Return the same tag with false and real credentials to promote it. Keep the
+endpoint and mandatory profile consistent with the address just verified: a
+fresh passed snapshot may be reused for `hostProbes.reuseWindow`. Mode changes
+apply even when the protocol configuration is otherwise identical. Real-to-probe
+changes stop new user selection before handler replacement; existing connections
+drain independently. Removed tags use the existing drain contract.
+
+Use probe credentials scoped to a user or small cohort and only its own nodes.
+Permit the probe destination and block other destinations. Probe credentials
+consume no real user slot. Two real slots keep the backend off the immediate
+failover path; one slot requires directly reachable provider access and adds
+slot-creation time to the interruption. Keep the old real slot alive until the
+client's next request confirms its new current path, or until a short lease
+covering `apply.drainTimeout` expires. Five to ten probe addresses are normally
+sufficient; more can arrive in later answers.
+
 ## Request
 
 ### Transport
@@ -149,6 +181,7 @@ Per outbound:
 | Field | Meaning |
 | --- | --- |
 | `tag` | Always. |
+| `isProbeOnly` | Always a boolean. True means probe credentials excluded from user selection. |
 | `state` | Always. `up`, `degraded`, `suspect`, `down`, or `unknown` for an outbound the core knows nothing about yet. `degraded` means required probe steps passed but an optional step failed; an `up` candidate is preferred before cost is considered. |
 | `reason`, `stateMs` | What set the state (`traffic`, `probe`, `return_probe`, `host_probe`, `network_change`, `network_down`, `network_up`, `replaced`, `rescued` for an outbound whose down a confirmation already running or an assigned audit proved false, or `chosen` for an outbound a balancer chose again after its rest, judged afresh) and how long ago. The `path_state` event distinguishes rescues with `by: confirm` or `by: audit`. |
 | `seenMs` | How long the core has kept the counters of the outbound. |

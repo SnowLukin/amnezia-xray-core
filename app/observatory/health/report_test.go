@@ -69,6 +69,10 @@ func foldReport(t *testing.T, raw []byte) (reportCounts, bool) {
 					}
 				}
 			}
+		case "probe_only_promoted":
+			c.ProbeOnlyPromoted++
+		case "fresh_path_down":
+			c.FreshPathDown++
 		case "pending_closed":
 			c.PendingClosed += num(f["connections"])
 		case "idle_closed":
@@ -77,6 +81,9 @@ func foldReport(t *testing.T, raw []byte) (reportCounts, bool) {
 			c.Probes++
 			if f["is_ok"] != true {
 				c.ProbesFailed++
+				if f["reason"] == "candidate" {
+					c.CandidateProbesFailed++
+				}
 				if f["reason"] == "wake" {
 					c.WakeProbeFailed++
 				}
@@ -90,6 +97,8 @@ func foldReport(t *testing.T, raw []byte) (reportCounts, bool) {
 			}
 		case "probe_start":
 			switch f["reason"] {
+			case "candidate":
+				c.CandidateProbes++
 			case "audit":
 				c.AuditCount++
 			case "wake":
@@ -241,10 +250,12 @@ func TestReportAddsUpTheEvents(t *testing.T) {
 	te.emit(now, "path_state", map[string]any{"outbound": "a1", "state": "up", "reason": "rescued"})
 	te.emit(now, "probe_start", map[string]any{"outbound": "a1", "reason": "audit"})
 	te.emit(now, "path_state", map[string]any{"outbound": "a1", "state": "up", "reason": "rescued", "by": "audit"})
-	for _, reason := range []string{"lone", "wake"} {
+	for _, reason := range []string{"lone", "wake", "candidate"} {
 		te.emit(now, "probe_start", map[string]any{"outbound": "a1", "reason": reason})
 		te.emit(now, "probe_result", map[string]any{"outbound": "a1", "reason": reason, "is_ok": false, "bytes": int64(10)})
 	}
+	te.emit(now, "probe_only_promoted", map[string]any{"outbound": "a1"})
+	te.emit(now, "fresh_path_down", map[string]any{"outbound": "a1"})
 
 	raw, dropped := te.events.drain()
 	if dropped != 0 {
