@@ -143,11 +143,18 @@ class TLSProxy:
         self.stop = threading.Event()
         self.threads = []
 
+    def _normalized_key(self):
+        key_path = os.path.join(self.work, f"{self.kind}-proxy.key")
+        # Xray's EC fixture has an RSA PEM label; keep the pinned certificate.
+        subprocess.run(["openssl", "pkey", "-in", os.path.join(bench.CERT_DIR, "example.key"),
+                        "-out", key_path], check=True, capture_output=True, timeout=10)
+        return key_path
+
     def __enter__(self):
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         context.minimum_version = ssl.TLSVersion.TLSv1_3
         context.load_cert_chain(os.path.join(bench.CERT_DIR, "example.crt"),
-                                os.path.join(bench.CERT_DIR, "example.key"))
+                                self._normalized_key())
         context.set_alpn_protocols(["h2", "http/1.1"])
         self.context = context
         self.listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)

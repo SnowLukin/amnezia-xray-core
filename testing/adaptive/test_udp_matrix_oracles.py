@@ -3,12 +3,15 @@
 import base64
 import copy
 import hashlib
+import os
 import socket
 import struct
+import subprocess
 import unittest
 from unittest import mock
 
 import udp_matrix_ws as websocket
+import udp_matrix_topology as topology
 
 import udp_matrix as matrix
 from run_udp_matrix import pion_application_route_proof
@@ -19,6 +22,42 @@ BINDING_SUCCESS = bytes.fromhex(
     "0101000c2112a442000102030405060708090a0b"
     "002000080001a147e112a643"
 )
+
+
+class TLSProxyFixtureTest(unittest.TestCase):
+    def test_proxy_loads_original_certificate_with_normalized_work_key(self):
+        for kind in ("ws", "xhttp"):
+            with self.subTest(kind=kind), \
+                 mock.patch.object(topology.bench, "CERT_DIR", "/fixture/certs"), \
+                 mock.patch.object(topology.subprocess, "run") as run, \
+                 mock.patch.object(topology.ssl, "SSLContext") as ssl_context, \
+                 mock.patch.object(topology.socket, "socket"), \
+                 mock.patch.object(topology.threading, "Thread"):
+                work = "/matrix/work"
+                proxy = topology.TLSProxy(kind, work)
+                proxy.__enter__()
+                key_path = os.path.join(work, f"{kind}-proxy.key")
+                run.assert_called_once_with(
+                    ["openssl", "pkey", "-in", "/fixture/certs/example.key", "-out", key_path],
+                    check=True, capture_output=True, timeout=10)
+                ssl_context.return_value.load_cert_chain.assert_called_once_with(
+                    "/fixture/certs/example.crt", key_path)
+
+    def test_normalization_failure_aborts_before_loading_or_listening(self):
+        for error in (subprocess.CalledProcessError(1, ["openssl", "pkey"]),
+                      subprocess.TimeoutExpired(["openssl", "pkey"], 10)):
+            with self.subTest(error=type(error).__name__), \
+                 mock.patch.object(topology.subprocess, "run", side_effect=error), \
+                 mock.patch.object(topology.ssl, "SSLContext") as ssl_context, \
+                 mock.patch.object(topology.socket, "socket") as listener, \
+                 mock.patch.object(topology.threading, "Thread") as thread:
+                proxy = topology.TLSProxy("ws", "/matrix/work")
+                with self.assertRaises(type(error)) as raised:
+                    proxy.__enter__()
+                self.assertIs(raised.exception, error)
+                ssl_context.return_value.load_cert_chain.assert_not_called()
+                listener.assert_not_called()
+                thread.assert_not_called()
 
 
 class STUNBindingOracleTest(unittest.TestCase):
