@@ -13,6 +13,7 @@ from unittest import mock
 
 import udp_matrix_ws as websocket
 import udp_matrix_topology as topology
+import udp_matrix_advanced as advanced
 
 import udp_matrix as matrix
 from run_udp_matrix import pion_application_route_proof
@@ -278,6 +279,119 @@ class FakeClock:
 
     def sleep(self, seconds):
         self.now += seconds
+
+
+class AdvancedFixtureTest(unittest.TestCase):
+    def client(self):
+        client = mock.MagicMock()
+        client.__enter__.return_value = client
+        return client
+
+    def test_reconnect_sends_under_fault_restores_and_keeps_same_association(self):
+        client, channel, ledger = self.client(), self.client(), mock.Mock(flows=[])
+        modes, observed = [], []
+        def echo(current, host):
+            self.assertIs(current, channel)
+            observed.append(modes[-1] if modes else "pass")
+            if observed[-1] == "reset_after:1":
+                raise socket.timeout("reset packet")
+            return True
+        with mock.patch.object(advanced.bench, "Client", return_value=client), \
+             mock.patch.object(advanced, "SocksUDP", return_value=channel) as association, \
+             mock.patch.object(advanced, "Ledger", return_value=ledger), \
+             mock.patch.object(advanced.bench, "chaos_stats", side_effect=[{200: [5]}, {200: [7]}]), \
+             mock.patch.object(advanced.bench, "address_port", return_value=200), \
+             mock.patch.object(advanced.bench, "chaos", side_effect=lambda _port, mode: modes.append(mode)), \
+             mock.patch.object(advanced, "_echo", side_effect=echo), \
+             mock.patch.object(advanced, "_source_access", return_value={}), \
+             mock.patch.object(advanced, "reconcile_flows", return_value={"ok": False}) as reconcile, \
+             mock.patch.object(advanced, "save_json"):
+            result = advanced.reconnect_flow(None, "fake-xray", "/matrix/work")
+        self.assertEqual(observed, ["pass", "reset_after:1", "pass"])
+        self.assertEqual(modes, ["reset_after:1", "pass"])
+        association.assert_called_once()
+        reconcile.assert_called_once_with(ledger.flows, client.final_report, "matrix-reality")
+        self.assertTrue(result["first_ok"] and result["recovered"])
+        self.assertEqual(result["physical_connections"], 2)
+        self.assertFalse(result["ok"])
+        self.assertIn("reset packet", result["fault"]["error"])
+        fault = result["fault"]
+        self.assertLessEqual(fault["armed_ns"], fault["send_started_ns"])
+        self.assertLessEqual(fault["attempt_ended_ns"], fault["restore_started_ns"])
+        self.assertLessEqual(fault["restore_started_ns"], fault["restored_ns"])
+
+    def test_unexpected_fault_packet_failure_still_restores_pass(self):
+        with mock.patch.object(advanced.bench, "Client", return_value=self.client()), \
+             mock.patch.object(advanced, "SocksUDP", return_value=self.client()), \
+             mock.patch.object(advanced, "Ledger"), \
+             mock.patch.object(advanced.bench, "chaos_stats", return_value={200: [5]}), \
+             mock.patch.object(advanced.bench, "address_port", return_value=200), \
+             mock.patch.object(advanced.bench, "chaos") as chaos, \
+             mock.patch.object(advanced, "_echo", side_effect=[True, RuntimeError("unexpected")]):
+            with self.assertRaisesRegex(RuntimeError, "unexpected"):
+                advanced.reconnect_flow(None, "fake-xray", "/matrix/work")
+        self.assertEqual(chaos.call_args_list, [mock.call("200", "reset_after:1"), mock.call("200", "pass")])
+
+    def cross_window(self, missing=None):
+        tag, reserve = "matrix-reality", "matrix-reality-reserve"
+        client, channel, clock = self.client(), self.client(), FakeClock()
+        initial = {"balancers": [{"balancer": "auto", "active": tag}]}
+        selected = {"balancers": [{"balancer": "auto", "active": reserve}]}
+        client.status.side_effect = [initial] + [initial if missing == "status" else selected] * 110
+        client.events = []
+        def drain():
+            if client.drain.call_count > 1 and not client.events and missing != "decision":
+                client.events.append({"type": "switch", "fields": {"reason": "pin", "from": tag, "to": reserve}})
+        client.drain.side_effect = drain
+        first = {"report_reason": "interval", "report_index": 1, "paths": {tag: {"udp_flows": 0}}}
+        client.take_report.side_effect = lambda: None if missing == "report" or clock.now < 1 else first
+        client.final_report = {"report_reason": "stop", "report_index": 2, "paths": {tag: {"udp_flows": 1}}}
+        snapshot = {"report_reason": "snapshot", "report_index": 2}
+        client.api.side_effect = lambda *args: {"ok": missing != "accepted"} if args[0] == "pin" else snapshot
+        with mock.patch.object(advanced.bench, "Client", return_value=client) as constructor, \
+             mock.patch.object(advanced.bench, "client_config", wraps=advanced.bench.client_config) as config, \
+             mock.patch.object(advanced, "SocksUDP", return_value=channel) as association, \
+             mock.patch.object(advanced, "Ledger"), \
+             mock.patch.object(advanced, "_echo", return_value=True) as echo, \
+             mock.patch.object(advanced, "_source_access", return_value={}), \
+             mock.patch.object(advanced, "save_json"), \
+             mock.patch.object(advanced.time, "monotonic", side_effect=clock.monotonic), \
+             mock.patch.object(advanced.time, "sleep", side_effect=clock.sleep):
+            result = advanced.cross_report_window(None, "fake-xray", "/matrix/work")
+        config.assert_called_once_with([(tag, "reality", 0), (reserve, "reality", 1)], {tag: 1, reserve: 2},
+                                       health={"report": {"quietShare": 1, "interval": "1s"}}, loglevel="info")
+        association.assert_called_once()
+        self.assertEqual(echo.call_args_list, [mock.call(channel, "127.0.0.1")] * 2)
+        self.assertIn(mock.call("pin", "auto", reserve), client.api.call_args_list)
+        return result, client
+
+    def test_cross_window_reserve_decision_interval_and_old_association(self):
+        result, client = self.cross_window()
+        self.assertTrue(result["ok"])
+        self.assertEqual((result["first_flows"], result["final_flows"]), (0, 1))
+        self.assertEqual(result["snapshot"]["report_index"], 2)
+        self.assertGreater(client.take_report.call_count, 1)
+
+    def test_cross_window_missing_report_or_real_decision_remains_failure(self):
+        for missing in ("report", "decision", "accepted", "status"):
+            with self.subTest(missing=missing):
+                result, client = self.cross_window(missing)
+                self.assertFalse(result["ok"])
+                self.assertIsNone(result["first_report"])
+                self.assertIsNone(result["first_flows"])
+                if missing != "report":
+                    client.take_report.assert_not_called()
+
+    def test_source_access_preserves_all_raw_lines_and_per_source_counts(self):
+        lines = "time udp:127.0.0.1:4000 accepted udp:dest [socks -> old]\n" * 2
+        lines += "time udp:127.0.0.1:4001 accepted udp:dest [socks -> reserve]\n"
+        flows = [mock.Mock(source="127.0.0.1:4000"), mock.Mock(source="127.0.0.1:4001")]
+        with mock.patch.object(advanced.os.path, "exists", return_value=True), \
+             mock.patch("builtins.open", mock.mock_open(read_data=lines)):
+            evidence = advanced._source_access("/matrix/access.log", flows)
+        self.assertEqual(evidence["by_source"]["127.0.0.1:4000"],
+                         {"count": 2, "lines": lines.splitlines()[:2]})
+        self.assertEqual(evidence["by_source"]["127.0.0.1:4001"]["count"], 1)
 
 
 class MatrixRunModeTest(unittest.TestCase):
