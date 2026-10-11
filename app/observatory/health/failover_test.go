@@ -170,8 +170,10 @@ func TestCheaperCandidateFailingTakesTheDearerThatPassed(t *testing.T) {
 	if te.sel.current() != "b1" || !te.sel.activeSince.Equal(at(4*time.Second)) {
 		t.Fatalf("active %q since %v, want b1 when a2 failed at 4s", te.sel.current(), te.sel.activeSince.Sub(t0))
 	}
-	if jobs, _ := te.tick(at(5 * time.Second)); len(jobs) != 0 {
-		t.Fatalf("probed %v after the switch", jobTags(jobs))
+	if jobs, _ := te.tick(at(5 * time.Second)); !slices.Equal(reasons(jobs), []string{"audit:a1"}) {
+		t.Fatalf("probed %v after the switch, want audit:a1", reasons(jobs))
+	} else {
+		te.onProbeResult(jobs[0], probeResult{ok: false}, at(5*time.Second))
 	}
 }
 
@@ -182,7 +184,7 @@ func TestOneProbeAtATimeTriesCandidatesInTurn(t *testing.T) {
 	if got := jobTags(jobs); !slices.Equal(got, []string{"a2"}) {
 		t.Fatalf("first probes %v, want a2 alone", got)
 	}
-	starts := []string{"a2@1s"}
+	starts := []string{"failover:a2@1s"}
 	answers := map[*probeJob]time.Time{jobs[0]: at(4 * time.Second)}
 	for now := at(1100 * time.Millisecond); now.Before(at(20 * time.Second)); now = now.Add(100 * time.Millisecond) {
 		for j, due := range answers {
@@ -193,11 +195,11 @@ func TestOneProbeAtATimeTriesCandidatesInTurn(t *testing.T) {
 		}
 		jobs, _ := te.tick(now)
 		for _, j := range jobs {
-			starts = append(starts, j.tag+"@"+now.Sub(t0).String())
+			starts = append(starts, j.reason.String()+":"+j.tag+"@"+now.Sub(t0).String())
 			answers[j] = now.Add(3 * time.Second)
 		}
 	}
-	if !slices.Equal(starts, []string{"a2@1s", "b1@4s"}) || te.sel.current() != "b1" {
+	if !slices.Equal(starts, []string{"failover:a2@1s", "failover:b1@4s", "audit:a1@7s"}) || te.sel.current() != "b1" {
 		t.Fatalf("probes %v, active %q; want a2, then b1 once a2 failed", starts, te.sel.current())
 	}
 }
@@ -235,9 +237,10 @@ func TestLazyCandidateWaitsForEverythingCheaperInParallel(t *testing.T) {
 	te.serverNames(map[string]string{"a1": "a1.example", "a2": "a2.example", "b1": "b1.example", "c1": "c1.example"})
 	te.failN(3, "a1", failDial, at(0))
 	jobs, _ := te.tick(at(time.Second))
-	if got := jobTags(jobs); !slices.Equal(got, []string{"a2", "b1"}) {
+	if got := reasons(jobs); !slices.Equal(got, []string{"failover:a2", "failover:b1", "audit:a1"}) {
 		t.Fatalf("probes %v, want a2 and b1 without the lazy c1", got)
 	}
+	te.onProbeResult(jobs[2], probeResult{ok: false}, at(2*time.Second))
 	te.onProbeResult(jobs[0], probeResult{ok: false}, at(4*time.Second))
 	if more, _ := te.tick(at(4 * time.Second)); len(more) != 0 {
 		t.Fatalf("probed %v while b1, cheaper than the lazy c1, was still probed", jobTags(more))
@@ -457,7 +460,7 @@ func TestProbeStartedAfterTheDownRescuesNothing(t *testing.T) {
 		t.Fatal("setup: no confirming probe queued")
 	}
 	te.failN(3, "a1", failDial, at(2500*time.Millisecond))
-	if p := te.path("a1"); p.status != statusDown || p.rescue != nil || te.queued("a1", reasonConfirm) {
+	if p := te.path("a1"); p.status != statusDown || p.rescue == nil || p.rescue.by != "audit" || te.queued("a1", reasonConfirm) {
 		t.Fatalf("a1 %v, mark %+v, confirming probe still queued %v", p.status, p.rescue, te.queued("a1", reasonConfirm))
 	}
 	late := te.enqueue("a1", reasonConfirm, "", at(3*time.Second))

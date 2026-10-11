@@ -5,34 +5,11 @@ import (
 	"time"
 )
 
-// Weak evidence waits for a confirming probe, strong evidence does not: when
-// failures about the path come while the probe runs, the outbound goes down
-// at once and the balancers fail over. On a network that hiccups, such as
-// the Wi-Fi of a phone under load, those failures may last a second while
-// the probe gets through. Its answer comes after them and is the newest
-// proof about the path, so a pass proves the down false and rescues the
-// outbound: it is up again without the rest of its quarantine, at the
-// quarantine level it had before, and the penalty the down gave a return to
-// it is taken back. Its connections that went silent are kept: the check
-// stallTimeout after the decision is dropped, and the switch away from it
-// ends nothing, as it is no longer down. Those it ended at the decision
-// stay ended.
-//
-// The failover the down started goes on: a balancer that moved or still
-// moves away comes back by a return, soon after minHoldTime and through its
-// returnToCheaper probes, so a path that fails for a second does not move new
-// connections twice within it. A balancer left with nothing takes the
-// outbound back at once, as after a recheck. The rescue changes no choice by
-// itself, so it is no decision of the report.
-//
-// Only a confirming probe that was running when the outbound went down
-// rescues it: one still waiting for its turn is dropped at the down, and
-// one made in a previous network proves nothing about this one. Probes for
-// other reasons go their usual way, which already brought an outbound up
-// when they passed, whenever they started: a failover probe of it for
-// another balancer does so as for any candidate, at level zero, and moves
-// only that balancer. Only the answer of a confirming probe was dropped
-// once the outbound was no longer suspect.
+// A confirmation already running or an audit queued for this down may prove
+// the decision false. Its mark restores the prior quarantine and return
+// penalties and cancels checks of silent connections. Failover still goes on;
+// a working path returns through the usual hold and return probes. A result
+// from another network or an earlier down cannot use the mark.
 
 // Returns to an outbound that came back after a failover from it spread
 // over this long after minHoldTime, or over returnToCheaper.interval when that is
@@ -41,10 +18,11 @@ import (
 // their probes to it in one wave.
 const returnSpread = 5 * time.Minute
 
-// rescueMark is what a down did that the pass of a confirming probe running
-// at the time takes back.
+// rescueMark is what a pass of the assigned confirmation or audit takes back.
 type rescueMark struct {
-	job uint64
+	job    uint64
+	downID uint64
+	by     string
 	// The quarantine level before the down.
 	level int
 	// Returns the down penalized, as they were before it.
@@ -58,13 +36,16 @@ type penaltyMark struct {
 	returnedAt time.Time
 }
 
-// rescueMarkFor returns the mark of a down of tag now, or nil when no
-// confirming probe of it runs that could undo it. At most one runs, as two
-// probes of one server name never do.
+// rescueMarkFor returns the mark of this down, or nil without its probe.
 func (e *engine) rescueMarkFor(tag string, level int) *rescueMark {
 	for _, j := range e.running {
 		if j.tag == tag && j.reason == reasonConfirm && !j.invalidated && j.generation == e.generation {
-			return &rescueMark{job: j.id, level: level}
+			return &rescueMark{job: j.id, downID: e.path(tag).downID, by: "confirm", level: level}
+		}
+	}
+	for _, j := range e.queue {
+		if j.tag == tag && j.reason == reasonAudit && !j.invalidated && j.generation == e.generation && j.auditDown == e.path(tag).downID {
+			return &rescueMark{job: j.id, downID: j.auditDown, by: "audit", level: level}
 		}
 	}
 	return nil
@@ -83,7 +64,7 @@ func (m *rescueMark) notePenalty(s *selector, tag string) {
 // whatever j brings, it rescues nothing later.
 func (e *engine) takeRescue(j *probeJob) *rescueMark {
 	p := e.paths[j.tag]
-	if p == nil || p.rescue == nil || p.rescue.job != j.id {
+	if p == nil || p.rescue == nil || p.rescue.job != j.id || p.rescue.downID != p.downID {
 		return nil
 	}
 	m := p.rescue
@@ -91,16 +72,20 @@ func (e *engine) takeRescue(j *probeJob) *rescueMark {
 	return m
 }
 
-// rescue undoes the down of p that the confirming probe of m proved false.
+// rescue undoes the down of p that m's probe proved false.
 func (e *engine) rescue(p *path, m *rescueMark, now time.Time) {
-	// For the weak evidence the probe was sent for, this is a false alarm
-	// like any other: the next such suspicion waits longer.
-	e.backOffWeakEvidence(p, now)
+	if m.by == "confirm" {
+		// The next weak suspicion waits longer after a false alarm.
+		e.backOffWeakEvidence(p, now)
+	} else {
+		p.stats.auditsPassed++
+	}
 	p.success(now)
 	p.quarantineLevel = m.level
 	p.quarantineUntil = time.Time{}
 	p.provisional = false
 	p.setStatus(statusUp, "rescued", now)
+	p.rescuedBy = m.by
 	e.emitPath(p, now)
 	e.remember(p.tag)
 	// Silence proves nothing about a path that works; the checks would

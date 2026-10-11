@@ -45,6 +45,8 @@ type Observer struct {
 	kick    chan struct{}
 	done    chan struct{}
 	started bool
+	// Routed UDP associations, counted once when their link ends.
+	udpFlows map[*udpFlow]struct{}
 
 	trackMu sync.Mutex
 	// Every open connection, for statistics when it ends.
@@ -81,6 +83,9 @@ type Observer struct {
 
 // New creates the observer.
 func New(ctx context.Context, config *Config) (*Observer, error) {
+	if err := validateQuietShare(config.GetReport()); err != nil {
+		return nil, err
+	}
 	if err := config.ValidateProbeSteps(); err != nil {
 		return nil, err
 	}
@@ -254,6 +259,9 @@ func (o *Observer) seedProviderSets() {
 func (o *Observer) Close() error {
 	running.CompareAndSwap(o, nil)
 	o.once.Do(func() { close(o.done) })
+	o.mu.Lock()
+	o.finishUDPFlowsLocked()
+	o.mu.Unlock()
 	o.stopRun()
 	o.closeProviders()
 	return nil
@@ -809,9 +817,12 @@ func (o *Observer) Status() []byte {
 // due and starts a new window; nil when none is due. A window with decisions
 // is due once it lasts the report interval. final asks for the last report
 // of this run before the host stops the core: it is due when the core made
-// any decision in the run, and nothing is due after it.
+// any decision or sampled this run, and nothing is due after it.
 func (o *Observer) TakeReport(final bool) []byte {
 	o.mu.Lock()
+	if final {
+		o.finishUDPFlowsLocked()
+	}
 	v := o.e.takeReport(final, o.now())
 	o.mu.Unlock()
 	return o.marshalReport(v)

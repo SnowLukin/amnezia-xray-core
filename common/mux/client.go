@@ -362,7 +362,13 @@ func (m *ClientWorker) Dispatch(ctx context.Context, link *transport.Link) bool 
 	s.input = link.Reader
 	s.output = link.Writer
 	go fetchInput(ctx, s, m.link.Writer)
-	if _, ok := link.Reader.(*pipe.Reader); !ok {
+	_, directPipe := link.Reader.(*pipe.Reader)
+	if !directPipe {
+		if wrapped, ok := link.Reader.(interface{ UnderlyingReader() buf.Reader }); ok {
+			_, directPipe = wrapped.UnderlyingReader().(*pipe.Reader)
+		}
+	}
+	if !directPipe {
 		select {
 		case <-ctx.Done():
 		case <-s.done.Wait():

@@ -77,6 +77,48 @@ the config.
    started yet is dropped at the down, and one that fails changes nothing.
    A probe for any other reason brings an outbound up when it passes,
    whenever it started.
+
+   With `confirmWithProbe: auto`, a strong down still starts failover immediately.
+   The observatory then queues one `audit` probe below failover and recheck.
+   It must start within 30 seconds in the same network generation. A passed
+   audit rescues the down, including its
+   quarantine, return penalty, and pending silence check. The balancer returns
+   through its usual `minHoldTime` and `probesToReturn` rules. A failed audit
+   leaves the down unchanged. A path gets at most one audit per active
+   `penaltyWindow`; when several balancers select it, the longest window wins.
+   Set `shouldSkipDownAudit: true` in `leastCost.settings` to disable audits.
+   `audit_count` counts starts, `audit_passed_count` counts rescues, and
+   `audit_skipped_count` counts audits suppressed by the setting or throttle
+   and queued audits dropped before starting. The report fields
+   `audits` and `audits_passed` count the same per outbound.
+   A path-level failure (`dial_failed`, `dial_timeout`, `server_unverified`)
+   below the usual suspicion threshold queues a `lone` probe if at least one
+   balancer selects the outbound and its last traffic or probe success is
+   older than `passive.loneFailureAfter` (default `"2m"`, `"0s"` disables).
+   Age starts at path creation when there is no success; a network change
+   or recovery starts a new age window without inventing a success.
+   No probe is queued when the network is lost or in doubt, or the path is
+   already being checked. If configured connectivity has no success in the
+   current network, or that success is older than four connectivity timeouts,
+   its check runs first and holds lone until it passes. This freshness is
+   checked again after waiting for probe budgets; disabled or ignored
+   connectivity adds no gate. The usual threshold of three failures stays
+   the same.
+   `lone` follows failover and recheck and precedes audit; it shares their
+   concurrency, spacing, rate and server-name budgets and can run in idle
+   because a real connection supplied its failure. A path gets at most one
+   started lone probe per five minutes. Canceling a queued job spends none
+   of that interval. A passed probe clears failures and records its state;
+   a degraded pass keeps the path usable while unpinned balancers search
+   for an up alternative under the usual probe-before-switch rule; when all
+   paths are degraded, the live choice stays usable. A failed probe makes
+   one strong down through the usual quarantine, failover,
+   pending-close and silence-close rules, without a second audit.
+   Traffic success, ordinary suspicion or down, a network change or loss,
+   and handler replacement cancel lone work. Before starting and accepting
+   its result, the observer checks that the path is still selected and that
+   no success, down or provider retirement overtook the original failure.
+   A stale result records the probe but changes no path state.
 4. **Failover.** The chosen outbound goes down and rests in quarantine with a
    growing, jittered backoff. The balancer moves new connections to the
    cheapest usable candidate, after probing it if `shouldProbeBeforeSwitch`. Up to
@@ -98,7 +140,32 @@ the config.
    candidate must pass `returnToCheaper.probesToReturn` probes in a row,
    `returnToCheaper.probeInterval` apart. A return that fails within `penaltyWindow`
    multiplies the wait before the next one; a return that holds clears it.
-6. **Networks.** On `NetworkChanged(id)` results of the previous network are
+6. **User presence.** `UserPresent()` / `xray api health present` returns
+   immediately after queuing `wake` probes of stale selected paths. A balancer
+   must be unpinned and not exhausted; a shared outbound is considered once
+   per call. No work is queued while the network is lost or in doubt, or
+   while another probe of that path is running or other queued probe work
+   is already sufficient. A deferred
+   network-change or remembered probe of the selected path is replaced by
+   one guarded wake probe; other paths and balancers remain idle. A success exactly
+   `wake.freshness` old still counts as fresh; older or missing proof needs
+   a check. The default freshness is `"60s"`, and `wake.minInterval` defaults
+   to `"5m"`, counted from the actual start. Missing JSON fields keep these
+   defaults; `"0s"` removes the corresponding limit. In a direct protobuf,
+   zero keeps the default and a negative value removes the limit.
+   `wake` has the same priority as `network_change` and can run during idle,
+   with the usual concurrency, spacing, total-rate and server-name budgets.
+   A pass records the profile state without moving a healthy choice;
+   a degraded pass starts the ordinary search for an up alternative, keeping
+   the path usable when every candidate is degraded. A failure uses the
+   usual quarantine, failover, pending-close and silence-close rules,
+   without an audit or a passive strong/weak down count.
+   Fresh traffic, a newer down, switching or pinning the choice, provider
+   changes, and every network change (including `ignore`) cancel old wake
+   work. Obsolete queued work spends no interval; completed stale work counts
+   as a probe but changes no path. No wake job is requeued automatically.
+   Without a host call, this feature adds no probes or timers.
+7. **Networks.** On `NetworkChanged(id)` results of the previous network are
    forgotten. If the network was seen before, the outbound that last worked
    there is tried first, with one probe and no round over all candidates.
 
@@ -112,7 +179,8 @@ one server name are a known censor signal. Without user traffic for
 the end of a provider lease, see Providers, putting an outbound to sleep
 after its last use and ending its idle connections, see Sleep, and the one
 look at the connections of an outbound found down `stallTimeout` after the
-decision, see below. Closing
+decision, see below, and checks explicitly queued by `UserPresent`, see
+User presence above. Closing
 the core ends the probes still running, and their outcome is not held
 against the outbound.
 
@@ -191,8 +259,10 @@ outputs. `nextRefreshIn` follows this table as well; a number is refused.
     { "tag": "block", "protocol": "blackhole" }
   ],
   "healthObservatory": {
+    "wake": { "freshness": "60s", "minInterval": "5m" },
     "passive": {
       "window": "60s", "dialTimeout": "6s", "firstByteTimeout": "5s", "stallTimeout": "8s",
+      "loneFailureAfter": "2m",
       "failuresToSuspect": 3, "minDistinctTargets": 2, "successBytes": 24576, "sweepInterval": "500ms",
       "partialStallMaxAge": "30s", "shouldIgnorePartialStalls": false, "isDialOnly": false,
       "shouldKeepPendingOnDown": false, "shouldKeepSilentOnDown": false
@@ -284,7 +354,8 @@ for `hostProbes` `probesPerMinute` half of `schedule.probesPerMinute`, `reuseWin
 - Paths with `isLazy` are never probed in the background and are only tried
   when everything cheaper is down.
 - `confirmWithProbe`: `auto` probes only destination failures, `always` probes every
-  suspicion, `never` trusts the evidence.
+  suspicion before deciding, `never` trusts the evidence. `auto` audits strong
+  downs after the decision unless `shouldSkipDownAudit` is true.
 - `networkChangeAction` of the strategy: `recheck` forgets and probes the chosen
   outbound once (or the one remembered for the network), `forget` only
   forgets, `ignore` keeps everything. A pinned balancer is rechecked once
@@ -909,6 +980,7 @@ when the core runs through a library that keeps the instance to itself:
 | Call | Purpose |
 | --- | --- |
 | `NetworkChanged(id)` / `xray api health network <id>` | The device moved to another network. `id` lets the observatory remember working outbounds per network; empty when the host cannot tell networks apart. |
+| `UserPresent()` / `xray api health present` | The user unlocked the device. Queue checks of stale unpinned selected paths and return immediately; see User presence. The host supplies this signal through `HealthService.UserPresent` or the observer API. |
 | `NetworkLost()` / `lost` | No network; decisions pause until the next change. |
 | `SetMemoryLow(low)` | The process is short of memory, or no longer; see Memory. Safe from any goroutine, a repeated value does nothing. Only for embedders. |
 | `Pin(balancer, outbound, run)` / `pin` | Keep the balancer on an outbound. |
@@ -938,7 +1010,7 @@ Every event is `{"seq": n, "ts": unix_ms, "type": "...", "fields": {...}}`.
 | `switch` | `balancer`, `from`, `to`, `reason`, `held_ms`, `cost` | New connections go to another outbound. `reason`: `start`, `start_pinned`, `start_remembered`, `start_with`, `failover`, `return`, `recovered`, `remembered`, `network_change`, `network_up` (the network check passed again and brought back outbounds ruled out while it failed, to a balancer that had nothing usable), `candidates_changed`, `pin`, `retired` (the previous one left its provider set), `expired` (the lease of the previous one ended; one that failed as well is left with `failover`). `held_ms` is the time on the previous one. |
 | `path_state` | `outbound`, `state`, `reason`; for `suspect` also `failures`, `targets`, `kinds`, `is_strong`; for `down` also `quarantine_ms`, `quarantine_level` and `is_provisional` when it was ruled out while the network check was failing | An outbound became `up`, `degraded`, `suspect`, `down` or `unknown`. For `degraded`, `reason` is the first failed optional step. Other reasons: `traffic`, `probe`, `return_probe`, `host_probe`, `network_change`, `network_down`, `network_up`, `replaced` (a provider
 changed its settings), `probe_changed` (a provider changed the profile of an unchanged outbound), `rescued` (a probe that was confirming a suspicion when strong evidence ruled the outbound out passed, see How it decides). `kinds` counts failures by kind: `dial_failed`, `dial_timeout`, `server_unverified`, `no_response`, `closed`, `stall`, `partial_stall`. For an outbound with a tunnel, `dial_failed` and `dial_timeout` tell that the tunnel could not be set up or that its server did not answer a connection, see How it decides. |
-| `probe_start` | `outbound`, `reason`, `balancer`, `running`, `request` | A probe started. `reason`: `confirm`, `failover`, `network_change`, `remembered`, `recheck`, `return`, `group_recheck`, `host`. `running` counts the outbound probes running now, this one included. `request` is the id of the request a `host` probe is for. |
+| `probe_start` | `outbound`, `reason`, `balancer`, `running`, `request` | A probe started. `reason`: `confirm`, `failover`, `network_change`, `wake`, `remembered`, `recheck`, `lone`, `audit`, `return`, `group_recheck`, `host`. `running` counts the outbound probes running now, this one included. `request` is the id of the request a `host` probe is for. |
 | `probe_result` | `outbound`, `reason`, `balancer`, `is_ok`, `rtt_ms`, `bytes`, `error`, `is_stale`, `request`, `profile`, `state`, `steps` | A probe finished. `steps` lists only attempted steps with `name`, `is_passed`, `connect_ms`, `ms`, `bytes`, a `destination` index on success or an `error` class on failure. `bytes` counts both directions above TLS. `is_stale` means the network, handler or probe profile changed while it ran, so its result did not change the path. Its attempted steps still count in the report. |
 | `group_state` | `balancer`, `group`, `state`, `members`, `failed`, `quarantine_ms` | An explicit group became `down` after consecutive failures or `up` after a successful recovery check. Unvisited members of a down group are skipped. |
 | `probe_request` | `request`, `balancer`, `outbounds`, `end`, `ms`, `probed`, `reused`, `ok`, `failed`, `down`, `skipped`, `expired`, `gone` | A request of the host that waited for a probe ended; one answered at once writes none. `end`: `done`, `timeout`, `network_change`, `gone`. The counts are by result; `probed` and `reused` count the answers of a probe and of a recent proof. |
@@ -992,8 +1064,9 @@ are no decision.
 `TakeReport(final)` returns the report when one is due and starts a new
 window:
 
-- `final`, before the host stops the core: due when the run had a decision,
-  with reason `stop`. Nothing is due after it, final or not.
+- `final`, before the host stops the core: due when the run had a decision or
+  was selected by `report.quietShare`, with reason `stop`. Nothing is due
+  after it, final or not.
 - Otherwise due once a window with a decision lasts `report.interval` by the
   wall clock, which goes on while the device sleeps; reason `interval`. A
   decision after a window that long without one goes with the next call.
@@ -1005,14 +1078,33 @@ snapshot of `Report()`, reason `snapshot`, replaces it after every report it
 takes, and sends the kept one when it starts again; the reason it sends is
 its own choice.
 
+`report.quietShare` selects a fraction of core runs once at startup (0 by
+default). A selected run can produce a final report and a snapshot without
+any decision; `is_quiet_sample` identifies it. Quiet runs do not create
+interval reports merely because the interval elapsed.
+
 Counters cover the window: from the start of the run or the previous report
 to this one. Reports of one run add up.
+
+A controlled 64-path P3 fixture produces a 35,998-byte report; removing
+only the new UDP, down-strength and quiet-sample fields from that same JSON
+leaves 12,358 bytes, a 23,640-byte increase. The stripped shape is a
+comparison fixture, not a separate P2 binary measurement.
+On an Apple M4 Pro with Go 1.26.4, five serial steady-state samples of
+`BenchmarkObservedUDPLinkRealHealthUplink` have a median of 14.42 ns/write,
+versus 1.076 ns/write without observation, with zero allocations in both.
+The benchmark uses the real tracker and checks its final public report;
+it excludes network I/O, initialization and concurrent flows. UDP accounting
+uses a short per-flow mutex and lifecycle coordination in addition to
+atomic counters, so its cost is measured rather than described as one
+atomic operation. The full live UDP/XUDP matrix is still required.
 
 | Field | Meaning |
 | --- | --- |
 | `health_run` | The run of the core, as `run` in Status. |
 | `report_reason` | `stop`, `interval` or `snapshot`. |
 | `report_index` | Number of the report in the run, from 1. |
+| `is_quiet_sample` | This run was selected by `report.quietShare`; selection does not change between report windows. |
 | `window_ms`, `session_ms` | Length of the window and of the run in milliseconds of the wall clock. |
 | `events` | Events written in the window. |
 | `events_dropped` | Events the log dropped in the window because it was full: they never reached `DrainEvents`. |
@@ -1039,7 +1131,18 @@ to this one. Reports of one run add up.
 | `outbound_sleeps` | `outbound_sleep` events: outbounds that released what they held. A sleep changes no choice and is no decision. |
 | `active`, `is_balancer_exhausted`, `is_network_up`, `connectivity` | At the time of the report: the chosen outbound by balancer, whether a balancer is exhausted, and the network as in Status. |
 | `paths` | The first 64 outbounds by tag. `state` and `ttfb_p50_ms` (over the whole life of the outbound, 0 without samples) as they are now; `active_ms`, `degraded_ms`, `bytes_up`, `bytes_down`, `conns_ok`, `conns_failed`, `probes` and `probe_bytes` cover this report window. `probe_steps` gives `name`, `passed` and `failed` for steps actually attempted in the window, including stale probes. Steps follow the current profile order; names from an earlier profile in the same window follow in their first observed order. An outbound forgotten and seen again counts from zero. |
+| `wake_probe_count`, `wake_probe_failed_count`, `wake_skipped_count` | Started wake probes, completed failed wake probes (including stale results), and eligible unique selected paths skipped per host call because proof is fresh or the wake interval/job limit applies. A queued cancellation has no start count; a canceled probe has no result count. Other probe work, pins, exhausted balancers, or unavailable networks add no skip count. |
+| `lone_probe_count`, `lone_probe_failed_count` | Started lone probes and completed failed lone probes, including stale results; canceled probes have no result count. |
+| `lone_probes`, `lone_probes_failed` | The same lone counters for this outbound in the report window. A failed current lone probe contributes one `downs_strong`; a stale completion contributes no down. |
+| `downs_strong`, `downs_weak` | New downs backed by strong or weak passive evidence for that outbound in this window. They include failed current lone probes paired with a dial failure, but exclude pure wake and network-change probe failures. Use `wake_probe_count` and `wake_probe_failed_count` for the wake failure rate; passive down counters are not its denominator. |
+| `udp_flows`, `udp_flows_unanswered` | Routed UDP associations that ended in this window; unanswered means at least one uplink buffer and no downlink bytes. An association still open at an interval report belongs to the window where it ends. Final stop ends all open associations. |
+| `udp_bytes_up`, `udp_bytes_down`, `udp_writes`, `udp_reads` | Payload bytes and nonempty buffers at the logical outbound link. Each buffer is approximately one UDP packet. These fields do not include proxy framing or AWG handshakes; the existing mixed `bytes_up/down` and `conns_ok/failed` keep their transport semantics. |
+| `udp_first_reply_p50_ms` | Median time from the first uplink buffer to the first downlink buffer for associations ending in this window, at the histogram bucket upper bound; 0 without samples. |
+| `udp_ports` | Nonzero `dns` (53), `quic` (443), `stun` (3478-3479 and 19302), `rtc` (50000-65535), and `other` buckets. Each contains `flows` and `unanswered`. The first routed destination port fixes the bucket for the whole association, even if later packets name other destinations. |
 | `groups` | Current explicit-group summaries as described in Outbound groups. |
+
+Per-outbound fields `audits`, `audits_passed`, `lone_probes`, `lone_probes_failed`,
+`downs_strong`, `downs_weak` and all `udp_*` fields belong to `paths.<tag>`.
 
 ## Status
 

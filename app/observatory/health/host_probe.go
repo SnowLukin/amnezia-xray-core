@@ -377,7 +377,11 @@ func (e *engine) onHostProbeResult(p *path, r probeResult, now time.Time) {
 				e.backOffWeakEvidence(p, now)
 			}
 		}
-		e.markProbeState(p, r, now)
+		if r.pathState() == statusUp {
+			e.markUp(p, "host_probe", now)
+		} else {
+			e.markProbeState(p, r, now)
+		}
 		for _, s := range e.sortedSelectors() {
 			if s.exhausted && s.hasCandidate(p.tag) {
 				e.switchTo(s, p.tag, "recovered", now)

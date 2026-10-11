@@ -3,6 +3,7 @@ package conf
 import (
 	"bytes"
 	"encoding/json"
+	"math"
 	"net/url"
 	"strings"
 	"time"
@@ -32,6 +33,7 @@ func (b *HealthBackoffConfig) build() (*health.Backoff, error) {
 }
 
 type HealthPassiveConfig struct {
+	LoneFailureAfter          *duration.Duration `json:"loneFailureAfter"`
 	Window                    *duration.Duration `json:"window"`
 	DialTimeout               *duration.Duration `json:"dialTimeout"`
 	FirstByteTimeout          *duration.Duration `json:"firstByteTimeout"`
@@ -149,8 +151,14 @@ type HealthNetworkConfig struct {
 	MaxNetworks            int32 `json:"maxNetworks"`
 }
 
+type HealthWakeConfig struct {
+	Freshness   *duration.Duration `json:"freshness"`
+	MinInterval *duration.Duration `json:"minInterval"`
+}
+
 type HealthReportConfig struct {
-	Interval *duration.Duration `json:"interval"`
+	Interval   *duration.Duration `json:"interval"`
+	QuietShare float64            `json:"quietShare"`
 }
 
 type HealthSleepConfig struct {
@@ -443,6 +451,7 @@ type HealthObservatoryConfig struct {
 	Providers    []*HealthProviderConfig   `json:"providers"`
 	Report       *HealthReportConfig       `json:"report"`
 	Sleep        *HealthSleepConfig        `json:"sleep"`
+	Wake         *HealthWakeConfig         `json:"wake"`
 }
 
 func (c *HealthObservatoryConfig) UnmarshalJSON(raw []byte) error {
@@ -480,6 +489,9 @@ func checkProbeURL(where, dest string) error {
 func (c *HealthObservatoryConfig) Build() (proto.Message, error) {
 	out := &health.Config{Paths: c.Paths}
 	if p := c.Passive; p != nil {
+		if p.LoneFailureAfter != nil && *p.LoneFailureAfter < 0 {
+			return nil, errors.New("healthObservatory: passive.loneFailureAfter must be nonnegative")
+		}
 		for _, field := range []struct {
 			name  string
 			value *duration.Duration
@@ -489,6 +501,7 @@ func (c *HealthObservatoryConfig) Build() (proto.Message, error) {
 			}
 		}
 		out.Passive = &health.PassiveConfig{
+			LoneFailureAfter:          optionalDuration(p.LoneFailureAfter),
 			Window:                    optionalDuration(p.Window),
 			DialTimeout:               optionalDuration(p.DialTimeout),
 			FirstByteTimeout:          optionalDuration(p.FirstByteTimeout),
@@ -652,8 +665,20 @@ func (c *HealthObservatoryConfig) Build() (proto.Message, error) {
 	if n := c.Network; n != nil {
 		out.Network = &health.NetworkConfig{NoMemory: n.ShouldRememberNetworks != nil && !*n.ShouldRememberNetworks, MaxNetworks: n.MaxNetworks}
 	}
+	if w := c.Wake; w != nil {
+		if w.Freshness != nil && *w.Freshness < 0 {
+			return nil, errors.New("healthObservatory: wake.freshness must not be negative")
+		}
+		if w.MinInterval != nil && *w.MinInterval < 0 {
+			return nil, errors.New("healthObservatory: wake.minInterval must not be negative")
+		}
+		out.Wake = &health.WakeConfig{Freshness: optionalDuration(w.Freshness), MinInterval: optionalDuration(w.MinInterval)}
+	}
 	if r := c.Report; r != nil {
-		out.Report = &health.ReportConfig{Interval: optionalDuration(r.Interval)}
+		if math.IsNaN(r.QuietShare) || r.QuietShare < 0 || r.QuietShare > 1 {
+			return nil, errors.New("healthObservatory: report.quietShare must be in [0, 1]")
+		}
+		out.Report = &health.ReportConfig{Interval: optionalDuration(r.Interval), QuietShare: r.QuietShare}
 	}
 	if s := c.Sleep; s != nil {
 		// Sooner, a connection that just ended may still be closing inside
@@ -760,6 +785,7 @@ type strategyLeastCostConfig struct {
 	StartPinTimeout         *duration.Duration                      `json:"startPinTimeout"`
 	StartOutbound           string                                  `json:"startOutbound"`
 	NetworkChangeAction     string                                  `json:"networkChangeAction"`
+	ShouldSkipDownAudit     bool                                    `json:"shouldSkipDownAudit"`
 }
 
 func (v *strategyLeastCostConfig) UnmarshalJSON(raw []byte) error {
@@ -768,6 +794,7 @@ func (v *strategyLeastCostConfig) UnmarshalJSON(raw []byte) error {
 		"confirmWithProbe": true, "minHoldTime": true, "returnToCheaper": true,
 		"startPinnedOutbound": true, "startPinTimeout": true, "startOutbound": true,
 		"networkChangeAction": true,
+		"shouldSkipDownAudit": true,
 	}); err != nil {
 		return err
 	}
@@ -819,6 +846,7 @@ func (v *strategyLeastCostConfig) Build() (proto.Message, error) {
 		StartPinnedOutbound:   v.StartPinnedOutbound,
 		StartPinTimeout:       optionalDuration(v.StartPinTimeout),
 		StartOutbound:         v.StartOutbound,
+		ShouldSkipDownAudit:   v.ShouldSkipDownAudit,
 	}
 	switch strings.ToLower(v.ConfirmWithProbe) {
 	case "", "auto":

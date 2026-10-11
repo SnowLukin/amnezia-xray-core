@@ -94,13 +94,13 @@ type requestOutbound struct {
 }
 
 type requestProbe struct {
-	Profile  string             `json:"profile"`
-	State    string             `json:"state"`
-	Steps    []requestProbeStep `json:"steps"`
-	IsPassed bool               `json:"isPassed"`
-	Error    string             `json:"error,omitempty"`
-	RTTMs    int64              `json:"rttMs,omitempty"`
-	AgoMs    int64              `json:"agoMs"`
+	Profile  *string             `json:"profile,omitempty"`
+	State    string              `json:"state,omitempty"`
+	Steps    *[]requestProbeStep `json:"steps,omitempty"`
+	IsPassed bool                `json:"isPassed"`
+	Error    string              `json:"error,omitempty"`
+	RTTMs    int64               `json:"rttMs,omitempty"`
+	AgoMs    int64               `json:"agoMs"`
 }
 
 // providerRequest gathers the body of the refresh j of p that starts now.
@@ -226,17 +226,15 @@ func describeOutbound(p *path, tag string, active time.Duration, now time.Time) 
 	// the body must not make the result of an older one look fresh.
 	if !p.lastProbeEnd.IsZero() {
 		r := p.lastProbeResult
-		passed := p.lastError == ""
-		state := statusDown
-		if r.profile != "" || len(r.steps) != 0 || r.state != statusUnknown {
-			state = r.pathState()
-			passed = state != statusDown
-		} else if passed {
-			state = statusUp
-		}
 		o.Probe = &requestProbe{
-			Profile: r.profile, State: state.String(), Steps: r.requestSteps(),
-			IsPassed: passed, AgoMs: max(now.Sub(p.lastProbeEnd).Milliseconds(), 0),
+			IsPassed: p.lastError == "", AgoMs: max(now.Sub(p.lastProbeEnd).Milliseconds(), 0),
+		}
+		if r.profile != "" || len(r.steps) != 0 || r.state != statusUnknown {
+			steps := r.requestSteps()
+			o.Probe.Profile = &r.profile
+			o.Probe.State = r.pathState().String()
+			o.Probe.Steps = &steps
+			o.Probe.IsPassed = r.pathState() != statusDown
 		}
 		if o.Probe.IsPassed {
 			o.Probe.RTTMs = p.lastRTT.Milliseconds()

@@ -154,9 +154,9 @@ func TestHostProbeGivesWayToTheObserver(t *testing.T) {
 	te := newTestEngine(t, hostConfig(nil), &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3)}, "a1", "b1")
 	r := te.ask(t, at(0), "b1")
 	te.failN(3, "a1", failDial, at(time.Second))
-	jobs := te.run(t, at(2*time.Second), nil)
-	if !slices.Equal(reasons(jobs), []string{"failover:b1"}) || te.sel.current() != "b1" {
-		t.Fatalf("probes %v, active %q, want one failover probe of b1", reasons(jobs), te.sel.current())
+	jobs := te.run(t, at(2*time.Second), map[string]bool{"a1": false})
+	if !slices.Equal(reasons(jobs), []string{"failover:b1", "audit:a1"}) || te.sel.current() != "b1" {
+		t.Fatalf("probes %v, active %q, want failover:b1 followed by audit:a1", reasons(jobs), te.sel.current())
 	}
 	if r.open() || r.items[0].result != probeOK || r.items[0].reason != reasonFailover {
 		t.Fatalf("request open %v, answers %v", r.open(), answers(r))
@@ -323,13 +323,13 @@ func TestHostProbeRecoversAnExhaustedBalancer(t *testing.T) {
 	te := newTestEngine(t, &Config{Schedule: &ScheduleConfig{Quarantine: &Backoff{InitialDelay: int64(time.Minute)}}},
 		&SelectorConfig{Paths: pathSpecs("a", 1, "b", 3)}, "a1", "b1")
 	te.failN(3, "a1", failDial, at(0))
-	te.run(t, at(time.Second), map[string]bool{"b1": false})
+	te.run(t, at(time.Second), map[string]bool{"a1": false, "b1": false})
 	if !te.sel.exhausted {
 		t.Fatal("setup: not exhausted")
 	}
 	te.events.drain()
 	te.ask(t, at(5*time.Minute))
-	te.run(t, at(5*time.Minute), nil)
+	te.run(t, at(5*time.Minute), map[string]bool{"a1": true, "b1": true})
 	sw := eventsOf(drainEvents(te), "switch")
 	if len(sw) != 1 || sw[0].Fields["to"] != "a1" || sw[0].Fields["reason"] != "recovered" {
 		t.Fatalf("switches %v, want one to a1 for recovered", sw)
@@ -340,10 +340,14 @@ func TestHostProbeRecoversAnExhaustedBalancer(t *testing.T) {
 // brings the return closer.
 func TestHostProbeOfACheaperOutboundDoesNotReturn(t *testing.T) {
 	te := newTestEngine(t, &Config{Schedule: quarantine(30 * time.Second)}, returnToCheaperConfig(), "a1", "b1")
-	failoverToB(t, te, at(0))
+	te.failN(3, "a1", failDial, at(0))
+	te.run(t, at(time.Second), map[string]bool{"a1": false})
+	if te.sel.current() != "b1" {
+		t.Fatalf("failover went to %q", te.sel.current())
+	}
 	returnToCheaperAt := te.sel.returnToCheaperAt
 	te.ask(t, at(2*time.Minute), "a1")
-	jobs := te.run(t, at(2*time.Minute), nil)
+	jobs := te.run(t, at(2*time.Minute), map[string]bool{"a1": true})
 	if !slices.Equal(reasons(jobs), []string{"host:a1"}) || te.path("a1").status != statusUp {
 		t.Fatalf("probes %v, a1 %v", reasons(jobs), te.path("a1").status)
 	}

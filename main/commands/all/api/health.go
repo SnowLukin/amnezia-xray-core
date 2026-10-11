@@ -15,7 +15,7 @@ import (
 
 var cmdHealth = &base.Command{
 	CustomFlags: true,
-	UsageLine:   "{{.Exec}} api health [--server=127.0.0.1:8080] <status|events|network [id]|lost|pin <balancer> <outbound> [run]|release <balancer> [run]|refresh [provider]|report [take|final]|probe <balancer> [outbound...]|headers <provider>|set <provider> [after]>",
+	UsageLine:   "{{.Exec}} api health [--server=127.0.0.1:8080] <status|events|network [id]|lost|present|pin <balancer> <outbound> [run]|release <balancer> [run]|refresh [provider]|report [take|final]|probe <balancer> [outbound...]|headers <provider>|set <provider> [after]>",
 	Short:       "Query and control the health observatory",
 	Long: `
 Query and control the health observatory. Output is JSON.
@@ -28,6 +28,8 @@ Commands:
 	events                      events since the previous call
 	network [id]                the device moved to another network
 	lost                        the device has no network
+	present                     the user unlocked the device; queue checks
+	                            of stale selected paths and return at once
 	pin <balancer> <outbound> [run]
 	                            keep the balancer on the outbound
 	release <balancer> [run]    let the balancer choose again
@@ -102,6 +104,14 @@ func executeHealth(cmd *base.Command, args []string) {
 			base.Fatalf("health events: %s", err)
 		}
 		fmt.Printf("{\"dropped\":%d,\"events\":%s}\n", r.Dropped, r.Json)
+	case "present":
+		if len(a) != 1 {
+			base.Fatalf("health present: no arguments expected")
+		}
+		if _, err := client.UserPresent(ctx, &healthService.UserPresentRequest{}); err != nil {
+			base.Fatalf("health present: %s", err)
+		}
+		fmt.Println("{}")
 	case "network", "lost":
 		req := &healthService.NetworkChangedRequest{Lost: a[0] == "lost"}
 		if len(a) > 1 {

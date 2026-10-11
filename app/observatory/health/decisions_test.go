@@ -249,17 +249,25 @@ func TestStrongEvidenceIsNotMutedByWaitingConfirm(t *testing.T) {
 func TestPenaltyDoesNotCrossNetworks(t *testing.T) {
 	te := newTestEngine(t, &Config{Schedule: quarantine(30 * time.Second)}, returnToCheaperConfig(), "a1", "b1")
 	te.onNetworkChange("home", at(0))
-	failoverToB(t, te, at(time.Second))
+	te.failN(3, "a1", failDial, at(time.Second))
+	te.run(t, at(2*time.Second), map[string]bool{"a1": false})
+	if te.sel.current() != "b1" {
+		t.Fatalf("failover went to %q", te.sel.current())
+	}
 	back := drive(te.engine, at(6*time.Minute), at(20*time.Minute), time.Second,
-		func(now time.Time) { te.noteDemand(now) }, nil, func() bool { return te.sel.current() == "a1" })
-	failoverToB(t, te, back.Add(time.Minute))
+		func(now time.Time) { te.noteDemand(now) }, func(j *probeJob, now time.Time) bool { return true }, func() bool { return te.sel.current() == "a1" })
+	te.failN(3, "a1", failDial, back.Add(time.Minute))
+	te.run(t, back.Add(time.Minute+time.Second), map[string]bool{"a1": false})
+	if te.sel.current() != "b1" {
+		t.Fatalf("failover went to %q", te.sel.current())
+	}
 	if te.sel.penaltyFor("a1") <= 1 {
 		t.Fatalf("setup: no penalty")
 	}
 	change := back.Add(4 * time.Minute)
 	te.onNetworkChange("cafe", change)
 	end := drive(te.engine, change, change.Add(time.Hour), time.Second,
-		func(now time.Time) { te.noteDemand(now) }, nil, func() bool { return te.sel.current() == "a1" })
+		func(now time.Time) { te.noteDemand(now) }, func(j *probeJob, now time.Time) bool { return true }, func() bool { return te.sel.current() == "a1" })
 	if d := end.Sub(change); d > 2*time.Minute {
 		t.Fatalf("a1 works in the new network, the return took %v (penalty %v from home)", d, te.sel.penaltyFor("a1"))
 	}

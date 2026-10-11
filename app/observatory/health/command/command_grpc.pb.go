@@ -22,6 +22,7 @@ const (
 	HealthService_GetStatus_FullMethodName          = "/xray.core.app.observatory.health.command.HealthService/GetStatus"
 	HealthService_DrainEvents_FullMethodName        = "/xray.core.app.observatory.health.command.HealthService/DrainEvents"
 	HealthService_NetworkChanged_FullMethodName     = "/xray.core.app.observatory.health.command.HealthService/NetworkChanged"
+	HealthService_UserPresent_FullMethodName        = "/xray.core.app.observatory.health.command.HealthService/UserPresent"
 	HealthService_Pin_FullMethodName                = "/xray.core.app.observatory.health.command.HealthService/Pin"
 	HealthService_Refresh_FullMethodName            = "/xray.core.app.observatory.health.command.HealthService/Refresh"
 	HealthService_GetReport_FullMethodName          = "/xray.core.app.observatory.health.command.HealthService/GetReport"
@@ -37,6 +38,7 @@ type HealthServiceClient interface {
 	GetStatus(ctx context.Context, in *GetStatusRequest, opts ...grpc.CallOption) (*GetStatusResponse, error)
 	DrainEvents(ctx context.Context, in *DrainEventsRequest, opts ...grpc.CallOption) (*DrainEventsResponse, error)
 	NetworkChanged(ctx context.Context, in *NetworkChangedRequest, opts ...grpc.CallOption) (*NetworkChangedResponse, error)
+	UserPresent(ctx context.Context, in *UserPresentRequest, opts ...grpc.CallOption) (*UserPresentResponse, error)
 	Pin(ctx context.Context, in *PinRequest, opts ...grpc.CallOption) (*PinResponse, error)
 	Refresh(ctx context.Context, in *RefreshRequest, opts ...grpc.CallOption) (*RefreshResponse, error)
 	GetReport(ctx context.Context, in *GetReportRequest, opts ...grpc.CallOption) (*GetReportResponse, error)
@@ -77,6 +79,16 @@ func (c *healthServiceClient) NetworkChanged(ctx context.Context, in *NetworkCha
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(NetworkChangedResponse)
 	err := c.cc.Invoke(ctx, HealthService_NetworkChanged_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *healthServiceClient) UserPresent(ctx context.Context, in *UserPresentRequest, opts ...grpc.CallOption) (*UserPresentResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(UserPresentResponse)
+	err := c.cc.Invoke(ctx, HealthService_UserPresent_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -150,6 +162,7 @@ type HealthServiceServer interface {
 	GetStatus(context.Context, *GetStatusRequest) (*GetStatusResponse, error)
 	DrainEvents(context.Context, *DrainEventsRequest) (*DrainEventsResponse, error)
 	NetworkChanged(context.Context, *NetworkChangedRequest) (*NetworkChangedResponse, error)
+	UserPresent(context.Context, *UserPresentRequest) (*UserPresentResponse, error)
 	Pin(context.Context, *PinRequest) (*PinResponse, error)
 	Refresh(context.Context, *RefreshRequest) (*RefreshResponse, error)
 	GetReport(context.Context, *GetReportRequest) (*GetReportResponse, error)
@@ -174,6 +187,9 @@ func (UnimplementedHealthServiceServer) DrainEvents(context.Context, *DrainEvent
 }
 func (UnimplementedHealthServiceServer) NetworkChanged(context.Context, *NetworkChangedRequest) (*NetworkChangedResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method NetworkChanged not implemented")
+}
+func (UnimplementedHealthServiceServer) UserPresent(context.Context, *UserPresentRequest) (*UserPresentResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method UserPresent not implemented")
 }
 func (UnimplementedHealthServiceServer) Pin(context.Context, *PinRequest) (*PinResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Pin not implemented")
@@ -264,6 +280,24 @@ func _HealthService_NetworkChanged_Handler(srv interface{}, ctx context.Context,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(HealthServiceServer).NetworkChanged(ctx, req.(*NetworkChangedRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _HealthService_UserPresent_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(UserPresentRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(HealthServiceServer).UserPresent(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: HealthService_UserPresent_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(HealthServiceServer).UserPresent(ctx, req.(*UserPresentRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -394,6 +428,10 @@ var HealthService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "NetworkChanged",
 			Handler:    _HealthService_NetworkChanged_Handler,
+		},
+		{
+			MethodName: "UserPresent",
+			Handler:    _HealthService_UserPresent_Handler,
 		},
 		{
 			MethodName: "Pin",

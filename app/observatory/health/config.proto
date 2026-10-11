@@ -22,6 +22,14 @@ message Config {
   ReportConfig report = 9;
   SleepConfig sleep = 10;
   repeated PathDefinition paths = 11;
+  WakeConfig wake = 12;
+}
+
+// User presence checks stale selected paths even while idle. Zero keeps the
+// default duration, a negative value removes the freshness or interval limit.
+message WakeConfig {
+  int64 freshness = 1;
+  int64 min_interval = 2;
 }
 
 // PassiveConfig decides when user traffic makes an outbound suspect.
@@ -68,6 +76,9 @@ message PassiveConfig {
   // progress on a path the core has left, and they keep its tunnel awake.
   // This keeps them.
   bool should_keep_silent_on_down = 15;
+  // Without recent proof of life, one path failure asks for a probe.
+  // Zero uses the default; a negative value disables this check.
+  int64 lone_failure_after = 16;
 }
 
 message ProbeProfile {
@@ -175,6 +186,8 @@ message ReportConfig {
   // A window with decisions is reported once it is this long. Zero is the
   // default of 24 hours, negative turns the periodic report off.
   int64 interval = 1;
+  // Share of runs whose final report is kept without a routing decision.
+  double quiet_share = 2;
 }
 
 // SleepConfig sets when an outbound that can release what it holds while
@@ -239,6 +252,8 @@ message SelectorConfig {
   // host verifies the pinned outbound within a known time and stops the core
   // when it fails. Zero keeps the pin until the host releases it.
   int64 start_pin_timeout = 11;
+  // Skip the probe that checks a strong down after failover.
+  bool should_skip_down_audit = 12;
 }
 
 enum ConfirmMode {

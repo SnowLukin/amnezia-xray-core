@@ -154,7 +154,7 @@ Per outbound:
 | `seenMs` | How long the core has kept the counters of the outbound. |
 | `quarantineLevel`, `quarantineMs` | While the outbound rests after a failure: the level of its rest, which grows with every failure in a row, and how much longer it lasts. |
 | `failures` | Failures of user connections by kind over the life of the outbound: `dial_failed`, `dial_timeout`, `server_unverified` (REALITY did not verify the server), `no_response`, `closed`, `stall`, `partial_stall`. |
-| `probe` | The last probe that finished in the current network: `profile`, `state`, and attempted `steps` with `name`, `isPassed`, `connectMs` (connection establishment), `ms` (whole step), `bytes`, a `destination` index on success (including zero), or an `error` class on failure. The compatibility fields remain: `isPassed` means state other than `down`, `rttMs` when it passed, `error` as a class when it failed, and `agoMs` since its result. Failure classes include `dial_failed`, `dial_timeout`, `server_unverified`, `closed`, `timeout`, `no_progress`, `status_<N>` and `short_body`; addresses and error text are never sent. A network change clears this snapshot. |
+| `probe` | The last probe that finished: an actual snapshot includes `profile` (including an empty built-in name), `state`, and attempted `steps` with `name`, `isPassed`, `connectMs` (connection establishment), `ms` (whole step), `bytes`, a `destination` index on success (including zero), or an `error` class on failure. If only legacy result fields exist, `profile`, `state`, and `steps` are absent. The compatibility fields remain: `isPassed` means state other than `down`, `rttMs` when it passed, `error` as a class when it failed, and `agoMs` since its result. Failure classes include `dial_failed`, `dial_timeout`, `server_unverified`, `closed`, `timeout`, `no_progress`, `status_<N>`, `short_body` and `other`; addresses and error text are never sent. A network change clears the snapshot unless the configured action is IGNORE. |
 | `connsOk`, `connsFailed`, `bytesUp`, `bytesDown` | User connections and their bytes. |
 | `activeMs` | How long a balancer has chosen the outbound, the current stretch included. |
 | `ttfbP50Ms` | The median time to the first byte. |
@@ -162,9 +162,15 @@ Per outbound:
 
 The body never holds destinations, domains, addresses or server names,
 the targets of failures, the text of an error that may name a URL, header
-values, or the raw run and network id. A usual set takes a few kilobytes;
-the size is up to about 500 bytes per outbound besides its tag, some 60 KB
-for the largest set with every counter busy.
+values, or the raw run and network id. A usual set takes a few kilobytes.
+The legacy fixture with 128 outbounds and busy counters stays below 64 KiB,
+excluding backend-chosen tags and version. The fixture with four raw probe
+steps per outbound has a separate ceiling of 150 KiB: 64 KiB plus
+128 * (44 bytes of snapshot metadata + 4 * (160 bytes of step metadata +
+one separator)). JSON-escaped profile and step-name contents are excluded
+as caller-chosen text. Actual probe measurements are retained in full.
+These are regression-fixture ceilings, not runtime truncation limits for
+arbitrary values.
 
 ## Durations
 

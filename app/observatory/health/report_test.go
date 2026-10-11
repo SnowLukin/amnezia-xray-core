@@ -64,6 +64,9 @@ func foldReport(t *testing.T, raw []byte) (reportCounts, bool) {
 			case "up":
 				if f["reason"] == "rescued" {
 					c.PathRescued++
+					if f["by"] == "audit" {
+						c.AuditPassed++
+					}
 				}
 			}
 		case "pending_closed":
@@ -74,10 +77,25 @@ func foldReport(t *testing.T, raw []byte) (reportCounts, bool) {
 			c.Probes++
 			if f["is_ok"] != true {
 				c.ProbesFailed++
+				if f["reason"] == "wake" {
+					c.WakeProbeFailed++
+				}
+				if f["reason"] == "lone" {
+					c.LoneProbeFailed++
+				}
 			}
 			c.ProbeBytes += num(f["bytes"])
 			if f["reason"] == "host" {
 				c.HostProbes++
+			}
+		case "probe_start":
+			switch f["reason"] {
+			case "audit":
+				c.AuditCount++
+			case "wake":
+				c.WakeProbeCount++
+			case "lone":
+				c.LoneProbeCount++
 			}
 		case "probe_request":
 			c.HostProbeRequests++
@@ -161,8 +179,19 @@ func reportJSON(t *testing.T, v *reportView) reportView {
 	return out
 }
 
-// Every counter of the report matches what the events add up to, the way a
-// host read them from the event log.
+// Skip counters have no event; their windows are checked through actual actions.
+func eventReportCounts(counts reportCounts) map[string]any {
+	values := reflect.ValueOf(counts)
+	out := make(map[string]any, values.NumField()-2)
+	for i := 0; i < values.NumField(); i++ {
+		name := values.Type().Field(i).Name
+		if name != "AuditSkipped" && name != "WakeSkipped" {
+			out[name] = values.Field(i).Interface()
+		}
+	}
+	return out
+}
+
 func TestReportAddsUpTheEvents(t *testing.T) {
 	cfg := &Config{Schedule: quarantine(30 * time.Second), Events: &EventsConfig{MaxEvents: maxEvents, MaxBytes: maxEventBytes}}
 	te := newReportEngine(t, cfg, returnToCheaperConfig(), "a1", "b1")
@@ -210,6 +239,12 @@ func TestReportAddsUpTheEvents(t *testing.T) {
 	te.emit(now, "idle_closed", map[string]any{"outbound": "b1", "connections": 2})
 	te.emit(now, "outbound_sleep", map[string]any{"outbound": "b1", "idle_ms": int64(300_000), "reason": "idle"})
 	te.emit(now, "path_state", map[string]any{"outbound": "a1", "state": "up", "reason": "rescued"})
+	te.emit(now, "probe_start", map[string]any{"outbound": "a1", "reason": "audit"})
+	te.emit(now, "path_state", map[string]any{"outbound": "a1", "state": "up", "reason": "rescued", "by": "audit"})
+	for _, reason := range []string{"lone", "wake"} {
+		te.emit(now, "probe_start", map[string]any{"outbound": "a1", "reason": reason})
+		te.emit(now, "probe_result", map[string]any{"outbound": "a1", "reason": reason, "is_ok": false, "bytes": int64(10)})
+	}
 
 	raw, dropped := te.events.drain()
 	if dropped != 0 {
@@ -218,16 +253,16 @@ func TestReportAddsUpTheEvents(t *testing.T) {
 	want, decided := foldReport(t, raw)
 	got := reportJSON(t, te.takeReport(true, now))
 	got.EventsDropped = 0
-	if !reflect.DeepEqual(got.reportCounts, want) {
+	if !reflect.DeepEqual(eventReportCounts(got.reportCounts), eventReportCounts(want)) {
 		t.Fatalf("report\n%+v\nevents add up to\n%+v", got.reportCounts, want)
 	}
 	if !decided || got.Reason != reportStop {
 		t.Fatalf("decided %v, reason %q", decided, got.Reason)
 	}
-	// The scenario has to reach every counter, or the comparison proves little.
+	// Every event-derived counter must be exercised by this fixture.
 	rv := reflect.ValueOf(want)
 	for i := 0; i < rv.NumField(); i++ {
-		if name := rv.Type().Field(i).Name; name != "EventsDropped" && rv.Field(i).IsZero() {
+		if name := rv.Type().Field(i).Name; name != "EventsDropped" && name != "AuditSkipped" && name != "WakeSkipped" && rv.Field(i).IsZero() {
 			t.Errorf("the scenario leaves %s at zero", name)
 		}
 	}
@@ -645,6 +680,7 @@ func TestReportFieldsDocumented(t *testing.T) {
 	te := newReportEngine(t, connectivityConfig(), nil, "a1", "b1")
 	failoverEvent(te, at(time.Second))
 	te.emit(at(time.Second), "provider_fetch", map[string]any{"trigger": "host", "is_ok": true})
+	te.path("a1").stats.udp.ports[udpPortDNS] = udpPortTotals{flows: 1, unanswered: 1}
 	raw, _ := json.Marshal(te.snapshotReport(at(time.Second)))
 	var top map[string]json.RawMessage
 	_ = json.Unmarshal(raw, &top)
@@ -657,7 +693,7 @@ func TestReportFieldsDocumented(t *testing.T) {
 	for k := range paths["a1"] {
 		keys = append(keys, k)
 	}
-	if len(top) < 30 || len(paths["a1"]) != 11 {
+	if len(top) < 30 || len(paths["a1"]) != reflect.TypeOf(reportPath{}).NumField() {
 		t.Fatalf("setup: report %s", raw)
 	}
 	for _, k := range keys {

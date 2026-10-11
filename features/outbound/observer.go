@@ -25,6 +25,20 @@ type ConnectionObserver interface {
 	StartDial(ctx context.Context, tag string, server net.Destination, abort func()) DialTracker
 }
 
+// UDPFlowObserver follows a routed UDP link independently of the physical
+// connection used by its outbound. A mux worker may carry several such links.
+type UDPFlowObserver interface {
+	StartUDPFlow(ctx context.Context, tag string, firstPort net.Port) UDPFlowTracker
+}
+
+// UDPFlowTracker counts buffers at the routed link boundary. A MultiBuffer
+// may contain several UDP packets, so callers pass both bytes and buffers.
+type UDPFlowTracker interface {
+	Uplink(bytes, packets int64)
+	Downlink(bytes, packets int64)
+	Finished()
+}
+
 // DialTracker follows one dial and the connection it produced.
 type DialTracker interface {
 	// Dialed reports the dial result and the dialed connection. When err is

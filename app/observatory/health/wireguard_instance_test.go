@@ -52,6 +52,7 @@ type udpGate struct {
 	sent atomic.Int64
 	// Datagrams from the server, whatever became of them.
 	answered atomic.Int64
+	sender   *wireGuardSenderLedger
 }
 
 // waitQuiet waits until neither side has sent anything for d.
@@ -93,9 +94,28 @@ const (
 
 func startUDPGate(t *testing.T, server string) *udpGate {
 	t.Helper()
-	front, err := stdnet.ListenUDP("udp", &stdnet.UDPAddr{IP: stdnet.IPv4(127, 0, 0, 1)})
-	if err != nil {
-		t.Fatal(err)
+	var front *stdnet.UDPConn
+	var sender *wireGuardSenderLedger
+	for attempt := 1; attempt <= 64; attempt++ {
+		candidate, err := stdnet.ListenUDP("udp", &stdnet.UDPAddr{IP: stdnet.IPv4(127, 0, 0, 1)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		endpoint := candidate.LocalAddr().String()
+		var reserved bool
+		sender, reserved = wireGuardSenders.reserve(endpoint, t.Name())
+		if reserved {
+			front = candidate
+			break
+		}
+		err = candidate.Close()
+		t.Logf("sender endpoint allocation rejected: attempt=%d endpoint=%s retained_by_earlier_fixture=true close_error=%v", attempt, endpoint, err)
+		if err != nil {
+			t.Fatalf("inconclusive sender endpoint allocation: failed to close rejected candidate: %v", err)
+		}
+	}
+	if front == nil {
+		t.Fatal("inconclusive sender endpoint allocation: all 64 candidates are retained by earlier fixtures")
 	}
 	to, err := stdnet.ResolveUDPAddr("udp", server)
 	if err != nil {
@@ -105,7 +125,7 @@ func startUDPGate(t *testing.T, server string) *udpGate {
 	if err != nil {
 		t.Fatal(err)
 	}
-	g := &udpGate{addr: front.LocalAddr().String()}
+	g := &udpGate{addr: front.LocalAddr().String(), sender: sender}
 	var client atomic.Pointer[stdnet.UDPAddr]
 	var wg sync.WaitGroup
 	wg.Add(2)
@@ -161,17 +181,35 @@ func freePort(t *testing.T) int {
 // inbound of the same core through their own gates; behind the inbound,
 // every destination is ts.
 type wireGuardFailover struct {
-	inst   *core.Instance
-	obs    *health.Observer
-	w1, w2 *udpGate
-	events *eventWaiter
+	inst        *core.Instance
+	obs         *health.Observer
+	w1, w2      *udpGate
+	events      *eventWaiter
+	userTimeout time.Duration
 }
 
 func startWireGuardFailover(t *testing.T, ts *httptest.Server, passive string) *wireGuardFailover {
 	t.Helper()
+	var timeouts struct {
+		DialTimeout      string `json:"dialTimeout"`
+		FirstByteTimeout string `json:"firstByteTimeout"`
+	}
+	if err := json.Unmarshal([]byte(passive), &timeouts); err != nil {
+		t.Fatal(err)
+	}
+	dialTimeout, err := time.ParseDuration(timeouts.DialTimeout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstByteTimeout, err := time.ParseDuration(timeouts.FirstByteTimeout)
+	if err != nil {
+		t.Fatal(err)
+	}
 	// Probes take long enough for the first handshake of a tunnel under the
 	// race detector, which slows its cryptography down to seconds.
-	return startWireGuard(t, ts, passive, `{"destination": "http://10.10.0.1/probe", "timeout": "8s", "progressTimeout": "8s"}`)
+	f := startWireGuard(t, ts, passive, `{"destination": "http://10.10.0.1/probe", "timeout": "8s", "progressTimeout": "8s"}`)
+	f.userTimeout = dialTimeout + firstByteTimeout
+	return f
 }
 
 // startWireGuard is startWireGuardFailover with the probe of the observer.
@@ -280,7 +318,7 @@ func (f *wireGuardFailover) users() (stop func()) {
 				return
 			case <-time.After(200 * time.Millisecond):
 			}
-			users.Go(func() { f.get("10.10.0."+strconv.Itoa(1+i%2), "/small", 5*time.Second) })
+			users.Go(func() { f.get("10.10.0."+strconv.Itoa(1+i%2), "/small", f.userTimeout) })
 		}
 	})
 	return sync.OnceFunc(func() {
@@ -366,6 +404,35 @@ func targetServer(t *testing.T) *httptest.Server {
 	return ts
 }
 
+func (f *wireGuardFailover) failedDownAudit(from int, down, sw health.Event) health.Event {
+	f.events.t.Helper()
+	start := f.first(from, "probe_start", about("w1"))
+	result := f.first(from, "probe_result", about("w1"))
+	if start.Fields["reason"] != "audit" || start.Time < max(down.Time, sw.Time) || start.Time-down.Time > (30*time.Second).Milliseconds() {
+		f.events.t.Fatalf("w1 probe start %v at %d, down at %d, switch at %d; want audit after down and switch within 30s", start.Fields, start.Time, down.Time, sw.Time)
+	}
+	if result.Fields["reason"] != "audit" || result.Fields["is_ok"] != false || result.Fields["is_stale"] != false || result.Time < start.Time {
+		f.events.t.Fatalf("w1 probe result %v at %d, start at %d; want a failed current audit", result.Fields, result.Time, start.Time)
+	}
+	f.mark()
+	for _, typ := range []string{"probe_start", "probe_result"} {
+		count := 0
+		for _, e := range f.events.since(from, typ) {
+			if e.Fields["outbound"] != "w1" {
+				continue
+			}
+			count++
+			if e.Fields["reason"] != "audit" || e.Time < down.Time {
+				f.events.t.Fatalf("unexpected w1 %s %v at %d, down at %d; want only the down audit", typ, e.Fields, e.Time, down.Time)
+			}
+		}
+		if count != 1 {
+			f.events.t.Fatalf("w1 %s count %d, want exactly one down audit", typ, count)
+		}
+	}
+	return result
+}
+
 // A WireGuard outbound whose server stops answering is ruled out by the
 // connections users make, which it can no longer carry: each waits for
 // the tunnel in vain, a path failure that needs no probe. Left by the
@@ -373,7 +440,7 @@ func targetServer(t *testing.T) *httptest.Server {
 // nothing more.
 func TestWireGuardOutboundFailsOverWhenItsServerStopsAnswering(t *testing.T) {
 	ts := targetServer(t)
-	f := startWireGuardFailover(t, ts, `{"dialTimeout": "1s", "firstByteTimeout": "2s", "sweepInterval": "50ms"}`)
+	f := startWireGuardFailover(t, ts, `{"dialTimeout": "6s", "firstByteTimeout": "2s", "sweepInterval": "50ms"}`)
 	if err := f.get("10.10.0.1", "/small", 10*time.Second); err != nil {
 		t.Fatal(err)
 	}
@@ -388,28 +455,29 @@ func TestWireGuardOutboundFailsOverWhenItsServerStopsAnswering(t *testing.T) {
 	if suspect.Fields["is_strong"] != true || !strings.Contains(fmt.Sprint(suspect.Fields["kinds"]), "dial_timeout") {
 		t.Fatalf("suspicion %v, want strong evidence of dial timeouts", suspect.Fields)
 	}
-	f.first(from, "path_state", stateOf("w1", "down"))
+	down := f.first(from, "path_state", stateOf("w1", "down"))
 	sw := f.first(from, "switch", nil)
 	if sw.Fields["from"] != "w1" || sw.Fields["to"] != "w2" || sw.Fields["reason"] != "failover" {
 		t.Fatalf("switch %v, want failover from w1 to w2", sw.Fields)
 	}
-	for _, e := range f.events.since(from, "probe_start") {
-		if e.Fields["outbound"] == "w1" {
-			t.Fatalf("strong evidence was probed: %v", e.Fields)
-		}
-	}
-	if slept := f.first(from, "outbound_sleep", about("w1")); slept.Fields["reason"] != "down" {
-		t.Fatalf("w1 slept with %v, want reason down", slept.Fields)
+	stopUsers()
+	audit := f.failedDownAudit(from, down, sw)
+	due := max(sw.Time, audit.Time)
+	// An earlier sleep can precede the audit waking the tunnel again.
+	slept := f.within(from, "outbound_sleep", func(e health.Event) bool {
+		return e.Fields["outbound"] == "w1" && e.Fields["reason"] == "down" && e.Time >= due
+	}, 2*time.Second)
+	if after := time.Duration(slept.Time-due) * time.Millisecond; after > 2*time.Second {
+		t.Fatalf("w1 slept %v after switch and audit completion, want at once", after)
 	}
 	// Awake, its device would repeat a handshake every 5 s.
-	sent := f.w1.sent.Load()
+	senderBefore := f.w1.sender.closedSnapshot(t)
 	time.Sleep(6 * time.Second)
-	if n := f.w1.sent.Load() - sent; n != 0 {
-		t.Fatalf("%d datagrams to the dead address after w1 slept", n)
+	senderAfter := f.w1.sender.snapshot()
+	if n := len(senderAfter.calls) - len(senderBefore.calls); n != 0 || len(senderAfter.generations) != len(senderBefore.generations) {
+		t.Fatalf("%d sender calls after w1 slept; before=%+v after=%+v", n, senderBefore, senderAfter)
 	}
-	// Under the race detector the tunnels are slow enough for the users to
-	// hold up the next connection.
-	stopUsers()
+	f.failedDownAudit(from, down, sw)
 	if err := f.get("10.10.0.1", "/small", 10*time.Second); err != nil {
 		t.Fatal("after the failover:", err)
 	}
@@ -465,7 +533,7 @@ func TestWireGuardProbeWakesThroughALostHandshakeResponse(t *testing.T) {
 func TestWireGuardOutboundSleepsOnceItsSilentConnectionsEnd(t *testing.T) {
 	const stall = 2 * time.Second
 	ts := targetServer(t)
-	f := startWireGuardFailover(t, ts, `{"dialTimeout": "1s", "firstByteTimeout": "2s", "stallTimeout": "2s",
+	f := startWireGuardFailover(t, ts, `{"dialTimeout": "6s", "firstByteTimeout": "2s", "stallTimeout": "2s",
 	  "sweepInterval": "50ms"}`)
 	if err := f.get("10.10.0.1", "/small", 10*time.Second); err != nil {
 		t.Fatal(err)
@@ -500,11 +568,16 @@ func TestWireGuardOutboundSleepsOnceItsSilentConnectionsEnd(t *testing.T) {
 	f.w1.blocked.Store(true)
 	stopUsers := f.users()
 	defer stopUsers()
+	suspect := f.first(from, "path_state", stateOf("w1", "suspect"))
+	if suspect.Fields["is_strong"] != true || !strings.Contains(fmt.Sprint(suspect.Fields["kinds"]), "dial_timeout") {
+		t.Fatalf("suspicion %v, want strong evidence of dial timeouts", suspect.Fields)
+	}
 	down := f.first(from, "path_state", stateOf("w1", "down"))
 	sw := f.first(from, "switch", nil)
-	if sw.Fields["from"] != "w1" || sw.Fields["to"] != "w2" {
+	if sw.Fields["from"] != "w1" || sw.Fields["to"] != "w2" || sw.Fields["reason"] != "failover" {
 		t.Fatalf("switch %v, want failover from w1 to w2", sw.Fields)
 	}
+	stopUsers()
 	closed := f.first(from, "pending_closed", func(e health.Event) bool {
 		return e.Fields["outbound"] == "w1" && e.Fields["is_silent"] == true
 	})
@@ -519,21 +592,32 @@ func TestWireGuardOutboundSleepsOnceItsSilentConnectionsEnd(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("the held connection is still open after the silent close")
 	}
-	slept := f.first(from, "outbound_sleep", about("w1"))
+	audit := f.failedDownAudit(from, down, sw)
+	due = max(closed.Time, sw.Time, audit.Time)
+	// An earlier sleep can precede the audit waking the tunnel again.
+	slept := f.within(from, "outbound_sleep", func(e health.Event) bool {
+		return e.Fields["outbound"] == "w1" && e.Fields["reason"] == "down" && e.Time >= due
+	}, 2*time.Second)
 	if slept.Fields["reason"] != "down" || slept.Time < closed.Time {
 		t.Fatalf("w1 slept with %v at %d, silent close at %d; want reason down after the close: the held "+
 			"connection keeps it awake until then", slept.Fields, slept.Time, closed.Time)
 	}
-	if after := time.Duration(slept.Time-closed.Time) * time.Millisecond; after > 2*time.Second {
-		t.Fatalf("w1 slept %v after the silent close, want at once", after)
+	if after := time.Duration(slept.Time-due) * time.Millisecond; after > 2*time.Second {
+		t.Fatalf("w1 slept %v after switch, silent close and audit completion, want at once", after)
 	}
 	// Awake, its device would repeat a handshake every 5 s.
-	sent := f.w1.sent.Load()
+	senderBefore := f.w1.sender.closedSnapshot(t)
 	time.Sleep(6 * time.Second)
-	if n := f.w1.sent.Load() - sent; n != 0 {
-		t.Fatalf("%d datagrams to the dead address after w1 slept", n)
+	senderAfter := f.w1.sender.snapshot()
+	if n := len(senderAfter.calls) - len(senderBefore.calls); n != 0 || len(senderAfter.generations) != len(senderBefore.generations) {
+		t.Fatalf("%d sender calls after w1 slept; before=%+v after=%+v", n, senderBefore, senderAfter)
 	}
-	stopUsers()
+	f.failedDownAudit(from, down, sw)
+	for _, e := range f.events.since(from, "outbound_sleep") {
+		if e.Fields["outbound"] == "w1" && e.Time < closed.Time {
+			t.Fatalf("w1 slept at %d before its held connection closed at %d", e.Time, closed.Time)
+		}
+	}
 	if err := f.get("10.10.0.1", "/small", 10*time.Second); err != nil {
 		t.Fatal("after the failover:", err)
 	}
@@ -629,10 +713,11 @@ func TestWireGuardUnchosenOutboundProbedDeadSleepsOnceItsSilentConnectionsEnd(t 
 		}
 	}
 	// Awake, its device would repeat a handshake every 5 s.
-	sent := f.w1.sent.Load()
+	senderBefore := f.w1.sender.closedSnapshot(t)
 	time.Sleep(6 * time.Second)
-	if n := f.w1.sent.Load() - sent; n != 0 {
-		t.Fatalf("%d datagrams to the dead address after w1 slept", n)
+	senderAfter := f.w1.sender.snapshot()
+	if n := len(senderAfter.calls) - len(senderBefore.calls); n != 0 || len(senderAfter.generations) != len(senderBefore.generations) {
+		t.Fatalf("%d sender calls after w1 slept; before=%+v after=%+v", n, senderBefore, senderAfter)
 	}
 	if got := f.active(t); got != "w2" {
 		t.Fatalf("the balancer is on %q, want w2", got)
@@ -733,10 +818,11 @@ func TestWireGuardConnectionWaitingInADeadTunnelEndsWhenItsOutboundIsDown(t *tes
 					"down at once after both", slept.Fields, slept.Time, closed.Time, sw.Time)
 			}
 			// Awake, its device would repeat a handshake every 5 s.
-			sent = f.w1.sent.Load()
+			senderBefore := f.w1.sender.closedSnapshot(t)
 			time.Sleep(6 * time.Second)
-			if n := f.w1.sent.Load() - sent; n != 0 {
-				t.Fatalf("%d datagrams to the dead address after w1 slept", n)
+			senderAfter := f.w1.sender.snapshot()
+			if n := len(senderAfter.calls) - len(senderBefore.calls); n != 0 || len(senderAfter.generations) != len(senderBefore.generations) {
+				t.Fatalf("%d sender calls after w1 slept; before=%+v after=%+v", n, senderBefore, senderAfter)
 			}
 		})
 	}

@@ -12,6 +12,8 @@ import (
 // are phrased so that false is the default, therefore a config built in
 // protobuf directly behaves like the same config in JSON.
 const (
+	defaultWakeFreshness      = time.Minute
+	defaultWakeMinInterval    = 5 * time.Minute
 	defaultWindow             = 60 * time.Second
 	defaultDialTimeout        = 6 * time.Second
 	defaultFirstByteTimeout   = 5 * time.Second
@@ -185,6 +187,7 @@ func (b backoff) delay(attempt int) time.Duration {
 }
 
 type passiveSettings struct {
+	loneFailureAfter   time.Duration
 	window             time.Duration
 	dialTimeout        time.Duration
 	firstByteTimeout   time.Duration
@@ -271,7 +274,13 @@ type hostProbeSettings struct {
 	timeout      time.Duration
 }
 
+type wakeSettings struct {
+	freshness   time.Duration
+	minInterval time.Duration
+}
+
 type settings struct {
+	wake         wakeSettings
 	paths        sync.Map
 	baseOrder    map[string][]string
 	passive      passiveSettings
@@ -284,7 +293,8 @@ type settings struct {
 	maxNetworks  int
 	providers    []*providerSettings
 	// Zero turns the periodic report off.
-	reportInterval time.Duration
+	reportInterval   time.Duration
+	reportQuietShare float64
 	// How long after its last use an outbound no balancer chooses is put
 	// to sleep; zero turns sleep off.
 	sleepAfter time.Duration
@@ -482,12 +492,14 @@ func toBackoff(b *Backoff, def backoff) backoff {
 
 func newSettings(c *Config) *settings {
 	s := &settings{baseOrder: map[string][]string{}}
+	s.wake = wakeSettings{freshness: dur(c.GetWake().GetFreshness(), defaultWakeFreshness), minInterval: dur(c.GetWake().GetMinInterval(), defaultWakeMinInterval)}
 	for _, p := range c.GetPaths() {
 		s.paths.Store(p.Tag, p.Probe)
 		s.baseOrder[p.Balancer] = append(s.baseOrder[p.Balancer], p.Tag)
 	}
 	p := c.GetPassive()
 	s.passive = passiveSettings{
+		loneFailureAfter:   optional(p.GetLoneFailureAfter(), 2*time.Minute),
 		window:             dur(p.GetWindow(), defaultWindow),
 		dialTimeout:        dur(p.GetDialTimeout(), defaultDialTimeout),
 		firstByteTimeout:   dur(p.GetFirstByteTimeout(), defaultFirstByteTimeout),
@@ -576,6 +588,7 @@ func newSettings(c *Config) *settings {
 	s.maxEvents = min(num(c.GetEvents().GetMaxEvents(), defaultMaxEvents), maxEvents)
 	s.maxBytes = int(min(size(c.GetEvents().GetMaxBytes(), defaultMaxEventBytes), maxEventBytes))
 	s.reportInterval = optional(c.GetReport().GetInterval(), defaultReportInterval)
+	s.reportQuietShare = c.GetReport().GetQuietShare()
 	if after := optional(c.GetSleep().GetAfterLastUse(), defaultSleepAfter); after > 0 {
 		// The JSON loader refuses a shorter one; a config built without it
 		// must not cut connections that are still closing either.
@@ -631,6 +644,7 @@ type selectorSettings struct {
 	baseOrder        []string
 	switchAfterProbe bool
 	confirm          ConfirmMode
+	skipDownAudit    bool
 	minHoldTime      time.Duration
 	returnToCheaper  returnToCheaperSettings
 	startPinned      string
@@ -687,6 +701,7 @@ func newSelectorSettings(c *SelectorConfig) *selectorSettings {
 		baseOrder:        order,
 		switchAfterProbe: !c.GetSkipProbeBeforeSwitch(),
 		confirm:          c.GetConfirmWithProbe(),
+		skipDownAudit:    c.GetShouldSkipDownAudit(),
 		minHoldTime:      dur(c.GetMinHoldTime(), defaultMinHoldTime),
 		returnToCheaper: returnToCheaperSettings{
 			interval:            dur(u.GetInterval(), defaultReturnToCheaperInterval),

@@ -805,12 +805,14 @@ func TestNetworkTriggerAfterAPinOnTheCheapestThatFailed(t *testing.T) {
 			te.pin("auto", "a1", at(time.Minute))
 			back := at(10 * time.Minute)
 			te.onNetworkChange("cafe", back)
-			te.failN(3, "a1", failDialTimeout, back.Add(5*time.Second))
-			if te.path("a1").status != statusDown || te.sel.current() != "a1" {
-				t.Fatalf("setup: a1 %v, on %s", te.path("a1").status, te.sel.current())
-			}
 			var got []string
 			for now := back; now.Before(back.Add(3 * time.Minute)); now = now.Add(5 * time.Second) {
+				if now.Equal(back.Add(5 * time.Second)) {
+					te.failN(3, "a1", failDialTimeout, now)
+					if te.path("a1").status != statusDown || te.sel.current() != "a1" {
+						t.Fatalf("setup: a1 %v, on %s", te.path("a1").status, te.sel.current())
+					}
+				}
 				if now.Equal(back.Add(time.Minute)) {
 					te.release("auto", now)
 				}
@@ -820,7 +822,7 @@ func TestNetworkTriggerAfterAPinOnTheCheapestThatFailed(t *testing.T) {
 				jobs, refreshes, _ := te.step(now)
 				got = append(got, triggers(refreshes)...)
 				for _, j := range jobs {
-					te.onProbeResult(j, probeResult{ok: true, rtt: 50 * time.Millisecond}, now)
+					te.onProbeResult(j, probeResult{ok: j.tag != "a1", rtt: 50 * time.Millisecond}, now)
 				}
 			}
 			if te.sel.current() != "b1" || fmt.Sprint(got) != "[network_change]" {
@@ -994,7 +996,7 @@ func TestRefreshesOfManyClientsSpreadOut(t *testing.T) {
 func TestProviderCostsRankCandidates(t *testing.T) {
 	te := newProviderEngine(t, quietProvider(nil), &SelectorConfig{Paths: pathSpecs("a", 1, "p-", 5)}, "a1")
 	te.failN(3, "a1", failDial, t0)
-	te.run(t, at(time.Second), nil)
+	te.run(t, at(time.Second), map[string]bool{"a1": false})
 	if !te.sel.exhausted {
 		t.Fatalf("setup: want exhausted, active %q", te.sel.current())
 	}

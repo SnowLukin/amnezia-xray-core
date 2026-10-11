@@ -106,9 +106,13 @@ type path struct {
 	quarantineUntil time.Time
 	// Ruled out while the connectivity check was failing.
 	provisional bool
-	// The outbound went down while a confirming probe of it ran: what a
-	// pass of that probe takes back, see rescue.go.
-	rescue *rescueMark
+	// The confirmation or audit assigned to this down may restore its state.
+	rescue      *rescueMark
+	downID      uint64
+	lastAuditAt time.Time
+	lastLoneAt  time.Time
+	lastWakeAt  time.Time
+	rescuedBy   string
 
 	probing bool
 	// When the last probe started, and when the last one finished: lastRTT,
@@ -144,6 +148,8 @@ type path struct {
 	// Connections its proxy processes now, as its handler tells: it does
 	// not sleep under one.
 	processes int
+	// Logical UDP links still using this exact path, including retired ones.
+	udpFlowsActive int
 	// Ending idle connections, see idle.go: the uses of the path at the
 	// last check, and when a connection it kept may first have received
 	// nothing for closeIdleAfter, zero when none may. idleClosed: a check
@@ -164,17 +170,25 @@ func (p *path) clearProbeSnapshot() {
 }
 
 type pathStats struct {
-	connsOK        int64
-	connsFailed    int64
-	bytesUp        int64
-	bytesDown      int64
-	failuresByKind [failClosed + 1]int64
-	ttfb           histogram
-	probes         int64
-	probesFailed   int64
-	probeBytes     int64
-	activeTime     time.Duration
-	degradedTime   time.Duration
+	connsOK          int64
+	connsFailed      int64
+	bytesUp          int64
+	bytesDown        int64
+	udp              udpPathTotals
+	udpFirstReply    histogram
+	downsStrong      int64
+	downsWeak        int64
+	audits           int64
+	auditsPassed     int64
+	loneProbes       int64
+	loneProbesFailed int64
+	failuresByKind   [failClosed + 1]int64
+	ttfb             histogram
+	probes           int64
+	probesFailed     int64
+	probeBytes       int64
+	activeTime       time.Duration
+	degradedTime     time.Duration
 }
 
 func (p *path) setStatus(s pathStatus, reason string, now time.Time) bool {

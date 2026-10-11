@@ -32,6 +32,10 @@ message NetworkChangedRequest {
 
 message NetworkChangedResponse {}
 
+message UserPresentRequest {}
+
+message UserPresentResponse {}
+
 message PinRequest {
   string balancer = 1;
   // Outbound to keep the balancer on. Empty releases the pin.
@@ -115,6 +119,7 @@ service HealthService {
   rpc GetStatus(GetStatusRequest) returns (GetStatusResponse) {}
   rpc DrainEvents(DrainEventsRequest) returns (DrainEventsResponse) {}
   rpc NetworkChanged(NetworkChangedRequest) returns (NetworkChangedResponse) {}
+  rpc UserPresent(UserPresentRequest) returns (UserPresentResponse) {}
   rpc Pin(PinRequest) returns (PinResponse) {}
   rpc Refresh(RefreshRequest) returns (RefreshResponse) {}
   rpc GetReport(GetReportRequest) returns (GetReportResponse) {}

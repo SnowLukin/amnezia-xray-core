@@ -37,6 +37,14 @@ type reportCounts struct {
 	PathSuspect             int64            `json:"path_suspect_count"`
 	PathDegraded            int64            `json:"path_degraded_count"`
 	PathRescued             int64            `json:"path_rescued_count"`
+	AuditCount              int64            `json:"audit_count"`
+	AuditPassed             int64            `json:"audit_passed_count"`
+	AuditSkipped            int64            `json:"audit_skipped_count"`
+	WakeProbeCount          int64            `json:"wake_probe_count"`
+	WakeProbeFailed         int64            `json:"wake_probe_failed_count"`
+	WakeSkipped             int64            `json:"wake_skipped_count"`
+	LoneProbeCount          int64            `json:"lone_probe_count"`
+	LoneProbeFailed         int64            `json:"lone_probe_failed_count"`
 	PendingClosed           int64            `json:"pending_closed_count"`
 	IdleClosed              int64            `json:"idle_closed_count"`
 	Probes                  int64            `json:"probes"`
@@ -68,17 +76,36 @@ type reportCounts struct {
 }
 
 type reportPath struct {
-	State       string            `json:"state"`
-	TTFBP50Ms   int64             `json:"ttfb_p50_ms"`
-	ActiveMs    int64             `json:"active_ms"`
-	BytesUp     int64             `json:"bytes_up"`
-	BytesDown   int64             `json:"bytes_down"`
-	ConnsOK     int64             `json:"conns_ok"`
-	ConnsFailed int64             `json:"conns_failed"`
-	Probes      int64             `json:"probes"`
-	ProbeBytes  int64             `json:"probe_bytes"`
-	ProbeSteps  []reportProbeStep `json:"probe_steps"`
-	DegradedMs  int64             `json:"degraded_ms"`
+	State              string                   `json:"state"`
+	TTFBP50Ms          int64                    `json:"ttfb_p50_ms"`
+	ActiveMs           int64                    `json:"active_ms"`
+	BytesUp            int64                    `json:"bytes_up"`
+	BytesDown          int64                    `json:"bytes_down"`
+	ConnsOK            int64                    `json:"conns_ok"`
+	ConnsFailed        int64                    `json:"conns_failed"`
+	Probes             int64                    `json:"probes"`
+	ProbeBytes         int64                    `json:"probe_bytes"`
+	ProbeSteps         []reportProbeStep        `json:"probe_steps"`
+	DegradedMs         int64                    `json:"degraded_ms"`
+	DownsStrong        int64                    `json:"downs_strong"`
+	DownsWeak          int64                    `json:"downs_weak"`
+	Audits             int64                    `json:"audits"`
+	AuditsPassed       int64                    `json:"audits_passed"`
+	LoneProbes         int64                    `json:"lone_probes"`
+	LoneProbesFailed   int64                    `json:"lone_probes_failed"`
+	UDPFlows           int64                    `json:"udp_flows"`
+	UDPFlowsUnanswered int64                    `json:"udp_flows_unanswered"`
+	UDPBytesUp         int64                    `json:"udp_bytes_up"`
+	UDPBytesDown       int64                    `json:"udp_bytes_down"`
+	UDPWrites          int64                    `json:"udp_writes"`
+	UDPReads           int64                    `json:"udp_reads"`
+	UDPFirstReplyP50Ms int64                    `json:"udp_first_reply_p50_ms"`
+	UDPPorts           map[string]reportUDPPort `json:"udp_ports,omitempty"`
+}
+
+type reportUDPPort struct {
+	Flows      int64 `json:"flows"`
+	Unanswered int64 `json:"unanswered"`
 }
 
 type reportProbeStep struct {
@@ -102,6 +129,7 @@ type reportView struct {
 	Active              map[string]string     `json:"active"`
 	IsBalancerExhausted bool                  `json:"is_balancer_exhausted"`
 	IsNetworkUp         bool                  `json:"is_network_up"`
+	IsQuietSample       bool                  `json:"is_quiet_sample"`
 	Connectivity        string                `json:"connectivity,omitempty"`
 	Groups              []groupStatusView     `json:"groups,omitempty"`
 	Paths               map[string]reportPath `json:"paths"`
@@ -110,14 +138,21 @@ type reportView struct {
 // pathTotals are the counters of a path that a report shows as growth since
 // the previous report.
 type pathTotals struct {
-	active      time.Duration
-	bytesUp     int64
-	bytesDown   int64
-	connsOK     int64
-	connsFailed int64
-	probes      int64
-	probeBytes  int64
-	degraded    time.Duration
+	active           time.Duration
+	bytesUp          int64
+	bytesDown        int64
+	connsOK          int64
+	connsFailed      int64
+	probes           int64
+	probeBytes       int64
+	degraded         time.Duration
+	downsStrong      int64
+	downsWeak        int64
+	audits           int64
+	auditsPassed     int64
+	loneProbes       int64
+	loneProbesFailed int64
+	udp              udpPathTotals
 }
 
 // report counts every event as it is emitted, so the report depends neither
@@ -134,6 +169,7 @@ type report struct {
 	windowStart time.Time
 	taken       int
 	final       bool
+	quietSample bool
 	// Events the log had dropped when the window started.
 	droppedBefore uint64
 }
@@ -183,6 +219,9 @@ func (r *report) count(typ string, f map[string]any) {
 			// brings back tells so with its own switch.
 			if f["reason"] == "rescued" {
 				c.PathRescued++
+				if f["by"] == "audit" {
+					c.AuditPassed++
+				}
 			}
 		}
 	case "pending_closed":
@@ -194,12 +233,28 @@ func (r *report) count(typ string, f map[string]any) {
 		c.Probes++
 		if f["is_ok"] != true {
 			c.ProbesFailed++
+			if f["reason"] == "wake" {
+				c.WakeProbeFailed++
+			}
+			if f["reason"] == "lone" {
+				c.LoneProbeFailed++
+			}
 		}
 		c.ProbeBytes += number(f["bytes"])
 		if f["reason"] == "host" {
 			c.HostProbes++
 		}
 		r.countProbeSteps(f)
+	case "probe_start":
+		if f["reason"] == "wake" {
+			c.WakeProbeCount++
+		}
+		if f["reason"] == "lone" {
+			c.LoneProbeCount++
+		}
+		if f["reason"] == "audit" {
+			c.AuditCount++
+		}
 	case "probe_request":
 		c.HostProbeRequests++
 	case "return_start":
@@ -358,8 +413,8 @@ func wholeMilliseconds(d time.Duration) int64 {
 }
 
 // takeReport returns the report when it is due and starts a new window, or
-// nil. A final report is due when the run had a decision; nothing is due
-// after it.
+// nil. A final report is due when the run had a decision or was sampled;
+// nothing is due after it.
 func (e *engine) takeReport(final bool, now time.Time) *reportView {
 	r := &e.report
 	if r.final {
@@ -369,7 +424,7 @@ func (e *engine) takeReport(final bool, now time.Time) *reportView {
 	switch {
 	case final:
 		r.final = true
-		if r.decided {
+		if r.decided || r.quietSample {
 			reason = reportStop
 		}
 	case r.decisions > 0 && e.s.reportInterval > 0 && now.Round(0).Sub(r.windowStart) >= e.s.reportInterval:
@@ -391,7 +446,7 @@ func (e *engine) takeReport(final bool, now time.Time) *reportView {
 // snapshotReport returns what a final report would be now without closing
 // the window, or nil when it would be nil.
 func (e *engine) snapshotReport(now time.Time) *reportView {
-	if e.report.final || !e.report.decided {
+	if e.report.final || (!e.report.decided && !e.report.quietSample) {
 		return nil
 	}
 	return e.reportView(reportSnapshot, now, false)
@@ -403,16 +458,17 @@ func (e *engine) reportView(reason string, now time.Time, take bool) *reportView
 	r := &e.report
 	wall := now.Round(0)
 	v := &reportView{
-		Groups:       e.groupViews(now),
-		Reason:       reason,
-		Index:        r.taken + 1,
-		WindowMs:     wholeMilliseconds(wall.Sub(r.windowStart)),
-		SessionMs:    wholeMilliseconds(wall.Sub(r.started)),
-		reportCounts: r.counts,
-		Active:       map[string]string{},
-		IsNetworkUp:  !e.networkDown,
-		Connectivity: e.connectivityState(),
-		Paths:        map[string]reportPath{},
+		Groups:        e.groupViews(now),
+		Reason:        reason,
+		Index:         r.taken + 1,
+		WindowMs:      wholeMilliseconds(wall.Sub(r.windowStart)),
+		SessionMs:     wholeMilliseconds(wall.Sub(r.started)),
+		reportCounts:  r.counts,
+		Active:        map[string]string{},
+		IsNetworkUp:   !e.networkDown,
+		IsQuietSample: r.quietSample,
+		Connectivity:  e.connectivityState(),
+		Paths:         map[string]reportPath{},
 	}
 	v.EventsDropped = e.events.droppedTotal - r.droppedBefore
 	if !take {
@@ -449,33 +505,56 @@ func (e *engine) reportView(reason string, now time.Time, take bool) *reportView
 			degraded += wall.Sub(p.statusSince.Round(0))
 		}
 		total := pathTotals{
-			active:      p.stats.activeTime + active[tag],
-			bytesUp:     p.stats.bytesUp,
-			bytesDown:   p.stats.bytesDown,
-			connsOK:     p.stats.connsOK,
-			connsFailed: p.stats.connsFailed,
-			probes:      p.stats.probes,
-			probeBytes:  p.stats.probeBytes,
-			degraded:    degraded,
+			active:           p.stats.activeTime + active[tag],
+			bytesUp:          p.stats.bytesUp,
+			bytesDown:        p.stats.bytesDown,
+			udp:              p.stats.udp,
+			connsOK:          p.stats.connsOK,
+			connsFailed:      p.stats.connsFailed,
+			probes:           p.stats.probes,
+			probeBytes:       p.stats.probeBytes,
+			degraded:         degraded,
+			downsStrong:      p.stats.downsStrong,
+			downsWeak:        p.stats.downsWeak,
+			audits:           p.stats.audits,
+			auditsPassed:     p.stats.auditsPassed,
+			loneProbes:       p.stats.loneProbes,
+			loneProbesFailed: p.stats.loneProbesFailed,
 		}
 		if i < reportPaths {
 			base := p.reported
+			udp := total.udp.delta(base.udp)
 			v.Paths[tag] = reportPath{
-				State:       p.status.String(),
-				TTFBP50Ms:   p.stats.ttfb.quantile(0.5).Milliseconds(),
-				ActiveMs:    (total.active - base.active).Milliseconds(),
-				BytesUp:     total.bytesUp - base.bytesUp,
-				BytesDown:   total.bytesDown - base.bytesDown,
-				ConnsOK:     total.connsOK - base.connsOK,
-				ConnsFailed: total.connsFailed - base.connsFailed,
-				Probes:      total.probes - base.probes,
-				ProbeBytes:  total.probeBytes - base.probeBytes,
-				ProbeSteps:  e.reportProbeSteps(tag),
-				DegradedMs:  max((total.degraded - base.degraded).Milliseconds(), 0),
+				State:              p.status.String(),
+				TTFBP50Ms:          p.stats.ttfb.quantile(0.5).Milliseconds(),
+				ActiveMs:           (total.active - base.active).Milliseconds(),
+				BytesUp:            total.bytesUp - base.bytesUp,
+				BytesDown:          total.bytesDown - base.bytesDown,
+				ConnsOK:            total.connsOK - base.connsOK,
+				ConnsFailed:        total.connsFailed - base.connsFailed,
+				Probes:             total.probes - base.probes,
+				ProbeBytes:         total.probeBytes - base.probeBytes,
+				ProbeSteps:         e.reportProbeSteps(tag),
+				DegradedMs:         max((total.degraded - base.degraded).Milliseconds(), 0),
+				DownsStrong:        total.downsStrong - base.downsStrong,
+				DownsWeak:          total.downsWeak - base.downsWeak,
+				Audits:             total.audits - base.audits,
+				AuditsPassed:       total.auditsPassed - base.auditsPassed,
+				LoneProbes:         total.loneProbes - base.loneProbes,
+				LoneProbesFailed:   total.loneProbesFailed - base.loneProbesFailed,
+				UDPFlows:           udp.flows,
+				UDPFlowsUnanswered: udp.unanswered,
+				UDPBytesUp:         udp.bytesUp,
+				UDPBytesDown:       udp.bytesDown,
+				UDPWrites:          udp.writes,
+				UDPReads:           udp.reads,
+				UDPFirstReplyP50Ms: p.stats.udpFirstReply.quantile(0.5).Milliseconds(),
+				UDPPorts:           udp.reportPorts(),
 			}
 		}
 		if take {
 			p.reported = total
+			p.stats.udpFirstReply = histogram{}
 		}
 	}
 	return v

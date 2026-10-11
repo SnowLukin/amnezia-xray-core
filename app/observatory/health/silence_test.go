@@ -437,15 +437,39 @@ func TestSilenceWaitsForTheFailover(t *testing.T) {
 	f.clk.t = decided.Add(defaultStallTimeout)
 	_, wake := f.turn()
 	f.check(map[string]bool{})
-	if !wake.IsZero() && wake.Before(decided.Add(time.Minute)) {
-		t.Fatalf("the held check left a wake %v after the decision", wake.Sub(decided))
+	if !wake.Equal(decided.Add(auditWindow + time.Nanosecond)) {
+		t.Fatalf("wake %v after the decision, want the audit deadline", wake.Sub(decided))
 	}
+	f.engine(func(e *engine) {
+		if len(e.silences) != 1 || !e.silences[0].held || len(e.queue) != 1 || e.queue[0].reason != reasonAudit || e.queue[0].tag != "a1" {
+			t.Fatalf("held checks %+v, queued %+v, want held silence and audit:a1", e.silences, e.queue)
+		}
+	})
 	f.clk.advance(4 * time.Second)
 	f.answer(jobs[0], true)
 	f.turn()
 	f.check(map[string]bool{"quiet": true})
 	if evs := f.events("pending_closed"); len(evs) != 1 || evs[0].Fields["is_silent"] != true {
 		t.Fatalf("events %+v, want the silent close at the switch", evs)
+	}
+	held := newSilenceFixture(t, nil, &SelectorConfig{Paths: pathSpecs("a1", 1, "b1", 3)})
+	held.open("a1", "quiet", 100)
+	held.clk.advance(time.Second)
+	held.failStrong("a1")
+	if jobs, _ := held.turn(); len(jobs) != 1 || jobs[0].reason != reasonFailover || jobs[0].tag != "b1" {
+		t.Fatalf("probes %+v, want the held failover of b1", jobs)
+	}
+	for _, now := range []time.Time{decided.Add(auditWindow + time.Nanosecond), decided.Add(time.Minute)} {
+		held.clk.t = now
+		if jobs, wake := held.turn(); len(jobs) != 0 || !wake.IsZero() {
+			t.Fatalf("after audit expiry probes %+v, wake %v, want neither", jobs, wake)
+		}
+		held.check(map[string]bool{})
+		held.engine(func(e *engine) {
+			if len(e.queue) != 0 || len(e.silences) != 1 || !e.silences[0].held || e.report.counts.AuditSkipped != 1 {
+				t.Fatalf("queued %+v, silence %+v, skipped audits %d, want one expired audit and held silence", e.queue, e.silences, e.report.counts.AuditSkipped)
+			}
+		})
 	}
 }
 

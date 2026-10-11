@@ -2,6 +2,7 @@ package health
 
 import (
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -180,8 +181,8 @@ func TestPathLevelFailuresSwitchAfterProbingCandidate(t *testing.T) {
 	if te.sel.current() != "a1" {
 		t.Fatalf("switched before the candidate was probed")
 	}
-	jobs := te.run(t, at(3*time.Second), nil)
-	if len(jobs) != 1 || jobs[0].tag != "a2" || jobs[0].reason != reasonFailover {
+	jobs := te.run(t, at(3*time.Second), map[string]bool{"a1": false})
+	if !slices.Equal(reasons(jobs), []string{"failover:a2", "audit:a1"}) {
 		t.Fatalf("unexpected probes %+v", jobs)
 	}
 	if te.sel.current() != "a2" {
@@ -281,7 +282,7 @@ func TestDownOutboundAsksToEndWaitingConnections(t *testing.T) {
 		t.Fatalf("down marks %+v, want a1 at the decision", downs)
 	}
 	// Connections still went to a1 while b1 was probed; they end at the switch.
-	te.run(t, at(time.Second), nil)
+	te.run(t, at(time.Second), map[string]bool{"a1": false})
 	downs = te.takeDowns()
 	if te.sel.current() != "b1" || len(downs) != 1 || downs[0].tag != "a1" || !downs[0].at.Equal(at(time.Second)) {
 		t.Fatalf("active %q, down marks %+v, want a1 at the switch", te.sel.current(), downs)
@@ -393,7 +394,7 @@ func TestExhaustedThenRecheckRecovers(t *testing.T) {
 	cfg := &Config{Schedule: &ScheduleConfig{Quarantine: &Backoff{InitialDelay: int64(30 * time.Second), Multiplier: 2, MaxDelay: int64(time.Hour)}}}
 	te := newTestEngine(t, cfg, &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3)}, "a1", "b1")
 	te.failN(3, "a1", failDial, at(0))
-	te.run(t, at(time.Second), map[string]bool{"b1": false})
+	te.run(t, at(time.Second), map[string]bool{"a1": false, "b1": false})
 	if !te.sel.exhausted || te.sel.current() != "" {
 		t.Fatalf("want exhausted, active %q", te.sel.current())
 	}
@@ -404,7 +405,7 @@ func TestExhaustedThenRecheckRecovers(t *testing.T) {
 	}
 	// The quarantine is 30 s with the default 30% spread.
 	te.noteDemand(at(40 * time.Second))
-	jobs := te.run(t, at(40*time.Second), nil)
+	jobs := te.run(t, at(40*time.Second), map[string]bool{"a1": true, "b1": true})
 	if len(jobs) == 0 || jobs[0].reason != reasonRecheck || jobs[0].tag != "a1" {
 		t.Fatalf("want recheck of the cheapest, got %+v", jobs)
 	}
@@ -449,14 +450,18 @@ func failoverToB(t *testing.T, te *testEngine, now time.Time) {
 
 func TestReturnToCheaperNeedsSuccessesInARow(t *testing.T) {
 	te := newTestEngine(t, &Config{Schedule: quarantine(30 * time.Second)}, returnToCheaperConfig(), "a1", "b1")
-	failoverToB(t, te, at(0))
+	te.failN(3, "a1", failDial, at(0))
+	te.run(t, at(time.Second), map[string]bool{"a1": false})
+	if te.sel.current() != "b1" {
+		t.Fatalf("failover went to %q", te.sel.current())
+	}
 	// Before the interval nothing happens.
 	if jobs, _ := te.tick(at(4 * time.Minute)); len(jobs) != 0 {
 		t.Fatalf("returnToCheaper before interval: %+v", jobs)
 	}
 	var returnToCheapers []time.Time
 	for now := at(5 * time.Minute); now.Before(at(10*time.Minute)) && te.sel.current() != "a1"; now = now.Add(time.Second) {
-		for _, j := range te.run(t, now, nil) {
+		for _, j := range te.run(t, now, map[string]bool{"a1": true, "b1": true}) {
 			if j.reason == reasonReturnToCheaper {
 				returnToCheapers = append(returnToCheapers, now)
 			}
@@ -480,10 +485,14 @@ func TestReturnToCheaperNeedsSuccessesInARow(t *testing.T) {
 
 func TestReturnToCheaperFailureQuarantinesAndPenaltyDelaysNextReturn(t *testing.T) {
 	te := newTestEngine(t, &Config{Schedule: quarantine(30 * time.Second)}, returnToCheaperConfig(), "a1", "b1")
-	failoverToB(t, te, at(0))
+	te.failN(3, "a1", failDial, at(0))
+	te.run(t, at(time.Second), map[string]bool{"a1": false})
+	if te.sel.current() != "b1" {
+		t.Fatalf("failover went to %q", te.sel.current())
+	}
 	now := at(6 * time.Minute)
 	for i := 0; i < 10 && te.sel.current() != "a1"; i++ {
-		te.run(t, now, nil)
+		te.run(t, now, map[string]bool{"a1": true, "b1": true})
 		now = now.Add(21 * time.Second)
 	}
 	if te.sel.current() != "a1" {
@@ -491,7 +500,11 @@ func TestReturnToCheaperFailureQuarantinesAndPenaltyDelaysNextReturn(t *testing.
 	}
 	// a1 fails right after the return: penalty doubles the next wait.
 	failAt := now.Add(time.Minute)
-	failoverToB(t, te, failAt)
+	te.failN(3, "a1", failDial, failAt)
+	te.run(t, failAt.Add(time.Second), map[string]bool{"a1": false})
+	if te.sel.current() != "b1" {
+		t.Fatalf("failover went to %q", te.sel.current())
+	}
 	if te.sel.penaltyFor("a1") != 2 {
 		t.Fatalf("penalty %v, want 2", te.sel.penaltyFor("a1"))
 	}
@@ -550,7 +563,11 @@ func TestNetworkChangeForgetsAndRemembersPerNetwork(t *testing.T) {
 	te.onSuccess("a1", at(2*time.Second))
 	te.onNetworkChange("lte", at(time.Minute))
 	te.run(t, at(time.Minute), nil)
-	failoverToB(t, te, at(2*time.Minute))
+	te.failN(3, "a1", failDial, at(2*time.Minute))
+	te.run(t, at(2*time.Minute+time.Second), map[string]bool{"a1": false})
+	if te.sel.current() != "b1" {
+		t.Fatalf("failover went to %q", te.sel.current())
+	}
 	te.onSuccess("b1", at(3*time.Minute))
 	if te.path("a1").status != statusDown {
 		t.Fatalf("a1 should be down on lte")
@@ -561,7 +578,7 @@ func TestNetworkChangeForgetsAndRemembersPerNetwork(t *testing.T) {
 		t.Fatalf("network change did not forget a1 state")
 	}
 	te.noteDemand(at(10 * time.Minute))
-	jobs := te.run(t, at(10*time.Minute), nil)
+	jobs := te.run(t, at(10*time.Minute), map[string]bool{"a1": true, "b1": true})
 	if len(jobs) != 1 || jobs[0].reason != reasonRemembered || jobs[0].tag != "a1" {
 		t.Fatalf("want one remembered probe of a1, got %+v", jobs)
 	}
@@ -669,12 +686,19 @@ func TestProbeBudget(t *testing.T) {
 func TestPinnedStaysUntilRelease(t *testing.T) {
 	te := newTestEngine(t, nil, &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3), StartPinnedOutbound: "a1"}, "a1", "b1")
 	te.failN(3, "a1", failDial, at(0))
-	te.run(t, at(time.Second), nil)
+	te.run(t, at(time.Second), map[string]bool{"a1": false})
 	if te.sel.current() != "a1" {
 		t.Fatalf("pinned balancer moved to %q", te.sel.current())
 	}
 	te.release("auto", at(2*time.Second))
-	te.run(t, at(3*time.Second), nil)
+	jobs, wake := te.tick(at(3 * time.Second))
+	if len(te.spacedUntil) != 1 || len(jobs) != 0 || !wake.After(at(3*time.Second)) || !wake.Equal(te.spacedUntil[0]) || te.sel.current() != "a1" {
+		t.Fatalf("audit budget: jobs %+v, wake %v, slots at %v, active %q", jobs, wake.Sub(t0), te.spacedUntil, te.sel.current())
+	}
+	jobs = te.run(t, wake, map[string]bool{"a1": false})
+	if !slices.Equal(reasons(jobs), []string{"failover:b1"}) {
+		t.Fatalf("after the audit budget: probes %v, want failover:b1", reasons(jobs))
+	}
 	if te.sel.current() != "b1" {
 		t.Fatalf("after release active %q, want b1", te.sel.current())
 	}

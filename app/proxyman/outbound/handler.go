@@ -216,6 +216,13 @@ func (h *Handler) Dispatch(ctx context.Context, link *transport.Link) {
 		link.Reader = &buf.EndpointOverrideReader{Reader: link.Reader, Dest: ob.Target.Address, OriginalDest: ob.OriginalTarget.Address}
 		link.Writer = &buf.EndpointOverrideWriter{Writer: link.Writer, Dest: ob.Target.Address, OriginalDest: ob.OriginalTarget.Address}
 	}
+	if ob.Target.Network == net.Network_UDP {
+		if observer, ok := h.observer.(outbound.UDPFlowObserver); ok {
+			if flow := observer.StartUDPFlow(ctx, h.tag, ob.Target.Port); flow != nil {
+				observeUDPLink(link, flow)
+			}
+		}
+	}
 	if h.mux != nil && shouldDispatchViaMux(outboundSocketMark) {
 		test := func(err error) {
 			if err != nil {

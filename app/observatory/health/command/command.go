@@ -51,6 +51,14 @@ func (s *service) NetworkChanged(_ context.Context, r *NetworkChangedRequest) (*
 	return &NetworkChangedResponse{}, nil
 }
 
+func (s *service) UserPresent(context.Context, *UserPresentRequest) (*UserPresentResponse, error) {
+	if err := s.ready(); err != nil {
+		return nil, err
+	}
+	s.observer.UserPresent()
+	return &UserPresentResponse{}, nil
+}
+
 func (s *service) Pin(_ context.Context, r *PinRequest) (*PinResponse, error) {
 	if err := s.ready(); err != nil {
 		return nil, err

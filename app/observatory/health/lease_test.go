@@ -385,8 +385,8 @@ func TestFailoverTakesExpiredAsLastResort(t *testing.T) {
 		want  string
 		order string
 	}{
-		{"a live one works", true, "b1", "[b1]"},
-		{"nothing live works", false, "p-x1", "[b1 p-x1]"},
+		{"a live one works", true, "b1", "[failover:b1 audit:a1]"},
+		{"nothing live works", false, "p-x1", "[failover:b1 failover:p-x1 audit:a1]"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			te := leaseEngine(t, nil, &SelectorConfig{Paths: pathSpecs("p-x1", 1, "a", 2, "b", 3)}, "p-x1", "a1", "b1")
@@ -398,8 +398,8 @@ func TestFailoverTakesExpiredAsLastResort(t *testing.T) {
 			}
 			te.failN(3, "a1", failDial, at(2*time.Minute))
 			var order []string
-			for _, j := range te.run(t, at(2*time.Minute), map[string]bool{"b1": tc.b1}) {
-				order = append(order, j.tag)
+			for _, j := range te.run(t, at(2*time.Minute), map[string]bool{"a1": false, "b1": tc.b1}) {
+				order = append(order, j.reason.String()+":"+j.tag)
 			}
 			if te.sel.current() != tc.want || te.sel.exhausted || fmt.Sprint(order) != tc.order {
 				t.Fatalf("active %q exhausted %v after probes %v", te.sel.current(), te.sel.exhausted, order)
@@ -455,8 +455,8 @@ func TestChosenExpiredStillFailsOver(t *testing.T) {
 	te.refreshAt(at(time.Minute))
 	te.eventsOf(t, "")
 	te.failN(3, "p-x1", failDial, at(2*time.Minute))
-	jobs := te.run(t, at(2*time.Minute), nil)
-	if te.path("p-x1").status != statusDown || len(jobs) != 1 || jobs[0].tag != "p-x2" || te.sel.current() != "p-x2" {
+	jobs := te.run(t, at(2*time.Minute), map[string]bool{"p-x1": false})
+	if te.path("p-x1").status != statusDown || !slices.Equal(reasons(jobs), []string{"failover:p-x2", "audit:p-x1"}) || te.sel.current() != "p-x2" {
 		t.Fatalf("p-x1 %v, probes %+v, active %q", te.path("p-x1").status, jobs, te.sel.current())
 	}
 	if sw := te.lastOf(t, "switch"); sw.Fields["reason"] != "failover" {
