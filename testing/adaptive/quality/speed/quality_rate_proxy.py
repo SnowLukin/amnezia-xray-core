@@ -8,8 +8,8 @@ the original pump. Each direction of each rate connection has its own budget.
 Changes from rate to pass, or to a different rate, apply to the next read.
 UDP continues to use the original whitelist and rejects rate mode.
 
-The original chaos.py has an unconditional asyncio.run(main()) entry point.
-Import its unchanged definitions after verifying/removing only that entry
+The original chaos.py ends with asyncio.run(main()), directly or inside its
+__main__ guard. Import its unchanged definitions after removing only that entry
 point, patch the two callback bindings, and run the same original main().
 No production or testing source needs to change to use this wrapper directly.
 """
@@ -18,13 +18,17 @@ import ast
 import asyncio
 import contextvars
 import inspect
+import os
 from pathlib import Path
 import sys
 import types
 
 
 # Installed at <repo>/testing/adaptive/quality/speed/quality_rate_proxy.py.
-ORIGINAL_CHAOS_PATH = Path(__file__).resolve().parents[4] / "testing" / "adaptive" / "chaos.py"
+ORIGINAL_CHAOS_PATH = Path(os.environ.get(
+    "XRAY_QUALITY_CHAOS_SOURCE",
+    str(Path(__file__).resolve().parents[4] / "testing" / "adaptive" / "chaos.py"),
+))
 
 
 def load_original_chaos(path=ORIGINAL_CHAOS_PATH):
@@ -32,6 +36,10 @@ def load_original_chaos(path=ORIGINAL_CHAOS_PATH):
     path = Path(path).resolve()
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     entry = tree.body[-1] if tree.body else None
+    if isinstance(entry, ast.If):
+        if ast.unparse(entry.test) != "__name__ == '__main__'" or len(entry.body) != 1 or entry.orelse:
+            raise RuntimeError("Unexpected guarded chaos entry")
+        entry = entry.body[0]
     call = entry.value if isinstance(entry, ast.Expr) else None
     func = call.func if isinstance(call, ast.Call) else None
     main_call = call.args[0] if isinstance(call, ast.Call) and len(call.args) == 1 else None

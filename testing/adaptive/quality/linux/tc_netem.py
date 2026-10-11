@@ -61,6 +61,8 @@ def dump(output, port):
     commands = {
         "links": ["ip", "-d", "link", "show"],
         "lo-offloads": ["ethtool", "-k", "lo"],
+        "ifbqup-offloads": ["ethtool", "-k", DEVICES[0]],
+        "ifbqdown-offloads": ["ethtool", "-k", DEVICES[1]],
         "qdisc-all": ["tc", "-s", "qdisc", "show"],
         "filters": ["tc", "-s", "filter", "show", "dev", "lo", "ingress"],
         "client-sockets": ["ss", "-tinp", f"( dport = :{port} )"],
@@ -93,6 +95,12 @@ def setup(output, port):
         for dev in DEVICES:
             run(["ip", "link", "add", dev, "type", "ifb"], output)
             run(["ip", "link", "set", dev, "mtu", "1500", "up"], output)
+            run(["ethtool", "-K", dev, "tso", "off", "gso", "off", "gro", "off"], output)
+            flags = run(["ethtool", "-k", dev], output).stdout
+            for feature in ("tcp-segmentation-offload", "generic-segmentation-offload", "generic-receive-offload"):
+                line = next((line.strip() for line in flags.splitlines() if line.strip().startswith(feature + ":")), "")
+                if ": off" not in line:
+                    raise RuntimeError(f"{dev}: {feature} must be off, got {line!r}")
         run(["tc", "qdisc", "add", "dev", "lo", "clsact"], output)
         for preference, key, dev in ((10, "dst_port", DEVICES[0]), (20, "src_port", DEVICES[1])):
             run(["tc", "filter", "add", "dev", "lo", "ingress", "protocol", "ip",
@@ -121,7 +129,8 @@ def profile(output, name):
                   ["tbf", "rate", "5mbit", "burst", "16kb", "limit", "512kb"]),
     }
     up, down = configs[name]
-    for dev, handle, options in ((DEVICES[0], "10:", up), (DEVICES[1], "20:", down)):
+    down_handle = "30:" if name == "queue" else "20:"
+    for dev, handle, options in ((DEVICES[0], "10:", up), (DEVICES[1], down_handle, down)):
         run(["tc", "qdisc", "replace", "dev", dev, "root", "handle", handle, *options], output)
 
 
