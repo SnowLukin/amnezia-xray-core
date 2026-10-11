@@ -410,6 +410,7 @@ class Stand:
                 p.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 p.kill()
+                p.wait(timeout=5)
 
     def reset(self):
         chaos(",".join(map(str, all_address_ports())), "pass")
@@ -545,6 +546,7 @@ class LocalProcess:
             self.proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
             self.proc.kill()
+            self.proc.wait(timeout=5)
 
     def cpu_seconds(self):
         out = subprocess.run(["ps", "-o", "time=", "-p", str(self.proc.pid)], capture_output=True,
@@ -673,29 +675,52 @@ class Client:
 
     def __enter__(self):
         self.process.start(self.path, self.log_path, self.env)
-        wait_ready()
-        self.thread = threading.Thread(target=self._poll, daemon=True)
-        self.thread.start()
+        thread = None
+        try:
+            wait_ready()
+            thread = self.thread = threading.Thread(target=self._poll, daemon=True)
+            thread.start()
+        except BaseException:
+            self._stop.set()
+            try:
+                if thread is not None:
+                    try:
+                        thread.join(timeout=5)
+                    except RuntimeError:
+                        pass
+            finally:
+                self._stop_process()
+            raise
         return self
 
     def __exit__(self, *exc):
-        self._stop.set()
-        self.thread.join(timeout=5)
         try:
-            self.direct_bytes = self.outbound_bytes("direct")
-        except Exception:
-            pass
-        if self.has_health:
-            self.drain()
+            self._stop.set()
+            self.thread.join(timeout=5)
             try:
-                REPORT_CHECKS.append(self._check_reports())
-            except Exception as e:
-                REPORT_CHECKS.append({"check": "reports add up the events", "value": repr(e), "limit": "== events",
-                                      "ok": False})
-            with open(self.log_path.replace(".log", "-events.json"), "w") as f:
-                json.dump({"dropped": self.dropped, "events": self.events, "reports": self.reports}, f, indent=1)
-        self.process.stop()
-        wait_closed(SOCKS_PORT)
+                self.direct_bytes = self.outbound_bytes("direct")
+            except Exception:
+                pass
+            if self.has_health:
+                self.drain()
+                try:
+                    REPORT_CHECKS.append(self._check_reports())
+                except Exception as e:
+                    REPORT_CHECKS.append({"check": "reports add up the events", "value": repr(e), "limit": "== events",
+                                          "ok": False})
+                with open(self.log_path.replace(".log", "-events.json"), "w") as f:
+                    json.dump({"dropped": self.dropped, "events": self.events, "reports": self.reports}, f, indent=1)
+        finally:
+            self._stop_process()
+
+    def _stop_process(self):
+        try:
+            try:
+                self.process.stop()
+            finally:
+                wait_closed(SOCKS_PORT)
+        except BaseException as e:
+            raise SystemExit(f"client cleanup failed: {e!r}") from e
 
     def cpu_seconds(self):
         return self.process.cpu_seconds()
@@ -748,6 +773,8 @@ class Client:
         if final:
             self.reports.append(final)
         problems = []
+        if self.dropped > 0:
+            problems.append(f"{self.dropped} dropped events")
         if again is not None:
             problems.append("a second final report")
         if final and (not snapshot or snapshot["report_reason"] != "snapshot"
@@ -761,6 +788,7 @@ class Client:
             window = [by_seq.get(seq) for seq in range(last + 1, last + r["events"] + 1)]
             last += r["events"]
             if None in window:
+                problems.append(f"report {i + 1} missing {window.count(None)} events in its sequence window")
                 continue
             want, _ = fold_report(window)
             for k, v in want.items():
@@ -893,6 +921,7 @@ def wait_closed(port, timeout=5):
             time.sleep(0.1)
         except OSError:
             return
+    raise RuntimeError(f"client socks port {port} did not close")
 
 
 class Traffic:

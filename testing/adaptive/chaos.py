@@ -37,10 +37,13 @@ takes the modes that apply to datagrams, and refuses the others:
   lose_reply:N    drop the first N datagrams back to each client address, as
                   the network loses the handshake response of a new socket
   delay:MS        delay every datagram by MS milliseconds
+  net:MS:PCT:SEED delay whole datagrams by MS each way and drop PCT percent,
+                  drawing from a seeded stream per direction
 Its status line adds the datagrams: "... pkts_up=P pkts_down=Q", counted as
 the bytes are.
 """
 import asyncio
+import random
 import socket
 import struct
 import sys
@@ -56,7 +59,10 @@ SERVERS = {}
 # UDP ports: listen port -> upstream port, and datagrams [up, down] per port.
 UDP = {}
 PACKETS = {}
-UDP_MODES = ("pass", "blackhole", "drop_after", "lose_reply", "delay")
+UDP_MODES = ("pass", "blackhole", "drop_after", "lose_reply", "delay", "net")
+NET = {}
+NET_STATS = {}
+UDP_LISTENERS = {}
 
 
 def rst(writer):
@@ -71,7 +77,7 @@ def rst(writer):
 
 def mode_of(port):
     name, _, arg = MODES.get(port, "pass").partition(":")
-    return name, int(arg) if arg else 0
+    return name, int(arg) if arg and name != "net" else 0
 
 
 def count(port, direction, n):
@@ -178,6 +184,9 @@ class UdpSession:
         self.forwarded = [0, 0]
         # Datagrams back to the client, whatever became of them, for lose_reply.
         self.replies = 0
+        self.delayed = {}
+        self.last_delivery = [0.0, 0.0]
+        self.closed = False
 
     async def open(self):
         loop = asyncio.get_running_loop()
@@ -185,18 +194,54 @@ class UdpSession:
             transport, _ = await loop.create_datagram_endpoint(
                 lambda: UdpUpstream(self), remote_addr=("127.0.0.1", UDP[self.port]))
         except OSError:
-            self.pending = []
+            self.close()
             return
         self.upstream = transport
-        for data in self.pending:
+        if self.closed:
+            transport.close()
+            return
+        for data, stats in self.pending:
             transport.sendto(data)
+            if stats:
+                stats["pending"][0] -= 1
+                self.forwarded[0] += 1
+                stats["forwarded"][0] += 1
         self.pending = []
 
     def forward(self, direction, data):
+        if self.closed:
+            return
         name, arg = mode_of(self.port)
         self.replies += direction
         if name == "blackhole" or (name == "drop_after" and self.forwarded[direction] >= arg) or (
                 name == "lose_reply" and direction == 1 and self.replies <= arg):
+            return
+        if name == "net":
+            state = NET[self.port]
+            stats = NET_STATS[self.port]
+            stats["offered"][direction] += 1
+            if state["rng"][direction].random() < state["loss"] / 100:
+                stats["dropped"][direction] += 1
+                return
+            loop = asyncio.get_running_loop()
+            when = max(loop.time() + state["delay"] / 1000, self.last_delivery[direction] + 0.000001)
+            self.last_delivery[direction] = when
+            handle = None
+
+            def send():
+                self.delayed.pop(handle, None)
+                if not self.closed:
+                    if self.deliver(direction, data, stats if direction == 0 else None):
+                        stats["pending"][direction] -= 1
+                        self.forwarded[direction] += 1
+                        stats["forwarded"][direction] += 1
+                    elif direction == 1:
+                        stats["pending"][direction] -= 1
+                        stats["cancelled"][direction] += 1
+
+            handle = loop.call_at(when, send)
+            self.delayed[handle] = direction
+            stats["pending"][direction] += 1
             return
         self.forwarded[direction] += 1
         if name == "delay":
@@ -204,15 +249,49 @@ class UdpSession:
         else:
             self.deliver(direction, data)
 
-    def deliver(self, direction, data):
+    def deliver(self, direction, data, stats=None):
+        if self.closed:
+            return False
         if direction == 0:
             if self.upstream is None:
-                self.pending.append(data)
+                self.pending.append((data, stats))
+                return False
             else:
                 self.upstream.sendto(data)
         elif self.listener.transport is not None:
             self.listener.transport.sendto(data, self.client)
             count_packet(self.port, 1, len(data))
+        else:
+            return False
+        return True
+
+    def cancel_delayed(self):
+        stats = NET_STATS.get(self.port)
+        for handle, direction in self.delayed.items():
+            handle.cancel()
+            if stats:
+                stats["cancelled"][direction] += 1
+                stats["pending"][direction] -= 1
+        self.delayed.clear()
+        kept = []
+        for data, pending_stats in self.pending:
+            if pending_stats:
+                pending_stats["pending"][0] -= 1
+                pending_stats["cancelled"][0] += 1
+            else:
+                kept.append((data, pending_stats))
+        self.pending = kept
+        self.last_delivery = [0.0, 0.0]
+
+    def close(self):
+        if self.closed:
+            return
+        self.closed = True
+        self.cancel_delayed()
+        self.pending.clear()
+        if self.upstream is not None:
+            self.upstream.close()
+        self.listener.sessions.pop(self.client, None)
 
 
 class UdpUpstream(asyncio.DatagramProtocol):
@@ -225,6 +304,9 @@ class UdpUpstream(asyncio.DatagramProtocol):
     def error_received(self, exc):
         # The upstream port is closed: to the client that is loss.
         pass
+
+    def connection_lost(self, exc):
+        self.session.close()
 
 
 class UdpListener(asyncio.DatagramProtocol):
@@ -249,6 +331,11 @@ class UdpListener(asyncio.DatagramProtocol):
         # A client went away; its socket answers with an ICMP error.
         pass
 
+    def connection_lost(self, exc):
+        for session in list(self.sessions.values()):
+            session.close()
+        self.transport = None
+
 
 # Where the server addresses listen. A client on another device, such as a
 # phone on the LAN, needs 0.0.0.0; the upstreams and the control stay local.
@@ -256,7 +343,9 @@ LISTEN_HOST = os.environ.get("BENCH_LISTEN", "127.0.0.1")
 
 
 async def listen_udp(lp):
-    await asyncio.get_running_loop().create_datagram_endpoint(lambda: UdpListener(lp), local_addr=(LISTEN_HOST, lp))
+    listener = UdpListener(lp)
+    await asyncio.get_running_loop().create_datagram_endpoint(lambda: listener, local_addr=(LISTEN_HOST, lp))
+    UDP_LISTENERS[lp] = listener
 
 
 async def listen(lp):
@@ -286,11 +375,32 @@ async def control(reader, writer):
         # A mode that does not apply to datagrams changes nothing, so a
         # scenario that asks for it fails instead of testing nothing.
         wrong = [p for p in ports if p in UDP and mode.partition(":")[0] not in UDP_MODES]
+        net = None
+        if mode.partition(":")[0] == "net":
+            try:
+                delay, loss, seed = map(int, mode.split(":")[1:])
+                if len(mode.split(":")) != 4 or delay < 0 or not 0 <= loss <= 100 or any(p not in UDP for p in ports):
+                    raise ValueError
+                net = (delay, loss, seed)
+            except ValueError:
+                wrong = ports
         if wrong:
             status = "400 Bad Request"
             body = f"mode {mode} does not apply to the udp ports {wrong}\n"
         else:
             for p in ports:
+                if p in UDP:
+                    for session in list(UDP_LISTENERS[p].sessions.values()):
+                        session.cancel_delayed()
+                    if net:
+                        delay, loss, seed = net
+                        NET[p] = {"delay": delay, "loss": loss,
+                                  "rng": [random.Random(seed * 2 + direction) for direction in (0, 1)],
+                                  "seed": seed}
+                        NET_STATS[p] = {key: [0, 0] for key in
+                                        ("offered", "dropped", "forwarded", "pending", "cancelled")}
+                    else:
+                        NET.pop(p, None)
                 MODES[p] = mode
                 if p in LISTEN:
                     await follow_mode(p)
@@ -300,6 +410,10 @@ async def control(reader, writer):
                  f"down={BYTES.get(p, [0, 0])[1]}")
         if p in UDP:
             body += f" pkts_up={PACKETS.get(p, [0, 0])[0]} pkts_down={PACKETS.get(p, [0, 0])[1]}"
+            if p in NET:
+                body += f" net_delay_ms={NET[p]['delay']} net_loss_percent={NET[p]['loss']} net_seed={NET[p]['seed']}"
+                for field, values in NET_STATS[p].items():
+                    body += f" net_{field}_up={values[0]} net_{field}_down={values[1]}"
         body += "\n"
     writer.write(f"HTTP/1.1 {status}\r\nContent-Length: {len(body)}\r\nConnection: close\r\n\r\n{body}".encode())
     await writer.drain()
@@ -322,4 +436,5 @@ async def main():
     await asyncio.Event().wait()
 
 
-asyncio.run(main())
+if __name__ == "__main__":
+    asyncio.run(main())
