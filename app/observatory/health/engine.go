@@ -2259,7 +2259,6 @@ func (e *engine) onNetworkChange(id string, now time.Time) {
 		_, known = e.networks[id]
 	}
 	e.changeQualityNetwork(id, known, now)
-	networkType, _ := parseQualityNetwork(id)
 	e.providersOnNetworkChange(known, now)
 	e.idleNet.changed = now
 	e.networkID = id
@@ -2278,7 +2277,7 @@ func (e *engine) onNetworkChange(id string, now time.Time) {
 		}
 	}
 	if !forget {
-		e.emit(now, "network_change", map[string]any{"network": id, "network_type": networkType, "is_known": known, "generation": e.generation, "is_ignored": true})
+		e.emit(now, "network_change", map[string]any{"network": id, "is_known": known, "generation": e.generation, "is_ignored": true})
 		return
 	}
 	e.generation++
@@ -2288,7 +2287,7 @@ func (e *engine) onNetworkChange(id string, now time.Time) {
 		}
 	}
 	e.pendingSuspicion = map[string]verdict{}
-	e.emit(now, "network_change", map[string]any{"network": id, "network_type": networkType, "is_known": known, "generation": e.generation})
+	e.emit(now, "network_change", map[string]any{"network": id, "is_known": known, "generation": e.generation})
 	for _, p := range e.paths {
 		p.rescue = nil
 		p.failures = p.failures[:0]

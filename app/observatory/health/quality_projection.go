@@ -46,6 +46,5 @@ func (e *engine) currentQuality(now time.Time) qualitySegmentView {
 	if e.quality != nil {
 		return e.quality.currentView(now)
 	}
-	typ, operator := parseQualityNetwork(e.networkID)
-	return qualitySegmentView{NetworkType: typ, NetworkOperator: operator, IsNetworkKnown: e.networkKnown}
+	return qualitySegmentView{IsNetworkKnown: e.networkKnown}
 }

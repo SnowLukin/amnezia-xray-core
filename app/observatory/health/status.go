@@ -90,8 +90,6 @@ type providerStatusView struct {
 }
 
 type statusView struct {
-	NetworkType           string           `json:"network_type,omitempty"`
-	NetworkOperator       string           `json:"network_operator,omitempty"`
 	WitnessQuality        *qualityPathView `json:"witness_quality,omitempty"`
 	QualitySamplesDropped uint64           `json:"quality_samples_dropped,omitempty"`
 	// Names this run of the core; pin and release requests may carry it.
@@ -116,8 +114,7 @@ type statusView struct {
 func (e *engine) status(now time.Time) statusView {
 	quality := e.currentQuality(now)
 	v := statusView{
-		Groups:      e.groupViews(now),
-		NetworkType: quality.NetworkType, NetworkOperator: quality.NetworkOperator,
+		Groups:         e.groupViews(now),
 		WitnessQuality: quality.Witness, QualitySamplesDropped: quality.SamplesDropped,
 		Network:      e.networkID,
 		IsNetworkUp:  !e.networkDown,

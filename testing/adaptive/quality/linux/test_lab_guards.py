@@ -22,10 +22,9 @@ PROOF = None
 
 class LabGuards(unittest.TestCase):
     def body(self, tag='wanted', quality=None):
-        identity = 'cell:25001:synthetic-private-suffix'
+        identity = 'opaque-synthetic-private-id'
         url = 'http://127.0.0.1:18998/set'
-        body = {'networkType':'cell','networkOperator':'25001',
-                'network':{'id':SCHEMA.provider_hash(url, identity)},
+        body = {'network':{'id':SCHEMA.provider_hash(url, identity)},
                 'outbounds':[{'tag':tag,'quality': {'bytesDown':0,'dialCount':1,'dialP50Ms':10,'dialP90Ms':10} if quality is None else quality}]}
         return body,url,identity
 
@@ -41,11 +40,26 @@ class LabGuards(unittest.TestCase):
     def test_provider_accepts_known_zero(self):
         self.assertTrue(self.provider_ok(*self.body()), 'known-zero bytes with successful dial became unknown')
 
-    def test_strict_identity_matches_core(self):
-        for raw in ['cell::fp','cell:１２３４５:fp','cell:1234:fp','cell:25001:','wifi:','WiFi:fp']:
+    def test_network_ids_are_opaque(self):
+        for raw in ['cell::fp','cell:１２３４５:fp','cell:1234:fp','cell:25001:','wifi:','WiFi:fp','cell:00101:fp']:
             with self.subTest(raw=raw):
-                self.assertEqual(SCHEMA.identity(raw)[0],'unknown')
-        self.assertEqual(SCHEMA.identity('cell:00101:fp'),('cell','00101','fp'))
+                body,url,_ = self.body()
+                expected = hashlib.sha256((url + '\0' + raw).encode()).hexdigest()[:16]
+                self.assertEqual(SCHEMA.provider_hash(url, raw), expected)
+                body['network']['id'] = expected
+                self.assertTrue(self.provider_ok(body, url, raw), 'opaque ID was parsed or rejected')
+
+    def test_provider_rejects_obsolete_network_metadata(self):
+        for field,value in [('networkType','cell'),('networkOperator','00101')]:
+            with self.subTest(field=field):
+                body,url,identity = self.body()
+                body[field] = value
+                self.assertFalse(self.provider_ok(body, url, identity), 'obsolete quality metadata accepted')
+
+    def test_provider_rejects_raw_opaque_id(self):
+        body,url,identity = self.body()
+        body['unexpectedIdentity'] = identity
+        self.assertFalse(self.provider_ok(body, url, identity), 'raw opaque host ID escaped in provider body')
 
     def rtt_pair(self, exported=True):
         cases=[]

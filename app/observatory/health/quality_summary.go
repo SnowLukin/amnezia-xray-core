@@ -129,12 +129,10 @@ type qualityPathView struct {
 }
 
 type qualitySegmentView struct {
-	NetworkType     string                     `json:"network_type"`
-	NetworkOperator string                     `json:"network_operator,omitempty"`
-	IsNetworkKnown  bool                       `json:"is_network_known"`
-	DurationMs      int64                      `json:"duration_ms"`
-	Paths           map[string]qualityPathView `json:"paths,omitempty"`
-	Witness         *qualityPathView           `json:"witness,omitempty"`
+	IsNetworkKnown bool                       `json:"is_network_known"`
+	DurationMs     int64                      `json:"duration_ms"`
+	Paths          map[string]qualityPathView `json:"paths,omitempty"`
+	Witness        *qualityPathView           `json:"witness,omitempty"`
 	// Only admitted measured tags outside Paths. When SamplesDropped is
 	// positive, the number of additional distinct rejected tags is unknown.
 	PathsDropped   int    `json:"paths_dropped,omitempty"`
@@ -277,39 +275,7 @@ func (a *qualityAccumulator) view() qualityPathView {
 }
 
 type qualityNetworkMetadata struct {
-	typ, operator string
-	known         bool
-}
-
-// Parse only metadata, without retaining the opaque fingerprint or changing
-// the original id used by network memory and provider hashing. A malformed
-// prefix never copies arbitrary id text into a public type or operator.
-func parseQualityNetwork(id string) (typ, operator string) {
-	typ = "unknown"
-	prefix, suffix, ok := strings.Cut(id, ":")
-	if !ok || suffix == "" {
-		return typ, ""
-	}
-	switch prefix {
-	case "wifi":
-		return "wifi", ""
-	case "eth":
-		return "eth", ""
-	case "other":
-		return "other", ""
-	case "cell":
-		code, fingerprint, ok := strings.Cut(suffix, ":")
-		if !ok || fingerprint == "" || (len(code) != 5 && len(code) != 6) {
-			return typ, ""
-		}
-		for i := range code {
-			if code[i] < '0' || code[i] > '9' {
-				return typ, ""
-			}
-		}
-		return "cell", strings.Clone(code)
-	}
-	return typ, ""
+	known bool
 }
 
 type qualityCollection struct {
@@ -374,8 +340,8 @@ func (c *qualityCollection) addEnd(tag string, witness bool, sample qualityEndSa
 
 func (c *qualityCollection) view(now time.Time, limit int) qualitySegmentView {
 	v := qualitySegmentView{
-		NetworkType: c.network.typ, NetworkOperator: c.network.operator, IsNetworkKnown: c.network.known,
-		DurationMs: wholeMilliseconds(now.Round(0).Sub(c.started)), SamplesDropped: c.samplesDropped,
+		IsNetworkKnown: c.network.known,
+		DurationMs:     wholeMilliseconds(now.Round(0).Sub(c.started)), SamplesDropped: c.samplesDropped,
 	}
 	if c.witness != nil {
 		w := c.witness.view()
@@ -417,7 +383,7 @@ type qualitySummary struct {
 }
 
 func newQualitySummary(now time.Time) *qualitySummary {
-	metadata := qualityNetworkMetadata{typ: "unknown"}
+	metadata := qualityNetworkMetadata{}
 	c := qualityCollection{started: now.Round(0), network: metadata}
 	return &qualitySummary{current: c, open: c}
 }
@@ -456,7 +422,7 @@ func (q *qualitySummary) trimSegments() {
 	}
 }
 
-func (q *qualitySummary) networkChanged(id string, known bool, now time.Time) uint64 {
+func (q *qualitySummary) networkChanged(_ string, known bool, now time.Time) uint64 {
 	if q == nil {
 		return 0
 	}
@@ -464,8 +430,7 @@ func (q *qualitySummary) networkChanged(id string, known bool, now time.Time) ui
 		q.closed = append(q.closed, q.open.view(now, qualitySegmentPaths))
 	}
 	q.epoch++
-	typ, operator := parseQualityNetwork(id)
-	c := qualityCollection{started: now.Round(0), network: qualityNetworkMetadata{typ: typ, operator: operator, known: known}}
+	c := qualityCollection{started: now.Round(0), network: qualityNetworkMetadata{known: known}}
 	q.current, q.open = c, c
 	q.trimSegments()
 	return q.epoch

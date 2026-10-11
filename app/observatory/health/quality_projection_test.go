@@ -105,12 +105,14 @@ func TestQualityStatusProjectionPreservesZeroAndLegacyTTFB(t *testing.T) {
 	o.e.quality.addEnd(o.e.qualityEpoch, "retired-measurement", false, qualityEndSample{bytesDown: 1 << 20})
 	before := len(o.e.paths)
 	status := o.e.status(t0.Add(time.Second))
-	if len(o.e.paths) != before || status.NetworkType != "cell" || status.NetworkOperator != "25001" || status.WitnessQuality == nil {
-		t.Fatal("status projection changed policy paths or lost network/witness metadata")
+	if len(o.e.paths) != before || status.Network != o.e.networkID || status.WitnessQuality == nil {
+		t.Fatal("status projection changed policy paths or lost opaque network/witness state")
 	}
 	fields := qualityProjectionJSON(t, status)
-	if string(fields["network_type"]) != `"cell"` || string(fields["network_operator"]) != `"25001"` {
-		t.Fatal("status metadata uses a private fingerprint instead of parsed type/operator")
+	for _, absent := range []string{"network_type", "network_operator", "networkType", "networkOperator"} {
+		if fields[absent] != nil {
+			t.Fatalf("status interpreted opaque network id as %s", absent)
+		}
 	}
 	for _, pv := range status.Paths {
 		switch pv.Outbound {
@@ -132,7 +134,7 @@ func TestQualityStatusProjectionPreservesZeroAndLegacyTTFB(t *testing.T) {
 			t.Fatal("status invented a policy row for a measurement-only tag")
 		}
 	}
-	newFields := []json.RawMessage{fields["network_type"], fields["network_operator"], fields["witness_quality"]}
+	newFields := []json.RawMessage{fields["paths"], fields["witness_quality"]}
 	for _, raw := range newFields {
 		if bytes.Contains(raw, []byte("PRIVATE_SESSION")) {
 			t.Fatal("quality status fields exposed opaque network id")
@@ -145,12 +147,18 @@ func TestQualityProviderProjectionUsesOwnExactTagsAndCamelCase(t *testing.T) {
 	te.quality = newQualitySummary(t0)
 	te.qualityEpoch = te.quality.networkChanged("cell:310260:PRIVATE_SESSION", true, t0)
 	te.networkID = "cell:310260:PRIVATE_SESSION"
+	te.networks[te.networkID] = map[string]string{}
 	qualityProjectionSeed(te.engine, "p-x1", false)
 	qualityProjectionSeed(te.engine, "foreign-provider-path", false)
 	qualityProjectionSeed(te.engine, "direct", true)
 	m, body, _ := requestOf(t, te, at(time.Minute))
-	if m["networkType"] != "cell" || m["networkOperator"] != "310260" || m["witnessQuality"] == nil {
-		t.Fatalf("provider metadata: %v", m)
+	if m["witnessQuality"] == nil {
+		t.Fatalf("provider omitted measured witness: %v", m)
+	}
+	for _, absent := range []string{"networkType", "networkOperator", "network_type", "network_operator"} {
+		if m[absent] != nil {
+			t.Fatalf("provider interpreted opaque network id as %s", absent)
+		}
 	}
 	for _, outbound := range m["outbounds"].([]any) {
 		row := outbound.(map[string]any)
@@ -173,12 +181,13 @@ func TestQualityProviderProjectionUsesOwnExactTagsAndCamelCase(t *testing.T) {
 			t.Fatalf("provider quality body exposed %q", secret)
 		}
 	}
-	if len(m["network"].(map[string]any)["id"].(string)) != 16 {
-		t.Fatal("provider lost its existing network hash")
+	network := m["network"].(map[string]any)
+	if network["id"] != providerHash(te.prov().cfg.url, te.networkID) || network["isKnown"] != true || network["isUp"] != true {
+		t.Fatal("provider lost its existing opaque network hash or known/up state")
 	}
 }
 
-func TestQualityProjectionUnknownMeasurementsAndOperatorAreOmitted(t *testing.T) {
+func TestQualityProjectionUnknownMeasurementsAndNetworkMetadataAreOmitted(t *testing.T) {
 	te := setEngine(t)
 	te.quality = newQualitySummary(t0)
 	te.qualityEpoch = te.quality.networkChanged("malformed:PRIVATE_SESSION", false, t0)
@@ -186,14 +195,11 @@ func TestQualityProjectionUnknownMeasurementsAndOperatorAreOmitted(t *testing.T)
 	s := qualityProjectionJSON(t, te.status(t0))
 	r := qualityProjectionJSON(t, te.providerRequest(te.prov(), &refreshJob{refresh: 1, trigger: triggerHost}, t0))
 	for _, fields := range []map[string]json.RawMessage{s, r} {
-		for _, absent := range []string{"network_operator", "networkOperator", "witness_quality", "witnessQuality", "quality_samples_dropped", "qualitySamplesDropped"} {
+		for _, absent := range []string{"network_type", "networkType", "network_operator", "networkOperator", "witness_quality", "witnessQuality", "quality_samples_dropped", "qualitySamplesDropped"} {
 			if fields[absent] != nil {
 				t.Errorf("unknown/zero optional top field %s emitted", absent)
 			}
 		}
-	}
-	if string(s["network_type"]) != `"unknown"` || string(r["networkType"]) != `"unknown"` {
-		t.Fatal("unrecognized prefix did not retain explicit unknown network type")
 	}
 	for _, outbound := range te.providerRequest(te.prov(), &refreshJob{}, t0).Outbounds {
 		if outbound.Quality != nil {
@@ -233,11 +239,16 @@ func TestQualityReportProjectionKeepsSnapshotsAndCurrentAcrossTake(t *testing.T)
 	if snap["quality"] == nil || bytes.Contains(snap["quality"], []byte("PRIVATE_SESSION")) {
 		t.Fatal("report quality omitted measured data or exposed its fingerprint")
 	}
+	for _, absent := range []string{"network_type", "network_operator"} {
+		if bytes.Contains(snap["quality"], []byte(`"`+absent+`":`)) {
+			t.Fatalf("report quality interpreted opaque network id as %s", absent)
+		}
+	}
 	var segments []qualitySegmentView
 	if err := json.Unmarshal(snap["quality"], &segments); err != nil {
 		t.Fatal(err)
 	}
-	if len(segments) != 1 || segments[0].Witness == nil || segments[0].Paths["a1"].BytesDown == nil || *segments[0].Paths["a1"].BytesDown != 0 {
+	if len(segments) != 1 || segments[0].IsNetworkKnown || segments[0].DurationMs != 2000 || segments[0].Witness == nil || segments[0].Paths["a1"].BytesDown == nil || *segments[0].Paths["a1"].BytesDown != 0 {
 		t.Fatal("report quality lost known zero/witness presence")
 	}
 	currentBefore, _ := json.Marshal(o.e.quality.currentView(clk.now()).Paths)
@@ -304,27 +315,31 @@ func TestQualityProjectionLossAndOverflowFieldsRemainOptional(t *testing.T) {
 	}
 }
 
-func TestQualityNetworkChangeEventAddsTypeInBothPolicyModes(t *testing.T) {
+func TestQualityNetworkChangeEventKeepsOpaqueIDInBothPolicyModes(t *testing.T) {
 	for _, mode := range []NetworkChangeMode{NetworkChangeMode_RECHECK, NetworkChangeMode_IGNORE} {
 		te := newTestEngine(t, nil, &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3), NetworkChangeAction: mode}, "a1", "b1")
 		generation := te.generation
-		te.onNetworkChange("cell:25001:PRIVATE_SESSION", at(time.Second))
-		ev := te.lastOf(t, "network_change")
-		if ev.Fields["network_type"] != "cell" {
-			t.Fatal("network event omitted parsed type")
-		}
-		if mode == NetworkChangeMode_IGNORE && (te.generation != generation || ev.Fields["is_ignored"] != true) {
-			t.Fatal("event type changed ignore policy behavior")
-		}
-		if mode == NetworkChangeMode_RECHECK && te.generation != generation+1 {
-			t.Fatal("event type changed recheck policy generation")
-		}
-		if ev.Fields["network_type"] == ev.Fields["network"] {
-			t.Fatal("event network type contains the raw id")
-		}
-		te.onNetworkChange("malformed:PRIVATE_SESSION", at(2*time.Second))
-		if te.lastOf(t, "network_change").Fields["network_type"] != "unknown" {
-			t.Fatal("malformed event prefix exposed arbitrary text as a type")
+		for i, id := range []string{"cell:25001:PRIVATE_SESSION", "malformed:PRIVATE_SESSION"} {
+			known := i == 1
+			if known {
+				te.networks[id] = map[string]string{}
+			}
+			te.onNetworkChange(id, at(time.Duration(i+1)*time.Second))
+			ev := te.lastOf(t, "network_change")
+			if ev.Fields["network"] != id || ev.Fields["is_known"] != known || te.networkKnown != known {
+				t.Fatal("opaque network event lost its original id/known state")
+			}
+			for _, absent := range []string{"network_type", "network_operator", "networkType", "networkOperator"} {
+				if _, present := ev.Fields[absent]; present {
+					t.Fatalf("quality added interpreted %s to network event", absent)
+				}
+			}
+			if mode == NetworkChangeMode_IGNORE && (te.generation != generation || ev.Fields["is_ignored"] != true) {
+				t.Fatal("opaque id changed ignore policy behavior")
+			}
+			if mode == NetworkChangeMode_RECHECK && te.generation != generation+uint64(i+1) {
+				t.Fatal("opaque id changed recheck policy generation")
+			}
 		}
 	}
 }

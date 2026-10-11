@@ -39,7 +39,7 @@ func TestQualityIntegrationActualConstructor(t *testing.T) {
 				return
 			}
 			if o.e.quality == nil || !o.e.quality.current.started.Equal(o.e.report.started) ||
-				o.e.quality.current.network.typ != "unknown" || o.e.quality.current.paths != nil || o.e.quality.open.paths != nil {
+				o.e.quality.current.network.known || o.e.quality.current.paths != nil || o.e.quality.open.paths != nil {
 				t.Fatal("constructor omitted summary, changed its start, or eagerly allocated traffic state")
 			}
 			if o.qualityEpoch.Load() != o.e.qualityEpoch || o.e.qualityEpoch != o.e.quality.epoch {

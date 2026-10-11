@@ -18,8 +18,6 @@ import (
 // like the config and the answer. Destinations of connections, server
 // addresses and header values never go in.
 type providerRequest struct {
-	NetworkType           string            `json:"networkType,omitempty"`
-	NetworkOperator       string            `json:"networkOperator,omitempty"`
 	WitnessQuality        *requestQuality   `json:"witnessQuality,omitempty"`
 	QualitySamplesDropped uint64            `json:"qualitySamplesDropped,omitempty"`
 	Protocol              int               `json:"protocol"`
@@ -113,8 +111,7 @@ type requestProbe struct {
 func (e *engine) providerRequest(p *provider, j *refreshJob, now time.Time) *providerRequest {
 	quality := e.currentQuality(now)
 	r := &providerRequest{
-		Protocol:    providerProtocol,
-		NetworkType: quality.NetworkType, NetworkOperator: quality.NetworkOperator,
+		Protocol:              providerProtocol,
 		QualitySamplesDropped: quality.SamplesDropped,
 		Provider:              p.cfg.tag,
 		RefreshNumber:         j.refresh,

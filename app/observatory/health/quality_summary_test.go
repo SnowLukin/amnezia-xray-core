@@ -446,35 +446,47 @@ func TestQualitySummaryStaleEpochIsIgnoredWithoutDrops(t *testing.T) {
 	}
 }
 
-func TestQualitySummaryNetworkPrefixesDoNotExposeFingerprint(t *testing.T) {
-	for i, tc := range []struct{ id, typ, operator string }{
-		{"wifi:PRIVATE_SESSION", "wifi", ""}, {"eth:PRIVATE_SESSION", "eth", ""}, {"other:PRIVATE_SESSION", "other", ""},
-		{"cell:25001:PRIVATE_SESSION", "cell", "25001"}, {"cell:310260:PRIVATE_SESSION:extra", "cell", "310260"},
-		{"PRIVATE_SESSION", "unknown", ""}, {"wifi:", "unknown", ""}, {"WIFI:PRIVATE_SESSION", "unknown", ""},
-		{"cell:2501:PRIVATE_SESSION", "unknown", ""}, {"cell:2500011:PRIVATE_SESSION", "unknown", ""},
-		{"cell:2500x:PRIVATE_SESSION", "unknown", ""}, {"cell:+2501:PRIVATE_SESSION", "unknown", ""},
-		{"cell:25001", "unknown", ""}, {"cell:25001:", "unknown", ""}, {"vpn:PRIVATE_SESSION", "unknown", ""},
-		{"", "unknown", ""}, {":PRIVATE_SESSION", "unknown", ""}, {" wifi:PRIVATE_SESSION", "unknown", ""},
-		{"cell:２５００１:PRIVATE_SESSION", "unknown", ""},
+func TestQualitySummaryNetworkIDIsOpaqueAndDoesNotExposeFingerprint(t *testing.T) {
+	for i, id := range []string{
+		"wifi:PRIVATE_SESSION", "eth:PRIVATE_SESSION", "other:PRIVATE_SESSION",
+		"cell:25001:PRIVATE_SESSION", "cell:310260:PRIVATE_SESSION:extra",
+		"PRIVATE_SESSION", "wifi:", "WIFI:PRIVATE_SESSION",
+		"cell:2501:PRIVATE_SESSION", "cell:2500011:PRIVATE_SESSION",
+		"cell:2500x:PRIVATE_SESSION", "cell:+2501:PRIVATE_SESSION",
+		"cell:25001", "cell:25001:", "vpn:PRIVATE_SESSION",
+		"", ":PRIVATE_SESSION", " wifi:PRIVATE_SESSION",
+		"cell:２５００１:PRIVATE_SESSION",
 	} {
 		t.Run(fmt.Sprint(i), func(t *testing.T) {
 			q := newQualitySummary(t0)
-			epoch := q.networkChanged(tc.id, i%2 == 0, t0)
+			known := i%2 == 0
+			epoch := q.networkChanged(id, known, t0)
 			q.addInitial(epoch, "a", false, qualityInitialSample{hasTTFB: true})
 			v := q.currentView(t0)
-			if v.NetworkType != tc.typ || v.NetworkOperator != tc.operator || v.IsNetworkKnown != (i%2 == 0) {
-				t.Fatalf("metadata from %q: %+v", tc.id, v)
+			if v.IsNetworkKnown != known || epoch != 1 || q.epoch != epoch {
+				t.Fatalf("opaque id %q changed known/epoch state: %+v", id, v)
 			}
 			var fields map[string]json.RawMessage
 			if err := json.Unmarshal(qualitySummaryJSON(t, v), &fields); err != nil {
 				t.Fatal(err)
 			}
-			if fields["is_network_known"] == nil || string(fields["duration_ms"]) != "0" || (tc.operator == "" && fields["network_operator"] != nil) {
-				t.Fatal("metadata JSON changed required known/duration presence or emitted an unknown operator")
+			if string(fields["is_network_known"]) != fmt.Sprint(known) || string(fields["duration_ms"]) != "0" {
+				t.Fatal("opaque id changed required known/duration presence")
+			}
+			for _, absent := range []string{"network_type", "network_operator", "networkType", "networkOperator"} {
+				if fields[absent] != nil {
+					t.Fatalf("quality interpreted opaque id as %s", absent)
+				}
 			}
 			views, _ := q.report(t0, false)
 			if strings.Contains(string(qualitySummaryJSON(t, views)), "PRIVATE_SESSION") || strings.Contains(string(qualitySummaryJSON(t, v)), "PRIVATE_SESSION") {
 				t.Fatal("opaque fingerprint leaked into public quality metadata")
+			}
+			neutral := newQualitySummary(t0)
+			neutralEpoch := neutral.networkChanged("independent-opaque-id", known, t0)
+			neutral.addInitial(neutralEpoch, "a", false, qualityInitialSample{hasTTFB: true})
+			if !reflect.DeepEqual(v, neutral.currentView(t0)) {
+				t.Fatal("host id spelling changed measured quality")
 			}
 		})
 	}

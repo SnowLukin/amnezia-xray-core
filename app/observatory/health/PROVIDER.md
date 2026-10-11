@@ -199,54 +199,73 @@ outputs. `nextRefreshIn` follows this table as well; a number is refused.
 
 ### Quality measurements
 
-Protocol 1 requests may include `networkType` (`wifi`, `eth`, `other`, `cell`,
-or `unknown`), optional `networkOperator` (a five- or six-digit cell operator
-code), optional `witnessQuality`, and optional `qualitySamplesDropped`.
-`outbounds[].quality` is present only for measured members of this provider's
-registered set. Lookup uses the exact internal tag before removing its provider
-prefix for the body. No measurement of another provider's outbound is disclosed.
+Protocol 1 requests may include `outbounds[].quality` for measured members
+of this provider's registered set, optional `witnessQuality`, and nonzero
+`qualitySamplesDropped`. Lookup uses the exact internal tag before removing
+its provider prefix for the body. Another provider's outbound measurements
+are not disclosed. The witness aggregates configured witness outbounds and
+is separate from the provider set.
 
-Quality covers the current network since its last change, independently of
-report windows. `qualitySamplesDropped` counts meaningful phases rejected across
-the current collection when its 64-tag or 16 KiB copied-tag budget is full. The
-backend must consider this partial coverage alongside each histogram count.
-The witness is the aggregate of configured witness outbounds, not a member of
-the provider set. These measurements create no refresh trigger or client policy.
-All fields are additions to request protocol 1; a backend must ignore unknown
-request fields. Answers and their accepted keys are unchanged.
+Quality covers the current network since the last `NetworkChanged`,
+independently of report windows. Every such call, including the same/empty ID
+and IGNORE routing policy, advances a separate measurement epoch; subsequent
+old-epoch phases are discarded. Quality does not parse the opaque network ID
+or export `networkType` or `networkOperator`. The existing provider-specific
+`network.id` hash still covers the complete host ID. Network/path/session
+labels belong to the separate measurement-context feature and are not
+implemented here. These measurements create no refresh trigger or client
+policy. They are request additions to protocol 1; unknown request fields must
+be ignored. Answer keys are unchanged.
 
-Inside quality, an absent field means it was not measured. A measured zero is
-included, including `bytesDown`, `tcpRttMinMs`, `bulkKbpsMax`,
-`bulkSplicedCount`, `rxOutOfOrderFraction`, and `txRetransmitFraction`.
+`qualitySamplesDropped` counts meaningful phases rejected across the current
+collection when its 64-tag or 16 KiB copied-tag admission budget is full,
+not distinct rejected tags. Histories of admitted tags remain until the next
+network change, including retired tags. The backend must consider this partial
+coverage alongside the histogram counts.
 
-A spliced path may retain S1 and TTFB when its existing passive socket sweep
-observes real receive progress. Completion byte accounting never creates a
-first-reply timestamp or download speed. A witness spliced before its first
-counted reply has no socket sweep and may omit S1 and TTFB.
+Missing quality fields were not measured; measured zeros remain present,
+including `bytesDown`, `tcpRttMinMs`, `bulkKbpsMax`, `bulkSplicedCount`,
+`rxOutOfOrderFraction`, and `txRetransmitFraction`. Durations are integer
+milliseconds and speeds are decimal Kbit/s. A counted speed sample needs a
+positive interval between the first reply and the last observed 1/4/16/64 MiB
+mark. Completion publishes bytes, speed, S2, and fractions after admitted
+samples finish; a connection's Finished callback does not wait for them.
+
+Spliced bulk completions have no speed sample. An eligible path may retain
+TTFB and S1 when its existing passive socket sweep observes real receive
+progress; the completion byte counter cannot create a first-reply timestamp.
+Witness has no such sweep and can omit TTFB/S1 if splice began before its first
+counted reply. Quality adds no polling. Mux measurements describe the shared
+physical TCP connection to the server, not each user stream.
 
 | Quality field | Meaning |
 | --- | --- |
-| `bytesDown`, `bytesDownOverflow` | Bytes of completed connections; the optional true overflow flag says the value saturated at int64 maximum. |
-| `ttfbCount`, `ttfbP50Ms`, `ttfbP90Ms` | TCP first-reply samples and millisecond quantiles. |
-| `dialCount`, `dialP50Ms`, `dialP90Ms` | Successful own-socket dial samples and millisecond quantiles. |
-| `tcpCount`, `tcpRttP50Ms`, `tcpRttP90Ms`, `tcpRttMinMs` | S1 TCP RTT samples and quantiles, plus exact measured minimum in milliseconds. |
-| `bulkCount`, `bulkKbpsP50`, `bulkKbpsP90`, `bulkKbpsMax` | Counted bulk-download speeds in decimal Kbit/s; the maximum is exact. |
-| `bulkRttP50Ms` | S2 RTT under load, even when bulk speed could not be measured. |
-| `bulkSplicedCount` | Bulk completions whose transfer used splice, with no speed sample. |
-| `rxOutOfOrderFraction` | Weighted S1-to-S2 out-of-order/received counter deltas; unavailable or decreasing counter pairs are omitted. |
-| `txRetransmitFraction` | Weighted retransmitted/sent totals from the last successful socket snapshot of each completed connection. |
+| `bytesDown`, `bytesDownOverflow` | Completed-connection bytes; the optional true flag means saturation at int64 maximum. |
+| `ttfbCount`, `ttfbP50Ms`, `ttfbP90Ms` | TCP first-reply count and millisecond quantiles. |
+| `dialCount`, `dialP50Ms`, `dialP90Ms` | Successful individual raw-socket dial count and quantiles, including its handshake and any DNS. |
+| `tcpCount`, `tcpRttP50Ms`, `tcpRttP90Ms`, `tcpRttMinMs` | S1 RTT count, quantiles, and minimum measured S1 minimum RTT in output milliseconds. |
+| `bulkCount`, `bulkKbpsP50`, `bulkKbpsP90`, `bulkKbpsMax` | Valid counted bulk speeds and quantiles; maximum in output Kbit/s. |
+| `bulkRttP50Ms` | S2 load RTT, even when speed is unavailable. |
+| `bulkSplicedCount` | Completed spliced downloads of at least 1 MiB, with no speed sample. |
+| `rxOutOfOrderFraction` | Ratio of summed valid S1-to-S2 out-of-order/received deltas; decreasing pairs and zero denominators are omitted. |
+| `txRetransmitFraction` | Ratio of summed retransmitted/sent totals from each completed connection's last successful snapshot, included once. |
 
-The fingerprint stays in the existing provider-specific `network.id` hash.
-Quality exposes only parsed transport type and cell operator, never an opaque
-suffix, a user destination, or a server address. Unsupported TCP fields are
-omitted. Witness and path absolute RTTs may reach different sites; compare
-relative load growth, retransmissions, and bulk speed with sufficient counts.
+Unsupported TCP fields are omitted, including fields beyond the returned
+socket-structure length. Linux minimum comes from valid S1 `Min_rtt`; Darwin
+minimum is the minimum sampled S1 `Srtt` in this scope. Darwin `Srtt` uses
+milliseconds and its S2 load RTT is a coarse sender estimate. Linux RX counters
+are packets; Darwin RX counters are bytes. Out-of-order is not a packet-loss
+percentage. TX uses saved S2 if present, otherwise S1; unavailable TX in that
+selected S2 does not fall back to the S1 pair. Witness and path can reach
+different destinations; compare relative load growth, retransmissions, and
+bulk p90/max with sufficient counts. Traffic-derived speed is a lower bound.
 
-The legacy state/counter part has its existing 64 KiB test budget, apart from
-tags and version chosen by the backend. Quality adds at most 64 measured path
-records and one witness record. The combined request fixture uses a 128 KiB core
-budget; tags and version still have no bound of their own. Actual serialized
-sizes must be recorded by the size tests on the supported runtime.
+Quality adds at most 64 measured path records and one witness record to the
+request. The existing legacy and raw probe-step fixture ceilings documented
+above remain separate. The earlier combined quality fixture used a 128 KiB
+core budget; it is not a whole-body bound with all Stage 1 probe steps or
+arbitrary backend-chosen tags/version. Record the actual combined serialized
+size after integration on the supported runtime.
 
 ## Answer
 
