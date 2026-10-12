@@ -15,7 +15,7 @@ import (
 // protobuf directly behaves like the same config in JSON.
 const (
 	defaultWakeFreshness      = time.Minute
-	defaultWakeMinInterval    = 5 * time.Minute
+	defaultWakeMinInterval    = 3 * time.Hour
 	defaultWindow             = 60 * time.Second
 	defaultDialTimeout        = 6 * time.Second
 	defaultFirstByteTimeout   = 5 * time.Second

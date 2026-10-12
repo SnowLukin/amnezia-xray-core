@@ -150,7 +150,10 @@ the config.
    one guarded wake probe; other paths and balancers remain idle. A success exactly
    `wake.freshness` old still counts as fresh; older or missing proof needs
    a check. The default freshness is `"60s"`, and `wake.minInterval` defaults
-   to `"5m"`, counted from the actual start. Missing JSON fields keep these
+   to `"3h"`, counted from the actual start: a host may report every wake of
+   the device, which on a phone follows each push, while a path that dies
+   during a short sleep is still found by its traffic and a network change
+   by its own probe. Missing JSON fields keep these
    defaults; `"0s"` removes the corresponding limit. In a direct protobuf,
    zero keeps the default and a negative value removes the limit.
    `wake` has the same priority as `network_change` and can run during idle,
@@ -259,7 +262,7 @@ outputs. `nextRefreshIn` follows this table as well; a number is refused.
     { "tag": "block", "protocol": "blackhole" }
   ],
   "healthObservatory": {
-    "wake": { "freshness": "60s", "minInterval": "5m" },
+    "wake": { "freshness": "60s", "minInterval": "3h" },
     "passive": {
       "window": "60s", "dialTimeout": "6s", "firstByteTimeout": "5s", "stallTimeout": "8s",
       "loneFailureAfter": "2m",

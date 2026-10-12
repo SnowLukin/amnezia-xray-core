@@ -137,11 +137,11 @@ func TestUserPresentDeduplicatesSelectorsAndCalls(t *testing.T) {
 		t.Fatalf("wake jobs: %v", jobTags(jobs))
 	}
 	te.onProbeResult(jobs[0], probeResult{ok: true}, at(4*time.Minute+time.Second))
-	te.userPresent(at(8 * time.Minute))
+	te.userPresent(at(3 * time.Minute).Add(te.s.wake.minInterval))
 	if te.queued("a1", reasonWake) || te.report.counts.WakeSkipped != 10 {
 		t.Fatal("limit started at enqueue rather than actual start")
 	}
-	te.userPresent(at(9 * time.Minute))
+	te.userPresent(at(4 * time.Minute).Add(te.s.wake.minInterval))
 	if !te.queued("a1", reasonWake) {
 		t.Fatal("interval boundary did not release wake limit")
 	}
@@ -258,8 +258,8 @@ func TestUserPresentSettingsDefaultsAndZero(t *testing.T) {
 		cfg                 *Config
 		freshness, interval time.Duration
 	}{
-		{&Config{}, time.Minute, 5 * time.Minute},
-		{&Config{Wake: &WakeConfig{}}, time.Minute, 5 * time.Minute},
+		{&Config{}, time.Minute, 3 * time.Hour},
+		{&Config{Wake: &WakeConfig{}}, time.Minute, 3 * time.Hour},
 		{&Config{Wake: &WakeConfig{Freshness: -1, MinInterval: -1}}, 0, 0},
 		{&Config{Wake: &WakeConfig{Freshness: int64(2 * time.Minute), MinInterval: int64(7 * time.Minute)}}, 2 * time.Minute, 7 * time.Minute},
 	} {
@@ -360,11 +360,11 @@ func TestUserPresentPromotesDeferredNetworkProbe(t *testing.T) {
 			}
 			started := te.path("a1").lastWakeAt
 			te.onProbeResult(jobs[0], probeResult{ok: true}, started.Add(time.Second))
-			te.userPresent(started.Add(4 * time.Minute))
+			te.userPresent(started.Add(te.s.wake.minInterval - time.Minute))
 			if te.queued("a1", reasonWake) || te.report.counts.WakeSkipped != 10 {
 				t.Fatal("promoted wake lost actual-start interval limit")
 			}
-			te.userPresent(started.Add(5 * time.Minute))
+			te.userPresent(started.Add(te.s.wake.minInterval))
 			if !te.queued("a1", reasonWake) {
 				t.Fatal("promoted wake interval did not expire at its boundary")
 			}
