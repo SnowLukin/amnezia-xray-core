@@ -19,6 +19,9 @@ def report(index, events, **counters):
         "provider_applied", "provider_rejected", "provider_restart_needed",
         "provider_expired", "provider_renewals", "provider_auth_failed",
         "provider_base_changed", "pins", "releases", "memory_low_count", "outbound_sleeps",
+        "candidate_probes", "candidate_probes_failed", "probe_only_promoted_count", "fresh_path_down_count",
+        "udp_probe_count", "udp_probe_ok_count", "udp_probe_lossy_count", "udp_probe_dead_count",
+        "udp_probe_second_destination_count", "udp_suspect_count", "udp_suspect_confirmed_count",
     ), 0)
     result.update(events=events, report_index=index, report_reason="final",
                   switch_reasons={}, switch_path=[], provider_triggers={})

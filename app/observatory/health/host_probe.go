@@ -10,6 +10,7 @@ import (
 // ProbeRequest asks to probe outbounds of a leastCost balancer now.
 type ProbeRequest struct {
 	Balancer string `json:"balancer"`
+	IsUDP    bool   `json:"isUdp"`
 	// Candidates of the balancer to probe. Empty: the outbound the balancer
 	// uses, then its other candidates that are not lazy, cheapest first.
 	Outbounds []string `json:"outbounds,omitempty"`
@@ -41,11 +42,12 @@ const (
 	keptProbeRequestsLowMemory = 1
 )
 
-// probeRequest is a request of the host. One per balancer is open at a time;
-// later requests for the balancer join it.
+// A host request is shared only by requests for the same balancer and probe kind.
 type probeRequest struct {
 	id         uint64
 	balancer   string
+	isUDP      bool
+	udpEpoch   uint64
 	generation uint64
 	started    time.Time
 	// Zero while the request waits.
@@ -57,6 +59,7 @@ type probeRequest struct {
 }
 
 type probeItem struct {
+	udp    *UDPStatus
 	tag    string
 	result string
 	source string
@@ -91,6 +94,13 @@ func (r *probeRequest) tags() []string {
 // requestProbe accepts a request of the host and returns its id and the
 // outbounds it covers. It never waits for a probe.
 func (e *engine) requestProbe(balancer string, outbounds []string, now time.Time) (uint64, []string, error) {
+	return e.requestProbeKind(balancer, outbounds, false, now)
+}
+
+func (e *engine) requestProbeKind(balancer string, outbounds []string, isUDP bool, now time.Time) (uint64, []string, error) {
+	if isUDP && e.s.udpProbe == nil {
+		return 0, nil, fmt.Errorf("UDP probes are disabled")
+	}
 	s := e.selectors[balancer]
 	if s == nil {
 		return 0, nil, fmt.Errorf("no such balancer: %s", balancer)
@@ -111,16 +121,23 @@ func (e *engine) requestProbe(balancer string, outbounds []string, now time.Time
 			tags = append(tags, t)
 		}
 	}
+	if isUDP {
+		for _, tag := range tags {
+			if e.isProbeOnly(tag) {
+				return 0, nil, fmt.Errorf("UDP probe is not allowed for probe-only outbound: %s", tag)
+			}
+		}
+	}
 	tags = s.groupRepresentatives(tags)
 	if len(tags) > limit {
 		return 0, nil, fmt.Errorf("too many outbounds: at most %d", limit)
 	}
 	// Settles requests of a network left meanwhile, so none of them is joined.
 	e.serveRequests(now)
-	r := e.openRequest(balancer)
+	r := e.openRequestKind(balancer, isUDP)
 	if r == nil {
 		e.requestID++
-		r = &probeRequest{id: e.requestID, balancer: balancer, generation: e.generation, started: now}
+		r = &probeRequest{id: e.requestID, balancer: balancer, generation: e.generation, started: now, isUDP: isUDP, udpEpoch: e.udpEpoch}
 		e.requests = append(e.requests, r)
 	}
 	for _, t := range tags {
@@ -181,8 +198,12 @@ func (e *engine) probePlan(s *selector, now time.Time) []string {
 }
 
 func (e *engine) openRequest(balancer string) *probeRequest {
+	return e.openRequestKind(balancer, false)
+}
+
+func (e *engine) openRequestKind(balancer string, isUDP bool) *probeRequest {
 	for _, r := range e.requests {
-		if r.open() && r.balancer == balancer {
+		if r.open() && r.balancer == balancer && r.isUDP == isUDP {
 			return r
 		}
 	}
@@ -203,7 +224,7 @@ func (e *engine) serveRequests(now time.Time) time.Time {
 		switch {
 		case s == nil:
 			e.settle(r, probeGone, "", "gone", now)
-		case r.generation != e.generation:
+		case r.generation != e.generation || (r.isUDP && r.udpEpoch != e.udpEpoch):
 			// Probes of the previous network tell nothing about this one.
 			e.settle(r, probeExpired, "network_change", "network_change", now)
 		case !now.Before(deadline):
@@ -224,6 +245,9 @@ func (e *engine) serveRequests(now time.Time) time.Time {
 // serve answers the waiting outbounds of r that need no probe and makes sure
 // a probe is on its way for the others. It reports whether r is answered.
 func (e *engine) serve(s *selector, r *probeRequest, now time.Time) bool {
+	if r.isUDP {
+		return e.serveUDP(s, r, now)
+	}
 	hp := e.s.schedule.hostProbes
 	for i := range r.items {
 		it := &r.items[i]
@@ -260,7 +284,7 @@ func (e *engine) serve(s *selector, r *probeRequest, now time.Time) bool {
 // requests waiting for it.
 func (e *engine) answerRequests(j *probeJob, res probeResult, now time.Time) {
 	for _, r := range e.requests {
-		if !r.open() || r.generation != j.generation {
+		if !r.open() || r.isUDP || j.isUDP || r.generation != j.generation {
 			continue
 		}
 		for i := range r.items {
@@ -302,7 +326,7 @@ func (e *engine) closeRequest(r *probeRequest, end string, now time.Time) {
 		sources[it.source]++
 	}
 	e.emit(now, "probe_request", map[string]any{
-		"request": r.id, "balancer": r.balancer, "outbounds": len(r.items), "end": end,
+		"is_udp": r.isUDP, "request": r.id, "balancer": r.balancer, "outbounds": len(r.items), "end": end,
 		"ms": now.Sub(r.started).Milliseconds(), "probed": sources["probe"], "reused": sources["recent"],
 		"ok": results[probeOK], "failed": results[probeFailed], "down": results[probeDown],
 		"skipped": results[probeSkipped], "expired": results[probeExpired], "gone": results[probeGone],
@@ -336,8 +360,12 @@ func (e *engine) keepRequests() {
 
 // waitedFor reports whether an open request waits for an answer about tag.
 func (e *engine) waitedFor(tag string) bool {
+	return e.waitedForKind(tag, false)
+}
+
+func (e *engine) waitedForKind(tag string, isUDP bool) bool {
 	for _, r := range e.requests {
-		if !r.open() {
+		if !r.open() || r.isUDP != isUDP {
 			continue
 		}
 		for _, it := range r.items {
@@ -353,7 +381,7 @@ func (e *engine) waitedFor(tag string) bool {
 // request waits for any more.
 func (e *engine) dropUnclaimedHost() {
 	e.queue = slices.DeleteFunc(e.queue, func(j *probeJob) bool {
-		return j.reason == reasonHost && !e.waitedFor(j.tag)
+		return j.reason == reasonHost && !e.waitedForKind(j.tag, j.isUDP)
 	})
 }
 
@@ -399,17 +427,19 @@ func (e *engine) onHostProbeResult(p *path, r probeResult, now time.Time) {
 }
 
 type probeItemView struct {
-	Outbound     string `json:"outbound"`
-	Result       string `json:"result"`
-	Source       string `json:"source,omitempty"`
-	ProbeReason  string `json:"probe_reason,omitempty"`
-	RTTMs        int64  `json:"rtt_ms,omitempty"`
-	Error        string `json:"error,omitempty"`
-	AgeMs        int64  `json:"age_ms,omitempty"`
-	QuarantineMs int64  `json:"quarantine_ms,omitempty"`
+	UDP          *UDPStatus `json:"udp,omitempty"`
+	Outbound     string     `json:"outbound"`
+	Result       string     `json:"result"`
+	Source       string     `json:"source,omitempty"`
+	ProbeReason  string     `json:"probe_reason,omitempty"`
+	RTTMs        int64      `json:"rtt_ms,omitempty"`
+	Error        string     `json:"error,omitempty"`
+	AgeMs        int64      `json:"age_ms,omitempty"`
+	QuarantineMs int64      `json:"quarantine_ms,omitempty"`
 }
 
 type probeRequestView struct {
+	IsUDP     bool            `json:"is_udp"`
 	ID        uint64          `json:"id"`
 	Balancer  string          `json:"balancer"`
 	AgeMs     int64           `json:"age_ms"`
@@ -419,12 +449,12 @@ type probeRequestView struct {
 }
 
 func (r *probeRequest) view(now time.Time) probeRequestView {
-	v := probeRequestView{ID: r.id, Balancer: r.balancer, AgeMs: now.Sub(r.started).Milliseconds(), IsDone: !r.open(),
+	v := probeRequestView{IsUDP: r.isUDP, ID: r.id, Balancer: r.balancer, AgeMs: now.Sub(r.started).Milliseconds(), IsDone: !r.open(),
 		End: r.end, Outbounds: make([]probeItemView, len(r.items))}
 	for i, it := range r.items {
-		iv := probeItemView{Outbound: it.tag, Result: it.result, Source: it.source, Error: it.err,
+		iv := probeItemView{UDP: it.udp, Outbound: it.tag, Result: it.result, Source: it.source, Error: it.err,
 			AgeMs: it.age.Milliseconds(), QuarantineMs: it.rest.Milliseconds()}
-		if it.source == "probe" {
+		if it.source == "probe" && !r.isUDP {
 			iv.RTTMs = it.rtt.Milliseconds()
 			if it.reason != reasonHost {
 				iv.ProbeReason = it.reason.String()
@@ -437,13 +467,14 @@ func (r *probeRequest) view(now time.Time) probeRequestView {
 
 // RequestProbe asks the observer to probe outbounds of a leastCost balancer
 // now, within its probe limits, and returns at once. A request for a
-// balancer with a request still open joins it and gets its id. The results
+// balancer and probe kind with a request still open joins it and gets its id. The results
 // appear in Status under probe_requests and in ProbeResult; the host tells
 // its request by the id and the run of the ticket. A probe the host asks for
-// is evidence like any other: a failed one may move the balancer away.
+// with TCP is evidence like any other: a failed one may move the balancer away.
+// UDP results only report measurements.
 func (o *Observer) RequestProbe(r ProbeRequest) (ProbeTicket, error) {
 	o.mu.Lock()
-	id, tags, err := o.e.requestProbe(r.Balancer, r.Outbounds, o.now())
+	id, tags, err := o.e.requestProbeKind(r.Balancer, r.Outbounds, r.IsUDP, o.now())
 	o.mu.Unlock()
 	if err != nil {
 		return ProbeTicket{}, err
@@ -469,4 +500,92 @@ func (o *Observer) ProbeResult(id uint64) ([]byte, bool) {
 	}
 	out, _ := json.Marshal(v)
 	return out, v.IsDone
+}
+
+func (e *engine) serveUDP(s *selector, r *probeRequest, now time.Time) bool {
+	for i := range r.items {
+		it := &r.items[i]
+		if it.result != probePending {
+			continue
+		}
+		if !s.offers(it.tag) {
+			it.result = probeGone
+			continue
+		}
+		p := e.path(it.tag)
+		switch {
+		case e.isProbeOnly(it.tag):
+			it.result, it.source = probeSkipped, "probe_only"
+		case e.s.udpProbe == nil:
+			it.result, it.source = probeSkipped, "disabled"
+		case e.retiring[it.tag] || e.replacing[it.tag]:
+			it.result, it.source = probeGone, "gone"
+		case e.memoryLow:
+			it.result, it.source = probeSkipped, "memory"
+		case e.networkDown:
+			it.result, it.source = probeSkipped, "network"
+		case e.idle(now):
+			it.result, it.source = probeSkipped, "idle"
+		case p.asleep || p.sleeping:
+			it.result, it.source = probeSkipped, "asleep"
+		case p.status == statusDown || s.groupDown(it.tag):
+			it.result, it.source = probeDown, "down"
+		case !p.udp.at.IsZero() && now.Sub(p.udp.at) < e.s.schedule.hostProbes.reuse:
+			it.source, it.age = "recent", now.Sub(p.udp.at)
+			v := p.statusUDP(now)
+			it.udp = &v
+			it.result = p.udp.state
+		default:
+			if j := e.enqueueUDP(it.tag, reasonHost, r.balancer, now); j != nil {
+				j.request = r.id
+			}
+		}
+		if it.result == probeSkipped || it.source == "recent" {
+			e.udpSkip(p, it.source, now)
+		}
+	}
+	return r.answered()
+}
+
+func (e *engine) answerUDPRequests(j *probeJob, res udpProbeResult, now time.Time) {
+	for _, r := range e.requests {
+		if !r.open() || !r.isUDP || r.udpEpoch != j.udpEpoch || r.generation != j.generation {
+			continue
+		}
+		for i := range r.items {
+			it := &r.items[i]
+			if it.tag != j.tag || it.result != probePending {
+				continue
+			}
+			if res.canceled {
+				it.result, it.source = probeExpired, "canceled"
+				continue
+			}
+			it.result, it.source, it.reason = res.state, "probe", j.reason
+			it.udp = &UDPStatus{State: res.state, Answered: res.answered, Sent: res.sent, RTTMs: res.rtt.Milliseconds(), JitterMs: res.jitter.Milliseconds(), Reason: j.reason.String()}
+			it.err = res.class
+		}
+		if r.answered() {
+			e.closeRequest(r, "done", now)
+		}
+	}
+	e.keepRequests()
+}
+
+func (e *engine) expireUDPRequests(tag, source string, now time.Time) {
+	for _, r := range e.requests {
+		if !r.open() || !r.isUDP {
+			continue
+		}
+		for i := range r.items {
+			it := &r.items[i]
+			if it.result == probePending && (tag == "" || tag == it.tag) {
+				it.result, it.source = probeExpired, source
+			}
+		}
+		if r.answered() {
+			e.closeRequest(r, source, now)
+		}
+	}
+	e.keepRequests()
 }

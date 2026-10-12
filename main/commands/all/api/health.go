@@ -15,7 +15,7 @@ import (
 
 var cmdHealth = &base.Command{
 	CustomFlags: true,
-	UsageLine:   "{{.Exec}} api health [--server=127.0.0.1:8080] <status|events|network [id]|lost|present|pin <balancer> <outbound> [run]|release <balancer> [run]|refresh [provider]|report [take|final]|probe <balancer> [outbound...]|headers <provider>|set <provider> [after]>",
+	UsageLine:   "{{.Exec}} api health [--server=127.0.0.1:8080] <status|events|network [id]|lost|present|pin <balancer> <outbound> [run]|release <balancer> [run]|refresh [provider]|report [take|final]|probe [--udp] <balancer> [outbound...]|headers <provider>|set <provider> [after]>",
 	Short:       "Query and control the health observatory",
 	Long: `
 Query and control the health observatory. Output is JSON.
@@ -41,7 +41,7 @@ Commands:
 	                            it is due and starts a new window, final
 	                            is the last one before the core stops;
 	                            null when there is nothing to report
-	probe <balancer> [outbound...]
+	probe [--udp] <balancer> [outbound...]
 	                            probe outbounds of the balancer now, by
 	                            default the one it uses and its other
 	                            candidates; waits for the result up to
@@ -174,10 +174,20 @@ func executeHealth(cmd *base.Command, args []string) {
 			fmt.Println(r.Json)
 		}
 	case "probe":
+		isUDP := false
+		filtered := a[:1]
+		for _, arg := range a[1:] {
+			if arg == "--udp" {
+				isUDP = true
+			} else {
+				filtered = append(filtered, arg)
+			}
+		}
+		a = filtered
 		if len(a) < 2 {
 			base.Fatalf("health probe: need balancer")
 		}
-		req := &healthService.ProbeRequest{Balancer: a[1], Outbounds: a[2:], WaitMs: int64(apiTimeout) * 1000}
+		req := &healthService.ProbeRequest{Balancer: a[1], Outbounds: a[2:], IsUdp: isUDP, WaitMs: int64(apiTimeout) * 1000}
 		r, err := client.Probe(ctx, req)
 		if err != nil {
 			base.Fatalf("health probe: %s", err)

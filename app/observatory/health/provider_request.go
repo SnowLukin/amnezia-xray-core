@@ -84,6 +84,7 @@ type requestOutbound struct {
 	QuarantineMs    int64            `json:"quarantineMs,omitempty"`
 	Failures        map[string]int64 `json:"failures,omitempty"`
 	Probe           *requestProbe    `json:"probe,omitempty"`
+	UDP             *requestUDP      `json:"udp,omitempty"`
 	ConnsOK         int64            `json:"connsOk,omitempty"`
 	ConnsFailed     int64            `json:"connsFailed,omitempty"`
 	BytesUp         int64            `json:"bytesUp,omitempty"`
@@ -92,6 +93,12 @@ type requestOutbound struct {
 	TTFBP50Ms       int64            `json:"ttfbP50Ms,omitempty"`
 	// What is left of the lease, below zero once it ended; none without one.
 	ExpiresInMs *int64 `json:"expiresInMs,omitempty"`
+}
+
+type requestUDP struct {
+	State string `json:"state"`
+	RTTMs int64  `json:"rttMs"`
+	AgoMs int64  `json:"agoMs"`
 }
 
 type requestProbe struct {
@@ -245,6 +252,9 @@ func describeOutbound(p *path, tag string, active time.Duration, now time.Time) 
 		} else {
 			o.Probe.Error = p.lastClass
 		}
+	}
+	if !p.udp.at.IsZero() {
+		o.UDP = &requestUDP{State: p.udp.state, RTTMs: p.udp.rtt.Milliseconds(), AgoMs: max(now.Sub(p.udp.at).Milliseconds(), 0)}
 	}
 	o.ConnsOK = p.stats.connsOK
 	o.ConnsFailed = p.stats.connsFailed

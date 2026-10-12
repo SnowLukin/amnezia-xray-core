@@ -81,6 +81,7 @@ message ProbeRequest {
   // Wait up to this long for the result; 0 answers at once. The deadline of
   // the call shortens the wait.
   int64 wait_ms = 3;
+  bool is_udp = 4;
 }
 
 message ProbeResponse {

@@ -45,7 +45,10 @@ type connTracker struct {
 	server string
 	conn   uint32
 	// Network generation the connection started in.
-	network uint64
+	network        uint64
+	udpPath        *path
+	udpEpoch       uint64
+	udpIncarnation uint64
 	// UDP flows have no request and answer to wait for; only their dial is judged.
 	udp bool
 	// Ends the user connection; nil when none waits for this dial.
@@ -242,8 +245,8 @@ func (t *connTracker) onWrite(n int64) {
 	now := t.o.nowNano()
 	t.bytesWritten.Add(n)
 	t.lastWrite.Store(now)
-	if t.firstWrite.Load() == 0 {
-		t.firstWrite.CompareAndSwap(0, now)
+	if t.firstWrite.Load() == 0 && t.firstWrite.CompareAndSwap(0, now) {
+		t.o.firstUserWrite(t)
 	}
 	if t.udp {
 		return

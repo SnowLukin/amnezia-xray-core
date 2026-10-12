@@ -46,7 +46,8 @@ type Observer struct {
 	done    chan struct{}
 	started bool
 	// Routed UDP associations, counted once when their link ends.
-	udpFlows map[*udpFlow]struct{}
+	udpFlows           map[*udpFlow]struct{}
+	udpEvidencePending map[*udpFlow]struct{}
 
 	trackMu sync.Mutex
 	// Every open connection, for statistics when it ends.
@@ -326,6 +327,23 @@ func (o *Observer) loop(done chan struct{}) {
 }
 
 func (o *Observer) runProbe(j *probeJob) {
+	ctx, cancel := context.WithCancel(o.runCtx)
+	o.mu.Lock()
+	j.cancel = cancel
+	if j.invalidated || j.forgotten {
+		cancel()
+	}
+	o.mu.Unlock()
+	defer cancel()
+	if j.isUDP {
+		r := o.probeUDPWithContext(ctx, j.tag, o.s.udpProbe)
+		o.mu.Lock()
+		o.e.onUDPProbeResult(j, r, o.now())
+		o.mu.Unlock()
+		o.wake()
+		return
+	}
+	ctx = o.probeJobContext(ctx, j)
 	var r probeResult
 	if j.reason == reasonConnectivity {
 		c := o.s.connectivity
@@ -333,7 +351,7 @@ func (o *Observer) runProbe(j *probeJob) {
 			destination: c.destination, method: "GET", timeout: c.timeout, progressTimeout: c.timeout,
 		})
 	} else {
-		r = o.probe(j.tag, j.profile)
+		r = o.probeWithContext(ctx, j.tag, j.profile)
 	}
 	o.mu.Lock()
 	o.e.onProbeResult(j, r, o.now())
@@ -351,7 +369,23 @@ func (o *Observer) Observes(tag string) bool {
 }
 
 func (o *Observer) AllowDispatch(ctx context.Context, tag string, handlerProbeOnly bool) bool {
-	return !(handlerProbeOnly || o.s.isProbeOnly(tag)) || probeStateFrom(ctx) != nil
+	if !handlerProbeOnly && !o.s.isProbeOnly(tag) {
+		return true
+	}
+	state := probeStateFrom(ctx)
+	if state == nil || state.credential == nil {
+		return false
+	}
+	c := state.credential
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	current := !c.job.invalidated && !c.job.forgotten && c.job.generation == o.e.generation && c.job.candidateEpoch == o.e.candidateEpoch
+	if c.job.reason == reasonCandidate {
+		current = current && o.e.candidateCurrent(c.job)
+	}
+	return handlerProbeOnly && o.e.isProbeOnly(tag) && c.job.tag == tag && c.job.isProbeOnly &&
+		(c.job.reason == reasonCandidate || c.job.reason == reasonHost) && o.e.running[c.job.id] == c.job && current &&
+		o.e.paths[tag] == c.path && c.path != nil && c.path.udpIncarnation == c.incarnation && !o.e.retiring[tag] && !o.e.replacing[tag]
 }
 
 // StartDial implements outbound.ConnectionObserver.
@@ -380,6 +414,11 @@ func (o *Observer) StartDial(ctx context.Context, tag string, server net.Destina
 	if _, ok := o.e.lastServer.Load(tag); !ok && t.server != "" {
 		o.e.lastServer.Store(tag, t.server)
 	}
+	o.mu.Lock()
+	t.udpPath = o.e.pathAt(tag, o.now())
+	t.udpEpoch = o.e.udpEpoch
+	t.udpIncarnation = t.udpPath.udpIncarnation
+	o.mu.Unlock()
 	o.track(t)
 	return t
 }
@@ -500,10 +539,13 @@ func (o *Observer) sweepLoop(done chan struct{}) {
 			return
 		case <-ticker.C:
 		}
+		o.mu.Lock()
+		udpPending := o.sweepUDPEvidenceLocked(o.now())
 		o.trackMu.Lock()
-		if len(o.watching) == 0 {
+		if len(o.watching) == 0 && !udpPending {
 			o.sweeping = false
 			o.trackMu.Unlock()
+			o.mu.Unlock()
 			return
 		}
 		batch = batch[:0]
@@ -511,6 +553,7 @@ func (o *Observer) sweepLoop(done chan struct{}) {
 			batch = append(batch, t)
 		}
 		o.trackMu.Unlock()
+		o.mu.Unlock()
 		now := o.nowNano()
 		for _, t := range batch {
 			lastRead, lastWrite := t.lastRead.Load(), t.lastWrite.Load()
@@ -573,6 +616,10 @@ func (o *Observer) success(t *connTracker) {
 		return
 	}
 	queued := len(o.e.queue)
+	if !t.udp && t.udpPath != nil && t.udpEpoch == o.e.udpEpoch && o.e.paths[t.tag] == t.udpPath && t.udpPath.udpIncarnation == t.udpIncarnation {
+		t.udpPath.lastTCPSuccess = o.now()
+		o.sweepUDPEvidenceLocked(o.now())
+	}
 	o.e.onSuccess(t.tag, o.now())
 	more := len(o.e.queue) > queued
 	o.mu.Unlock()

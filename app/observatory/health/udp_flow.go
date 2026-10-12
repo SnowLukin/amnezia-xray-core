@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/xtls/xray-core/common/net"
+	"github.com/xtls/xray-core/common/session"
 	"github.com/xtls/xray-core/features/outbound"
 )
 
@@ -84,19 +85,25 @@ func udpPortBucket(port net.Port) int {
 }
 
 type udpFlow struct {
-	o      *Observer
-	tag    string
-	path   *path
-	bucket int
+	o           *Observer
+	tag         string
+	path        *path
+	bucket      int
+	target      string
+	epoch       uint64
+	incarnation uint64
 
-	mu         sync.Mutex
-	closed     bool
-	bytesUp    int64
-	bytesDown  int64
-	reads      int64
-	writes     atomic.Int64
-	firstWrite int64
-	firstRead  int64
+	mu                    sync.Mutex
+	closed                bool
+	evidenceChecked       bool
+	evidenceAnswered      bool
+	lastEvidenceBytesDown int64
+	bytesUp               int64
+	bytesDown             int64
+	reads                 int64
+	writes                atomic.Int64
+	firstWrite            int64
+	firstRead             int64
 }
 
 var _ outbound.UDPFlowObserver = (*Observer)(nil)
@@ -118,7 +125,13 @@ func (o *Observer) StartUDPFlow(ctx context.Context, tag string, firstPort net.P
 	}
 	p := o.e.pathAt(tag, o.now())
 	p.udpFlowsActive++
-	f := &udpFlow{o: o, tag: tag, path: p, bucket: udpPortBucket(firstPort)}
+	f := &udpFlow{o: o, tag: tag, path: p, bucket: udpPortBucket(firstPort), epoch: o.e.udpEpoch, incarnation: p.udpIncarnation}
+	if obs := session.OutboundsFromContext(ctx); len(obs) > 0 {
+		target := obs[len(obs)-1].Target
+		if target.Address != nil {
+			f.target = target.String()
+		}
+	}
 	if o.udpFlows == nil {
 		o.udpFlows = make(map[*udpFlow]struct{})
 	}
@@ -130,23 +143,30 @@ func (f *udpFlow) Uplink(bytes, packets int64) {
 	if packets <= 0 {
 		return
 	}
+	first := false
 	f.mu.Lock()
 	if !f.closed {
 		f.bytesUp += bytes
 		f.writes.Add(packets)
 		if f.firstWrite == 0 {
 			f.firstWrite = f.o.nowNano()
+			first = true
 		}
 	}
 	f.mu.Unlock()
+	if first {
+		f.o.udpFirstWrite(f, f.o.now())
+	}
 }
 
 func (f *udpFlow) Downlink(bytes, packets int64) {
 	if packets <= 0 {
 		return
 	}
+	answered := false
 	f.mu.Lock()
 	if !f.closed {
+		answered = bytes > 0 && f.bytesDown == 0
 		f.bytesDown += bytes
 		f.reads += packets
 		if f.firstRead == 0 {
@@ -154,6 +174,9 @@ func (f *udpFlow) Downlink(bytes, packets int64) {
 		}
 	}
 	f.mu.Unlock()
+	if answered {
+		f.o.udpAnswered(f, f.o.now())
+	}
 }
 
 func (f *udpFlow) Finished() {
@@ -171,6 +194,7 @@ func (f *udpFlow) finishLocked() {
 		return
 	}
 	f.closed = true
+	f.o.retainUDPEvidenceLocked(f, f.o.now())
 	delete(f.o.udpFlows, f)
 	f.path.udpFlowsActive--
 	if f.o.e.paths[f.tag] != f.path {
@@ -198,4 +222,5 @@ func (o *Observer) finishUDPFlowsLocked() {
 	for f := range o.udpFlows {
 		f.finishLocked()
 	}
+	clear(o.udpEvidencePending)
 }

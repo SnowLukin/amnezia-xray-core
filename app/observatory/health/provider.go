@@ -689,6 +689,7 @@ func (e *engine) applyProviderSet(p *provider, c providerChange, now time.Time) 
 	p.pathDefs, p.groupDefs = c.paths, c.groups
 	for _, tag := range c.retire {
 		e.retiring[tag] = true
+		e.cancelUDPJobs(tag)
 	}
 	for _, tag := range c.revive {
 		delete(e.retiring, tag)
@@ -752,14 +753,16 @@ func (s *selector) offers(tag string) bool {
 // replacing marks outbounds whose handler is about to be swapped. Between
 // the removal of the old handler and the registration of the new one a
 // connection may see the tag missing; that is no reason to leave it.
-func (e *engine) replacingTags(tags []string) {
+func (e *engine) replacingTags(tags []string, now time.Time) {
 	for _, t := range tags {
 		e.replacing[t] = true
+		e.invalidateUDP(t, now)
 	}
 }
 
 // resetPath forgets what was learned about an outbound whose settings changed.
 func (e *engine) resetPath(tag string, now time.Time) {
+	e.invalidateUDP(tag, now)
 	e.resetProbeOnly(tag)
 	for _, s := range e.selectors {
 		delete(s.penalty, tag)
@@ -894,5 +897,5 @@ func (e *engine) dropProviderOutbound(tag string, now time.Time) {
 			s.snapshot.Store(&next)
 		}
 	}
-	e.forget(tag)
+	e.forget(tag, now)
 }

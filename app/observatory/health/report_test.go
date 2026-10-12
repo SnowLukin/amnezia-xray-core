@@ -77,6 +77,24 @@ func foldReport(t *testing.T, raw []byte) (reportCounts, bool) {
 			c.PendingClosed += num(f["connections"])
 		case "idle_closed":
 			c.IdleClosed += num(f["connections"])
+		case "udp_probe":
+			c.UDPProbeCount++
+			switch f["state"] {
+			case "ok":
+				c.UDPProbeOKCount++
+			case "lossy":
+				c.UDPProbeLossyCount++
+			case "dead":
+				c.UDPProbeDeadCount++
+				if f["reason"] == "udp_suspect" {
+					c.UDPSuspectConfirmedCount++
+				}
+			}
+			if num(f["destination_index"]) > 0 {
+				c.UDPProbeSecondDestinationCount++
+			}
+		case "udp_suspect":
+			c.UDPSuspectCount++
 		case "probe_result":
 			c.Probes++
 			if f["is_ok"] != true {
@@ -256,6 +274,10 @@ func TestReportAddsUpTheEvents(t *testing.T) {
 	}
 	te.emit(now, "probe_only_promoted", map[string]any{"outbound": "a1"})
 	te.emit(now, "fresh_path_down", map[string]any{"outbound": "a1"})
+	for i, state := range []string{"ok", "lossy", "dead"} {
+		te.emit(now, "udp_probe", map[string]any{"outbound": "a1", "reason": "udp_suspect", "state": state, "destination_index": i % 2})
+	}
+	te.emit(now, "udp_suspect", map[string]any{"outbound": "a1", "flows": 3, "targets": 2})
 
 	raw, dropped := te.events.drain()
 	if dropped != 0 {
@@ -529,11 +551,11 @@ func TestReportPathsGrowSincePreviousReport(t *testing.T) {
 	if p := v.Paths["a1"]; p.ActiveMs != 15_000 || p.BytesUp != 0 || p.BytesDown != 24 || p.ConnsOK != 0 || p.Probes != 1 || p.ProbeBytes != 4096 {
 		t.Fatalf("a1 grew by %+v", p)
 	}
-	if p, ok := v.Paths["b1"]; !ok || !reflect.DeepEqual(p, reportPath{State: "unknown", ProbeSteps: []reportProbeStep{}}) {
+	if p, ok := v.Paths["b1"]; !ok || !reflect.DeepEqual(p, reportPath{State: "unknown", UDPState: "unknown", ProbeSteps: []reportProbeStep{}}) {
 		t.Fatalf("b1 without growth %+v, listed %v", p, ok)
 	}
 	// An outbound forgotten and seen again counts from zero.
-	te.forget("b1")
+	te.forget("b1", t0)
 	te.path("b1").stats.connsFailed = 3
 	failoverEvent(te, at(26*time.Second))
 	v = te.takeReport(false, at(30*time.Second))
@@ -561,7 +583,7 @@ func TestReportListsTheFirstPaths(t *testing.T) {
 	// A path left out still starts its growth anew, so dropping a tag later
 	// does not bring its whole history at once.
 	for _, tag := range []string{"a1", "b1", "p00", "p01", "p02", "p03"} {
-		te.forget(tag)
+		te.forget(tag, t0)
 	}
 	failoverEvent(te, at(3*time.Second))
 	v = te.takeReport(false, at(4*time.Second))

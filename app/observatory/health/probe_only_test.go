@@ -252,7 +252,7 @@ func TestProbeOnlyDispatchGuardRejectsUserContexts(t *testing.T) {
 	ctx := context.Background()
 	var bytes atomic.Int64
 	if o.AllowDispatch(ctx, "candidate", true) || !o.AllowDispatch(ctx, "real", false) ||
-		!o.AllowDispatch(withProbe(ctx, &bytes), "candidate", true) {
-		t.Fatal("dispatch guard allowed a user or rejected a probe")
+		o.AllowDispatch(withProbe(ctx, &bytes), "candidate", true) {
+		t.Fatal("dispatch guard allowed a user or a generic probe context")
 	}
 }

@@ -2,11 +2,16 @@ package health
 
 import (
 	"fmt"
+	stdnet "net"
 	"net/url"
+	"strconv"
 	"strings"
 )
 
 func (c *Config) ValidateProbeSteps() error {
+	if err := c.ValidateUDP(); err != nil {
+		return err
+	}
 	seenProfiles := make(map[string]bool, len(c.GetProbes()))
 	for profileIndex, profile := range c.GetProbes() {
 		where := fmt.Sprintf("healthObservatory: probes[%d]", profileIndex)
@@ -79,6 +84,35 @@ func (c *Config) ValidateProbeSteps() error {
 			if step.ProgressTimeout < 0 {
 				return fmt.Errorf("%s.progressTimeout must be positive", stepWhere)
 			}
+		}
+	}
+	return nil
+}
+
+func (c *Config) ValidateUDP() error {
+	if c.GetPassive().GetUdpReplyTimeout() < -1 {
+		return fmt.Errorf("healthObservatory: passive.udpReplyTimeout must be nonnegative")
+	}
+	u := c.GetUdpProbe()
+	if u == nil {
+		return nil
+	}
+	if len(u.Destinations) < 1 || len(u.Destinations) > 4 {
+		return fmt.Errorf("healthObservatory: udpProbe.destinations must contain 1 to 4 host:port addresses")
+	}
+	for _, address := range u.Destinations {
+		host, port, err := stdnet.SplitHostPort(address)
+		n, portErr := strconv.ParseUint(port, 10, 16)
+		if err != nil || host == "" || strings.ContainsAny(host, " /?#@\\\t\r\n") || portErr != nil || n == 0 {
+			return fmt.Errorf("healthObservatory: udpProbe.destinations must contain valid host:port addresses")
+		}
+	}
+	for _, field := range []struct {
+		name  string
+		value int64
+	}{{"requests", int64(u.Requests)}, {"interval", u.Interval}, {"timeout", u.Timeout}, {"perHour", int64(u.PerHour)}} {
+		if field.value < 0 {
+			return fmt.Errorf("healthObservatory: udpProbe.%s must be positive", field.name)
 		}
 	}
 	return nil

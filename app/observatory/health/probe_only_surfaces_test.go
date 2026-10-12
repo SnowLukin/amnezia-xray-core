@@ -78,8 +78,8 @@ func TestProbeOnlyDispatchPolicyPreservesHandlerMode(t *testing.T) {
 	if o.AllowDispatch(user, "same-tag", true) {
 		t.Fatal("old probe handler admitted user after promotion")
 	}
-	if !o.AllowDispatch(probe, "same-tag", true) {
-		t.Fatal("core probe was rejected")
+	if o.AllowDispatch(probe, "same-tag", true) {
+		t.Fatal("old probe handler admitted a generic probe after promotion")
 	}
 	if !o.AllowDispatch(user, "same-tag", false) {
 		t.Fatal("real handler was rejected")
@@ -88,8 +88,8 @@ func TestProbeOnlyDispatchPolicyPreservesHandlerMode(t *testing.T) {
 	if o.AllowDispatch(user, "same-tag", false) {
 		t.Fatal("selected real handler admitted a new user after demotion")
 	}
-	if !o.AllowDispatch(probe, "same-tag", false) {
-		t.Fatal("core probe rejected after demotion")
+	if o.AllowDispatch(probe, "same-tag", false) {
+		t.Fatal("real handler admitted a generic probe after demotion")
 	}
 }
 

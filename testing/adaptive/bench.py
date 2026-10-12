@@ -48,6 +48,8 @@ UUID = "5f88c4df-2a2d-4b68-9b27-5d21339abb60"
 PROBE_UUID = "80d6d02c-fef0-4fd3-a318-a586684b12c7"
 PROBE_EMAIL = "bench-probe-only"
 USER_EMAIL = "bench-user"
+UDP_DROP_UUID = "1ec7f289-2a98-4e92-a401-538bc6fe6a67"
+UDP_DROP_EMAIL = "bench-udp-blackhole"
 REALITY_PRIVATE = "ODyRd0nJyxk9us_UzqG_jJM4NLTSPPLZfkpcCzuCvUk"
 REALITY_PUBLIC = "SFQq-6EUyhY12O_zOjI9pVdY1b7y3aVaevZJg8JDaEw"
 
@@ -104,6 +106,8 @@ AWG_ADDRESSES = [21071 + OFFSET, 21081 + OFFSET]
 AWG_ADDRESS = AWG_ADDRESSES[0]
 UDP_ECHO_PORT = 18997 + OFFSET
 UDP_PORTS = [AWG_PORT, UDP_ECHO_PORT] + AWG_ADDRESSES
+UDP_STUN_PORTS = [22022 + OFFSET, 22023 + OFFSET]
+UDP_STUN_DOMAINS = ["stun-one.test", "stun-two.test"]
 
 AWG_SERVER_PRIVATE = "KLWsMvV9jay7/DbNtHYRzqpRtSSp55JUhzHLmO4rWnI="
 AWG_SERVER_PUBLIC = "FaIcjcrbDGj21AiVKy630Bv7q+gLHOV9JGe6abLPL2U="
@@ -152,7 +156,7 @@ def ensure_cert(xray):
     return out.strip().split("=", 1)[1]
 
 
-def server_config(probe_credentials=False, access_log=None):
+def server_config(probe_credentials=False, access_log=None, udp_observation=False):
     tls = {"certificates": [{"certificateFile": os.path.join(CERT_DIR, "example.crt"),
                              "keyFile": os.path.join(CERT_DIR, "example.key")}]}
 
@@ -162,12 +166,14 @@ def server_config(probe_credentials=False, access_log=None):
             client["email"] = USER_EMAIL
         if flow:
             client["flow"] = flow
+        clients = [client] + ([dict(client, id=PROBE_UUID, email=PROBE_EMAIL)] if probe_credentials else [])
+        if udp_observation:
+            clients.append(dict(client, id=UDP_DROP_UUID, email=UDP_DROP_EMAIL))
         return {"tag": kind, "listen": "127.0.0.1", "port": server_port(kind), "protocol": "vless",
-                "settings": {"clients": [client] + ([dict(client, id=PROBE_UUID, email=PROBE_EMAIL)]
-                           if probe_credentials else []), "decryption": "none"}, "streamSettings": stream}
+                "settings": {"clients": clients, "decryption": "none"}, "streamSettings": stream}
 
-    hosts = {t: "127.0.0.1" for t in TARGETS + ["probe.test", "dead.test"]}
-    return {
+    hosts = {t: "127.0.0.1" for t in TARGETS + ["probe.test", "dead.test"] + UDP_STUN_DOMAINS}
+    config = {
         "log": {"loglevel": "warning"} | ({"access": access_log} if access_log else {}),
         "dns": {"hosts": hosts},
         "inbounds": [
@@ -190,15 +196,30 @@ def server_config(probe_credentials=False, access_log=None):
             {"user": [PROBE_EMAIL], "outboundTag": "dead"},
         ] if probe_credentials else []) + [{"domain": ["full:dead.test"], "outboundTag": "dead"}]},
     }
+    if udp_observation:
+        add_udp_stun_routes(config)
+        config["routing"]["rules"].insert(0, {"user": [UDP_DROP_EMAIL], "network": "udp", "outboundTag": "dead"})
+    return config
 
 
-def awg_server_config():
+def add_udp_stun_routes(config):
+    for index, port in enumerate((19302, 3478)):
+        tag = f"udp-stun-{index}"
+        config["outbounds"].append({"tag": tag, "protocol": "freedom", "settings": {
+            "redirect": f"127.0.0.1:{UDP_STUN_PORTS[index]}", "finalRules": [{"action": "allow"}]}})
+        config["routing"]["rules"].insert(0, {"domain": [f"full:{UDP_STUN_DOMAINS[index]}"],
+            "network": "udp", "port": str(port), "outboundTag": tag})
+        config["routing"]["rules"].insert(0, {"ip": [TUNNEL_TARGET], "network": "udp",
+            "port": str(port), "outboundTag": tag})
+
+
+def awg_server_config(udp_observation=False):
     """The AmneziaWG server. Its DNS, which the client reaches through the
     tunnel, answers every target with TUNNEL_TARGET; everything else that comes
     out of the tunnel goes to loopback on the port it was meant for."""
-    hosts = {t: TUNNEL_TARGET for t in TARGETS + ["probe.test"]}
+    hosts = {t: TUNNEL_TARGET for t in TARGETS + ["probe.test"] + UDP_STUN_DOMAINS}
     hosts["dead.test"] = TUNNEL_DEAD
-    return {
+    config = {
         "log": {"loglevel": "warning"},
         "dns": {"hosts": hosts, "queryStrategy": "UseIPv4"},
         "inbounds": [{"tag": "awg", "listen": "127.0.0.1", "port": AWG_PORT, "protocol": "wireguard",
@@ -215,6 +236,9 @@ def awg_server_config():
         "routing": {"rules": [{"port": "53", "outboundTag": "dns"},
                               {"ip": [TUNNEL_DEAD], "outboundTag": "dead"}]},
     }
+    if udp_observation:
+        add_udp_stun_routes(config)
+    return config
 
 
 def awg_member(tag, index=0):
@@ -344,6 +368,8 @@ def client_config(members, costs, health=None, strategy=None, burst=None, loglev
     }
     if "BENCH_CONCURRENT" in os.environ:
         h["schedule"] = {"maxConcurrentProbes": CONCURRENT}
+    if os.environ.get("BENCH_UDP_PROBE") == "1":
+        h["udpProbe"] = {"destinations": [f"{TUNNEL_TARGET}:19302", f"{TUNNEL_TARGET}:3478"]}
     for k, v in (health or {}).items():
         if isinstance(v, dict) and isinstance(h.get(k), dict):
             h[k] = h[k] | v
@@ -366,12 +392,14 @@ PIN = None
 class Stand:
     """Starts the target, the servers and the chaos proxy; stops them on exit."""
 
-    def __init__(self, xray, workdir, probe_credentials=False):
+    def __init__(self, xray, workdir, probe_credentials=False, udp_observation=False):
         global PIN
         self.xray = xray
         self.workdir = workdir
         self.procs = []
         self.probe_credentials = probe_credentials
+        self.udp_observation = udp_observation
+        self.udp_targets = None
         self.server_access_log = os.path.join(workdir, "server-access.log")
         PIN = ensure_cert(xray)
         self.target_log = os.path.join(workdir, "target.log")
@@ -386,13 +414,17 @@ class Stand:
         busy += [f"udp {p}" for p in UDP_PORTS if udp_bound(p)]
         if busy:
             raise RuntimeError(f"ports already in use, another bench running? {busy}")
+        if self.udp_observation:
+            from udp_probe_scenarios import STUNTargets
+            self.udp_targets = STUNTargets(self.workdir).__enter__()
         open(self.target_log, "w").close()
         self.procs.append(subprocess.Popen(
             ["python3", os.path.join(HERE, "target.py"), str(TARGET_PORT), self.target_log, str(TARGET_TLS_PORT),
              TARGET_CERT, TARGET_KEY, str(UDP_ECHO_PORT)],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
-        for name, config in (("server", server_config(self.probe_credentials, self.server_access_log if self.probe_credentials else None)),
-                             ("server-awg", awg_server_config())):
+        access = self.server_access_log if self.probe_credentials or self.udp_observation else None
+        for name, config in (("server", server_config(self.probe_credentials, access, self.udp_observation)),
+                             ("server-awg", awg_server_config(self.udp_observation))):
             path = os.path.join(self.workdir, f"{name}.json")
             with open(path, "w") as f:
                 json.dump(config, f)
@@ -429,8 +461,12 @@ class Stand:
             except subprocess.TimeoutExpired:
                 p.kill()
                 p.wait(timeout=5)
+        if self.udp_targets is not None:
+            self.udp_targets.__exit__()
 
     def reset(self):
+        if self.udp_targets is not None:
+            self.udp_targets.reset()
         chaos(",".join(map(str, all_address_ports())), "pass")
         open(self.target_log, "w").close()
         open(self.provider_log, "w").close()
@@ -1186,7 +1222,9 @@ def fold_report(events):
             "provider_retry_after", "provider_applied", "provider_rejected", "provider_restart_needed",
             "provider_expired", "provider_renewals", "provider_auth_failed", "provider_base_changed", "pins",
             "releases", "memory_low_count", "outbound_sleeps", "candidate_probes", "candidate_probes_failed",
-            "probe_only_promoted_count", "fresh_path_down_count"]
+            "probe_only_promoted_count", "fresh_path_down_count", "udp_probe_count", "udp_probe_ok_count",
+            "udp_probe_lossy_count", "udp_probe_dead_count", "udp_probe_second_destination_count",
+            "udp_suspect_count", "udp_suspect_confirmed_count"]
     c = dict.fromkeys(keys, 0)
     c.update(switch_reasons={}, switch_path=[], provider_triggers={})
     decided = False
@@ -1261,6 +1299,15 @@ def fold_report(events):
             c["memory_low_count"] += f.get("is_low") is True
         elif t == "outbound_sleep":
             c["outbound_sleeps"] += 1
+        elif t == "udp_probe":
+            c["udp_probe_count"] += 1
+            state = f.get("state")
+            if state in ("ok", "lossy", "dead"):
+                c[f"udp_probe_{state}_count"] += 1
+            c["udp_probe_second_destination_count"] += f.get("destination_index", 0) > 0
+            c["udp_suspect_confirmed_count"] += state == "dead" and f.get("reason") == "udp_suspect"
+        elif t == "udp_suspect":
+            c["udp_suspect_count"] += 1
     return c, decided
 
 

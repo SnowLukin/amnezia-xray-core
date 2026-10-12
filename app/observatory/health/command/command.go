@@ -101,7 +101,7 @@ func (s *service) Probe(ctx context.Context, r *ProbeRequest) (*ProbeResponse, e
 	if err := s.ready(); err != nil {
 		return nil, err
 	}
-	ticket, err := s.observer.RequestProbe(health.ProbeRequest{Balancer: r.Balancer, Outbounds: r.Outbounds})
+	ticket, err := s.observer.RequestProbe(health.ProbeRequest{Balancer: r.Balancer, Outbounds: r.Outbounds, IsUDP: r.IsUdp})
 	if err != nil {
 		return nil, err
 	}

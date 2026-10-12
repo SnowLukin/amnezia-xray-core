@@ -26,60 +26,72 @@ const (
 
 // reportCounts is what the events of a report window add up to.
 type reportCounts struct {
-	Events                  int64            `json:"events"`
-	EventsDropped           uint64           `json:"events_dropped"`
-	Switches                int64            `json:"switches"`
-	SwitchReasons           map[string]int64 `json:"switch_reasons"`
-	SwitchPath              []string         `json:"switch_path"`
-	Exhausted               int64            `json:"exhausted_count"`
-	GroupDown               int64            `json:"group_down_count"`
-	PathDown                int64            `json:"path_down_count"`
-	PathSuspect             int64            `json:"path_suspect_count"`
-	PathDegraded            int64            `json:"path_degraded_count"`
-	PathRescued             int64            `json:"path_rescued_count"`
-	AuditCount              int64            `json:"audit_count"`
-	AuditPassed             int64            `json:"audit_passed_count"`
-	AuditSkipped            int64            `json:"audit_skipped_count"`
-	WakeProbeCount          int64            `json:"wake_probe_count"`
-	WakeProbeFailed         int64            `json:"wake_probe_failed_count"`
-	WakeSkipped             int64            `json:"wake_skipped_count"`
-	LoneProbeCount          int64            `json:"lone_probe_count"`
-	LoneProbeFailed         int64            `json:"lone_probe_failed_count"`
-	CandidateProbes         int64            `json:"candidate_probes"`
-	CandidateProbesFailed   int64            `json:"candidate_probes_failed"`
-	ProbeOnlyPromoted       int64            `json:"probe_only_promoted_count"`
-	FreshPathDown           int64            `json:"fresh_path_down_count"`
-	PendingClosed           int64            `json:"pending_closed_count"`
-	IdleClosed              int64            `json:"idle_closed_count"`
-	Probes                  int64            `json:"probes"`
-	ProbesFailed            int64            `json:"probes_failed"`
-	ProbeBytes              int64            `json:"probe_bytes"`
-	HostProbeRequests       int64            `json:"host_probe_requests"`
-	HostProbes              int64            `json:"host_probes"`
-	ReturnToCheaperAttempts int64            `json:"return_attempts"`
-	ReturnToCheaperFailures int64            `json:"return_failures"`
-	PinnedDown              int64            `json:"pinned_down_count"`
-	NetworkChanges          int64            `json:"network_changes"`
-	NetworkKnown            int64            `json:"network_known"`
-	NetworkDown             int64            `json:"network_down_count"`
-	ProviderFetches         int64            `json:"provider_fetches"`
-	ProviderFetchFailures   int64            `json:"provider_fetch_failures"`
-	ProviderTriggers        map[string]int64 `json:"provider_triggers"`
-	ProviderRetryAfter      int64            `json:"provider_retry_after"`
-	ProviderApplied         int64            `json:"provider_applied"`
-	ProviderRejected        int64            `json:"provider_rejected"`
-	ProviderRestartNeeded   int64            `json:"provider_restart_needed"`
-	ProviderExpired         int64            `json:"provider_expired"`
-	ProviderRenewals        int64            `json:"provider_renewals"`
-	ProviderAuthFailed      int64            `json:"provider_auth_failed"`
-	ProviderBaseChanged     int64            `json:"provider_base_changed"`
-	Pins                    int64            `json:"pins"`
-	Releases                int64            `json:"releases"`
-	MemoryLow               int64            `json:"memory_low_count"`
-	OutboundSleeps          int64            `json:"outbound_sleeps"`
+	UDPProbeCount                  int64            `json:"udp_probe_count"`
+	UDPProbeOKCount                int64            `json:"udp_probe_ok_count"`
+	UDPProbeLossyCount             int64            `json:"udp_probe_lossy_count"`
+	UDPProbeDeadCount              int64            `json:"udp_probe_dead_count"`
+	UDPProbeSecondDestinationCount int64            `json:"udp_probe_second_destination_count"`
+	UDPSuspectCount                int64            `json:"udp_suspect_count"`
+	UDPSuspectConfirmedCount       int64            `json:"udp_suspect_confirmed_count"`
+	Events                         int64            `json:"events"`
+	EventsDropped                  uint64           `json:"events_dropped"`
+	Switches                       int64            `json:"switches"`
+	SwitchReasons                  map[string]int64 `json:"switch_reasons"`
+	SwitchPath                     []string         `json:"switch_path"`
+	Exhausted                      int64            `json:"exhausted_count"`
+	GroupDown                      int64            `json:"group_down_count"`
+	PathDown                       int64            `json:"path_down_count"`
+	PathSuspect                    int64            `json:"path_suspect_count"`
+	PathDegraded                   int64            `json:"path_degraded_count"`
+	PathRescued                    int64            `json:"path_rescued_count"`
+	AuditCount                     int64            `json:"audit_count"`
+	AuditPassed                    int64            `json:"audit_passed_count"`
+	AuditSkipped                   int64            `json:"audit_skipped_count"`
+	WakeProbeCount                 int64            `json:"wake_probe_count"`
+	WakeProbeFailed                int64            `json:"wake_probe_failed_count"`
+	WakeSkipped                    int64            `json:"wake_skipped_count"`
+	LoneProbeCount                 int64            `json:"lone_probe_count"`
+	LoneProbeFailed                int64            `json:"lone_probe_failed_count"`
+	CandidateProbes                int64            `json:"candidate_probes"`
+	CandidateProbesFailed          int64            `json:"candidate_probes_failed"`
+	ProbeOnlyPromoted              int64            `json:"probe_only_promoted_count"`
+	FreshPathDown                  int64            `json:"fresh_path_down_count"`
+	PendingClosed                  int64            `json:"pending_closed_count"`
+	IdleClosed                     int64            `json:"idle_closed_count"`
+	Probes                         int64            `json:"probes"`
+	ProbesFailed                   int64            `json:"probes_failed"`
+	ProbeBytes                     int64            `json:"probe_bytes"`
+	HostProbeRequests              int64            `json:"host_probe_requests"`
+	HostProbes                     int64            `json:"host_probes"`
+	ReturnToCheaperAttempts        int64            `json:"return_attempts"`
+	ReturnToCheaperFailures        int64            `json:"return_failures"`
+	PinnedDown                     int64            `json:"pinned_down_count"`
+	NetworkChanges                 int64            `json:"network_changes"`
+	NetworkKnown                   int64            `json:"network_known"`
+	NetworkDown                    int64            `json:"network_down_count"`
+	ProviderFetches                int64            `json:"provider_fetches"`
+	ProviderFetchFailures          int64            `json:"provider_fetch_failures"`
+	ProviderTriggers               map[string]int64 `json:"provider_triggers"`
+	ProviderRetryAfter             int64            `json:"provider_retry_after"`
+	ProviderApplied                int64            `json:"provider_applied"`
+	ProviderRejected               int64            `json:"provider_rejected"`
+	ProviderRestartNeeded          int64            `json:"provider_restart_needed"`
+	ProviderExpired                int64            `json:"provider_expired"`
+	ProviderRenewals               int64            `json:"provider_renewals"`
+	ProviderAuthFailed             int64            `json:"provider_auth_failed"`
+	ProviderBaseChanged            int64            `json:"provider_base_changed"`
+	Pins                           int64            `json:"pins"`
+	Releases                       int64            `json:"releases"`
+	MemoryLow                      int64            `json:"memory_low_count"`
+	OutboundSleeps                 int64            `json:"outbound_sleeps"`
 }
 
 type reportPath struct {
+	UDPProbes          int64                    `json:"udp_probes"`
+	UDPProbesDead      int64                    `json:"udp_probes_dead"`
+	UDPRTTP50Ms        int64                    `json:"udp_rtt_p50_ms"`
+	UDPJitterP50Ms     int64                    `json:"udp_jitter_p50_ms"`
+	UDPState           string                   `json:"udp_state"`
 	State              string                   `json:"state"`
 	TTFBP50Ms          int64                    `json:"ttfb_p50_ms"`
 	ActiveMs           int64                    `json:"active_ms"`
@@ -157,6 +169,8 @@ type pathTotals struct {
 	loneProbes       int64
 	loneProbesFailed int64
 	udp              udpPathTotals
+	udpProbes        int64
+	udpProbesDead    int64
 }
 
 // report counts every event as it is emitted, so the report depends neither
@@ -237,6 +251,24 @@ func (r *report) count(typ string, f map[string]any) {
 	case "idle_closed":
 		// Ending what idles on a path that works changes no choice.
 		c.IdleClosed += number(f["connections"])
+	case "udp_probe":
+		c.UDPProbeCount++
+		switch f["state"] {
+		case "ok":
+			c.UDPProbeOKCount++
+		case "lossy":
+			c.UDPProbeLossyCount++
+		case "dead":
+			c.UDPProbeDeadCount++
+			if f["reason"] == "udp_suspect" {
+				c.UDPSuspectConfirmedCount++
+			}
+		}
+		if number(f["destination_index"]) > 0 {
+			c.UDPProbeSecondDestinationCount++
+		}
+	case "udp_suspect":
+		c.UDPSuspectCount++
 	case "probe_result":
 		c.Probes++
 		if f["is_ok"] != true {
@@ -523,6 +555,8 @@ func (e *engine) reportView(reason string, now time.Time, take bool) *reportView
 			bytesUp:          p.stats.bytesUp,
 			bytesDown:        p.stats.bytesDown,
 			udp:              p.stats.udp,
+			udpProbes:        p.stats.udpProbes,
+			udpProbesDead:    p.stats.udpProbesDead,
 			connsOK:          p.stats.connsOK,
 			connsFailed:      p.stats.connsFailed,
 			probes:           p.stats.probes,
@@ -564,11 +598,18 @@ func (e *engine) reportView(reason string, now time.Time, take bool) *reportView
 				UDPReads:           udp.reads,
 				UDPFirstReplyP50Ms: p.stats.udpFirstReply.quantile(0.5).Milliseconds(),
 				UDPPorts:           udp.reportPorts(),
+				UDPProbes:          total.udpProbes - base.udpProbes,
+				UDPProbesDead:      total.udpProbesDead - base.udpProbesDead,
+				UDPRTTP50Ms:        p.stats.udpRTT.quantile(0.5).Milliseconds(),
+				UDPJitterP50Ms:     p.stats.udpJitter.quantile(0.5).Milliseconds(),
+				UDPState:           p.statusUDP(now).State,
 			}
 		}
 		if take {
 			p.reported = total
 			p.stats.udpFirstReply = histogram{}
+			p.stats.udpRTT = histogram{}
+			p.stats.udpJitter = histogram{}
 		}
 	}
 	return v

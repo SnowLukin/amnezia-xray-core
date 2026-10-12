@@ -234,7 +234,7 @@ func TestForgottenPathStartsProbeStepCountsFromZero(t *testing.T) {
 		"outbound": "b1", "is_ok": true,
 		"steps": []map[string]any{{"name": "transport", "is_passed": true}},
 	})
-	te.forget("b1")
+	te.forget("b1", t0)
 	te.path("b1")
 	te.emit(at(2*time.Second), "probe_result", map[string]any{
 		"outbound": "b1", "is_ok": false,

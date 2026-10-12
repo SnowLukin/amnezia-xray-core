@@ -181,7 +181,7 @@ func TestUDPFlowFinishAfterForgetDoesNotRestorePath(t *testing.T) {
 		t.Fatalf("old path has %d active flows", oldPath.udpFlowsActive)
 	}
 	o.mu.Lock()
-	o.e.forget("a1")
+	o.e.forget("a1", t0)
 	o.mu.Unlock()
 	old.Finished()
 	if oldPath.udpFlowsActive != 0 || o.e.paths["a1"] != nil {
@@ -191,7 +191,7 @@ func TestUDPFlowFinishAfterForgetDoesNotRestorePath(t *testing.T) {
 	retiringPath := retiring.path
 	retiring.Uplink(5, 1)
 	o.mu.Lock()
-	o.e.forget("a1")
+	o.e.forget("a1", t0)
 	o.mu.Unlock()
 	newFlow := o.StartUDPFlow(context.Background(), "a1", 19302).(*udpFlow)
 	newPath := newFlow.path

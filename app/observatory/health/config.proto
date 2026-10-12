@@ -23,6 +23,7 @@ message Config {
   SleepConfig sleep = 10;
   repeated PathDefinition paths = 11;
   WakeConfig wake = 12;
+  UDPProbeConfig udp_probe = 13;
 }
 
 // User presence checks stale selected paths even while idle. Zero keeps the
@@ -79,6 +80,8 @@ message PassiveConfig {
   // Without recent proof of life, one path failure asks for a probe.
   // Zero uses the default; a negative value disables this check.
   int64 lone_failure_after = 16;
+  // Zero uses 5 seconds; a negative value disables UDP evidence.
+  int64 udp_reply_timeout = 17;
 }
 
 message ProbeProfile {
@@ -425,4 +428,12 @@ message ProviderApply {
   repeated string accepted_headers = 7;
   // An answer may set no header; one that has headers is refused.
   bool fixed_headers = 8;
+}
+
+message UDPProbeConfig {
+  repeated string destinations = 1;
+  int32 requests = 2;
+  int64 interval = 3;
+  int64 timeout = 4;
+  int32 per_hour = 5;
 }

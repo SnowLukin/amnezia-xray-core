@@ -1111,7 +1111,7 @@ func TestReplacedOutboundIsJudgedAfresh(t *testing.T) {
 
 func TestSwappedHandlerDoesNotMoveTheBalancer(t *testing.T) {
 	te := newProviderEngine(t, quietProvider(nil), &SelectorConfig{Paths: pathSpecs("p-x", 1, "p-y", 2)}, "p-x", "p-y")
-	te.replacingTags([]string{"p-x"})
+	te.replacingTags([]string{"p-x"}, t0)
 	// A connection between the removal of the old handler and the
 	// registration of the new one sees p-x missing.
 	te.updateCandidates(te.sel, []string{"p-y"}, at(time.Second))

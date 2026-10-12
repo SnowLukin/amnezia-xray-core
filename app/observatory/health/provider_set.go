@@ -1090,7 +1090,7 @@ func (o *Observer) applySet(rt *providerRuntime, a *providerAnswer, j *refreshJo
 	demoted := map[string]pathSettings{}
 	wasRetiring := map[string]bool{}
 	o.mu.Lock()
-	o.e.replacingTags(reset)
+	o.e.replacingTags(reset, o.now())
 	for _, path := range a.paths {
 		metadata, exists := o.s.paths.Load(path.Tag)
 		if !exists || !path.IsProbeOnly {

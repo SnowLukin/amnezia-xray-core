@@ -155,7 +155,16 @@ type path struct {
 	// not sleep under one.
 	processes int
 	// Logical UDP links still using this exact path, including retired ones.
-	udpFlowsActive int
+	udpFlowsActive   int
+	udp              udpSnapshot
+	udpIncarnation   uint64
+	udpSwitchPending bool
+	udpSwitchDone    bool
+	udpSwitchDue     time.Time
+	udpSuspectAt     time.Time
+	udpSkips         map[string]bool
+	udpEvidence      []udpEvidence
+	lastTCPSuccess   time.Time
 	// Ending idle connections, see idle.go: the uses of the path at the
 	// last check, and when a connection it kept may first have received
 	// nothing for closeIdleAfter, zero when none may. idleClosed: a check
@@ -182,6 +191,10 @@ type pathStats struct {
 	bytesDown        int64
 	udp              udpPathTotals
 	udpFirstReply    histogram
+	udpProbes        int64
+	udpProbesDead    int64
+	udpRTT           histogram
+	udpJitter        histogram
 	downsStrong      int64
 	downsWeak        int64
 	audits           int64

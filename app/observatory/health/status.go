@@ -7,6 +7,26 @@ import (
 	"time"
 )
 
+// UDPStatus describes the latest UDP probe, independently of path health.
+type UDPStatus struct {
+	State    string `json:"state"`
+	Answered int    `json:"answered"`
+	Sent     int    `json:"sent"`
+	RTTMs    int64  `json:"rtt_ms"`
+	JitterMs int64  `json:"jitter_ms"`
+	AgeMs    int64  `json:"age_ms"`
+	Reason   string `json:"reason,omitempty"`
+}
+
+func (p *path) statusUDP(now time.Time) UDPStatus {
+	if p.udp.at.IsZero() {
+		return UDPStatus{State: "unknown"}
+	}
+	return UDPStatus{State: p.udp.state, Answered: p.udp.answered, Sent: p.udp.sent,
+		RTTMs: p.udp.rtt.Milliseconds(), JitterMs: p.udp.jitter.Milliseconds(),
+		AgeMs: max(now.Sub(p.udp.at).Milliseconds(), 0), Reason: p.udp.reason.String()}
+}
+
 type pathStatusView struct {
 	Outbound        string           `json:"outbound"`
 	IsProbeOnly     bool             `json:"is_probe_only"`
@@ -31,6 +51,7 @@ type pathStatusView struct {
 	ProbesFailed    int64            `json:"probes_failed"`
 	ProbeBytes      int64            `json:"probe_bytes"`
 	Probe           *statusProbeView `json:"probe,omitempty"`
+	UDP             UDPStatus        `json:"udp"`
 	ActiveMs        int64            `json:"active_ms"`
 	// What is left of the provider lease, below zero once it ended; none
 	// without a lease.
@@ -174,6 +195,7 @@ func (e *engine) status(now time.Time) statusView {
 			ProbesFailed: p.stats.probesFailed,
 			ProbeBytes:   p.stats.probeBytes,
 			Probe:        p.statusProbe(now),
+			UDP:          p.statusUDP(now),
 			ActiveMs:     (p.stats.activeTime + active[tag]).Milliseconds(),
 			IsAsleep:     p.asleep,
 		}

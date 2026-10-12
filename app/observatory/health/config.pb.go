@@ -193,6 +193,7 @@ type Config struct {
 	Sleep         *SleepConfig      `protobuf:"bytes,10,opt,name=sleep,proto3" json:"sleep,omitempty"`
 	Paths         []*PathDefinition `protobuf:"bytes,11,rep,name=paths,proto3" json:"paths,omitempty"`
 	Wake          *WakeConfig       `protobuf:"bytes,12,opt,name=wake,proto3" json:"wake,omitempty"`
+	UdpProbe      *UDPProbeConfig   `protobuf:"bytes,13,opt,name=udp_probe,json=udpProbe,proto3" json:"udp_probe,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -304,6 +305,13 @@ func (x *Config) GetWake() *WakeConfig {
 	return nil
 }
 
+func (x *Config) GetUdpProbe() *UDPProbeConfig {
+	if x != nil {
+		return x.UdpProbe
+	}
+	return nil
+}
+
 // User presence checks stale selected paths even while idle. Zero keeps the
 // default duration, a negative value removes the freshness or interval limit.
 type WakeConfig struct {
@@ -406,8 +414,10 @@ type PassiveConfig struct {
 	// Without recent proof of life, one path failure asks for a probe.
 	// Zero uses the default; a negative value disables this check.
 	LoneFailureAfter int64 `protobuf:"varint,16,opt,name=lone_failure_after,json=loneFailureAfter,proto3" json:"lone_failure_after,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	// Zero uses 5 seconds; a negative value disables UDP evidence.
+	UdpReplyTimeout int64 `protobuf:"varint,17,opt,name=udp_reply_timeout,json=udpReplyTimeout,proto3" json:"udp_reply_timeout,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *PassiveConfig) Reset() {
@@ -548,6 +558,13 @@ func (x *PassiveConfig) GetShouldKeepSilentOnDown() bool {
 func (x *PassiveConfig) GetLoneFailureAfter() int64 {
 	if x != nil {
 		return x.LoneFailureAfter
+	}
+	return 0
+}
+
+func (x *PassiveConfig) GetUdpReplyTimeout() int64 {
+	if x != nil {
+		return x.UdpReplyTimeout
 	}
 	return 0
 }
@@ -2426,11 +2443,87 @@ func (x *ProviderApply) GetFixedHeaders() bool {
 	return false
 }
 
+type UDPProbeConfig struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Destinations  []string               `protobuf:"bytes,1,rep,name=destinations,proto3" json:"destinations,omitempty"`
+	Requests      int32                  `protobuf:"varint,2,opt,name=requests,proto3" json:"requests,omitempty"`
+	Interval      int64                  `protobuf:"varint,3,opt,name=interval,proto3" json:"interval,omitempty"`
+	Timeout       int64                  `protobuf:"varint,4,opt,name=timeout,proto3" json:"timeout,omitempty"`
+	PerHour       int32                  `protobuf:"varint,5,opt,name=per_hour,json=perHour,proto3" json:"per_hour,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *UDPProbeConfig) Reset() {
+	*x = UDPProbeConfig{}
+	mi := &file_app_observatory_health_config_proto_msgTypes[24]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *UDPProbeConfig) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*UDPProbeConfig) ProtoMessage() {}
+
+func (x *UDPProbeConfig) ProtoReflect() protoreflect.Message {
+	mi := &file_app_observatory_health_config_proto_msgTypes[24]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use UDPProbeConfig.ProtoReflect.Descriptor instead.
+func (*UDPProbeConfig) Descriptor() ([]byte, []int) {
+	return file_app_observatory_health_config_proto_rawDescGZIP(), []int{24}
+}
+
+func (x *UDPProbeConfig) GetDestinations() []string {
+	if x != nil {
+		return x.Destinations
+	}
+	return nil
+}
+
+func (x *UDPProbeConfig) GetRequests() int32 {
+	if x != nil {
+		return x.Requests
+	}
+	return 0
+}
+
+func (x *UDPProbeConfig) GetInterval() int64 {
+	if x != nil {
+		return x.Interval
+	}
+	return 0
+}
+
+func (x *UDPProbeConfig) GetTimeout() int64 {
+	if x != nil {
+		return x.Timeout
+	}
+	return 0
+}
+
+func (x *UDPProbeConfig) GetPerHour() int32 {
+	if x != nil {
+		return x.PerHour
+	}
+	return 0
+}
+
 var File_app_observatory_health_config_proto protoreflect.FileDescriptor
 
 const file_app_observatory_health_config_proto_rawDesc = "" +
 	"\n" +
-	"#app/observatory/health/config.proto\x12 xray.core.app.observatory.health\"\xc3\x06\n" +
+	"#app/observatory/health/config.proto\x12 xray.core.app.observatory.health\"\x92\a\n" +
 	"\x06Config\x12I\n" +
 	"\apassive\x18\x02 \x01(\v2/.xray.core.app.observatory.health.PassiveConfigR\apassive\x12F\n" +
 	"\x06probes\x18\x03 \x03(\v2..xray.core.app.observatory.health.ProbeProfileR\x06probes\x12X\n" +
@@ -2443,11 +2536,12 @@ const file_app_observatory_health_config_proto_rawDesc = "" +
 	"\x05sleep\x18\n" +
 	" \x01(\v2-.xray.core.app.observatory.health.SleepConfigR\x05sleep\x12F\n" +
 	"\x05paths\x18\v \x03(\v20.xray.core.app.observatory.health.PathDefinitionR\x05paths\x12@\n" +
-	"\x04wake\x18\f \x01(\v2,.xray.core.app.observatory.health.WakeConfigR\x04wakeJ\x04\b\x01\x10\x02\"M\n" +
+	"\x04wake\x18\f \x01(\v2,.xray.core.app.observatory.health.WakeConfigR\x04wake\x12M\n" +
+	"\tudp_probe\x18\r \x01(\v20.xray.core.app.observatory.health.UDPProbeConfigR\budpProbeJ\x04\b\x01\x10\x02\"M\n" +
 	"\n" +
 	"WakeConfig\x12\x1c\n" +
 	"\tfreshness\x18\x01 \x01(\x03R\tfreshness\x12!\n" +
-	"\fmin_interval\x18\x02 \x01(\x03R\vminInterval\"\xf3\x05\n" +
+	"\fmin_interval\x18\x02 \x01(\x03R\vminInterval\"\x9f\x06\n" +
 	"\rPassiveConfig\x12\x16\n" +
 	"\x06window\x18\x01 \x01(\x03R\x06window\x12!\n" +
 	"\fdial_timeout\x18\x02 \x01(\x03R\vdialTimeout\x12,\n" +
@@ -2466,7 +2560,8 @@ const file_app_observatory_health_config_proto_rawDesc = "" +
 	"\x17partial_stall_min_bytes\x18\r \x01(\x03R\x14partialStallMinBytes\x12<\n" +
 	"\x1bshould_keep_pending_on_down\x18\x0e \x01(\bR\x17shouldKeepPendingOnDown\x12:\n" +
 	"\x1ashould_keep_silent_on_down\x18\x0f \x01(\bR\x16shouldKeepSilentOnDown\x12,\n" +
-	"\x12lone_failure_after\x18\x10 \x01(\x03R\x10loneFailureAfter\"\xae\x02\n" +
+	"\x12lone_failure_after\x18\x10 \x01(\x03R\x10loneFailureAfter\x12*\n" +
+	"\x11udp_reply_timeout\x18\x11 \x01(\x03R\x0fudpReplyTimeout\"\xae\x02\n" +
 	"\fProbeProfile\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12 \n" +
 	"\vdestination\x18\x02 \x01(\tR\vdestination\x12\x16\n" +
@@ -2627,7 +2722,13 @@ const file_app_observatory_health_config_proto_rawDesc = "" +
 	"\x11allowed_protocols\x18\x05 \x03(\tR\x10allowedProtocols\x12.\n" +
 	"\x13is_routing_accepted\x18\x06 \x01(\bR\x11isRoutingAccepted\x12)\n" +
 	"\x10accepted_headers\x18\a \x03(\tR\x0facceptedHeaders\x12#\n" +
-	"\rfixed_headers\x18\b \x01(\bR\ffixedHeaders*.\n" +
+	"\rfixed_headers\x18\b \x01(\bR\ffixedHeaders\"\xa1\x01\n" +
+	"\x0eUDPProbeConfig\x12\"\n" +
+	"\fdestinations\x18\x01 \x03(\tR\fdestinations\x12\x1a\n" +
+	"\brequests\x18\x02 \x01(\x05R\brequests\x12\x1a\n" +
+	"\binterval\x18\x03 \x01(\x03R\binterval\x12\x18\n" +
+	"\atimeout\x18\x04 \x01(\x03R\atimeout\x12\x19\n" +
+	"\bper_hour\x18\x05 \x01(\x05R\aperHour*.\n" +
 	"\vConfirmMode\x12\b\n" +
 	"\x04AUTO\x10\x00\x12\n" +
 	"\n" +
@@ -2659,7 +2760,7 @@ func file_app_observatory_health_config_proto_rawDescGZIP() []byte {
 }
 
 var file_app_observatory_health_config_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
-var file_app_observatory_health_config_proto_msgTypes = make([]protoimpl.MessageInfo, 25)
+var file_app_observatory_health_config_proto_msgTypes = make([]protoimpl.MessageInfo, 26)
 var file_app_observatory_health_config_proto_goTypes = []any{
 	(ConfirmMode)(0),              // 0: xray.core.app.observatory.health.ConfirmMode
 	(NetworkChangeMode)(0),        // 1: xray.core.app.observatory.health.NetworkChangeMode
@@ -2688,7 +2789,8 @@ var file_app_observatory_health_config_proto_goTypes = []any{
 	(*CostTrigger)(nil),           // 24: xray.core.app.observatory.health.CostTrigger
 	(*ProviderLimits)(nil),        // 25: xray.core.app.observatory.health.ProviderLimits
 	(*ProviderApply)(nil),         // 26: xray.core.app.observatory.health.ProviderApply
-	nil,                           // 27: xray.core.app.observatory.health.ProviderConfig.HeadersEntry
+	(*UDPProbeConfig)(nil),        // 27: xray.core.app.observatory.health.UDPProbeConfig
+	nil,                           // 28: xray.core.app.observatory.health.ProviderConfig.HeadersEntry
 }
 var file_app_observatory_health_config_proto_depIdxs = []int32{
 	5,  // 0: xray.core.app.observatory.health.Config.passive:type_name -> xray.core.app.observatory.health.PassiveConfig
@@ -2702,29 +2804,30 @@ var file_app_observatory_health_config_proto_depIdxs = []int32{
 	15, // 8: xray.core.app.observatory.health.Config.sleep:type_name -> xray.core.app.observatory.health.SleepConfig
 	17, // 9: xray.core.app.observatory.health.Config.paths:type_name -> xray.core.app.observatory.health.PathDefinition
 	4,  // 10: xray.core.app.observatory.health.Config.wake:type_name -> xray.core.app.observatory.health.WakeConfig
-	7,  // 11: xray.core.app.observatory.health.ProbeProfile.steps:type_name -> xray.core.app.observatory.health.ProbeStep
-	9,  // 12: xray.core.app.observatory.health.ConnectivityConfig.recheck_backoff:type_name -> xray.core.app.observatory.health.Backoff
-	9,  // 13: xray.core.app.observatory.health.ScheduleConfig.quarantine:type_name -> xray.core.app.observatory.health.Backoff
-	12, // 14: xray.core.app.observatory.health.ScheduleConfig.host_probes:type_name -> xray.core.app.observatory.health.HostProbesConfig
-	11, // 15: xray.core.app.observatory.health.ScheduleConfig.probe_only:type_name -> xray.core.app.observatory.health.ProbeOnlyConfig
-	17, // 16: xray.core.app.observatory.health.SelectorConfig.paths:type_name -> xray.core.app.observatory.health.PathDefinition
-	18, // 17: xray.core.app.observatory.health.SelectorConfig.groups:type_name -> xray.core.app.observatory.health.PathGroup
-	0,  // 18: xray.core.app.observatory.health.SelectorConfig.confirm_with_probe:type_name -> xray.core.app.observatory.health.ConfirmMode
-	20, // 19: xray.core.app.observatory.health.SelectorConfig.return_to_cheaper:type_name -> xray.core.app.observatory.health.ReturnToCheaperConfig
-	1,  // 20: xray.core.app.observatory.health.SelectorConfig.network_change_action:type_name -> xray.core.app.observatory.health.NetworkChangeMode
-	27, // 21: xray.core.app.observatory.health.ProviderConfig.headers:type_name -> xray.core.app.observatory.health.ProviderConfig.HeadersEntry
-	22, // 22: xray.core.app.observatory.health.ProviderConfig.triggers:type_name -> xray.core.app.observatory.health.ProviderTriggers
-	25, // 23: xray.core.app.observatory.health.ProviderConfig.limits:type_name -> xray.core.app.observatory.health.ProviderLimits
-	26, // 24: xray.core.app.observatory.health.ProviderConfig.apply:type_name -> xray.core.app.observatory.health.ProviderApply
-	24, // 25: xray.core.app.observatory.health.ProviderTriggers.when_cost_above:type_name -> xray.core.app.observatory.health.CostTrigger
-	2,  // 26: xray.core.app.observatory.health.ProviderTriggers.network_change_mode:type_name -> xray.core.app.observatory.health.RefreshOnNetwork
-	23, // 27: xray.core.app.observatory.health.ProviderTriggers.expiry:type_name -> xray.core.app.observatory.health.ExpiryTrigger
-	9,  // 28: xray.core.app.observatory.health.ProviderLimits.backoff:type_name -> xray.core.app.observatory.health.Backoff
-	29, // [29:29] is the sub-list for method output_type
-	29, // [29:29] is the sub-list for method input_type
-	29, // [29:29] is the sub-list for extension type_name
-	29, // [29:29] is the sub-list for extension extendee
-	0,  // [0:29] is the sub-list for field type_name
+	27, // 11: xray.core.app.observatory.health.Config.udp_probe:type_name -> xray.core.app.observatory.health.UDPProbeConfig
+	7,  // 12: xray.core.app.observatory.health.ProbeProfile.steps:type_name -> xray.core.app.observatory.health.ProbeStep
+	9,  // 13: xray.core.app.observatory.health.ConnectivityConfig.recheck_backoff:type_name -> xray.core.app.observatory.health.Backoff
+	9,  // 14: xray.core.app.observatory.health.ScheduleConfig.quarantine:type_name -> xray.core.app.observatory.health.Backoff
+	12, // 15: xray.core.app.observatory.health.ScheduleConfig.host_probes:type_name -> xray.core.app.observatory.health.HostProbesConfig
+	11, // 16: xray.core.app.observatory.health.ScheduleConfig.probe_only:type_name -> xray.core.app.observatory.health.ProbeOnlyConfig
+	17, // 17: xray.core.app.observatory.health.SelectorConfig.paths:type_name -> xray.core.app.observatory.health.PathDefinition
+	18, // 18: xray.core.app.observatory.health.SelectorConfig.groups:type_name -> xray.core.app.observatory.health.PathGroup
+	0,  // 19: xray.core.app.observatory.health.SelectorConfig.confirm_with_probe:type_name -> xray.core.app.observatory.health.ConfirmMode
+	20, // 20: xray.core.app.observatory.health.SelectorConfig.return_to_cheaper:type_name -> xray.core.app.observatory.health.ReturnToCheaperConfig
+	1,  // 21: xray.core.app.observatory.health.SelectorConfig.network_change_action:type_name -> xray.core.app.observatory.health.NetworkChangeMode
+	28, // 22: xray.core.app.observatory.health.ProviderConfig.headers:type_name -> xray.core.app.observatory.health.ProviderConfig.HeadersEntry
+	22, // 23: xray.core.app.observatory.health.ProviderConfig.triggers:type_name -> xray.core.app.observatory.health.ProviderTriggers
+	25, // 24: xray.core.app.observatory.health.ProviderConfig.limits:type_name -> xray.core.app.observatory.health.ProviderLimits
+	26, // 25: xray.core.app.observatory.health.ProviderConfig.apply:type_name -> xray.core.app.observatory.health.ProviderApply
+	24, // 26: xray.core.app.observatory.health.ProviderTriggers.when_cost_above:type_name -> xray.core.app.observatory.health.CostTrigger
+	2,  // 27: xray.core.app.observatory.health.ProviderTriggers.network_change_mode:type_name -> xray.core.app.observatory.health.RefreshOnNetwork
+	23, // 28: xray.core.app.observatory.health.ProviderTriggers.expiry:type_name -> xray.core.app.observatory.health.ExpiryTrigger
+	9,  // 29: xray.core.app.observatory.health.ProviderLimits.backoff:type_name -> xray.core.app.observatory.health.Backoff
+	30, // [30:30] is the sub-list for method output_type
+	30, // [30:30] is the sub-list for method input_type
+	30, // [30:30] is the sub-list for extension type_name
+	30, // [30:30] is the sub-list for extension extendee
+	0,  // [0:30] is the sub-list for field type_name
 }
 
 func init() { file_app_observatory_health_config_proto_init() }
@@ -2738,7 +2841,7 @@ func file_app_observatory_health_config_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_app_observatory_health_config_proto_rawDesc), len(file_app_observatory_health_config_proto_rawDesc)),
 			NumEnums:      3,
-			NumMessages:   25,
+			NumMessages:   26,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

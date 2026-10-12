@@ -24,7 +24,9 @@ import (
 )
 
 type probeState struct {
-	bytes *atomic.Int64
+	bytes      *atomic.Int64
+	credential *probeCredential
+	udpDial    func(error)
 
 	mu              sync.Mutex
 	started         time.Time
@@ -70,6 +72,10 @@ func (s *probeState) expire(reason string) {
 }
 
 func (s *probeState) recordDial(err error) {
+	if s.udpDial != nil {
+		s.udpDial(err)
+		return
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.started.IsZero() || s.finished || (s.dialDone && s.dialErr == nil) {
@@ -179,6 +185,10 @@ func (s *probeState) stop() {
 }
 
 func (o *Observer) probe(tag string, ps *probeSettings) probeResult {
+	return o.probeWithContext(o.runCtx, tag, ps)
+}
+
+func (o *Observer) probeWithContext(ctx context.Context, tag string, ps *probeSettings) probeResult {
 	steps := ps.steps
 	if len(steps) == 0 {
 		name := ps.name
@@ -193,9 +203,9 @@ func (o *Observer) probe(tag string, ps *probeSettings) probeResult {
 	}
 	result := probeResult{profile: ps.name, state: statusUp}
 	for i := range steps {
-		step, attempt := o.probeStep(tag, &steps[i])
+		step, attempt := o.probeStepWithContext(ctx, tag, &steps[i])
 		result.bytes += step.bytes
-		if o.runCtx.Err() != nil {
+		if ctx.Err() != nil {
 			result.canceled = true
 			result.err = "canceled"
 			return result
@@ -229,6 +239,10 @@ type probeAttemptResult struct {
 }
 
 func (o *Observer) probeStep(tag string, step *probeStepSettings) (probeStepResult, probeAttemptResult) {
+	return o.probeStepWithContext(o.runCtx, tag, step)
+}
+
+func (o *Observer) probeStepWithContext(parent context.Context, tag string, step *probeStepSettings) (probeStepResult, probeAttemptResult) {
 	started := time.Now()
 	result := probeStepResult{name: step.name, destination: -1}
 	results := make(chan struct {
@@ -237,7 +251,7 @@ func (o *Observer) probeStep(tag string, step *probeStepSettings) (probeStepResu
 	}, len(step.destinations))
 	cancels := make([]context.CancelFunc, len(step.destinations))
 	for i, destination := range step.destinations {
-		ctx, cancel := context.WithCancel(o.runCtx)
+		ctx, cancel := context.WithCancel(parent)
 		cancels[i] = cancel
 		go func(index int, destination string) {
 			r := o.probeDestination(ctx, tag, step, destination)
@@ -252,7 +266,7 @@ func (o *Observer) probeStep(tag string, step *probeStepSettings) (probeStepResu
 		attempt := <-results
 		result.bytes += attempt.bytes
 		failures[attempt.index] = attempt.probeAttemptResult
-		if attempt.ok && !result.ok && o.runCtx.Err() == nil {
+		if attempt.ok && !result.ok && parent.Err() == nil {
 			result.ok = true
 			result.destination = attempt.index
 			result.connect = attempt.connect
@@ -285,6 +299,9 @@ func (o *Observer) probeDestination(parent context.Context, tag string, ps *prob
 	probeCtx := withProbe(parent, &bytes)
 	probeCtx = session.ContextWithContent(probeCtx, &session.Content{SkipMuxReuse: true})
 	state := probeStateFrom(probeCtx)
+	if !ps.isOptional {
+		state.credential, _ = parent.Value(probeCredentialKey{}).(*probeCredential)
+	}
 	ctx, cancel := context.WithCancel(probeCtx)
 	defer cancel()
 	defer state.stop()

@@ -808,6 +808,74 @@ later trigger whose interval permits a request. The shorter interval for
 immediate cost feedback keeps all other gates, including low memory,
 idle, pin, network, refused credentials, backoff and `Retry-After`.
 
+## UDP observation
+
+UDP probes and passive UDP evidence are independent of path health. They
+never change `up`, `suspect`, `down`, quarantine, failures or the balancer's
+choice, and do not confirm TCP probes. Without `udpProbe`, passive evidence
+still produces events; no UDP probe is queued.
+
+```json
+"udpProbe": {
+  "destinations": ["stun.example.test:3478", "stun-backup.example.test:3478"],
+  "requests": 5,
+  "interval": "200ms",
+  "timeout": "2s",
+  "perHour": 6
+}
+```
+
+Place this object inside `healthObservatory`. Destinations must contain
+1-4 `host:port` entries; the core has no built-in public STUN address. The
+other values above are defaults and must be positive. A probe sends STUN
+Binding requests through the named outbound with a distinct transaction
+ID for each request. It accepts only a matching Binding Success reply;
+address attributes are neither retained nor exported. At least three
+answers produce `ok`, one or two produce `lossy`. Zero answers try the
+second destination, if present, and then produce `dead`. Only the first
+two configured destinations are used. An immediate UDP connection refusal
+produces `unsupported`. `sent` and `answered` describe the last destination.
+RTT is the median of its replies; jitter is the mean absolute difference
+between adjacent RTTs in request order.
+
+The lowest-priority queue shares concurrency, server-name, spacing and
+minute limits with TCP probes; it waits while any TCP probe is queued or
+running. `perHour` limits starts across the whole core. UDP probes do not
+start while idle, without a network, under low memory, on a sleeping,
+retiring, replacing, probe-only or down path. An unselected real path can
+be probed only by the host. Reasons are `udp_switch`, `udp_suspect` and
+`host`. After selection, the first user write schedules one `udp_switch`
+probe after 20 seconds per path incarnation and network, including startup.
+A skipped or queued probe does not consume that one-time start.
+
+Passive evidence uses the routed UDP link from the traffic counters, not
+a SOCKS socket or an XUDP GlobalID. The first routed target's full address
+and port identify its destination. One common sweep checks each link once,
+`passive.udpReplyTimeout` (5 seconds) after its first uplink buffer. At least
+three uplink buffers and no downlink bytes mark it unanswered. Its first
+downlink byte marks it answered immediately; this proves core reception,
+not application reception. Links closed before the deadline retain a
+pending record until that original deadline, at most 4096 across the core.
+The existing Stage 1 traffic counters remain finish-only.
+
+Within `passive.window` (60 seconds), a selected path needs at least three
+unanswered links to at least two address-and-port targets, no answered
+UDP link, and at least one TCP traffic success. This writes `udp_suspect`
+and queues a UDP probe if enabled, at most once per 10 minutes per path.
+ICE candidates that do not answer cannot trigger suspicion while another
+UDP link answers. Evidence is bounded to 64 records per path and preserves
+the newest answered record when full. Existing sweeps and traffic callbacks
+clear expired target records; expiry creates no additional idle wakeups.
+`passive.udpReplyTimeout: "0s"` disables evidence only.
+Every network notification, including an unchanged or empty ID and
+`networkChangeAction: "ignore"`, clears UDP observations. Handler replacement,
+mode changes and removal invalidate old flows and probe results.
+
+`RequestProbe` accepts `isUdp: true` and CLI `api health probe` accepts
+`--udp`; TCP and UDP tickets are separate. The UDP result has its own
+`udp` object, with the same fields as Status. Neither a recent TCP success
+nor a TCP probe can answer a UDP ticket.
+
 ## Probes on request
 
 The host may know more than the observatory, for example that the tunnel
@@ -1047,6 +1115,9 @@ Every event is `{"seq": n, "ts": unix_ms, "type": "...", "fields": {...}}`.
 | `path_state` | `outbound`, `state`, `reason`; for `suspect` also `failures`, `targets`, `kinds`, `is_strong`; for `down` also `quarantine_ms`, `quarantine_level` and `is_provisional` when it was ruled out while the network check was failing; for `rescued` also `by`: `confirm` or `audit` | An outbound became `up`, `degraded`, `suspect`, `down` or `unknown`. For `degraded`, `reason` is the first failed optional step. Other reasons: `traffic`, `probe`, `return_probe`, `host_probe`, `network_change`, `network_down`, `network_up`, `replaced` (a provider
 changed its settings), `probe_changed` (a provider changed the profile of an unchanged outbound), `rescued` (a confirmation already running or an audit assigned to the down proved it false, see How it decides). `kinds` counts failures by kind: `dial_failed`, `dial_timeout`, `server_unverified`, `no_response`, `closed`, `stall`, `partial_stall`. For an outbound with a tunnel, `dial_failed` and `dial_timeout` tell that the tunnel could not be set up or that its server did not answer a connection, see How it decides. |
 | `probe_start` | `outbound`, `reason`, `balancer`, `running`, `request` | A probe started. `reason`: `confirm`, `failover`, `network_change`, `wake`, `remembered`, `recheck`, `lone`, `audit`, `return`, `group_recheck`, `candidate`, `host`. `running` counts the outbound probes running now, this one included. `request` is the id of the request a `host` probe is for. |
+| `udp_probe` | `outbound`, `reason`, `state`, `answered`, `sent`, `rtt_ms`, `jitter_ms`, `destination_index`, `class` | A current UDP probe finished. Destination index is zero-based; `class` describes an immediate refusal for `unsupported`. Stale and canceled probes publish no observation. |
+| `udp_suspect` | `outbound`, `flows`, `targets`, `window_ms` | Passive UDP evidence met the selected-path rule. |
+| `udp_skip` | `outbound`, `reason` | A UDP probe could not start; each reason is written once until the next probe or reset. Reasons include `per_hour`, `asleep`, `idle`, `memory`, `recent`, `network_down`, `down`, `inactive`, `gone`, `disabled` and `probe_only`. |
 | `probe_result` | `outbound`, `reason`, `balancer`, `is_ok`, `rtt_ms`, `bytes`, `error`, `is_stale`, `request`, `profile`, `state`, `steps` | A probe finished. `steps` lists only attempted steps with `name`, `is_passed`, `connect_ms`, `ms`, `bytes`, a `destination` index on success or an `error` class on failure. `bytes` counts both directions above TLS. `is_stale` means the network, handler or probe profile changed while it ran, so its result did not change the path. Its attempted steps still count in the report. |
 | `probe_only_promoted` | `outbound`, `provider` | A provider made a fresh verified candidate real. |
 | `fresh_path_down` | `outbound` | A new real provider handler was first judged down within five minutes of activation. |
@@ -1155,6 +1226,9 @@ Long duration and performance acceptance were excluded by the project decision.
 | `path_rescued_count` | `path_state` events with reason `rescued`: downs a confirming probe or audit proved false. A rescue changes no choice by itself and is no decision; a balancer it brings back switches with `recovered`. |
 | `pending_closed_count` | Connections of outbounds found down ended by `pending_closed` events: those that had received nothing and, with `is_silent`, those that went silent after the decision. |
 | `idle_closed_count` | Connections of outbounds no balancer chooses ended by `idle_closed` events, so that the outbounds can sleep. Ending them changes no choice and is no decision. |
+| `udp_probe_count`, `udp_probe_ok_count`, `udp_probe_lossy_count`, `udp_probe_dead_count` | Current completed UDP probes and their result counts. `unsupported` contributes only to the total. UDP observations are not decisions and do not count as TCP probes. |
+| `udp_probe_second_destination_count` | UDP probes that tried the second destination. |
+| `udp_suspect_count`, `udp_suspect_confirmed_count` | Passive UDP suspicions, and `dead` probes whose reason was `udp_suspect`. |
 | `probes`, `probes_failed`, `probe_bytes` | `probe_result` events, the failed ones, and their `bytes`. |
 | `host_probe_requests`, `host_probes` | `probe_request` events, and `probe_result` events with reason `host`. |
 | `return_attempts`, `return_failures` | `return_start` and `return_failed` events. |
@@ -1178,6 +1252,7 @@ Long duration and performance acceptance were excluded by the project decision.
 | `lone_probe_count`, `lone_probe_failed_count` | Started lone probes and completed failed lone probes, including stale results; canceled probes have no result count. |
 | `lone_probes`, `lone_probes_failed` | The same lone counters for this outbound in the report window. A failed current lone probe contributes one `downs_strong`; a stale completion contributes no down. |
 | `downs_strong`, `downs_weak` | New downs backed by strong or weak passive evidence for that outbound in this window. They include failed current lone probes paired with a dial failure, but exclude pure wake and network-change probe failures. Use `wake_probe_count` and `wake_probe_failed_count` for the wake failure rate; passive down counters are not its denominator. |
+| `udp_probes`, `udp_probes_dead`, `udp_rtt_p50_ms`, `udp_jitter_p50_ms`, `udp_state` | Per-path completed UDP probes, dead ones and reply RTT/jitter medians in this report window, at histogram bucket upper bounds (0 without samples). `udp_state` is the latest current result, or `unknown`. Taking a report clears histogram samples, but keeps the snapshot. |
 | `udp_flows`, `udp_flows_unanswered` | Routed UDP link trackers that ended in this window; unanswered means at least one uplink buffer and no downlink bytes. A SOCKS UDP association can create more than one routed link after mux reconnect. An open tracker belongs to the window where it ends; final stop ends all open trackers. |
 | `udp_bytes_up`, `udp_bytes_down`, `udp_writes`, `udp_reads` | Payload bytes and nonempty buffers at the logical outbound link. Each buffer is approximately one UDP packet. Downlink is counted before the underlying writer, so bytes received by the core do not imply that the application read them. These fields do not include proxy framing or AWG handshakes; the existing mixed `bytes_up/down` and `conns_ok/failed` keep their transport semantics. |
 | `udp_first_reply_p50_ms` | Median time from the first uplink buffer to the first downlink buffer for routed links ending in this window, at the histogram bucket upper bound; 0 without samples. |
@@ -1185,9 +1260,18 @@ Long duration and performance acceptance were excluded by the project decision.
 | `groups` | Current explicit-group summaries as described in Outbound groups. |
 
 Per-outbound fields `audits`, `audits_passed`, `lone_probes`, `lone_probes_failed`,
-`downs_strong`, `downs_weak` and all `udp_*` fields belong to `paths.<tag>`.
+`downs_strong`, `downs_weak` and the per-path UDP fields belong to `paths.<tag>`.
+The UDP fields ending in `_count` are global report counters.
 
 ## Status
+
+Each path includes `udp`, independent of its health state:
+`state` (`unknown` before the first current probe, otherwise `ok`, `lossy`,
+`dead` or `unsupported`), `answered`, `sent`, `rtt_ms`, `jitter_ms`,
+`age_ms` since completion and `reason`. Every network change clears it,
+including IGNORE. Provider POST requests include optional `udp` with
+`state`, `rttMs` and `agoMs` only after a probe in the current network;
+unknown UDP is omitted. See [PROVIDER.md](PROVIDER.md#request).
 
 Paths include `is_probe_only` in both modes. Each provider includes
 `probe_only_verified`, the number of currently verified probe-only members of its set.

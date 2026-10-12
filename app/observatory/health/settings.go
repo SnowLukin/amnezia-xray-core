@@ -6,6 +6,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/xtls/xray-core/common/net"
 )
 
 // Defaults apply to every zero value of the protobuf config. Boolean fields
@@ -190,6 +192,7 @@ func (b backoff) delay(attempt int) time.Duration {
 }
 
 type passiveSettings struct {
+	udpReplyTimeout    time.Duration
 	loneFailureAfter   time.Duration
 	window             time.Duration
 	dialTimeout        time.Duration
@@ -295,6 +298,7 @@ type wakeSettings struct {
 }
 
 type settings struct {
+	udpProbe     *udpSettings
 	wake         wakeSettings
 	paths        sync.Map
 	baseOrder    map[string][]string
@@ -507,6 +511,13 @@ func toBackoff(b *Backoff, def backoff) backoff {
 
 func newSettings(c *Config) *settings {
 	s := &settings{baseOrder: map[string][]string{}}
+	if u := c.GetUdpProbe(); u != nil {
+		s.udpProbe = &udpSettings{requests: num(u.Requests, 5), interval: dur(u.Interval, 200*time.Millisecond), timeout: dur(u.Timeout, 2*time.Second), perHour: num(u.PerHour, 6)}
+		for _, address := range u.Destinations {
+			destination, _ := net.ParseDestination("udp:" + address)
+			s.udpProbe.destinations = append(s.udpProbe.destinations, destination)
+		}
+	}
 	s.wake = wakeSettings{freshness: dur(c.GetWake().GetFreshness(), defaultWakeFreshness), minInterval: dur(c.GetWake().GetMinInterval(), defaultWakeMinInterval)}
 	for _, p := range c.GetPaths() {
 		s.paths.Store(p.Tag, pathSettings{probe: p.Probe, isProbeOnly: p.IsProbeOnly})
@@ -514,6 +525,7 @@ func newSettings(c *Config) *settings {
 	}
 	p := c.GetPassive()
 	s.passive = passiveSettings{
+		udpReplyTimeout:    optional(p.GetUdpReplyTimeout(), 5*time.Second),
 		loneFailureAfter:   optional(p.GetLoneFailureAfter(), 2*time.Minute),
 		window:             dur(p.GetWindow(), defaultWindow),
 		dialTimeout:        dur(p.GetDialTimeout(), defaultDialTimeout),

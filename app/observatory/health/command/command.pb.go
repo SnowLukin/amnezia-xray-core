@@ -662,6 +662,7 @@ type ProbeRequest struct {
 	// Wait up to this long for the result; 0 answers at once. The deadline of
 	// the call shortens the wait.
 	WaitMs        int64 `protobuf:"varint,3,opt,name=wait_ms,json=waitMs,proto3" json:"wait_ms,omitempty"`
+	IsUdp         bool  `protobuf:"varint,4,opt,name=is_udp,json=isUdp,proto3" json:"is_udp,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -715,6 +716,13 @@ func (x *ProbeRequest) GetWaitMs() int64 {
 		return x.WaitMs
 	}
 	return 0
+}
+
+func (x *ProbeRequest) GetIsUdp() bool {
+	if x != nil {
+		return x.IsUdp
+	}
+	return false
 }
 
 type ProbeResponse struct {
@@ -1047,11 +1055,12 @@ const file_app_observatory_health_command_command_proto_rawDesc = "" +
 	"\x04take\x18\x01 \x01(\bR\x04take\x12\x14\n" +
 	"\x05final\x18\x02 \x01(\bR\x05final\"'\n" +
 	"\x11GetReportResponse\x12\x12\n" +
-	"\x04json\x18\x01 \x01(\tR\x04json\"a\n" +
+	"\x04json\x18\x01 \x01(\tR\x04json\"x\n" +
 	"\fProbeRequest\x12\x1a\n" +
 	"\bbalancer\x18\x01 \x01(\tR\bbalancer\x12\x1c\n" +
 	"\toutbounds\x18\x02 \x03(\tR\toutbounds\x12\x17\n" +
-	"\await_ms\x18\x03 \x01(\x03R\x06waitMs\"E\n" +
+	"\await_ms\x18\x03 \x01(\x03R\x06waitMs\x12\x15\n" +
+	"\x06is_udp\x18\x04 \x01(\bR\x05isUdp\"E\n" +
 	"\rProbeResponse\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\x04R\x02id\x12\x10\n" +
 	"\x03run\x18\x02 \x01(\tR\x03run\x12\x12\n" +

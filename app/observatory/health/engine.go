@@ -2,6 +2,7 @@ package health
 
 import (
 	"cmp"
+	"context"
 	"math"
 	"math/rand"
 	"slices"
@@ -31,6 +32,8 @@ const (
 	// Probes of the host give way to those of the observer.
 	reasonHost
 	reasonWake
+	reasonUDPSwitch
+	reasonUDPSuspect
 )
 
 func (r probeReason) priority() probeReason {
@@ -68,6 +71,10 @@ func (r probeReason) String() string {
 		return "return"
 	case reasonHost:
 		return "host"
+	case reasonUDPSwitch:
+		return "udp_switch"
+	case reasonUDPSuspect:
+		return "udp_suspect"
 	default:
 		return "unknown"
 	}
@@ -85,6 +92,11 @@ type probeJob struct {
 	candidateEpoch uint64
 	profile        *probeSettings
 	isProbeOnly    bool
+	isUDP          bool
+	udpEpoch       uint64
+	udpIncarnation uint64
+	udpPath        *path
+	cancel         context.CancelFunc
 	invalidated    bool
 	forgotten      bool
 	evidenceStrong bool
@@ -132,6 +144,8 @@ type engine struct {
 	requests  []*probeRequest
 	requestID uint64
 
+	udpEpoch       uint64
+	udpStarts      []time.Time
 	candidateEpoch uint64
 	generation     uint64
 	networkID      string
@@ -199,6 +213,7 @@ type engine struct {
 func newEngine(s *settings, seed int64) *engine {
 	e := &engine{
 		s:                s,
+		udpEpoch:         1,
 		run:              strconv.FormatInt(seed, 10),
 		rnd:              rand.New(rand.NewSource(seed)),
 		paths:            map[string]*path{},
@@ -1056,6 +1071,7 @@ func (e *engine) switchTo(s *selector, tag string, reason string, now time.Time)
 	}
 	e.used(tag, now)
 	s.setActive(tag)
+	e.noteUDPSwitch(e.path(tag))
 	s.activeSince = now
 	s.exhausted = false
 	s.failoverTried = nil
@@ -1342,7 +1358,7 @@ func (e *engine) returnToCheaperTargetFor(s *selector, now time.Time) string {
 // Probes made in a previous network do not count: their results are dropped.
 func (e *engine) queued(tag string, reason probeReason) bool {
 	same := func(j *probeJob) bool {
-		return !j.invalidated && j.tag == tag && j.reason == reason && (reason == reasonConnectivity || j.generation == e.generation)
+		return !j.isUDP && !j.invalidated && j.tag == tag && j.reason == reason && (reason == reasonConnectivity || j.generation == e.generation)
 	}
 	for _, j := range e.queue {
 		if same(j) {
@@ -1360,7 +1376,7 @@ func (e *engine) queued(tag string, reason probeReason) bool {
 func (e *engine) dropQueued(tag string, reason probeReason) {
 	kept := e.queue[:0]
 	for _, j := range e.queue {
-		if j.tag != tag || j.reason != reason {
+		if j.isUDP || j.tag != tag || j.reason != reason {
 			kept = append(kept, j)
 		}
 	}
@@ -1370,7 +1386,7 @@ func (e *engine) dropQueued(tag string, reason probeReason) {
 func (e *engine) invalidateProbeJobs(tag string, now time.Time) {
 	var old []*probeJob
 	e.queue = slices.DeleteFunc(e.queue, func(j *probeJob) bool {
-		if j.tag != tag {
+		if j.isUDP || j.tag != tag {
 			return false
 		}
 		old = append(old, j)
@@ -1380,7 +1396,7 @@ func (e *engine) invalidateProbeJobs(tag string, now time.Time) {
 		return true
 	})
 	for _, j := range e.running {
-		if j.tag == tag && !j.invalidated {
+		if !j.isUDP && j.tag == tag && !j.invalidated {
 			j.invalidated = true
 			old = append(old, j)
 		}
@@ -1482,12 +1498,18 @@ func (e *engine) budgetWait(j *probeJob, now time.Time) time.Duration {
 			wait = w
 		}
 	}
-	if j.reason == reasonHost {
+	if j.reason == reasonHost || j.isUDP {
 		// The host gets at most half of the probes of a server name, so a
 		// failover after its probes still finds the name in the budget.
 		e.hostStarts = pruneTimes(e.hostStarts, now)
 		if n := len(e.hostStarts); n >= e.s.schedule.hostProbes.perMinute {
 			wait = max(wait, e.hostStarts[n-e.s.schedule.hostProbes.perMinute].Add(time.Minute).Sub(now))
+		}
+		if j.isUDP {
+			share := max(e.s.schedule.perMinute/2, 1)
+			if len(e.starts) >= share {
+				wait = max(wait, e.starts[len(e.starts)-share].Add(time.Minute).Sub(now))
+			}
 		}
 		if share := max(e.s.schedule.probesPerServerNamePerMinute/2, 1); len(byName) >= share {
 			wait = max(wait, byName[len(byName)-share].Add(time.Minute).Sub(now))
@@ -1523,6 +1545,7 @@ func (e *engine) tick(now time.Time) ([]*probeJob, time.Time) {
 	}
 
 	idle := e.idle(now)
+	soonest(e.scheduleUDP(now))
 	for _, s := range e.sortedSelectors() {
 		if s.pinned == "" || s.pinnedUntil.IsZero() {
 			continue
@@ -1581,13 +1604,28 @@ func (e *engine) tick(now time.Time) ([]*probeJob, time.Time) {
 	// Once a probe of the observer waits for the budget, probes of the host
 	// wait behind it.
 	waiting := false
-	sort.SliceStable(e.queue, func(i, j int) bool { return e.queue[i].reason.priority() < e.queue[j].reason.priority() })
+	sort.SliceStable(e.queue, func(i, j int) bool {
+		if e.queue[i].isUDP != e.queue[j].isUDP {
+			return !e.queue[i].isUDP
+		}
+		return e.queue[i].reason.priority() < e.queue[j].reason.priority()
+	})
 	kept := e.queue[:0]
 	for _, j := range e.queue {
+		if j.isUDP {
+			keep, next := e.tickUDP(j, now, idle, kept)
+			soonest(next)
+			if keep {
+				kept = append(kept, j)
+			} else if e.running[j.id] == j {
+				start = append(start, j)
+			}
+			continue
+		}
 		if j.reason == reasonCandidate && !e.candidateCurrent(j) {
 			continue
 		}
-		if e.isProbeOnly(j.tag) && j.reason != reasonCandidate && j.reason != reasonConnectivity {
+		if e.isProbeOnly(j.tag) && j.reason != reasonCandidate && j.reason != reasonHost && j.reason != reasonConnectivity {
 			continue
 		}
 		if j.reason == reasonWake && !e.wakeProbeCurrent(j, now) {
@@ -1679,6 +1717,10 @@ func soonestOf(a, b time.Time) time.Time {
 // heldBackNow tells whether tick leaves a queued probe waiting now, or
 // drops it as one of a network left since: it does not start on its own.
 func (e *engine) heldBackNow(j *probeJob, idle bool) bool {
+	if j.isUDP {
+		// Queued observations do not keep an otherwise unused tunnel awake.
+		return true
+	}
 	if j.reason == reasonConnectivity {
 		return false
 	}
@@ -1711,6 +1753,10 @@ func (e *engine) sortedSelectors() []*selector {
 }
 
 func (e *engine) begin(j *probeJob, now time.Time) {
+	if j.isUDP {
+		e.beginUDP(j, now)
+		return
+	}
 	e.running[j.id] = j
 	if j.reason == reasonConnectivity {
 		return
@@ -1874,14 +1920,14 @@ func (e *engine) onProbeResult(j *probeJob, r probeResult, now time.Time) {
 		return
 	}
 	p := e.path(j.tag)
-	stale := j.invalidated || j.generation != e.generation
+	stale := j.invalidated || j.generation != e.generation || (j.isProbeOnly && !e.isProbeOnly(j.tag))
 	if j.reason == reasonCandidate {
 		stale = stale || !e.candidateCurrent(j)
 		if stale && !j.invalidated && j.generation == e.generation && j.candidateEpoch == e.candidateEpoch {
 			p.probing = false
 		}
 	} else if e.isProbeOnly(j.tag) {
-		stale = true
+		stale = stale || !j.isProbeOnly || j.reason != reasonHost || j.candidateEpoch != e.candidateEpoch || e.retiring[j.tag] || e.replacing[j.tag]
 	}
 	if j.reason == reasonWake && !e.wakeProbeCurrent(j, now) {
 		stale = true
@@ -1935,6 +1981,18 @@ func (e *engine) onProbeResult(j *probeJob, r probeResult, now time.Time) {
 	}
 	if j.reason == reasonCandidate {
 		e.onCandidateResult(j, r, p, now)
+		return
+	}
+	if j.isProbeOnly && j.reason == reasonHost {
+		state := statusDown
+		if r.ok {
+			state = statusUp
+		}
+		p.lastProbeResult.state = state
+		if p.setStatus(state, "host_probe", now) {
+			e.emitPath(p, now)
+		}
+		e.answerRequests(j, r, now)
 		return
 	}
 	if r.ok {
@@ -2330,6 +2388,7 @@ func (e *engine) resumePending(now time.Time) {
 
 // onNetworkChange forgets what was learned in the previous network.
 func (e *engine) onNetworkChange(id string, now time.Time) {
+	e.resetUDPNetwork(now)
 	e.candidateEpoch++
 	e.cancelCandidates("")
 	for tag := range e.paths {
@@ -2620,7 +2679,7 @@ func (e *engine) gc(now time.Time, stale time.Duration) {
 		// handler leaves: forgotten, it would hold it for good. There are
 		// at most as many as handlers.
 		if !offered[tag] && !p.probing && p.udpFlowsActive == 0 && now.Sub(p.statusSince) >= stale && !e.awakeSleeper(p) {
-			e.forget(tag)
+			e.forget(tag, now)
 		}
 	}
 	// A dial records the server before the outbound has a path.
@@ -2638,7 +2697,8 @@ func (e *engine) gc(now time.Time, stale time.Duration) {
 }
 
 // forget drops everything kept about an outbound that is gone.
-func (e *engine) forget(tag string) {
+func (e *engine) forget(tag string, now time.Time) {
+	e.invalidateUDP(tag, now)
 	for _, j := range e.running {
 		if j.tag == tag {
 			j.invalidated = true

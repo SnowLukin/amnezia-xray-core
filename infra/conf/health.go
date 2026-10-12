@@ -33,6 +33,7 @@ func (b *HealthBackoffConfig) build() (*health.Backoff, error) {
 }
 
 type HealthPassiveConfig struct {
+	UDPReplyTimeout           *duration.Duration `json:"udpReplyTimeout"`
 	LoneFailureAfter          *duration.Duration `json:"loneFailureAfter"`
 	Window                    *duration.Duration `json:"window"`
 	DialTimeout               *duration.Duration `json:"dialTimeout"`
@@ -49,6 +50,34 @@ type HealthPassiveConfig struct {
 	PartialStallMinBytes      int64              `json:"partialStallMinBytes"`
 	ShouldKeepPendingOnDown   bool               `json:"shouldKeepPendingOnDown"`
 	ShouldKeepSilentOnDown    bool               `json:"shouldKeepSilentOnDown"`
+}
+
+func (p *HealthPassiveConfig) UnmarshalJSON(raw []byte) error {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return err
+	}
+	if value, present := fields["udpReplyTimeout"]; present && bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
+		return errors.New("healthObservatory: passive.udpReplyTimeout must not be null")
+	}
+	type plain HealthPassiveConfig
+	return json.Unmarshal(raw, (*plain)(p))
+}
+
+type HealthUDPProbeConfig struct {
+	Destinations []string           `json:"destinations"`
+	Requests     *int32             `json:"requests"`
+	Interval     *duration.Duration `json:"interval"`
+	Timeout      *duration.Duration `json:"timeout"`
+	PerHour      *int32             `json:"perHour"`
+}
+
+func (u *HealthUDPProbeConfig) UnmarshalJSON(raw []byte) error {
+	if err := rejectNullFields(raw, "healthObservatory: udpProbe", map[string]bool{"destinations": true, "requests": true, "interval": true, "timeout": true, "perHour": true}); err != nil {
+		return err
+	}
+	type plain HealthUDPProbeConfig
+	return json.Unmarshal(raw, (*plain)(u))
 }
 
 type HealthProbeConfig struct {
@@ -455,6 +484,7 @@ func (c *HealthProviderConfig) build() (*health.ProviderConfig, error) {
 
 // HealthObservatoryConfig is the "healthObservatory" section.
 type HealthObservatoryConfig struct {
+	UDPProbe     *HealthUDPProbeConfig     `json:"udpProbe"`
 	Paths        []*health.PathDefinition  `json:"-"`
 	Passive      *HealthPassiveConfig      `json:"passive"`
 	Probes       []*HealthProbeConfig      `json:"probes"`
@@ -472,6 +502,9 @@ func (c *HealthObservatoryConfig) UnmarshalJSON(raw []byte) error {
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &fields); err != nil {
 		return err
+	}
+	if value, present := fields["udpProbe"]; present && bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
+		return errors.New("healthObservatory: udpProbe must not be null")
 	}
 	if _, old := fields["subjectSelector"]; old {
 		return errors.New("healthObservatory: subjectSelector is not supported; put path on outbounds")
@@ -502,7 +535,36 @@ func checkProbeURL(where, dest string) error {
 
 func (c *HealthObservatoryConfig) Build() (proto.Message, error) {
 	out := &health.Config{Paths: c.Paths}
+	if u := c.UDPProbe; u != nil {
+		for _, f := range []struct {
+			name  string
+			value *int32
+		}{{"requests", u.Requests}, {"perHour", u.PerHour}} {
+			if f.value != nil && *f.value <= 0 {
+				return nil, errors.New("healthObservatory: udpProbe.", f.name, " must be positive")
+			}
+		}
+		for _, f := range []struct {
+			name  string
+			value *duration.Duration
+		}{{"interval", u.Interval}, {"timeout", u.Timeout}} {
+			if err := requirePositiveDuration("healthObservatory: udpProbe."+f.name, f.value); err != nil {
+				return nil, err
+			}
+		}
+		out.UdpProbe = &health.UDPProbeConfig{Destinations: u.Destinations, Interval: optionalDuration(u.Interval), Timeout: optionalDuration(u.Timeout)}
+		if u.Requests != nil {
+			out.UdpProbe.Requests = *u.Requests
+		}
+		if u.PerHour != nil {
+			out.UdpProbe.PerHour = *u.PerHour
+		}
+	}
+
 	if p := c.Passive; p != nil {
+		if p.UDPReplyTimeout != nil && *p.UDPReplyTimeout < 0 {
+			return nil, errors.New("healthObservatory: passive.udpReplyTimeout must be nonnegative")
+		}
 		if p.LoneFailureAfter != nil && *p.LoneFailureAfter < 0 {
 			return nil, errors.New("healthObservatory: passive.loneFailureAfter must be nonnegative")
 		}
@@ -515,6 +577,7 @@ func (c *HealthObservatoryConfig) Build() (proto.Message, error) {
 			}
 		}
 		out.Passive = &health.PassiveConfig{
+			UdpReplyTimeout:           optionalDuration(p.UDPReplyTimeout),
 			LoneFailureAfter:          optionalDuration(p.LoneFailureAfter),
 			Window:                    optionalDuration(p.Window),
 			DialTimeout:               optionalDuration(p.DialTimeout),
