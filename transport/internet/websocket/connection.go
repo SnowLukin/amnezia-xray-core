@@ -22,6 +22,8 @@ type connection struct {
 	remoteAddr net.Addr
 }
 
+func (c *connection) NetConn() net.Conn { return c.conn.NetConn() }
+
 func NewConnection(conn *websocket.Conn, remoteAddr net.Addr, extraReader io.Reader, heartbeatPeriod uint32) *connection {
 	if heartbeatPeriod != 0 {
 		go func() {

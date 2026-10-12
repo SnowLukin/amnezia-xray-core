@@ -1266,6 +1266,8 @@ Long duration and performance acceptance were excluded by the project decision.
 | `udp_first_reply_p50_ms` | Median time from the first uplink buffer to the first downlink buffer for routed links ending in this window, at the histogram bucket upper bound; 0 without samples. |
 | `udp_ports` | Nonzero `dns` (53), `quic` (443), `stun` (3478-3479 and 19302), `rtc` (50000-65535), and `other` buckets. Each contains `flows` and `unanswered`. The first routed destination port fixes the bucket for the whole routed link, even if later packets name other destinations. |
 | `groups` | Current explicit-group summaries as described in Outbound groups. |
+| `quality` | Measured network segments of this report window, each with top-four admitted paths and optional witness; see Quality measurements. |
+| `quality_segments_dropped` | Nonzero count of older nonempty quality segments discarded by the four-segment limit, reset when a report is taken. |
 
 Per-outbound fields `audits`, `audits_passed`, `lone_probes`, `lone_probes_failed`,
 `downs_strong`, `downs_weak` and the per-path UDP fields belong to `paths.<tag>`.
@@ -1317,3 +1319,117 @@ successful address (zero is valid), and `error` only as a failure class.
 `connect_ms` measures connection establishment and `ms` the complete step.
 The result disappears on a network change. The event keeps stale results for
 traffic diagnostics, without replacing this Status snapshot.
+## Quality measurements
+
+User TCP connections produce quality summaries for paths and the aggregate of
+configured `connectivity.witnesses`. These measurements never change path state,
+balancer choice, probes, quarantine, or provider triggers.
+`passive.shouldSkipQuality` defaults to `false`; `true` disables these connection
+measurements. UDP trackers and the observatory's own probes add no quality samples.
+The legacy TTFB fields keep their lifetime scope and existing semantics.
+
+The five signals are TCP TTFB, successful own-socket dial time, TCP socket
+statistics, counted bulk-download speed, and the same measurements for witness.
+TTFB runs from the first request write, or from the dial when there was no write,
+to the first reply. Dial time is recorded only when the successful dial returns
+an individual raw socket; it includes that transport's handshake and any DNS.
+S1 is read from the open server socket at the first reply, before the observer
+lock. S2 is read when counted download bytes cross 1, 4, 16, or 64 MiB. One read
+crossing several marks uses one clock read and one S2; quality adds no clock or
+socket reads between marks. The latest successful S2 survives a later failed read.
+
+Bulk speed uses the observed byte and time difference between the first reply
+and the last counted mark, in decimal Kbit/s. The tail and the time until
+completion do not change it. It needs a positive byte/time interval. Spliced
+downloads have no speed sample; completed spliced downloads of at least 1 MiB
+increment `bulk_spliced_count`. After splice starts, an eligible path can retain
+TTFB and S1 when its existing passive socket sweep observes real receive
+progress on the open socket. Aggregate bytes arriving at completion cannot
+supply a first-reply timestamp. Witness has no such socket sweep, so splice
+before its first counted reply can leave its TTFB and S1 unavailable. Quality
+adds no polling.
+
+Mux quality describes the observed physical TCP connection to the server:
+counts, first reply, byte marks, and socket statistics belong to the channel
+shared by its user streams. Datagrams carried inside it add no separate UDP
+quality sample.
+
+Unsupported or unmeasured fields are absent; measured zeros remain present.
+Linux checks the length returned by `getsockopt` before reading each field:
+RTT and `Min_rtt` are microseconds, `Min_rtt = ~uint32(0)` is unavailable, and
+zero `Rcv_rtt` is unavailable. Darwin `Srtt` is milliseconds. Its reported
+minimum is the minimum sampled S1 `Srtt` in the path or witness scope, not a
+kernel lifetime minimum; S2 `Srtt` is a coarse load indicator. Linux RX ratios
+use packets, Darwin RX ratios use bytes. RX out-of-order is an indicator, not
+a packet-loss percentage. Windows and transports without an individual raw
+socket supply no TCP_INFO fields; counted TTFB and speed can still be available.
+Fronting sockets measure the path to the edge server. Witness can reach different
+destinations, so absolute witness and path RTTs need not be comparable.
+
+Reports carry optional `quality` segments and nonzero
+`quality_segments_dropped` when older segments were discarded. A segment has
+`is_network_known`, `duration_ms`, `paths`, optional `witness`, and nonzero
+`paths_dropped` or `samples_dropped`. `is_network_known` records whether the
+network was remembered in this core run when the segment began. Quality does
+not parse the opaque `NetworkChanged(id)` string or export network type,
+operator, or fingerprint. Network/path/session labels belong to the separate
+measurement-context feature and are not implemented here. The existing local
+Status/event network ID and provider-specific `network.id` hash keep their
+contracts; quality adds no field to `network_change`.
+
+Current-network and open-window collections each admit the first 64 measured
+tags with at most 16 KiB of copied tag bytes, retaining their complete history
+even after retirement. Witness is separate and consumes neither tag budget.
+The report retains the latest four nonempty segments, each with the four
+busiest admitted paths by completed `bytes_down`; exact tag order breaks ties.
+`paths_dropped` counts admitted tags outside that projection. `samples_dropped`
+counts rejected meaningful phases, not distinct rejected tags. Rejected tags
+may be busier than retained tags, so ranking is exact among admitted tags;
+`bytes_down_overflow` makes the true ordering of saturated byte totals unknown.
+
+Every `NetworkChanged`, including the same or empty ID and IGNORE routing
+policy, advances an independent measurement epoch and resets current quality.
+Routing `generation` can stay unchanged under IGNORE. Later phases of old-epoch
+connections are discarded; already accepted phases stay in their old segment.
+`NetworkLost` alone does not advance the epoch. A successful nonnull report take
+starts a fresh window without resetting current-network Status/provider history.
+Snapshots and nil takes close nothing. Initial timing and completion data may
+therefore belong to different report windows; this is completion accounting,
+not a byte-stream split at the window boundary.
+
+Completion never waits for an in-flight quality socket sample. The collector
+under the observer lock fixes the byte cutoff and closes sampling admission.
+The last admitted sample publishes the quality end once. If a report was taken
+meanwhile, the delayed phase enters the then-available window; an intervening
+network change discards it. Returned snapshots stay unchanged. Final reports
+remain terminal: data published later cannot enter that run's report. A host
+gathering completion evidence waits with a fixed timeout before its final take
+and records incomplete coverage if publication has not completed.
+
+Status attaches `paths[].quality` to existing policy paths by exact full tag,
+with optional `witness_quality` and nonzero `quality_samples_dropped` for the
+current network. Reading Status creates no policy path for a retired tag.
+Providers get `outbounds[].quality` only for their own registered set, plus
+optional `witnessQuality` and nonzero `qualitySamplesDropped`; see
+[PROVIDER.md](PROVIDER.md#quality-measurements).
+
+| Quality field | Meaning |
+| --- | --- |
+| `bytes_down` | Bytes received by completed connections, including measured zero. |
+| `bytes_down_overflow` | Present and true when cumulative bytes saturated at int64 maximum. |
+| `ttfb_count`, `ttfb_p50_ms`, `ttfb_p90_ms` | TCP first-reply count and quantiles. |
+| `dial_count`, `dial_p50_ms`, `dial_p90_ms` | Successful own-socket dial count and quantiles. |
+| `tcp_count`, `tcp_rtt_p50_ms`, `tcp_rtt_p90_ms`, `tcp_rtt_min_ms` | S1 RTT count and quantiles; minimum measured S1 minimum RTT, in output milliseconds. |
+| `bulk_count`, `bulk_kbps_p50`, `bulk_kbps_p90`, `bulk_kbps_max` | Valid counted-download speed count and quantiles; maximum in output Kbit/s. |
+| `bulk_rtt_p50_ms` | S2 load RTT quantile, independently of speed availability. |
+| `bulk_spliced_count` | Spliced bulk completions; known zero remains present for counted bulk connections. |
+| `rx_out_of_order_fraction` | Sum of valid S1-to-S2 out-of-order deltas divided by received deltas. Decreasing counters and zero denominators are omitted. |
+| `tx_retransmit_fraction` | Retransmitted/sent totals from each completed connection's last successful snapshot, included once. |
+
+TX uses a saved S2 snapshot if present, otherwise S1; an absent TX pair in
+that selected S2 is not replaced by the S1 pair. Fractions are ratios of sums,
+not averages of connection ratios. Quantiles use inclusive bucket bounds and
+rounded sample ranks, at least one. The unbounded bucket returns the last
+finite bound: 8000 ms or 500000 Kbit/s. Counts are needed to assess sparse
+samples. User-traffic speed is a lower bound affected by reader pauses, slow
+start, and the application's bitrate; compare its p90 and maximum with witness.

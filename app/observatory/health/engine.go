@@ -210,6 +210,9 @@ type engine struct {
 	idleNet idleNet
 
 	report report
+	// Measurements have their own epoch even when routing ignores a change.
+	quality      *qualitySummary
+	qualityEpoch uint64
 }
 
 func newEngine(s *settings, seed int64) *engine {
@@ -2412,6 +2415,7 @@ func (e *engine) onNetworkChange(id string, now time.Time) {
 	if id != "" {
 		_, known = e.networks[id]
 	}
+	e.changeQualityNetwork(id, known, now)
 	e.providersOnNetworkChange(known, now)
 	e.idleNet.changed = now
 	e.networkID = id

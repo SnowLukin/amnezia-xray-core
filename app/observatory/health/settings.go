@@ -208,6 +208,7 @@ type passiveSettings struct {
 	partialMinBytes    int64
 	keepPending        bool
 	keepSilent         bool
+	skipQuality        bool
 }
 
 type probeSettings struct {
@@ -541,6 +542,7 @@ func newSettings(c *Config) *settings {
 		partialMinBytes:    size(p.GetPartialStallMinBytes(), defaultPartialMinBytes),
 		keepPending:        p.GetShouldKeepPendingOnDown(),
 		keepSilent:         p.GetShouldKeepSilentOnDown(),
+		skipQuality:        p.GetShouldSkipQuality(),
 	}
 	if p.GetShouldIgnorePartialStalls() {
 		s.passive.partialStallAge = 0

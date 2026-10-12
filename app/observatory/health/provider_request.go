@@ -18,21 +18,23 @@ import (
 // like the config and the answer. Destinations of connections, server
 // addresses and header values never go in.
 type providerRequest struct {
-	Protocol      int               `json:"protocol"`
-	Provider      string            `json:"provider"`
-	Run           string            `json:"run"`
-	RefreshNumber uint64            `json:"refreshNumber"`
-	Trigger       string            `json:"trigger"`
-	RetryLevel    int               `json:"retryLevel"`
-	LastFailure   *requestFailure   `json:"lastFailure,omitempty"`
-	Version       string            `json:"version,omitempty"`
-	BaseVersion   string            `json:"baseVersion,omitempty"`
-	ClientTime    time.Time         `json:"clientTime"`
-	Network       requestNetwork    `json:"network"`
-	IsMemoryLow   bool              `json:"isMemoryLow"`
-	Balancer      requestBalancer   `json:"balancer"`
-	Outbounds     []requestOutbound `json:"outbounds"`
-	Groups        []requestGroup    `json:"groups,omitempty"`
+	WitnessQuality        *requestQuality   `json:"witnessQuality,omitempty"`
+	QualitySamplesDropped uint64            `json:"qualitySamplesDropped,omitempty"`
+	Protocol              int               `json:"protocol"`
+	Provider              string            `json:"provider"`
+	Run                   string            `json:"run"`
+	RefreshNumber         uint64            `json:"refreshNumber"`
+	Trigger               string            `json:"trigger"`
+	RetryLevel            int               `json:"retryLevel"`
+	LastFailure           *requestFailure   `json:"lastFailure,omitempty"`
+	Version               string            `json:"version,omitempty"`
+	BaseVersion           string            `json:"baseVersion,omitempty"`
+	ClientTime            time.Time         `json:"clientTime"`
+	Network               requestNetwork    `json:"network"`
+	IsMemoryLow           bool              `json:"isMemoryLow"`
+	Balancer              requestBalancer   `json:"balancer"`
+	Outbounds             []requestOutbound `json:"outbounds"`
+	Groups                []requestGroup    `json:"groups,omitempty"`
 
 	// The network as the host named it; it goes out hashed, see providerHash.
 	networkID string
@@ -74,6 +76,7 @@ type requestBalancer struct {
 }
 
 type requestOutbound struct {
+	Quality         *requestQuality  `json:"quality,omitempty"`
 	Tag             string           `json:"tag"`
 	IsProbeOnly     bool             `json:"isProbeOnly"`
 	State           string           `json:"state"`
@@ -114,20 +117,25 @@ type requestProbe struct {
 
 // providerRequest gathers the body of the refresh j of p that starts now.
 func (e *engine) providerRequest(p *provider, j *refreshJob, now time.Time) *providerRequest {
+	quality := e.currentQuality(now)
 	r := &providerRequest{
-		Protocol:      providerProtocol,
-		Provider:      p.cfg.tag,
-		RefreshNumber: j.refresh,
-		Trigger:       j.trigger.String(),
-		RetryLevel:    j.retry,
-		Version:       p.version,
-		BaseVersion:   p.base,
-		ClientTime:    now.Round(0).UTC(),
-		Network:       requestNetwork{IsKnown: e.networks[e.networkID] != nil, IsUp: !e.networkDown},
-		IsMemoryLow:   e.memoryLow,
-		Balancer:      requestBalancer{Tag: p.cfg.balancer},
-		Outbounds:     make([]requestOutbound, 0, len(p.tags)),
-		networkID:     e.networkID,
+		Protocol:              providerProtocol,
+		QualitySamplesDropped: quality.SamplesDropped,
+		Provider:              p.cfg.tag,
+		RefreshNumber:         j.refresh,
+		Trigger:               j.trigger.String(),
+		RetryLevel:            j.retry,
+		Version:               p.version,
+		BaseVersion:           p.base,
+		ClientTime:            now.Round(0).UTC(),
+		Network:               requestNetwork{IsKnown: e.networks[e.networkID] != nil, IsUp: !e.networkDown},
+		IsMemoryLow:           e.memoryLow,
+		Balancer:              requestBalancer{Tag: p.cfg.balancer},
+		Outbounds:             make([]requestOutbound, 0, len(p.tags)),
+		networkID:             e.networkID,
+	}
+	if quality.Witness != nil {
+		r.WitnessQuality = requestQualityOf(*quality.Witness)
 	}
 	if !p.lastFailedAt.IsZero() {
 		r.LastFailure = &requestFailure{Status: p.lastStatus, Error: cutText(p.lastClass, maxFailureText),
@@ -193,6 +201,9 @@ func (e *engine) providerRequest(p *provider, j *refreshJob, now time.Time) *pro
 		}
 		o := describeOutbound(e.paths[tag], strings.TrimPrefix(tag, p.cfg.prefix), active[tag], now)
 		o.IsProbeOnly = e.isProbeOnly(tag)
+		if q, ok := quality.Paths[tag]; ok {
+			o.Quality = requestQualityOf(q)
+		}
 		if l := p.leases[tag]; l != nil {
 			left := l.left(now).Milliseconds()
 			o.ExpiresInMs = &left

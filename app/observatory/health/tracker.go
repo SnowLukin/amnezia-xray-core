@@ -89,6 +89,7 @@ type connTracker struct {
 	idleRead uint64
 
 	dialedConn net.Conn
+	quality    *connectionQuality
 	read       stats.Counter
 	write      stats.Counter
 	// The counters handed to the connection live here to save allocations.
@@ -134,6 +135,7 @@ func (t *connTracker) Dialed(conn net.Conn, err error, read, write stats.Counter
 		return nil, nil
 	}
 	t.dialedConn = conn
+	t.quality.dialed(conn, now)
 	t.read = read
 	t.write = write
 	t.state.Store(trackerOpen)
@@ -176,6 +178,11 @@ func (t *connTracker) sweepSpliced(now int64) bool {
 		t.kernelRx.Store(rx)
 		t.lastRead.Store(now)
 		if t.firstRead.CompareAndSwap(0, now) {
+			from := t.firstWrite.Load()
+			if from == 0 {
+				from = t.dialed.Load()
+			}
+			t.quality.firstKernelRead(t.o, now, t.bytesRead.Load(), now-from)
 			t.o.answered(t)
 		}
 	}
@@ -212,21 +219,36 @@ func (t *connTracker) onRead(n int64) {
 		t.pendingWrite.Store(0)
 	}
 	p := &t.o.s.passive
-	if total-n >= p.successBytes {
+	timing := total-n < p.successBytes
+	if !timing && !t.quality.needsMark(total) {
 		// The connection already proved the outbound works and nothing about
 		// its reads is timed any more, so bulk downloads skip the clock.
 		return
 	}
 	now := t.o.nowNano()
+	if !timing {
+		t.quality.mark(t.o, now, total)
+		return
+	}
 	t.lastRead.Store(now)
 	if t.firstRead.Load() == 0 && t.firstRead.CompareAndSwap(0, now) {
+		if t.quality != nil {
+			qualityFrom := t.firstWrite.Load()
+			if qualityFrom == 0 {
+				qualityFrom = t.dialed.Load()
+			}
+			t.quality.firstRead(t.o, now, total, now-qualityFrom)
+		}
 		t.o.answered(t)
+		// Preserve the legacy origin load after answered, including concurrent
+		// writes while that callback waits for the observer mutex.
 		from := t.firstWrite.Load()
 		if from == 0 {
 			from = t.dialed.Load()
 		}
 		t.ttfb.Store(now - from)
 	}
+	t.quality.mark(t.o, now, total)
 	if total >= p.successBytes {
 		if total-n < p.successBytes && t.mark(reportedSuccess) {
 			t.o.success(t)
@@ -278,6 +300,9 @@ func (t *connTracker) Finished(err error) {
 	t.dialedConn = nil
 	t.socket.Store(nil)
 	t.o.finished(t)
+	if t.quality != nil {
+		t.quality.socket.Store(nil)
+	}
 }
 
 // sweep checks the deadlines of one connection. It returns whether the
@@ -387,7 +412,10 @@ func (c *trackerReadCounter) Add(n int64) int64 {
 }
 
 // Spliced is called before bytes start to move without per-read counting.
-func (c *trackerReadCounter) Spliced() { c.t.onSpliced() }
+func (c *trackerReadCounter) Spliced() {
+	c.t.quality.onSpliced()
+	c.t.onSpliced()
+}
 
 type trackerWriteCounter struct{ t *connTracker }
 
@@ -463,19 +491,35 @@ func (c *probeCounter) Add(n int64) int64 {
 // whether the network works. It reports once, when the connection has
 // received enough to count as working.
 type witnessTracker struct {
-	o     *Observer
-	bytes atomic.Int64
-	done  atomic.Bool
+	o           *Observer
+	bytes       atomic.Int64
+	done        atomic.Bool
+	quality     *connectionQuality
+	qualityRead atomic.Int64
+	dialedAt    atomic.Int64
+	firstWrite  atomic.Int64
+	finished    atomic.Bool
 }
 
-func (t *witnessTracker) Dialed(_ net.Conn, err error, read, write stats.Counter) (stats.Counter, stats.Counter) {
+func (t *witnessTracker) Dialed(conn net.Conn, err error, read, write stats.Counter) (stats.Counter, stats.Counter) {
 	if err != nil {
 		return nil, nil
+	}
+	if t.quality != nil {
+		now := t.o.nowNano()
+		t.dialedAt.Store(now)
+		t.quality.dialed(conn, now)
+		write = &witnessWriteCounter{t: t, inner: write}
 	}
 	return &witnessCounter{t, read}, write
 }
 
-func (t *witnessTracker) Finished(error) {}
+func (t *witnessTracker) Finished(error) {
+	if t.quality != nil && !t.finished.Swap(true) {
+		t.o.qualityWitnessFinished(t)
+		t.quality.socket.Store(nil)
+	}
+}
 
 type witnessCounter struct {
 	t     *witnessTracker
@@ -497,6 +541,26 @@ func (c *witnessCounter) Set(v int64) int64 {
 }
 
 func (c *witnessCounter) Add(n int64) int64 {
+	if q := c.t.quality; q != nil && n > 0 {
+		total := c.t.qualityRead.Add(n)
+		now := int64(0)
+		if !q.firstClaim.Load() {
+			now = c.t.o.nowNano()
+			from := c.t.firstWrite.Load()
+			if from == 0 {
+				from = c.t.dialedAt.Load()
+			}
+			if q.firstRead(c.t.o, now, total, now-from) {
+				c.t.o.qualityWitnessAnswered(c.t)
+			}
+		}
+		if q.needsMark(total) {
+			if now == 0 {
+				now = c.t.o.nowNano()
+			}
+			q.mark(c.t.o, now, total)
+		}
+	}
 	if !c.t.done.Load() && c.t.bytes.Add(n) >= c.t.o.s.passive.successBytes && c.t.done.CompareAndSwap(false, true) {
 		c.t.o.witnessed()
 	}
@@ -505,6 +569,40 @@ func (c *witnessCounter) Add(n int64) int64 {
 	}
 	return 0
 }
+
+func (c *witnessCounter) Spliced() { c.t.quality.onSpliced() }
+
+type witnessWriteCounter struct {
+	t     *witnessTracker
+	inner stats.Counter
+}
+
+func (c *witnessWriteCounter) Value() int64 {
+	if c.inner != nil {
+		return c.inner.Value()
+	}
+	return 0
+}
+
+func (c *witnessWriteCounter) Set(v int64) int64 {
+	if c.inner != nil {
+		return c.inner.Set(v)
+	}
+	return 0
+}
+
+func (c *witnessWriteCounter) Add(n int64) int64 {
+	if n > 0 && c.t.firstWrite.Load() == 0 {
+		c.t.firstWrite.CompareAndSwap(0, c.t.o.nowNano())
+	}
+	if c.inner != nil {
+		return c.inner.Add(n)
+	}
+	return 0
+}
+
+// Upload splice does not remove the timing of counted download reads.
+func (c *witnessWriteCounter) Spliced() {}
 
 type probeContextKey struct{}
 

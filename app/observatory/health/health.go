@@ -59,6 +59,9 @@ type Observer struct {
 
 	// The engine's network generation, readable without the lock.
 	generation atomic.Uint64
+	// Measurements have an epoch even when routing ignores a network change.
+	qualityEpoch atomic.Uint64
+	qualityInfo  qualitySocketReader
 	// Names this run of the core, so that a host request meant for a
 	// previous run is told apart.
 	run string
@@ -133,6 +136,10 @@ func newObserver(ctx context.Context, config *Config) *Observer {
 	o.runCtx, o.stopRun = context.WithCancel(ctx)
 	o.newHandler = o.createHandler
 	o.e.report.begin(o.clock())
+	if !s.passive.skipQuality {
+		o.e.quality = newQualitySummary(o.e.report.started)
+	}
+	o.qualityEpoch.Store(o.e.qualityEpoch)
 	// The number of the kept set starts from the wall clock in
 	// milliseconds, so it grows across runs too: a host that asks with the
 	// number it kept from the run before gets the set of this one.
@@ -395,11 +402,22 @@ func (o *Observer) StartDial(ctx context.Context, tag string, server net.Destina
 	}
 	if !o.s.observes(tag) {
 		if o.s.witness(tag) {
-			return &witnessTracker{o: o}
+			w := &witnessTracker{o: o}
+			if !o.s.passive.skipQuality {
+				_, udp := targetFrom(ctx)
+				if !udp {
+					w.quality = o.newConnectionQuality(false, 0)
+					w.quality.started = o.nowNano()
+				}
+			}
+			return w
 		}
 		return nil
 	}
 	target, udp := targetFrom(ctx)
+	// Capture the measurement epoch before the start timestamp. A network
+	// change during construction must not label an older dial as new traffic.
+	quality := o.newConnectionQuality(udp, 0)
 	t := &connTracker{
 		o:       o,
 		tag:     tag,
@@ -411,6 +429,10 @@ func (o *Observer) StartDial(ctx context.Context, tag string, server net.Destina
 		started: o.nowNano(),
 		network: o.generation.Load(),
 	}
+	if quality != nil {
+		quality.started = t.started
+	}
+	t.quality = quality
 	if _, ok := o.e.lastServer.Load(tag); !ok && t.server != "" {
 		o.e.lastServer.Store(tag, t.server)
 	}
@@ -602,6 +624,7 @@ func (o *Observer) failure(t *connTracker, kind failureKind) {
 
 func (o *Observer) answered(t *connTracker) {
 	o.mu.Lock()
+	o.collectQualityInitial(t.quality, t.tag, false)
 	if t.network == o.e.generation {
 		p := o.e.pathAt(t.tag, o.now())
 		p.lastAnsweredStart = max(p.lastAnsweredStart, t.started)
@@ -641,6 +664,7 @@ func (o *Observer) witnessed() {
 
 func (o *Observer) finished(t *connTracker) {
 	o.mu.Lock()
+	o.collectQualityEnd(t.quality, t.tag, false, &t.bytesRead)
 	now := o.now()
 	st := &o.e.pathAt(t.tag, now).stats
 	if t.bytesRead.Load() > 0 {
@@ -790,6 +814,7 @@ func (o *Observer) NetworkChanged(id string) {
 	o.mu.Lock()
 	o.e.onNetworkChange(id, o.now())
 	o.generation.Store(o.e.generation)
+	o.qualityEpoch.Store(o.e.qualityEpoch)
 	o.mu.Unlock()
 	o.wake()
 }

@@ -82,6 +82,9 @@ message PassiveConfig {
   int64 lone_failure_after = 16;
   // Zero uses 5 seconds; a negative value disables UDP evidence.
   int64 udp_reply_timeout = 17;
+  // Only measure path quality from user TCP traffic; this disables the
+  // measurements without changing evidence, probes or routing decisions.
+  bool should_skip_quality = 32;
 }
 
 message ProbeProfile {

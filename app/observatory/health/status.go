@@ -28,6 +28,7 @@ func (p *path) statusUDP(now time.Time) UDPStatus {
 }
 
 type pathStatusView struct {
+	Quality         *qualityPathView `json:"quality,omitempty"`
 	Outbound        string           `json:"outbound"`
 	IsProbeOnly     bool             `json:"is_probe_only"`
 	State           string           `json:"state"`
@@ -112,6 +113,8 @@ type providerStatusView struct {
 }
 
 type statusView struct {
+	WitnessQuality        *qualityPathView `json:"witness_quality,omitempty"`
+	QualitySamplesDropped uint64           `json:"quality_samples_dropped,omitempty"`
 	// Names this run of the core; pin and release requests may carry it.
 	Run         string `json:"run,omitempty"`
 	Network     string `json:"network,omitempty"`
@@ -132,8 +135,10 @@ type statusView struct {
 }
 
 func (e *engine) status(now time.Time) statusView {
+	quality := e.currentQuality(now)
 	v := statusView{
-		Groups:       e.groupViews(now),
+		Groups:         e.groupViews(now),
+		WitnessQuality: quality.Witness, QualitySamplesDropped: quality.SamplesDropped,
 		Network:      e.networkID,
 		IsNetworkUp:  !e.networkDown,
 		Connectivity: e.connectivityState(),
@@ -198,6 +203,9 @@ func (e *engine) status(now time.Time) statusView {
 			UDP:          p.statusUDP(now),
 			ActiveMs:     (p.stats.activeTime + active[tag]).Milliseconds(),
 			IsAsleep:     p.asleep,
+		}
+		if q, ok := quality.Paths[tag]; ok {
+			pv.Quality = &q
 		}
 		if !p.statusSince.IsZero() {
 			pv.ForMs = now.Sub(p.statusSince).Milliseconds()

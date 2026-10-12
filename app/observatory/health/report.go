@@ -142,13 +142,15 @@ type reportView struct {
 	WindowMs  int64  `json:"window_ms"`
 	SessionMs int64  `json:"session_ms"`
 	reportCounts
-	Active              map[string]string     `json:"active"`
-	IsBalancerExhausted bool                  `json:"is_balancer_exhausted"`
-	IsNetworkUp         bool                  `json:"is_network_up"`
-	IsQuietSample       bool                  `json:"is_quiet_sample"`
-	Connectivity        string                `json:"connectivity,omitempty"`
-	Groups              []groupStatusView     `json:"groups,omitempty"`
-	Paths               map[string]reportPath `json:"paths"`
+	Active                 map[string]string     `json:"active"`
+	IsBalancerExhausted    bool                  `json:"is_balancer_exhausted"`
+	IsNetworkUp            bool                  `json:"is_network_up"`
+	IsQuietSample          bool                  `json:"is_quiet_sample"`
+	Connectivity           string                `json:"connectivity,omitempty"`
+	Groups                 []groupStatusView     `json:"groups,omitempty"`
+	Paths                  map[string]reportPath `json:"paths"`
+	Quality                []qualitySegmentView  `json:"quality,omitempty"`
+	QualitySegmentsDropped uint64                `json:"quality_segments_dropped,omitempty"`
 }
 
 // pathTotals are the counters of a path that a report shows as growth since
@@ -517,6 +519,9 @@ func (e *engine) reportView(reason string, now time.Time, take bool) *reportView
 		Paths:         map[string]reportPath{},
 	}
 	v.EventsDropped = e.events.droppedTotal - r.droppedBefore
+	// This builder is reached only when the outer report actually exists.
+	// Snapshot preserves the window; successful take resets only its quality.
+	v.Quality, v.QualitySegmentsDropped = e.quality.report(now, take)
 	if !take {
 		v.SwitchReasons = maps.Clone(v.SwitchReasons)
 		v.SwitchPath = slices.Clone(v.SwitchPath)
