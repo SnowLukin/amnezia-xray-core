@@ -344,6 +344,11 @@ func (o *Observer) probeJobContext(parent context.Context, j *probeJob) context.
 }
 
 func (o *Observer) firstUserWrite(t *connTracker) {
+	// Without UDP probes there is nothing to schedule: the first write of a
+	// connection then does not take the observer's lock.
+	if o.s.udpProbe == nil {
+		return
+	}
 	o.mu.Lock()
 	p := t.udpPath
 	changed := p != nil && t.udpEpoch == o.e.udpEpoch && o.e.paths[t.tag] == p && p.udpIncarnation == t.udpIncarnation &&

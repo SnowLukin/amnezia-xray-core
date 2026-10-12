@@ -176,14 +176,24 @@ func TestQualityPreservesLegacyTTFBOriginAfterAnswered(t *testing.T) {
 	}
 	// A first write arriving while answered waits was also visible to the
 	// baseline's legacy TTFB origin. Keep that old, possibly negative value.
+	// The write goes on its own goroutine: with UDP probes it takes the
+	// observer's lock too, after it has noted its time.
 	clk.advance(2 * time.Second)
-	w.Add(1)
+	wrote := make(chan struct{})
+	go func() { w.Add(1); close(wrote) }()
+	for deadline := time.Now().Add(5 * time.Second); tr.firstWrite.Load() == 0; time.Sleep(time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("first write was not noted while answered waits")
+		}
+	}
 	o.mu.Unlock()
 	held = false
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
-		t.Fatal("first reply did not finish after releasing answered")
+	for _, ch := range []chan struct{}{done, wrote} {
+		select {
+		case <-ch:
+		case <-time.After(5 * time.Second):
+			t.Fatal("first reply or write did not finish after releasing answered")
+		}
 	}
 	if got := tr.ttfb.Load(); got != -int64(2*time.Second) {
 		t.Fatalf("quality moved the legacy TTFB origin: %v", time.Duration(got))
