@@ -83,28 +83,29 @@ func (r probeReason) String() string {
 // probeJob is one probe of an outbound. Jobs are shared: one probe of a tag
 // for a reason answers every balancer waiting for it.
 type probeJob struct {
-	id             uint64
-	tag            string
-	reason         probeReason
-	selector       string
-	notBefore      time.Time
-	generation     uint64
-	candidateEpoch uint64
-	profile        *probeSettings
-	isProbeOnly    bool
-	isUDP          bool
-	udpEpoch       uint64
-	udpIncarnation uint64
-	udpPath        *path
-	cancel         context.CancelFunc
-	invalidated    bool
-	forgotten      bool
-	evidenceStrong bool
-	auditDown      uint64
-	loneDown       uint64
-	loneSuccess    time.Time
-	wakeDown       uint64
-	wakeSuccess    time.Time
+	id              uint64
+	tag             string
+	reason          probeReason
+	selector        string
+	notBefore       time.Time
+	generation      uint64
+	candidateEpoch  uint64
+	profile         *probeSettings
+	isProbeOnly     bool
+	isUDP           bool
+	udpEpoch        uint64
+	udpIncarnation  uint64
+	udpPath         *path
+	udpSpacingUntil time.Time
+	cancel          context.CancelFunc
+	invalidated     bool
+	forgotten       bool
+	evidenceStrong  bool
+	auditDown       uint64
+	loneDown        uint64
+	loneSuccess     time.Time
+	wakeDown        uint64
+	wakeSuccess     time.Time
 	// The request of the host that asked for the probe.
 	request uint64
 }
@@ -1664,6 +1665,7 @@ func (e *engine) tick(now time.Time) ([]*probeJob, time.Time) {
 			kept = append(kept, j)
 			continue
 		}
+		e.preemptRunningUDP()
 		w := e.budgetWait(j, now)
 		if w != 0 {
 			if j.reason == reasonAudit {

@@ -840,7 +840,11 @@ between adjacent RTTs in request order.
 
 The lowest-priority queue shares concurrency, server-name, spacing and
 minute limits with TCP probes; it waits while any TCP probe is queued or
-running. `perHour` limits starts across the whole core. UDP probes do not
+running. Ready TCP work cancels a running UDP probe and removes only its
+spacing reservation. The slot is released after the UDP worker closes and
+joins; actual starts remain in the hourly, minute and server-name budgets.
+Canceled results publish no observation. `perHour` limits starts across
+the whole core. UDP probes do not
 start while idle, without a network, under low memory, on a sleeping,
 retiring, replacing, probe-only or down path. An unselected real path can
 be probed only by the host. Reasons are `udp_switch`, `udp_suspect` and
@@ -1117,7 +1121,7 @@ changed its settings), `probe_changed` (a provider changed the profile of an unc
 | `probe_start` | `outbound`, `reason`, `balancer`, `running`, `request` | A probe started. `reason`: `confirm`, `failover`, `network_change`, `wake`, `remembered`, `recheck`, `lone`, `audit`, `return`, `group_recheck`, `candidate`, `host`. `running` counts the outbound probes running now, this one included. `request` is the id of the request a `host` probe is for. |
 | `udp_probe` | `outbound`, `reason`, `state`, `answered`, `sent`, `rtt_ms`, `jitter_ms`, `destination_index`, `class` | A current UDP probe finished. Destination index is zero-based; `class` describes an immediate refusal for `unsupported`. Stale and canceled probes publish no observation. |
 | `udp_suspect` | `outbound`, `flows`, `targets`, `window_ms` | Passive UDP evidence met the selected-path rule. |
-| `udp_skip` | `outbound`, `reason` | A UDP probe could not start; each reason is written once until the next probe or reset. Reasons include `per_hour`, `asleep`, `idle`, `memory`, `recent`, `network_down`, `down`, `inactive`, `gone`, `disabled` and `probe_only`. |
+| `udp_skip` | `outbound`, `reason` | A UDP probe could not start; each reason is written once until the next probe or reset. Event reasons are `per_hour`, `asleep`, `idle`, `memory` and `recent`; other blocked conditions are returned to the host or remain silent. |
 | `probe_result` | `outbound`, `reason`, `balancer`, `is_ok`, `rtt_ms`, `bytes`, `error`, `is_stale`, `request`, `profile`, `state`, `steps` | A probe finished. `steps` lists only attempted steps with `name`, `is_passed`, `connect_ms`, `ms`, `bytes`, a `destination` index on success or an `error` class on failure. `bytes` counts both directions above TLS. `is_stale` means the network, handler or probe profile changed while it ran, so its result did not change the path. Its attempted steps still count in the report. |
 | `probe_only_promoted` | `outbound`, `provider` | A provider made a fresh verified candidate real. |
 | `fresh_path_down` | `outbound` | A new real provider handler was first judged down within five minutes of activation. |

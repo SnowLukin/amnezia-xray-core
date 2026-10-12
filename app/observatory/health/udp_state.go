@@ -204,7 +204,8 @@ func (e *engine) tickUDP(j *probeJob, now time.Time, idle bool, tcpQueue []*prob
 func (e *engine) beginUDP(j *probeJob, now time.Time) {
 	e.running[j.id] = j
 	e.udpStarts = append(e.udpStarts, now)
-	e.spacedUntil = append(e.spacedUntil, now.Add(e.jitter(e.s.schedule.spacing, e.s.schedule.spacingJitter)))
+	j.udpSpacingUntil = now.Add(e.jitter(e.s.schedule.spacing, e.s.schedule.spacingJitter))
+	e.spacedUntil = append(e.spacedUntil, j.udpSpacingUntil)
 	e.starts = append(e.starts, now)
 	e.hostStarts = append(e.hostStarts, now)
 	name := e.serverName(j.tag)
@@ -216,6 +217,24 @@ func (e *engine) beginUDP(j *probeJob, now time.Time) {
 	}
 	clear(p.udpSkips)
 	e.used(j.tag, now)
+}
+
+func (e *engine) preemptRunningUDP() {
+	for _, j := range e.running {
+		if !j.isUDP {
+			continue
+		}
+		alreadyInvalidated := j.invalidated
+		j.invalidated = true
+		// A started UDP probe keeps its quotas but cannot delay ready TCP work.
+		if index := slices.Index(e.spacedUntil, j.udpSpacingUntil); !j.udpSpacingUntil.IsZero() && index >= 0 {
+			e.spacedUntil = slices.Delete(e.spacedUntil, index, index+1)
+		}
+		j.udpSpacingUntil = time.Time{}
+		if !alreadyInvalidated && j.cancel != nil {
+			j.cancel()
+		}
+	}
 }
 
 func (e *engine) onUDPProbeResult(j *probeJob, r udpProbeResult, now time.Time) {
