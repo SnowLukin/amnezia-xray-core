@@ -135,11 +135,12 @@ type engine struct {
 	nextID  uint64
 
 	// When the spacing after each recent probe start ends.
-	spacedUntil   []time.Time
-	starts        []time.Time
-	startsByName  map[string][]time.Time
-	hostStarts    []time.Time
-	serverNameFor func(tag string) string
+	spacedUntil     []time.Time
+	starts          []time.Time
+	startsByName    map[string][]time.Time
+	udpStartsByName map[string][]time.Time
+	hostStarts      []time.Time
+	serverNameFor   func(tag string) string
 
 	// Probe requests of the host, open ones and the latest closed ones.
 	requests  []*probeRequest
@@ -222,6 +223,7 @@ func newEngine(s *settings, seed int64) *engine {
 		events:           newEventLog(s.maxEvents, s.maxBytes),
 		running:          map[uint64]*probeJob{},
 		startsByName:     map[string][]time.Time{},
+		udpStartsByName:  map[string][]time.Time{},
 		networks:         map[string]map[string]string{},
 		pendingSuspicion: map[string]verdict{},
 		serverNameFor:    func(tag string) string { return tag },
@@ -1512,8 +1514,12 @@ func (e *engine) budgetWait(j *probeJob, now time.Time) time.Duration {
 				wait = max(wait, e.starts[len(e.starts)-share].Add(time.Minute).Sub(now))
 			}
 		}
-		if share := max(e.s.schedule.probesPerServerNamePerMinute/2, 1); len(byName) >= share {
-			wait = max(wait, byName[len(byName)-share].Add(time.Minute).Sub(now))
+		shareStarts := byName
+		if !j.isUDP {
+			shareStarts = e.tcpHostShareStarts(name, byName, now)
+		}
+		if share := max(e.s.schedule.probesPerServerNamePerMinute/2, 1); len(shareStarts) >= share {
+			wait = max(wait, shareStarts[len(shareStarts)-share].Add(time.Minute).Sub(now))
 		}
 	}
 	return wait
@@ -2694,6 +2700,14 @@ func (e *engine) gc(now time.Time, stale time.Duration) {
 	for name, ts := range e.startsByName {
 		if len(pruneTimes(ts, now)) == 0 {
 			delete(e.startsByName, name)
+		}
+	}
+	for name, ts := range e.udpStartsByName {
+		recent := pruneTimes(ts, now)
+		if len(recent) == 0 {
+			delete(e.udpStartsByName, name)
+		} else {
+			e.udpStartsByName[name] = recent
 		}
 	}
 }

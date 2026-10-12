@@ -843,6 +843,10 @@ minute limits with TCP probes; it waits while any TCP probe is queued or
 running. Ready TCP work cancels a running UDP probe and removes only its
 spacing reservation. The slot is released after the UDP worker closes and
 joins; actual starts remain in the hourly, minute and server-name budgets.
+Actual UDP starts keep their full minute and per-server-name quotas. The
+special half of a server name reserved for TCP host probes counts TCP starts
+only; a completed or canceled UDP probe does not consume that share. UDP
+admission still uses the full start history for its own limits and half.
 Canceled results publish no observation. `perHour` limits starts across
 the whole core. UDP probes do not
 start while idle, without a network, under low memory, on a sleeping,

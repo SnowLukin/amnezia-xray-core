@@ -210,6 +210,7 @@ func (e *engine) beginUDP(j *probeJob, now time.Time) {
 	e.hostStarts = append(e.hostStarts, now)
 	name := e.serverName(j.tag)
 	e.startsByName[name] = append(e.startsByName[name], now)
+	e.udpStartsByName[name] = append(pruneTimes(e.udpStartsByName[name], now), now)
 	p := j.udpPath
 	if j.reason == reasonUDPSwitch {
 		p.udpSwitchDone, p.udpSwitchPending = true, false
@@ -217,6 +218,23 @@ func (e *engine) beginUDP(j *probeJob, now time.Time) {
 	}
 	clear(p.udpSkips)
 	e.used(j.tag, now)
+}
+
+func (e *engine) tcpHostShareStarts(name string, starts []time.Time, now time.Time) []time.Time {
+	udpStarts := pruneTimes(e.udpStartsByName[name], now)
+	if len(udpStarts) == 0 {
+		delete(e.udpStartsByName, name)
+		return starts
+	}
+	e.udpStartsByName[name] = udpStarts
+	tcpStarts := slices.Clone(starts)
+	// UDP keeps the full SNI quota, but does not consume the TCP host share.
+	for _, started := range udpStarts {
+		if index := slices.Index(tcpStarts, started); index >= 0 {
+			tcpStarts = slices.Delete(tcpStarts, index, index+1)
+		}
+	}
+	return tcpStarts
 }
 
 func (e *engine) preemptRunningUDP() {
