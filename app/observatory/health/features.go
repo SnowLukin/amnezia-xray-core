@@ -2,6 +2,7 @@ package health
 
 import (
 	"fmt"
+	"math"
 	"net/url"
 )
 
@@ -14,6 +15,7 @@ func featureValue(value *bool, fallback bool) bool {
 }
 
 type featureSettings struct {
+	Census            bool
 	DialFailures      bool
 	DialTimeout       bool
 	ServerUnverified  bool
@@ -109,6 +111,7 @@ func (f featureSettings) failure(kind failureKind) bool {
 
 func (f featureSettings) status() map[string]bool {
 	return map[string]bool{
+		"census":              f.Census,
 		"dial_failures":       f.DialFailures,
 		"dial_timeout":        f.DialTimeout,
 		"server_unverified":   f.ServerUnverified,
@@ -148,6 +151,17 @@ func (c *Config) ValidateFeatures() error {
 		return err
 	}
 	f := newFeatureSettings(c.GetFeatures())
+	if cc := c.GetCensus(); cc != nil {
+		if !f.Report {
+			return fmt.Errorf("healthObservatory.telemetry.census requires telemetry.report")
+		}
+		if math.IsNaN(cc.SampleFraction) || math.IsInf(cc.SampleFraction, 0) || cc.SampleFraction <= 0 || cc.SampleFraction > 1 {
+			return fmt.Errorf("healthObservatory.telemetry.census.sampleFraction must be in (0, 1]")
+		}
+		if cc.StartAfter < 0 {
+			return fmt.Errorf("healthObservatory.telemetry.census.startAfter must be positive")
+		}
+	}
 	if f.LoneFailureProbe && !f.DialFailures && !f.DialTimeout && !f.ServerUnverified {
 		return fmt.Errorf("healthObservatory.evidence.loneFailureProbe requires evidence.dialFailures, evidence.dialTimeout or evidence.serverUnverified")
 	}
@@ -178,8 +192,8 @@ func (c *Config) ValidateFeatures() error {
 		return fmt.Errorf("healthObservatory.probes.udp.destinations must be nonempty when udp")
 	}
 	for i, p := range c.GetPaths() {
-		if p.GetIsProbeOnly() && !f.Candidates {
-			return fmt.Errorf("healthObservatory.paths[%d].isProbeOnly requires probes.candidates", i)
+		if p.GetIsProbeOnly() && !f.Candidates && c.GetCensus() == nil {
+			return fmt.Errorf("healthObservatory.paths[%d].isProbeOnly requires probes.candidates or telemetry.census", i)
 		}
 	}
 	for i, p := range c.GetProbes() {

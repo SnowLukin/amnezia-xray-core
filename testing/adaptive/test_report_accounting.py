@@ -12,7 +12,7 @@ def report(index, events, **counters):
     result = dict.fromkeys((
         "switches", "exhausted_count", "group_down_count", "path_down_count",
         "path_suspect_count", "path_rescued_count", "pending_closed_count",
-        "idle_closed_count", "probes", "probes_failed", "probe_bytes",
+        "idle_closed_count", "probes", "probes_failed", "probe_bytes", "census_probes", "census_probe_bytes",
         "host_probe_requests", "host_probes", "return_attempts", "return_failures",
         "pinned_down_count", "network_changes", "network_known", "network_down_count",
         "provider_fetches", "provider_fetch_failures", "provider_retry_after",
@@ -71,6 +71,16 @@ class ReportAccountingTest(unittest.TestCase):
 
     def test_zero_event_report_with_no_drops_passes(self):
         self.assertTrue(self.check_reports(empty=True)["ok"])
+
+    def test_census_is_accounted_independently_of_user_controller_probes(self):
+        values, decided = bench.fold_report([
+            {"type": "probe_start", "fields": {"reason": "census"}},
+            {"type": "probe_result", "fields": {"reason": "census", "is_ok": False, "bytes": 17}},
+            {"type": "probe_result", "fields": {"reason": "failover", "is_ok": True, "bytes": 32768}},
+        ])
+        self.assertEqual((values["census_probes"], values["census_probe_bytes"]), (1, 17))
+        self.assertEqual((values["probes"], values["probes_failed"], values["probe_bytes"]), (1, 0, 32768))
+        self.assertFalse(decided)
 
 
 

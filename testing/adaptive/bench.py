@@ -1229,7 +1229,7 @@ def fold_report(events):
     counters and whether there was a decision."""
     keys = ["events", "switches", "exhausted_count", "group_down_count", "path_down_count", "path_suspect_count", "path_rescued_count", "pending_closed_count",
             "idle_closed_count", "probes", "probes_failed", "probe_bytes", "host_probe_requests", "host_probes",
-            "return_attempts",
+            "return_attempts", "census_probes", "census_probe_bytes",
             "return_failures", "pinned_down_count",
             "network_changes", "network_known", "network_down_count", "provider_fetches", "provider_fetch_failures",
             "provider_retry_after", "provider_applied", "provider_rejected",
@@ -1263,6 +1263,10 @@ def fold_report(events):
             c["pending_closed_count"] += f.get("connections", 0)
         elif t == "idle_closed":
             c["idle_closed_count"] += f.get("connections", 0)
+        elif t == "probe_start" and f.get("reason") == "census":
+            c["census_probes"] += 1
+        elif t == "probe_result" and f.get("reason") == "census":
+            c["census_probe_bytes"] += f.get("bytes", 0)
         elif t == "probe_result":
             c["probes"] += 1
             c["probes_failed"] += f.get("is_ok") is not True

@@ -27,6 +27,8 @@ message Config {
   FeatureConfig features = 14;
   map<string, string> session_labels = 15;
   LabelRequestConfig label_request = 16;
+  // Presence enables a sampled, observational census of leastCost paths.
+  CensusConfig census = 17;
 }
 
 // User presence checks stale selected paths even while idle. Zero keeps the
@@ -525,4 +527,13 @@ message ProviderFeatureConfig {
   optional bool lease_renewal = 7;
   optional bool backend_schedule = 8;
   optional bool expired_lease_fallback = 9;
+}
+
+// A run is sampled once; each active network may produce one census.
+message CensusConfig {
+  double sample_fraction = 1;
+  // Zero uses 3 minutes; explicit JSON durations must be positive.
+  int64 start_after = 2;
+  // On-demand path tags or group names admitted to the census.
+  repeated string on_demand = 3;
 }

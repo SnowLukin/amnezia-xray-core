@@ -153,7 +153,14 @@ type HealthReportConfig struct {
 	QuietSampleFraction float64                   `json:"quietSampleFraction"`
 	SessionLabels       HealthSessionLabelsConfig `json:"sessionLabels"`
 }
+type HealthCensusConfig struct {
+	SampleFraction *float64           `json:"sampleFraction"`
+	StartAfter     *duration.Duration `json:"startAfter"`
+	OnDemand       []string           `json:"onDemand"`
+}
+
 type HealthTelemetryConfig struct {
+	Census            *HealthCensusConfig `json:"census"`
 	Events            HealthEventsConfig  `json:"events"`
 	Report            HealthReportConfig  `json:"report"`
 	Quality           HealthFeatureConfig `json:"quality"`
@@ -677,6 +684,18 @@ func (c *HealthObservatoryConfig) Build() (proto.Message, error) {
 	if err := validateLabels("healthObservatory.telemetry.report.sessionLabels.labels", t.Report.SessionLabels.Labels, 8); err != nil {
 		return nil, err
 	}
+	if census := t.Census; census != nil {
+		if !enabled(t.Report.IsEnabled, false) {
+			return nil, errors.New("healthObservatory.telemetry.census requires healthObservatory.telemetry.report")
+		}
+		if census.SampleFraction == nil || math.IsNaN(*census.SampleFraction) || math.IsInf(*census.SampleFraction, 0) || *census.SampleFraction <= 0 || *census.SampleFraction > 1 {
+			return nil, errors.New("healthObservatory.telemetry.census.sampleFraction is required and must be in (0, 1]")
+		}
+		if err := requirePositiveDuration("healthObservatory.telemetry.census.startAfter", census.StartAfter); err != nil {
+			return nil, err
+		}
+		out.Census = &health.CensusConfig{SampleFraction: *census.SampleFraction, StartAfter: optionalDuration(census.StartAfter), OnDemand: census.OnDemand}
+	}
 	out.Report = &health.ReportConfig{Interval: optionalDuration(t.Report.Interval), QuietShare: t.Report.QuietSampleFraction}
 	out.SessionLabels = t.Report.SessionLabels.Labels
 	for i, pc := range c.Providers {
@@ -1163,8 +1182,8 @@ func checkLeastCost(c *Config) error {
 			return errors.New(where, ": tag must be nonempty and unique")
 		}
 		seenTags[o.Tag] = true
-		if p.IsProbeOnly && !enabled(c.HealthObservatory.Probes.Candidates.IsEnabled, false) {
-			return errors.New(where, ".isProbeOnly requires healthObservatory.probes.candidates")
+		if p.IsProbeOnly && !enabled(c.HealthObservatory.Probes.Candidates.IsEnabled, false) && c.HealthObservatory.Telemetry.Census == nil {
+			return errors.New(where, ".isProbeOnly requires healthObservatory.probes.candidates or healthObservatory.telemetry.census")
 		}
 		if err := validateLabels(where+".labels", p.Labels, 6); err != nil {
 			return err
@@ -1280,6 +1299,66 @@ func checkLeastCost(c *Config) error {
 	for tag, ps := range providers {
 		if parsed[tag] == nil {
 			return errors.New("healthObservatory.providers[", ps[0].Tag, "].apply.balancer ", tag, " must use leastCost")
+		}
+	}
+	if c.HealthObservatory != nil && c.HealthObservatory.Telemetry.Census != nil {
+		if err := validateCensusOnDemand(c.HealthObservatory.Telemetry.Census.OnDemand, parsed, groups); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// An unqualified name must identify an on-demand path or group everywhere it
+// occurs. Allowing a regular homonym would unintentionally admit a path that
+// the backend did not intend to include.
+func validateCensusOnDemand(names []string, selectors map[string]*strategyLeastCostConfig, groups map[string]map[string]*strategyPathGroupConfig) error {
+	// Every report row needs an unambiguous key, including regular paths
+	// that are admitted automatically and do not occur in onDemand.
+	keys := make(map[string]string)
+	for balancer, selector := range selectors {
+		for name := range groups[balancer] {
+			owner := "group " + name + " in balancer " + balancer
+			if previous := keys[name]; previous != "" {
+				return errors.New("healthObservatory.telemetry.census: ambiguous report key ", name, ": ", previous, " and ", owner)
+			}
+			keys[name] = owner
+		}
+		for _, path := range selector.Paths {
+			if path.Group != "" {
+				continue
+			}
+			owner := "path " + path.Tag + " in balancer " + balancer
+			if previous := keys[path.Tag]; previous != "" {
+				return errors.New("healthObservatory.telemetry.census: ambiguous report key ", path.Tag, ": ", previous, " and ", owner)
+			}
+			keys[path.Tag] = owner
+		}
+	}
+	policies := make(map[string][]bool)
+	for balancer, selector := range selectors {
+		for _, path := range selector.Paths {
+			lazy := path.IsLazy
+			if path.Group != "" {
+				group := groups[balancer][path.Group]
+				lazy = group.ProbePolicy != nil && *group.ProbePolicy == "onDemand"
+			}
+			policies[path.Tag] = append(policies[path.Tag], lazy)
+		}
+		for name, group := range groups[balancer] {
+			policies[name] = append(policies[name], group.ProbePolicy != nil && *group.ProbePolicy == "onDemand")
+		}
+	}
+	for i, name := range names {
+		where := fmt.Sprintf("healthObservatory.telemetry.census.onDemand[%d]", i)
+		matches := policies[name]
+		if len(matches) == 0 {
+			return errors.New(where, ": unknown path or group ", name)
+		}
+		for _, lazy := range matches {
+			if !lazy {
+				return errors.New(where, ": ", name, " must use probePolicy:onDemand")
+			}
 		}
 	}
 	return nil

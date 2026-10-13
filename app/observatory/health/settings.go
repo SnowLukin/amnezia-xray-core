@@ -54,6 +54,7 @@ const (
 	maxSuspectCooldown                  = time.Hour
 	defaultMaxEvents                    = 1000
 	defaultReportInterval               = 24 * time.Hour
+	defaultCensusStartAfter             = 3 * time.Minute
 	defaultMaxEventBytes                = 64 * 1024
 	defaultMaxNetworks                  = 16
 	defaultMinHoldTime                  = 2 * time.Minute
@@ -300,7 +301,14 @@ type wakeSettings struct {
 	minInterval time.Duration
 }
 
+type censusSettings struct {
+	sampleFraction float64
+	startAfter     time.Duration
+	onDemand       map[string]bool
+}
+
 type settings struct {
+	census            *censusSettings
 	labelRequest      *labelRequestSettings
 	reportLabels      map[string]string
 	disabledProviders map[string]bool
@@ -574,6 +582,13 @@ func toBackoff(b *Backoff, def backoff) backoff {
 
 func newSettings(c *Config) *settings {
 	s := &settings{baseOrder: map[string][]string{}, features: newFeatureSettings(c.GetFeatures())}
+	if cc := c.GetCensus(); cc != nil {
+		s.features.Census = true
+		s.census = &censusSettings{sampleFraction: cc.SampleFraction, startAfter: dur(cc.StartAfter, defaultCensusStartAfter), onDemand: make(map[string]bool, len(cc.OnDemand))}
+		for _, name := range cc.OnDemand {
+			s.census.onDemand[name] = true
+		}
+	}
 	if s.features.SessionLabels {
 		s.reportLabels = filterLabels(c.GetSessionLabels(), 8)
 	}

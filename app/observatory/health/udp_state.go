@@ -152,12 +152,12 @@ func (e *engine) hasTCPWork(queued []*probeJob) bool {
 		queued = e.queue
 	}
 	for _, j := range queued {
-		if !j.isUDP && !j.invalidated {
+		if !j.isUDP && j.reason != reasonCensus && !j.invalidated {
 			return true
 		}
 	}
 	for _, j := range e.running {
-		if !j.isUDP && !j.invalidated {
+		if !j.isUDP && j.reason != reasonCensus && !j.invalidated {
 			return true
 		}
 	}
@@ -333,7 +333,7 @@ type probeCredential struct {
 }
 
 func (o *Observer) probeJobContext(parent context.Context, j *probeJob) context.Context {
-	if !j.isProbeOnly || (j.reason != reasonCandidate && j.reason != reasonHost) {
+	if !j.isProbeOnly || (j.reason != reasonCandidate && j.reason != reasonHost && j.reason != reasonCensus) {
 		return parent
 	}
 	o.mu.Lock()

@@ -35,6 +35,7 @@ const (
 	reasonWake
 	reasonUDPSwitch
 	reasonUDPSuspect
+	reasonCensus
 )
 
 func (r probeReason) priority() probeReason {
@@ -76,6 +77,8 @@ func (r probeReason) String() string {
 		return "udp_switch"
 	case reasonUDPSuspect:
 		return "udp_suspect"
+	case reasonCensus:
+		return "census"
 	default:
 		return "unknown"
 	}
@@ -84,6 +87,10 @@ func (r probeReason) String() string {
 // probeJob is one probe of an outbound. Jobs are shared: one probe of a tag
 // for a reason answers every balancer waiting for it.
 type probeJob struct {
+	censusRun       *censusRun
+	censusKey       string
+	censusSpacing   time.Time
+	censusDone      bool
 	qualityEpoch    uint64
 	id              uint64
 	tag             string
@@ -122,6 +129,7 @@ const lowMemoryRecheck = 2 * time.Minute
 // the caller passes the time and runs the probes the engine asks for.
 // It is not safe for concurrent use; the observer guards it with a mutex.
 type engine struct {
+	census    *censusState
 	s         *settings
 	rnd       *rand.Rand
 	run       string
@@ -242,6 +250,7 @@ func newEngine(s *settings, seed int64) *engine {
 		expired:          map[string]bool{},
 		fetchVia:         map[string]int{},
 	}
+	e.initCensus(seed)
 	if s.remember {
 		e.networks = make(map[string]map[string]string)
 	}
@@ -1476,6 +1485,7 @@ func (e *engine) dropQueued(tag string, reason probeReason) {
 }
 
 func (e *engine) invalidateProbeJobs(tag string, now time.Time) {
+	e.interruptCensusForPath(tag, now)
 	var old []*probeJob
 	e.queue = slices.DeleteFunc(e.queue, func(j *probeJob) bool {
 		if j.isUDP || j.tag != tag {
@@ -1521,6 +1531,9 @@ func (e *engine) invalidateProbeJobs(tag string, now time.Time) {
 
 // enqueue returns the new job, or nil when one is already waiting or running.
 func (e *engine) enqueue(tag string, reason probeReason, selectorTag string, at time.Time) *probeJob {
+	if reason != reasonCensus {
+		e.preemptCensus(at)
+	}
 	if e.queued(tag, reason) {
 		return nil
 	}
@@ -1531,6 +1544,7 @@ func (e *engine) enqueue(tag string, reason probeReason, selectorTag string, at 
 }
 
 func (e *engine) enqueueConnectivity(now time.Time) {
+	e.preemptCensus(now)
 	if e.queued("", reasonConnectivity) {
 		return
 	}
@@ -1542,6 +1556,13 @@ func (e *engine) enqueueConnectivity(now time.Time) {
 // -1 while it waits for a running probe to end: all probe slots are busy or
 // one probes its server name.
 func (e *engine) budgetWait(j *probeJob, now time.Time) time.Duration {
+	if j.reason == reasonCensus {
+		for _, r := range e.running {
+			if r.reason == reasonCensus {
+				return -1
+			}
+		}
+	}
 	if j.reason == reasonCandidate {
 		for _, r := range e.running {
 			if r.reason == reasonCandidate {
@@ -1585,7 +1606,11 @@ func (e *engine) budgetWait(j *probeJob, now time.Time) time.Duration {
 	}
 	byName := pruneTimes(e.startsByName[name], now)
 	e.startsByName[name] = byName
-	if len(byName) >= e.s.schedule.probesPerServerNamePerMinute {
+	nameLimit := e.s.schedule.probesPerServerNamePerMinute
+	if j.reason == reasonCensus {
+		nameLimit = min(nameLimit, 1)
+	}
+	if len(byName) >= nameLimit {
 		if w := byName[0].Add(time.Minute).Sub(now); w > wait {
 			wait = w
 		}
@@ -1641,6 +1666,7 @@ func (e *engine) tick(now time.Time) ([]*probeJob, time.Time) {
 	}
 
 	idle := e.idle(now)
+	soonest(e.scheduleCensus(now, idle))
 	soonest(e.scheduleUDP(now))
 	for _, s := range e.sortedSelectors() {
 		if s.pinned == "" || s.pinnedUntil.IsZero() {
@@ -1701,6 +1727,9 @@ func (e *engine) tick(now time.Time) ([]*probeJob, time.Time) {
 	// wait behind it.
 	waiting := false
 	sort.SliceStable(e.queue, func(i, j int) bool {
+		if (e.queue[i].reason == reasonCensus) != (e.queue[j].reason == reasonCensus) {
+			return e.queue[i].reason != reasonCensus
+		}
 		if e.queue[i].isUDP != e.queue[j].isUDP {
 			return !e.queue[i].isUDP
 		}
@@ -1708,6 +1737,17 @@ func (e *engine) tick(now time.Time) ([]*probeJob, time.Time) {
 	})
 	kept := e.queue[:0]
 	for _, j := range e.queue {
+		if j.reason == reasonCensus {
+			if !e.censusJobCurrent(j) {
+				continue
+			}
+			if e.hasOrdinaryProbeWork(now) {
+				kept = append(kept, j)
+				continue
+			}
+		} else {
+			e.preemptCensus(now)
+		}
 		if j.isUDP {
 			keep, next := e.tickUDP(j, now, idle, kept)
 			soonest(next)
@@ -1721,7 +1761,7 @@ func (e *engine) tick(now time.Time) ([]*probeJob, time.Time) {
 		if j.reason == reasonCandidate && !e.candidateCurrent(j) {
 			continue
 		}
-		if e.isProbeOnly(j.tag) && j.reason != reasonCandidate && j.reason != reasonHost && j.reason != reasonConnectivity {
+		if e.isProbeOnly(j.tag) && j.reason != reasonCandidate && j.reason != reasonHost && j.reason != reasonConnectivity && j.reason != reasonCensus {
 			continue
 		}
 		if j.reason == reasonWake && !e.wakeProbeCurrent(j, now) {
@@ -1760,7 +1800,9 @@ func (e *engine) tick(now time.Time) ([]*probeJob, time.Time) {
 			kept = append(kept, j)
 			continue
 		}
-		e.preemptRunningUDP()
+		if j.reason != reasonCensus {
+			e.preemptRunningUDP()
+		}
 		w := e.budgetWait(j, now)
 		if w != 0 {
 			if j.reason == reasonAudit {
@@ -1850,6 +1892,10 @@ func (e *engine) sortedSelectors() []*selector {
 }
 
 func (e *engine) begin(j *probeJob, now time.Time) {
+	if j.reason == reasonCensus {
+		e.beginCensus(j, now)
+		return
+	}
 	if j.isUDP {
 		e.beginUDP(j, now)
 		return
@@ -1987,6 +2033,10 @@ func (e *engine) maybeReturnToCheaper(s *selector, now time.Time) time.Time {
 }
 
 func (e *engine) onProbeResult(j *probeJob, r probeResult, now time.Time) {
+	if j.reason == reasonCensus {
+		e.onCensusResult(j, r, now)
+		return
+	}
 	if (j.reason == reasonLone || j.reason == reasonWake || j.reason == reasonCandidate) && e.running[j.id] != j {
 		return
 	}
@@ -2502,6 +2552,7 @@ func (e *engine) onNetworkChange(id string, now time.Time) {
 }
 
 func (e *engine) onNetworkChangeWithLabels(id string, labels map[string]string, now time.Time) {
+	e.censusNetworkChanged(id, now)
 	e.resetUDPNetwork(now)
 	e.candidateEpoch++
 	e.cancelCandidates("")
@@ -2690,6 +2741,10 @@ func (e *engine) recheckChoice(s *selector, known bool, now time.Time) {
 }
 
 func (e *engine) onNetworkLost(now time.Time) {
+	e.interruptCensus("network_lost", now)
+	if e.census != nil {
+		e.census.networkSince = time.Time{}
+	}
 	e.cancelLoneFailures()
 	e.cancelWakeProbes()
 	if !e.networkDown {
@@ -2711,6 +2766,9 @@ func (e *engine) setMemoryLow(low bool, now time.Time) bool {
 		return false
 	}
 	e.memoryLow = low
+	if low {
+		e.interruptCensus("memory", now)
+	}
 	if low {
 		e.cancelLabelRequest(now)
 	}
@@ -2907,6 +2965,7 @@ func (e *engine) gc(now time.Time, stale time.Duration) {
 
 // forget drops everything kept about an outbound that is gone.
 func (e *engine) forget(tag string, now time.Time) {
+	e.interruptCensusForPath(tag, now)
 	e.invalidateUDP(tag, now)
 	for _, j := range e.running {
 		if j.tag == tag {

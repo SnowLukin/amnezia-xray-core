@@ -32,6 +32,8 @@ type ReportSwitch struct {
 
 // reportCounts is what the events of a report window add up to.
 type reportCounts struct {
+	CensusProbes                   int64            `json:"census_probes"`
+	CensusProbeBytes               int64            `json:"census_probe_bytes"`
 	FallbackBalancerCount          int64            `json:"fallback_balancer_count"`
 	FallbackBalancerMs             map[string]int64 `json:"fallback_balancer_ms,omitempty"`
 	UDPProbeCount                  int64            `json:"udp_probe_count"`
@@ -143,6 +145,7 @@ type reportStepTotals struct {
 }
 
 type reportView struct {
+	Census     *censusView                  `json:"census,omitempty"`
 	Labels     map[string]string            `json:"labels,omitempty"`
 	PathLabels map[string]map[string]string `json:"path_labels,omitempty"`
 	Run        string                       `json:"health_run"`
@@ -228,6 +231,8 @@ func (r *report) count(typ string, f map[string]any) {
 		if !slices.Contains(startReasons, reason) {
 			r.decide()
 		}
+	case "census":
+		r.decide()
 	case "fallback_balancer":
 		if f["is_active"] == true {
 			c.FallbackBalancerCount++
@@ -286,6 +291,9 @@ func (r *report) count(typ string, f map[string]any) {
 	case "udp_suspect":
 		c.UDPSuspectCount++
 	case "probe_result":
+		if f["reason"] == "census" {
+			break
+		}
 		c.Probes++
 		if f["is_ok"] != true {
 			c.ProbesFailed++
@@ -534,6 +542,11 @@ func (e *engine) reportView(reason string, now time.Time, take bool) *reportView
 		IsQuietSample: r.quietSample,
 		Connectivity:  e.connectivityState(),
 		Paths:         map[string]reportPath{},
+	}
+	if take {
+		v.Census = e.takeCensus(now)
+	} else {
+		v.Census = e.peekCensus(now)
 	}
 	v.EventsDropped = e.events.droppedCount() - r.droppedBefore
 	// Always copy: a snapshot may include unfinished intervals without

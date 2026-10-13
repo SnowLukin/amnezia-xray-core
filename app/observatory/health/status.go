@@ -118,10 +118,11 @@ type providerStatusView struct {
 }
 
 type statusView struct {
-	IsLocalOnly           bool             `json:"is_local_only"`
-	Features              map[string]bool  `json:"features"`
-	WitnessQuality        *qualityPathView `json:"witness_quality,omitempty"`
-	QualitySamplesDropped uint64           `json:"quality_samples_dropped,omitempty"`
+	Census                *censusStatusView `json:"census,omitempty"`
+	IsLocalOnly           bool              `json:"is_local_only"`
+	Features              map[string]bool   `json:"features"`
+	WitnessQuality        *qualityPathView  `json:"witness_quality,omitempty"`
+	QualitySamplesDropped uint64            `json:"quality_samples_dropped,omitempty"`
 	// Names this run of the core; pin and release requests may carry it.
 	Run         string             `json:"run,omitempty"`
 	NetworkID   string             `json:"network_id,omitempty"`
@@ -145,6 +146,7 @@ type statusView struct {
 func (e *engine) status(now time.Time) statusView {
 	quality := e.currentQuality(now)
 	v := statusView{
+		Census:         e.censusStatus(),
 		IsLocalOnly:    true,
 		Features:       e.effectiveFeatures(),
 		Groups:         e.groupViews(now),

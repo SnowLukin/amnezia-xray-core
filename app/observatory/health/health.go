@@ -151,6 +151,7 @@ func newObserver(ctx context.Context, config *Config) *Observer {
 	if s.features.Report {
 		o.e.report.begin(collectorStart)
 	}
+	o.e.censusNetworkStarted(collectorStart)
 	if !s.passive.skipQuality || s.features.ProbeMeasurements || (s.features.Report && (s.features.HostLabels || s.features.LabelRequest)) {
 		o.e.quality = newQualitySummary(collectorStart)
 		o.e.quality.reporting = s.features.Report
@@ -289,6 +290,7 @@ func (o *Observer) Close() error {
 	o.once.Do(func() { close(o.done) })
 	o.mu.Lock()
 	o.finishUDPFlowsLocked()
+	o.e.interruptCensus("close", o.now())
 	o.mu.Unlock()
 	o.stopRun()
 	o.closeProviders()
@@ -417,7 +419,7 @@ func (o *Observer) AllowDispatch(ctx context.Context, tag string, handlerProbeOn
 		current = current && o.e.candidateCurrent(c.job)
 	}
 	return handlerProbeOnly && o.e.isProbeOnly(tag) && c.job.tag == tag && c.job.isProbeOnly &&
-		(c.job.reason == reasonCandidate || c.job.reason == reasonHost) && o.e.running[c.job.id] == c.job && current &&
+		(c.job.reason == reasonCandidate || c.job.reason == reasonHost || (c.job.reason == reasonCensus && o.e.censusJobCurrent(c.job))) && o.e.running[c.job.id] == c.job && current &&
 		o.e.paths[tag] == c.path && c.path != nil && c.path.udpIncarnation == c.incarnation && !o.e.retiring[tag] && !o.e.replacing[tag]
 }
 
@@ -455,6 +457,9 @@ func (o *Observer) StartDial(ctx context.Context, tag string, server net.Destina
 	o.e.noteDemand(o.now())
 	o.e.used(tag, o.now())
 	o.mu.Unlock()
+	if o.s.census != nil {
+		o.wake()
+	}
 	if !o.s.features.passiveTCP() && !o.s.features.Quality && !o.s.features.Report && !o.s.features.Metrics {
 		proof := !udp && o.s.features.UdpReplies
 		proofSignal = proofSignal && !udp
@@ -1025,6 +1030,7 @@ func (o *Observer) TakeReport(final bool) []byte {
 	o.mu.Lock()
 	if final {
 		o.finishUDPFlowsLocked()
+		o.e.interruptCensus("close", o.now())
 	}
 	v := o.e.takeReport(final, o.now())
 	o.mu.Unlock()

@@ -19,6 +19,7 @@ import phase_timeout_scenarios
 import probe_only_scenarios
 import udp_probe_scenarios
 import fallback_balancer_scenarios
+import census_scenarios
 
 
 def main():
@@ -31,7 +32,7 @@ def main():
     print(f"workdir {work}", flush=True)
     results = []
     with bench.Stand(xray, work, probe_credentials=not wanted or any(
-            name.startswith("probe_only_") or name == "udp_probe_credentials" for name in wanted),
+            name.startswith("probe_only_") or name.startswith("census_") or name == "udp_probe_credentials" for name in wanted),
             udp_observation=os.environ.get("BENCH_UDP_PROBE") == "1" or not wanted or any(
                 name.startswith("udp_probe_") for name in wanted)) as stand:
         for sc in scenarios.ALL:

@@ -679,6 +679,7 @@ Status — **только локальная диагностика**, не ра
 | TCP quality | `telemetry.quality` | false | Измеряет, не выбирает |
 | Журнал событий | `telemetry.events` | false | Локальная диагностика; report не зависит |
 | Отчёт окна | `telemetry.report` | false | Аналитика, хост сам забирает без core report timer |
+| Перепись путей | `telemetry.census` | Нет блока | Требует report и sampleFraction; независимая выборка, не меняет выбор |
 | Выборка тихих сессий | `telemetry.report.quietSampleFraction` > 0 | 0 | Добавляет долю, не выключающий флаг; требуется report |
 | Метрики | `telemetry.metrics` | false | Экспорт; требует штатный metrics exporter |
 | Status | Вызов `Status()` | Доступен | Read-on-demand, дополнительной фоновой фичи нет |
@@ -694,7 +695,7 @@ Status — **только локальная диагностика**, не ра
 | Запрос по nextRefreshIn | `triggers.backendSchedule.isEnabled` | true у provider | Повод задаёт бэк, все лимиты сохраняются |
 | Истёкшая аренда как последний резерв | `apply.expiredLeaseFallback.isEnabled` | true у provider | Текущее сохранение последнего шанса; не гарантирует серверный слот |
 
-Исключения к «любой комбинации»: только явные связи из таблицы. Ошибки, например: `auto.returnToCheaper.onNetworkChange requires auto.returnToCheaper and auto.networkChanges`; `selection pool-probe: isProbeOnly requires healthObservatory.probes.candidates`; `RequestProbe isUdp requires probes.udp`; `evidence.loneFailureProbe requires an enabled path-level detector`; `auto.failover.downAudit requires confirmWithProbe:auto and an enabled path-level detector`; `telemetry.report.sessionLabels requires telemetry.report`. Метрики без exporter — ошибка конфига, а runtime JSON-команда без активной фичи — `feature_disabled` (legacy signal ABI возвращает false).
+Исключения к «любой комбинации»: только явные связи из таблицы. Ошибки, например: `auto.returnToCheaper.onNetworkChange requires auto.returnToCheaper and auto.networkChanges`; `selection pool-probe: isProbeOnly requires healthObservatory.probes.candidates or healthObservatory.telemetry.census`; `RequestProbe isUdp requires probes.udp`; `evidence.loneFailureProbe requires an enabled path-level detector`; `auto.failover.downAudit requires confirmWithProbe:auto and an enabled path-level detector`; `telemetry.report.sessionLabels requires telemetry.report`. Метрики без exporter — ошибка конфига, а runtime JSON-команда без активной фичи — `feature_disabled` (legacy signal ABI возвращает false).
 
 ## Независимость и стоимость выключения
 
@@ -855,3 +856,55 @@ The UDP fields ending in `_count` are global report counters.
 ```jsonc
 { "fallback_balancer_count": 1, "fallback_balancer_ms": { "ai": 125000 } }
 ```
+
+## Перепись путей (`telemetry.census`)
+
+```json
+{
+  "healthObservatory": {
+    "telemetry": {
+      "report": {},
+      "census": {
+        "sampleFraction": 0.03,
+        "startAfter": "3m",
+        "onDemand": ["de-fallback", "cdn"]
+      }
+    }
+  }
+}
+```
+
+Блок есть — перепись включена; нет блока — нет выборки, очереди или запросов переписи. `sampleFraction` обязателен, конечное число `0 < x <= 1`. Монетка бросается один раз при старте ядра; `startAfter` по умолчанию `3m` и должен быть положительным. Требуется `telemetry.report`. `onDemand` принимает теги путей и имена групп только с `probePolicy:onDemand`; неизвестное имя и обычный путь — ошибка загрузки.
+
+Выбранная сессия запускает не больше одной переписи на каждую сеть в этом запуске, после непрерывной сети в течение `startAfter` и пользовательского трафика. Новая сеть может получить свою перепись после той же задержки. Ядро ничего не хранит между запусками.
+
+Все обычные пути всех `leastCost` входят автоматически. От группы берётся один следующий по кольцу участник вне карантина; если таких нет — следующий по кольцу. Пути «по запросу» проверяются только из `onDemand`, остальные получают `result:skipped, reason:on_demand`. `isProbeOnly` включаются с обязательными шагами их полного профиля. Для них достаточно `probes.candidates` **или** `telemetry.census`; перепись не включает автоматическое обслуживание кандидатов. У выбранного пути успех свежее `startAfter` используется без запроса с `source:recent`. Не больше 16 сетевых проб; последующие пути по цене и порядку получают `reason:limit`.
+
+Причина пробы — `census`, ниже всех остальных, включая UDP. Общие интервалы, параллельность, минутные квоты и не больше одной переписи на server name в минуту сохраняются. Любая более приоритетная проба вытесняет перепись. Смена сети, простой, нехватка памяти или остановка ядра выпускают неполный снимок.
+
+Результаты не меняют состояние, карантин, пассивные улики, выбор балансировщика, поводы провайдера или качество пользователя. `census_probes` и `census_probe_bytes` считаются отдельно от обычных проб. `observed_state` и `is_selected` фиксируют мнение наблюдателя в момент проверки; `member` именует фактически проверенного участника группы.
+
+Снимок лежит в `report.census` того окна, в котором перепись завершилась либо прервалась; событие `census` содержит тот же объект. Внешние поля отчёта `health_run` и `report_index` связывают снимок со статистикой сессии. Метки сети, путей и сессии лежат рядом по обычному контракту. Содержимое не включает адресов, SNI и сырых текстов ошибок.
+
+```json
+{
+  "census": {
+    "network": {"is_known": false},
+    "started_ms_ago": 412000,
+    "duration_ms": 61000,
+    "is_complete": true,
+    "paths": {
+      "reality-nl": {"result": "ok", "source": "recent", "observed_state": "up", "is_selected": true},
+      "awg-nl": {"result": "failed", "source": "probe", "error": "dial_timeout", "observed_state": "unknown"},
+      "relay": {"result": "ok", "source": "probe", "member": "relay-b1", "connect_ms": 61, "ms": 190, "observed_state": "up"},
+      "standby-1": {"result": "skipped", "reason": "on_demand"}
+    }
+  },
+  "census_probes": 2,
+  "census_probe_bytes": 32768
+}
+```
+
+Это иллюстрация формы; реальные значения зависят от профиля и сети. `Status.census` сообщает `is_selected`, `is_running` и `checked`; без блока `census` дополнительной фоновой функции нет. Хост передаёт `census`, `census_probes` и `census_probe_bytes` в `app/xray_health_summary` как есть вместе с метками и общими идентификаторами.
+
+Если за окно закончилось несколько переписей, первый снимок лежит непосредственно в `census`, остальные — в `census.additional` (массив того же снимка без рекурсивного additional). `census.network.host` и `census.network.ip` содержат включённые метки сети именно этой переписи; `census.path_labels` — снимок включённых меток путей. Эти метки сохраняются на начало переписи и не подменяются поздней сменой сети или провайдером. Общие метки отчёта описывают окно по обычному контракту. Хост переносит новые вложенные поля без преобразования. Очередь завершённых снимков ограничена 64, множество отпечатков уже переписанных сетей — 4096; после достижения границы новые сети не выбираются повторно вместо забытых старых.
