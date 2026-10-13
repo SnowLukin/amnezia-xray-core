@@ -74,9 +74,15 @@ func TestMeasurementHostAPIAndClosedSegments(t *testing.T) {
 	if o.e.status(o.now()).Network.Host["type"] != "wifi" {
 		t.Fatal("host labels absent")
 	}
+	epoch, generation := o.e.qualityEpoch, o.e.generation
+	network, host := o.e.labelNetwork, maps.Clone(o.e.hostLabels)
+	o.e.labelProof = true
 	for _, bad := range []string{`null`, `[]`, `{"type":3}`, `{`} {
 		if o.NetworkChangedWithLabels("unchanged", bad) == nil || o.e.networkID != "opaque" {
 			t.Fatal("malformed call mutated network")
+		}
+		if o.e.qualityEpoch != epoch || o.qualityEpoch.Load() != epoch || o.e.generation != generation || o.generation.Load() != generation || o.e.labelNetwork != network || !o.e.labelProof || !reflect.DeepEqual(o.e.hostLabels, host) {
+			t.Fatal("malformed call mutated network epoch or metadata proof")
 		}
 	}
 	o.NetworkChanged("next")
