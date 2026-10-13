@@ -87,8 +87,9 @@ type observedDialer struct {
 	mu       sync.Mutex
 	trackers []outbound.DialTracker
 	// Most connections dial once; their tracker needs no slice allocation.
-	first    [1]outbound.DialTracker
-	finished bool
+	first     [1]outbound.DialTracker
+	finished  bool
+	finishErr error
 	// Stands for the user connection when the context carries no session,
 	// so that retries of one dial count once.
 	id xctx.ID
@@ -141,8 +142,8 @@ func (d *observedDialer) StartTunnelDial(ctx context.Context, server net.Destina
 		return nil
 	}
 	tracker := d.observer.StartDial(observed, d.tag, server, d.abort)
-	if tracker != nil {
-		d.keep(tracker)
+	if tracker != nil && !d.keep(tracker) {
+		return nil
 	}
 	return tracker
 }
@@ -161,14 +162,23 @@ func (d *observedDialer) connection(ctx context.Context) (context.Context, bool)
 	return xctx.ContextWithID(ctx, d.id), d.finished
 }
 
-// keep has finish end the tracker with the connection.
-func (d *observedDialer) keep(tracker outbound.DialTracker) {
+// keep has finish end the tracker with the connection. A dial may return
+// after processing ended; complete that tracker immediately, outside the
+// lock as in finish, instead of retaining it without a terminal callback.
+func (d *observedDialer) keep(tracker outbound.DialTracker) bool {
 	d.mu.Lock()
+	if d.finished {
+		err := d.finishErr
+		d.mu.Unlock()
+		tracker.Finished(err)
+		return false
+	}
 	if d.trackers == nil {
 		d.trackers = d.first[:0]
 	}
 	d.trackers = append(d.trackers, tracker)
 	d.mu.Unlock()
+	return true
 }
 
 func (d *observedDialer) finish(err error) {
@@ -176,6 +186,7 @@ func (d *observedDialer) finish(err error) {
 	trackers := d.trackers
 	d.trackers = nil
 	d.finished = true
+	d.finishErr = err
 	d.mu.Unlock()
 	for _, t := range trackers {
 		t.Finished(err)
