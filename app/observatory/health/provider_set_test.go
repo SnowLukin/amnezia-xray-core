@@ -175,7 +175,7 @@ func newApplyFixture(t *testing.T, drain time.Duration, mods ...func(*ProviderCo
 			mod(p)
 		}
 	})
-	o := newObserver(context.Background(), &Config{Providers: []*ProviderConfig{pc}, Features: &FeatureConfig{Events: proto.Bool(true), Report: proto.Bool(true), Quality: proto.Bool(true), MemoryPressure: proto.Bool(true), Candidates: proto.Bool(true)}})
+	o := newObserver(context.Background(), &Config{Providers: []*ProviderConfig{pc}, Features: &FeatureConfig{Events: proto.Bool(true), Report: proto.Bool(true), Quality: proto.Bool(true), MemoryPressure: proto.Bool(true), Pinning: proto.Bool(true), Candidates: proto.Bool(true)}})
 	t.Cleanup(func() { o.Close() })
 	f := &applyFixture{o: o, rt: o.providers[0], m: newFakeManager(), seq0: o.e.providers[0].seq}
 	o.ohm = f.m

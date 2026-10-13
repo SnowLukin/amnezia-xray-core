@@ -212,29 +212,43 @@ func TestReportAndProviderExportObject(t *testing.T) {
 }
 
 func TestDirectProviderLimitsCannotDisableAdmission(t *testing.T) {
-	for _, field := range []string{"minInterval", "urgentMinInterval", "quota"} {
+	config := func(pc *health.ProviderConfig) *core.Config {
+		t.Helper()
+		cfg, err := core.LoadConfig("json", strings.NewReader(`{"log":{"loglevel":"none"},"outbounds":[{"tag":"direct","protocol":"freedom"}],"healthObservatory":{}}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i, app := range cfg.App {
+			value, err := app.GetInstance()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, ok := value.(*health.Config); ok {
+				cfg.App[i] = serial.ToTypedMessage(&health.Config{Providers: []*health.ProviderConfig{pc}})
+			}
+		}
+		return cfg
+	}
+	for _, field := range []string{"minInterval", "urgentMinInterval", "maxRefreshesPerHour"} {
 		pc := &health.ProviderConfig{IsEnabled: proto.Bool(true), Tag: "fresh", Url: "https://provider.test/set", Apply: &health.ProviderApply{Balancer: "auto", TagPrefix: "p-"}, Limits: &health.ProviderLimits{}}
 		switch field {
 		case "minInterval":
 			pc.Limits.MinInterval = -1
 		case "urgentMinInterval":
 			pc.Limits.ExhaustedMinInterval = -1
-		case "quota":
+		case "maxRefreshesPerHour":
 			pc.Limits.MaxRefreshesPerHour = -1
 		}
-		cfg := &core.Config{App: []*serial.TypedMessage{serial.ToTypedMessage(&health.Config{Providers: []*health.ProviderConfig{pc}})}}
-		inst, err := core.New(cfg)
+		inst, err := core.New(config(pc))
 		if inst != nil {
 			inst.Close()
 		}
-		if err == nil {
-			t.Fatalf("direct protobuf %s=-1 disabled admission guard", field)
+		if err == nil || !strings.Contains(err.Error(), field) || !strings.Contains(err.Error(), "positive or omitted") {
+			t.Fatalf("direct protobuf %s=-1: %v", field, err)
 		}
 	}
-	// Zero protobuf scalars mean the same positive defaults as omitted JSON.
 	pc := &health.ProviderConfig{IsEnabled: proto.Bool(true), Tag: "fresh", Url: "https://provider.test/set", Apply: &health.ProviderApply{Balancer: "auto", TagPrefix: "p-"}, Limits: &health.ProviderLimits{}}
-	cfg := &core.Config{App: []*serial.TypedMessage{serial.ToTypedMessage(&health.Config{Providers: []*health.ProviderConfig{pc}})}}
-	inst, err := core.New(cfg)
+	inst, err := core.New(config(pc))
 	if err != nil {
 		t.Fatal(err)
 	}

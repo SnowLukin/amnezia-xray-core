@@ -245,7 +245,7 @@ func TestRefreshUnderLowMemoryTriesOneVia(t *testing.T) {
 	    "providers": [{
 	      "isEnabled":true,"tag":"fresh","url": "`+ts.URL+`/set", "isPlainHttpAllowed": true,
 	      "via": ["missing", "dead", "direct"], "timeout": "500ms",
-	      "triggers":{"exhausted":{"isEnabled":false},"leaseRenewal":{"isEnabled":true},"backendSchedule":{"isEnabled":false}},
+	      "triggers":{"exhausted":{"isEnabled":true},"leaseRenewal":{"isEnabled":true},"backendSchedule":{"isEnabled":false}},
 	      "limits": {},
 	      "apply": {"balancer": "auto", "tagPrefix": "p-", "allowedProtocols": ["freedom"]}
 	    }]
@@ -264,8 +264,9 @@ func TestRefreshUnderLowMemoryTriesOneVia(t *testing.T) {
 	defer inst.Close()
 	obs := health.FromInstance(inst)
 	health.ConfigureProviderScenarioForTest(obs)
-	selectProviderTraffic(t, obs)
+	health.ConfigureProviderLongCooldownForTest(obs)
 	obs.SetMemoryLow(true)
+	selectProviderTraffic(t, obs)
 	w := &eventWaiter{t: t, o: obs}
 	obs.RequestProviderRefresh("fresh")
 	w.until("provider_fetch", func(e health.Event) bool { return e.Fields["via"] == "dead" })

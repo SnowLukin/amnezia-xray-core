@@ -980,7 +980,7 @@ func TestRefreshesOfManyClientsSpreadOut(t *testing.T) {
 	byMinute := map[int]int{}
 	waves := 0
 	for c := 0; c < clients; c++ {
-		s := newSettings(&Config{Providers: []*ProviderConfig{pc}, Schedule: &ScheduleConfig{IdleAfter: int64(24 * time.Hour)}})
+		s := legacyScenarioSettings(&Config{Providers: []*ProviderConfig{pc}, Schedule: &ScheduleConfig{IdleAfter: int64(24 * time.Hour)}})
 		e := newEngine(s, int64(c+1))
 		e.noteDemand(t0)
 		_, wake := e.tickProviders(t0)
@@ -1356,4 +1356,13 @@ func DemandProviderScenarioForTest(o *Observer) {
 	}
 	o.mu.Unlock()
 	(&selectorHandle{o: o, s: s}).Select(candidates)
+}
+
+func ConfigureProviderLongCooldownForTest(o *Observer) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	for _, p := range o.e.providers {
+		p.cfg.backoff.initial = time.Hour
+		p.cfg.backoff.max = time.Hour
+	}
 }
