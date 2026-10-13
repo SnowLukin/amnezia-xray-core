@@ -1154,7 +1154,7 @@ func (o *Observer) applySet(rt *providerRuntime, a *providerAnswer, j *refreshJo
 				keep[b.Tag] = true
 			}
 			o.mu.Lock()
-			o.e.keepSelectors(keep)
+			o.e.keepSelectorsAt(keep, o.now())
 			o.mu.Unlock()
 		}
 	}

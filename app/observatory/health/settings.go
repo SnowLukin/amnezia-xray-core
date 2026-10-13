@@ -776,6 +776,7 @@ func (s *settings) probeFor(tag string) *probeSettings {
 }
 
 type selectorSettings struct {
+	fallbackBalancer string
 	closePending     bool
 	closeSilent      bool
 	closeSilentAfter time.Duration
@@ -849,6 +850,7 @@ func newSelectorSettings(c *SelectorConfig) *selectorSettings {
 		closeSilent:      featureValue(f.CloseSilent, true),
 		closeSilentAfter: dur(c.GetCloseSilentAfter(), defaultStallTimeout),
 		raw:              c,
+		fallbackBalancer: c.GetFallbackBalancer(),
 		paths:            paths,
 		baseOrder:        order,
 		switchAfterProbe: featureValue(f.ProbeBeforeSwitch, true),

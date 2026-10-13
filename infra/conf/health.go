@@ -904,12 +904,13 @@ type strategyNetworkChangesConfig struct {
 	Action string `json:"action"`
 }
 type strategyLeastCostConfig struct {
-	Paths           []*health.PathDefinition               `json:"-"`
-	Failover        strategyFailoverConfig                 `json:"failover"`
-	Groups          []*strategyPathGroupConfig             `json:"groups"`
-	ReturnToCheaper strategyLeastCostReturnToCheaperConfig `json:"returnToCheaper"`
-	Startup         strategyStartupConfig                  `json:"startup"`
-	NetworkChanges  strategyNetworkChangesConfig           `json:"networkChanges"`
+	Paths            []*health.PathDefinition               `json:"-"`
+	FallbackBalancer *string                                `json:"fallbackBalancer"`
+	Failover         strategyFailoverConfig                 `json:"failover"`
+	Groups           []*strategyPathGroupConfig             `json:"groups"`
+	ReturnToCheaper  strategyLeastCostReturnToCheaperConfig `json:"returnToCheaper"`
+	Startup          strategyStartupConfig                  `json:"startup"`
+	NetworkChanges   strategyNetworkChangesConfig           `json:"networkChanges"`
 }
 
 func (v *strategyLeastCostConfig) UnmarshalJSON(raw []byte) error {
@@ -958,6 +959,9 @@ func positiveCost(where string, v *float32) error {
 	return nil
 }
 func (v *strategyLeastCostConfig) Build() (proto.Message, error) {
+	if v.FallbackBalancer != nil && *v.FallbackBalancer == "" {
+		return nil, errors.New("leastCost.settings.fallbackBalancer must be a nonempty balancer tag")
+	}
 	f, u, s, n := v.Failover, v.ReturnToCheaper, v.Startup, v.NetworkChanges
 	for _, x := range []struct {
 		name  string
@@ -984,7 +988,7 @@ func (v *strategyLeastCostConfig) Build() (proto.Message, error) {
 	default:
 		return nil, errors.New("leastCost.settings.returnToCheaper.onNetworkChange.scope must be unknown or all")
 	}
-	out := &health.SelectorConfig{Paths: v.Paths, Features: &health.SelectorFeatureConfig{ProbeBeforeSwitch: f.ShouldProbeBeforeSwitch, ClosePending: f.ClosePending.IsEnabled, CloseSilent: f.CloseSilent.IsEnabled, DownAudit: f.DownAudit.IsEnabled, Groups: featurePresence(v.Groups != nil), ReturnToCheaper: u.IsEnabled, ReturnOnNetworkChange: u.OnNetworkChange.IsEnabled, NetworkChanges: n.IsEnabled, StartupPin: s.Pin.IsEnabled}, CloseSilentAfter: optionalDuration(f.CloseSilent.After), MinHoldTime: durationPresence(u.MinHoldTime), StartOutbound: s.Outbound, StartPinTimeout: optionalDuration(s.Pin.Timeout), ReturnToCheaper: &health.ReturnToCheaperConfig{Interval: optionalDuration(u.Interval), TryOnAllNetworks: u.OnNetworkChange.Scope == "all"}}
+	out := &health.SelectorConfig{Paths: v.Paths, FallbackBalancer: derefString(v.FallbackBalancer), Features: &health.SelectorFeatureConfig{ProbeBeforeSwitch: f.ShouldProbeBeforeSwitch, ClosePending: f.ClosePending.IsEnabled, CloseSilent: f.CloseSilent.IsEnabled, DownAudit: f.DownAudit.IsEnabled, Groups: featurePresence(v.Groups != nil), ReturnToCheaper: u.IsEnabled, ReturnOnNetworkChange: u.OnNetworkChange.IsEnabled, NetworkChanges: n.IsEnabled, StartupPin: s.Pin.IsEnabled}, CloseSilentAfter: optionalDuration(f.CloseSilent.After), MinHoldTime: durationPresence(u.MinHoldTime), StartOutbound: s.Outbound, StartPinTimeout: optionalDuration(s.Pin.Timeout), ReturnToCheaper: &health.ReturnToCheaperConfig{Interval: optionalDuration(u.Interval), TryOnAllNetworks: u.OnNetworkChange.Scope == "all"}}
 	// Startup preference and pin presence are independent.
 	out.StartPinnedOutbound = s.Pin.Outbound
 	switch f.ConfirmWithProbe {
@@ -1137,6 +1141,9 @@ func checkLeastCost(c *Config) error {
 			b.Selectors = nil
 		}
 	}
+	if err := validateFallbackBalancers(balancers, parsed); err != nil {
+		return err
+	}
 	seenTags := map[string]bool{}
 	for i := range c.OutboundConfigs {
 		o := &c.OutboundConfigs[i]
@@ -1273,6 +1280,40 @@ func checkLeastCost(c *Config) error {
 	for tag, ps := range providers {
 		if parsed[tag] == nil {
 			return errors.New("healthObservatory.providers[", ps[0].Tag, "].apply.balancer ", tag, " must use leastCost")
+		}
+	}
+	return nil
+}
+
+func validateFallbackBalancers(balancers map[string]*BalancingRule, selectors map[string]*strategyLeastCostConfig) error {
+	for tag, selector := range selectors {
+		next := derefString(selector.FallbackBalancer)
+		if next == "" {
+			continue
+		}
+		where := "routing.balancers[" + tag + "].strategy.settings.fallbackBalancer"
+		if balancers[next] == nil {
+			return errors.New(where, ": unknown balancer ", next, "; chain ", tag, " -> ", next)
+		}
+		if next == tag {
+			return errors.New(where, ": cannot fall back to itself; chain ", tag, " -> ", tag)
+		}
+		chain := []string{tag}
+		seen := map[string]bool{tag: true}
+		for next != "" {
+			chain = append(chain, next)
+			if seen[next] {
+				return errors.New(where, ": cycle ", strings.Join(chain, " -> "))
+			}
+			seen[next] = true
+			if target := selectors[next]; target != nil {
+				next = derefString(target.FallbackBalancer)
+			} else {
+				next = ""
+			}
+		}
+		if len(chain) > 4 {
+			return errors.New(where, ": chain must contain at most 4 balancers: ", strings.Join(chain, " -> "))
 		}
 	}
 	return nil

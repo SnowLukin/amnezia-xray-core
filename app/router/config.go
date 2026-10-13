@@ -151,11 +151,22 @@ func (br *BalancingRule) Build(ohm outbound.Manager, dispatcher routing.Dispatch
 			strategy:    leastLoadStrategy,
 		}, nil
 	case "leastcost":
+		fallback := ""
+		if br.StrategySettings != nil {
+			settings, err := br.StrategySettings.GetInstance()
+			if err != nil {
+				return nil, err
+			}
+			if value, ok := settings.(interface{ GetFallbackBalancer() string }); ok {
+				fallback = value.GetFallbackBalancer()
+			}
+		}
 		return &Balancer{
-			selectors:   br.OutboundSelector,
-			ohm:         ohm,
-			fallbackTag: br.FallbackTag,
-			strategy:    &LeastCostStrategy{balancerTag: br.Tag, settings: br.StrategySettings},
+			fallbackBalancer: fallback,
+			selectors:        br.OutboundSelector,
+			ohm:              ohm,
+			fallbackTag:      br.FallbackTag,
+			strategy:         &LeastCostStrategy{balancerTag: br.Tag, settings: br.StrategySettings},
 		}, nil
 	case "random":
 		fallthrough

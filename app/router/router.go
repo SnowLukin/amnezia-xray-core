@@ -53,6 +53,10 @@ func (r *Router) Init(ctx context.Context, config *Config, d dns.Client, ohm out
 		r.balancers[rule.Tag] = balancer
 	}
 
+	if err := bindBalancerFallbacks(r.balancers); err != nil {
+		return err
+	}
+
 	r.rules = make([]*Rule, 0, len(config.Rule))
 	for _, rule := range config.Rule {
 		cond, err := rule.BuildCondition()
@@ -124,26 +128,38 @@ func (r *Router) ReloadRules(config *Config, shouldAppend bool) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	if !shouldAppend {
-		for _, rule := range r.rules {
-			if rule.Webhook != nil {
-				rule.Webhook.Close()
-			}
+	next := make(map[string]*Balancer, len(r.balancers)+len(config.BalancingRule))
+	if shouldAppend {
+		for tag, balancer := range r.balancers {
+			next[tag] = balancer
 		}
-		r.balancers = make(map[string]*Balancer, len(config.BalancingRule))
-		r.rules = make([]*Rule, 0, len(config.Rule))
 	}
+	added := make([]*Balancer, 0, len(config.BalancingRule))
 	for _, rule := range config.BalancingRule {
-		_, found := r.balancers[rule.Tag]
-		if found {
+		if _, exists := next[rule.Tag]; exists {
 			return errors.New("duplicate balancer tag")
 		}
 		balancer, err := rule.Build(r.ohm, r.dispatcher)
 		if err != nil {
 			return err
 		}
+		next[rule.Tag] = balancer
+		added = append(added, balancer)
+	}
+	if err := bindBalancerFallbacks(next); err != nil {
+		return err
+	}
+	if !shouldAppend {
+		for _, rule := range r.rules {
+			if rule.Webhook != nil {
+				rule.Webhook.Close()
+			}
+		}
+		r.rules = make([]*Rule, 0, len(config.Rule))
+	}
+	r.balancers = next
+	for _, balancer := range added {
 		balancer.InjectContext(r.ctx)
-		r.balancers[rule.Tag] = balancer
 	}
 
 	startIdx := len(r.rules)

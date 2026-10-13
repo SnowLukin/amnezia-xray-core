@@ -46,6 +46,11 @@ func foldReport(t *testing.T, raw []byte) (reportCounts, bool) {
 				c.SwitchHistory = c.SwitchHistory[1:]
 			}
 			decided = decided || !slices.Contains([]string{"start", "start_pinned", "start_remembered", "start_with"}, reason)
+		case "fallback_balancer":
+			if f["is_active"] == true {
+				c.FallbackBalancerCount++
+			}
+			decided = true
 		case "exhausted":
 			c.Exhausted++
 			decided = true
@@ -204,13 +209,14 @@ func reportJSON(t *testing.T, v *reportView) reportView {
 	return out
 }
 
-// Skip counters have no event; their windows are checked through actual actions.
+// Skip counters and fallback duration are state-derived; their windows are checked
+// through actual actions, including TestFallbackBalancerReportWindowsAndSnapshots.
 func eventReportCounts(counts reportCounts) map[string]any {
 	values := reflect.ValueOf(counts)
 	out := make(map[string]any, values.NumField()-2)
 	for i := 0; i < values.NumField(); i++ {
 		name := values.Type().Field(i).Name
-		if name != "AuditSkipped" && name != "WakeSkipped" {
+		if name != "AuditSkipped" && name != "WakeSkipped" && name != "FallbackBalancerMs" {
 			out[name] = values.Field(i).Interface()
 		}
 	}
@@ -276,6 +282,8 @@ func TestReportAddsUpTheEvents(t *testing.T) {
 		te.emit(now, "udp_probe", map[string]any{"outbound": "a1", "reason": "udp_suspect", "state": state, "destination_index": i % 2})
 	}
 	te.emit(now, "udp_suspect", map[string]any{"outbound": "a1", "flows": 3, "targets": 2})
+	te.emit(now, "fallback_balancer", map[string]any{"balancer": "auto", "to": "main", "is_active": true})
+	te.emit(now, "fallback_balancer", map[string]any{"balancer": "auto", "to": "main", "is_active": false})
 
 	raw, dropped := te.events.drain()
 	if dropped != 0 {
@@ -293,7 +301,7 @@ func TestReportAddsUpTheEvents(t *testing.T) {
 	// Every event-derived counter must be exercised by this fixture.
 	rv := reflect.ValueOf(want)
 	for i := 0; i < rv.NumField(); i++ {
-		if name := rv.Type().Field(i).Name; name != "EventsDropped" && name != "AuditSkipped" && name != "WakeSkipped" && rv.Field(i).IsZero() {
+		if name := rv.Type().Field(i).Name; name != "EventsDropped" && name != "AuditSkipped" && name != "WakeSkipped" && name != "FallbackBalancerMs" && rv.Field(i).IsZero() {
 			t.Errorf("the scenario leaves %s at zero", name)
 		}
 	}

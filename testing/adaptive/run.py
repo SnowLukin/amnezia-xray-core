@@ -18,6 +18,7 @@ import path_scenarios
 import phase_timeout_scenarios
 import probe_only_scenarios
 import udp_probe_scenarios
+import fallback_balancer_scenarios
 
 
 def main():

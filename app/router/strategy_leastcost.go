@@ -54,3 +54,16 @@ func (s *LeastCostStrategy) PickOutbound(candidates []string) string {
 	}
 	return s.selector.Select(candidates)
 }
+
+func (s *LeastCostStrategy) FallbackBalancer() string {
+	if selector, ok := s.selector.(extension.OutboundSelectorFallback); ok {
+		return selector.FallbackBalancer()
+	}
+	return ""
+}
+
+func (s *LeastCostStrategy) FallbackSelected(to string) {
+	if selector, ok := s.selector.(extension.OutboundSelectorFallback); ok {
+		selector.FallbackSelected(to)
+	}
+}

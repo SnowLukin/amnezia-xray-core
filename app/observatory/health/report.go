@@ -32,6 +32,8 @@ type ReportSwitch struct {
 
 // reportCounts is what the events of a report window add up to.
 type reportCounts struct {
+	FallbackBalancerCount          int64            `json:"fallback_balancer_count"`
+	FallbackBalancerMs             map[string]int64 `json:"fallback_balancer_ms,omitempty"`
 	UDPProbeCount                  int64            `json:"udp_probe_count"`
 	UDPProbeOKCount                int64            `json:"udp_probe_ok_count"`
 	UDPProbeLossyCount             int64            `json:"udp_probe_lossy_count"`
@@ -226,6 +228,11 @@ func (r *report) count(typ string, f map[string]any) {
 		if !slices.Contains(startReasons, reason) {
 			r.decide()
 		}
+	case "fallback_balancer":
+		if f["is_active"] == true {
+			c.FallbackBalancerCount++
+		}
+		r.decide()
 	case "exhausted":
 		c.Exhausted++
 		r.decide()
@@ -529,6 +536,22 @@ func (e *engine) reportView(reason string, now time.Time, take bool) *reportView
 		Paths:         map[string]reportPath{},
 	}
 	v.EventsDropped = e.events.droppedCount() - r.droppedBefore
+	// Always copy: a snapshot may include unfinished intervals without
+	// advancing them or mutating the counters of the current window.
+	v.FallbackBalancerMs = maps.Clone(r.counts.FallbackBalancerMs)
+	for _, s := range e.selectors {
+		if !s.fallingBack {
+			continue
+		}
+		start := s.fallbackSince
+		if start.Before(r.windowStart) {
+			start = r.windowStart
+		}
+		if v.FallbackBalancerMs == nil {
+			v.FallbackBalancerMs = map[string]int64{}
+		}
+		v.FallbackBalancerMs[s.tag] += wholeMilliseconds(wall.Sub(start))
+	}
 	// This builder is reached only when the outer report actually exists.
 	// Snapshot preserves the window; successful take resets only its quality.
 	v.Quality, v.QualitySegmentsDropped = e.quality.report(now, take)

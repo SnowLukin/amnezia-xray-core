@@ -861,7 +861,7 @@ func (o *Observer) OutboundSelector(balancerTag string, settings *serial.TypedMe
 		return nil, err
 	}
 	o.mu.Lock()
-	s := o.e.addSelector(balancerTag, newSelectorSettings(cfg))
+	s := o.e.addSelectorAt(balancerTag, newSelectorSettings(cfg), o.now())
 	o.mu.Unlock()
 	return &selectorHandle{o: o, s: s}, nil
 }
@@ -895,6 +895,28 @@ func (h *selectorHandle) Select(candidates []string) string {
 		return ""
 	}
 	return tag
+}
+
+// FallbackBalancer implements the optional router hook. Selection keeps the
+// source's health and demand accounting; the router asks the target normally.
+func (h *selectorHandle) FallbackBalancer() string {
+	h.o.mu.Lock()
+	defer h.o.mu.Unlock()
+	if h.o.e.selectors[h.s.tag] != h.s || !h.s.exhausted || h.s.pinned != "" {
+		return ""
+	}
+	return h.s.cfg.fallbackBalancer
+}
+
+// FallbackSelected starts one interval only after the router selected a target
+// outbound. A configuration reload may change the target meanwhile; a stale
+// confirmation must not start an interval for the new target.
+func (h *selectorHandle) FallbackSelected(to string) {
+	h.o.mu.Lock()
+	if h.o.e.selectors[h.s.tag] == h.s && h.s.cfg.fallbackBalancer == to {
+		h.o.e.beginFallback(h.s, h.o.now())
+	}
+	h.o.mu.Unlock()
 }
 
 func equalStrings(a, b []string) bool {

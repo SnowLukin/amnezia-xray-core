@@ -791,8 +791,10 @@ type selector struct {
 	// The pin is startPinned, not one of the host.
 	startPin bool
 	// The start pin releases itself at this time; zero waits for the host.
-	pinnedUntil time.Time
-	exhausted   bool
+	pinnedUntil   time.Time
+	exhausted     bool
+	fallingBack   bool
+	fallbackSince time.Time
 	// The network changed while pinned; the release rechecks the choice.
 	recheckOnRelease bool
 
@@ -842,6 +844,10 @@ func (s *selector) hasCandidate(tag string) bool {
 }
 
 func (e *engine) addSelector(tag string, cfg *selectorSettings) *selector {
+	return e.addSelectorAt(tag, cfg, time.Time{})
+}
+
+func (e *engine) addSelectorAt(tag string, cfg *selectorSettings, now time.Time) *selector {
 	providerTags := map[string]bool{}
 	for _, p := range e.providers {
 		if p.cfg.balancer != tag {
@@ -879,6 +885,9 @@ func (e *engine) addSelector(tag string, cfg *selectorSettings) *selector {
 			if cfg.paths[pathTag] == nil && s.cfg.paths[pathTag] != nil {
 				cfg.paths[pathTag] = s.cfg.paths[pathTag]
 			}
+		}
+		if s.cfg.fallbackBalancer != cfg.fallbackBalancer {
+			e.endFallback(s, now)
 		}
 		s.cfg = cfg
 		e.syncGroups(s)
@@ -1093,6 +1102,7 @@ func (e *engine) switchTo(s *selector, tag string, reason string, now time.Time)
 	if tag == "" || !e.expiredLeaseUsable(tag) || e.isProbeOnly(tag) || s.cfg.isProbeOnly(tag) || !s.hasCandidate(tag) {
 		return
 	}
+	e.endFallback(s, now)
 	from := s.current()
 	if from != "" && from != tag && !s.activeSince.IsZero() {
 		e.path(from).stats.activeTime += now.Sub(s.activeSince)
@@ -1152,7 +1162,37 @@ func (e *engine) exhaust(s *selector, now time.Time) {
 	s.failoverProbing = nil
 	e.dropUnclaimedFailover()
 	s.returnToCheaperTarget = ""
-	e.emit(now, "exhausted", map[string]any{"balancer": s.tag, "from": from, "candidates": len(s.candidates)})
+	f := map[string]any{"balancer": s.tag, "from": from, "candidates": len(s.candidates)}
+	if s.cfg.fallbackBalancer != "" {
+		f["fallback_balancer"] = s.cfg.fallbackBalancer
+	}
+	e.emit(now, "exhausted", f)
+}
+
+func (e *engine) beginFallback(s *selector, now time.Time) {
+	if s.fallingBack || !s.exhausted || s.pinned != "" || s.cfg.fallbackBalancer == "" {
+		return
+	}
+	s.fallingBack, s.fallbackSince = true, now.Round(0)
+	e.emit(now, "fallback_balancer", map[string]any{"balancer": s.tag, "to": s.cfg.fallbackBalancer, "is_active": true})
+}
+
+func (e *engine) endFallback(s *selector, now time.Time) {
+	if !s.fallingBack {
+		return
+	}
+	if e.s.features.Report {
+		start := s.fallbackSince
+		if start.Before(e.report.windowStart) {
+			start = e.report.windowStart
+		}
+		if e.report.counts.FallbackBalancerMs == nil {
+			e.report.counts.FallbackBalancerMs = map[string]int64{}
+		}
+		e.report.counts.FallbackBalancerMs[s.tag] += wholeMilliseconds(now.Round(0).Sub(start))
+	}
+	s.fallingBack, s.fallbackSince = false, time.Time{}
+	e.emit(now, "fallback_balancer", map[string]any{"balancer": s.tag, "to": s.cfg.fallbackBalancer, "is_active": false})
 }
 
 func (e *engine) failover(s *selector, now time.Time) {
@@ -2609,6 +2649,9 @@ func (e *engine) onNetworkChangeWithLabels(id string, labels map[string]string, 
 		sel.penaltyServed = false
 		sel.penalty = map[string]float64{}
 		sel.returnedTo = ""
+		if sel.cfg.onNetworkChange == NetworkChangeMode_FORGET {
+			e.endFallback(sel, now)
+		}
 		if sel.cfg.onNetworkChange != NetworkChangeMode_RECHECK {
 			continue
 		}
@@ -2726,6 +2769,7 @@ func (e *engine) pin(selectorTag, tag string, now time.Time) bool {
 	if s == nil || !s.hasCandidate(tag) || e.isProbeOnly(tag) || s.cfg.isProbeOnly(tag) {
 		return false
 	}
+	e.endFallback(s, now)
 	e.cancelWakeProbe(s.current())
 	e.cancelWakeProbe(tag)
 	e.unpinned = e.unpinned || (s.pinned != "" && s.pinned != tag)
@@ -2890,10 +2934,15 @@ func (e *engine) forget(tag string, now time.Time) {
 // keepSelectors forgets balancers that the routing no longer has, with what
 // they remembered per network.
 func (e *engine) keepSelectors(keep map[string]bool) {
+	e.keepSelectorsAt(keep, time.Time{})
+}
+
+func (e *engine) keepSelectorsAt(keep map[string]bool, now time.Time) {
 	for tag, s := range e.selectors {
 		if keep[tag] {
 			continue
 		}
+		e.endFallback(s, now)
 		e.unpinned = e.unpinned || s.pinned != ""
 		delete(e.selectors, tag)
 		for id, m := range e.networks {

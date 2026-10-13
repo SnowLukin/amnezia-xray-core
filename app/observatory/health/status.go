@@ -66,6 +66,8 @@ type pathStatusView struct {
 }
 
 type balancerStatusView struct {
+	FallbackBalancer      string   `json:"fallback_balancer,omitempty"`
+	IsFallingBack         bool     `json:"is_falling_back"`
 	Balancer              string   `json:"balancer"`
 	Active                string   `json:"active"`
 	Pinned                string   `json:"pinned,omitempty"`
@@ -163,6 +165,8 @@ func (e *engine) status(now time.Time) statusView {
 			Active:                s.current(),
 			Pinned:                s.pinned,
 			IsExhausted:           s.exhausted,
+			FallbackBalancer:      s.cfg.fallbackBalancer,
+			IsFallingBack:         s.fallingBack,
 			ReturnToCheaperTarget: s.returnToCheaperTarget,
 			Candidates:            s.candidates,
 		}
@@ -336,6 +340,7 @@ func (e *engine) effectiveFeatures() map[string]bool {
 		if raw == nil {
 			raw = &SelectorFeatureConfig{}
 		}
+		flags[prefix+"fallback_balancer"] = s.cfg.fallbackBalancer != ""
 		flags[prefix+"probe_before_switch"] = s.cfg.switchAfterProbe
 		flags[prefix+"close_pending"] = s.cfg.closePending
 		flags[prefix+"close_silent"] = s.cfg.closeSilent

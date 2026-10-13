@@ -280,6 +280,8 @@ message SelectorConfig {
   bool should_skip_down_audit = 12;
   SelectorFeatureConfig features = 13;
   int64 close_silent_after = 14;
+  // When exhausted, delegate new connections to this balancer's choice.
+  string fallback_balancer = 15;
 }
 
 enum ConfirmMode {

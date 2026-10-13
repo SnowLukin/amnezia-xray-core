@@ -811,3 +811,47 @@ The UDP fields ending in `_count` are global report counters.
 ## Provider protocol
 
 См. [PROVIDER.md](PROVIDER.md). Протокол остаётся 1; ответ меняет только ограниченный набор outbounds/groups, а новую полную конфигурацию хост получает по `baseVersion`.
+
+## Переход в другой балансировщик
+
+`leastCost.settings.fallbackBalancer` — тег другого элемента `routing.balancers`; отсутствие настройки оставляет прежний `fallbackTag`. Переход происходит только после исчерпания всех пригодных кандидатов, включая `probePolicy:onDemand`. Новое соединение получает текущий выбор цели, затем её следующий переход или конечный `fallbackTag`. `fallbackTag` обязателен у каждого leastCost. Цепочка содержит не более четырёх балансировщиков; неизвестный тег, переход на себя, цикл с перечислением цепочки и превышение длины отклоняются при загрузке.
+
+```jsonc
+{
+  "routing": {
+    "rules": [
+      { "network": "udp", "balancerTag": "udp" },
+      { "domain": ["domain:claude.ai", "domain:anthropic.com", "domain:openai.com", "domain:gemini.google.com"], "balancerTag": "ai" },
+      { "network": "tcp,udp", "balancerTag": "main" }
+    ],
+    "balancers": [
+      { "tag": "udp", "fallbackTag": "block", "strategy": { "type": "leastCost", "settings": { "fallbackBalancer": "main" } } },
+      { "tag": "ai", "fallbackTag": "block", "strategy": { "type": "leastCost", "settings": { "fallbackBalancer": "main" } } },
+      { "tag": "main", "fallbackTag": "block", "strategy": { "type": "leastCost", "settings": {} } }
+    ]
+  }
+}
+```
+
+Участники задают `selection.balancer:"udp"` для AWG, `"ai"` для AI-пути и `"main"` для основного набора; каждый имеет явный профиль собственной проверки. Доменные правила требуют sniffing на inbound (либо домен, уже полученный маршрутизатором); обычное соединение по IP не несёт имя приложения. Проба AI-пути обращается к явно заданному AI-эндпоинту.
+
+Пин сохраняет выбранный адрес и `pinned_down`, переход не начинается. Открытые соединения не мигрируют. Каждая попытка пользователя через исчерпанный источник остаётся спросом на него, поэтому обычная перепроверка карантина продолжается; после восстановления пути новые соединения автоматически возвращаются к источнику. Повод провайдера `exhausted` сохраняется. Улики и качество трафика в цели принадлежат выбранному outbound цели.
+
+Целью может быть stock-балансировщик; это плохая практика, поскольку в нём нет учёта здоровья. Stock-стратегии и конфиги без `fallbackBalancer` сохраняют прежнее поведение. UDP-улики по-прежнему не меняют TCP health; AWG проверяется по TCP через тот же UDP-туннель и по его транспортным отказам.
+
+Начальный bootstrap сохраняется: ядро не добавляет скрытую cold-start пробу. Если неизвестный путь недоступен с самого старта, переход начинается после обычного обнаружения отказа; успех самого первого соединения не гарантируется.
+
+| Выход | Новые данные |
+| --- | --- |
+| `exhausted.fields` | `fallback_balancer`: тег настроенной цели |
+| `fallback_balancer.fields` | `balancer`, `to`, `is_active`: true при первом реальном переходе, false при его окончании |
+| `Status.balancers[]` | `fallback_balancer`, `is_falling_back` |
+| Отчёт | `fallback_balancer_count`: число начал; `fallback_balancer_ms`: время по тегам источников |
+
+```jsonc
+{ "seq": 8, "ts": 1791896400000, "type": "fallback_balancer", "fields": { "balancer": "ai", "to": "main", "is_active": true } }
+```
+
+```jsonc
+{ "fallback_balancer_count": 1, "fallback_balancer_ms": { "ai": 125000 } }
+```

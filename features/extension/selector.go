@@ -19,3 +19,10 @@ type OutboundSelectorProvider interface {
 	// the settings and keeps the current choice.
 	OutboundSelector(balancerTag string, settings *serial.TypedMessage) (OutboundSelector, error)
 }
+
+// OutboundSelectorFallback optionally delegates an exhausted, unpinned selector.
+// The router confirms the transition only after a target chooses an outbound.
+type OutboundSelectorFallback interface {
+	FallbackBalancer() string
+	FallbackSelected(to string)
+}

@@ -83,16 +83,22 @@ func (s *RoundRobinStrategy) PickOutbound(tags []string) string {
 }
 
 type Balancer struct {
-	selectors   []string
-	strategy    BalancingStrategy
-	ohm         outbound.Manager
-	fallbackTag string
+	selectors        []string
+	strategy         BalancingStrategy
+	ohm              outbound.Manager
+	fallbackTag      string
+	fallbackBalancer string
+	fallbackTargets  map[string]*Balancer
 
 	override override
 }
 
 // PickOutbound picks the tag of a outbound
 func (b *Balancer) PickOutbound() (string, error) {
+	return b.pickOutbound(0)
+}
+
+func (b *Balancer) pickOutbound(depth int) (string, error) {
 	candidates, err := b.SelectOutbounds()
 	if err != nil {
 		if b.fallbackTag != "" {
@@ -108,6 +114,20 @@ func (b *Balancer) PickOutbound() (string, error) {
 		tag = b.strategy.PickOutbound(candidates)
 	}
 	if tag == "" {
+		if depth < 3 && b.fallbackBalancer != "" {
+			if strategy, ok := b.strategy.(interface {
+				FallbackBalancer() string
+				FallbackSelected(to string)
+			}); ok {
+				target := strategy.FallbackBalancer()
+				if next := b.fallbackTargets[target]; target != "" && next != nil {
+					if selected, err := next.pickOutbound(depth + 1); err == nil && selected != "" {
+						strategy.FallbackSelected(target)
+						return selected, nil
+					}
+				}
+			}
+		}
 		if b.fallbackTag != "" {
 			errors.LogInfo(context.Background(), "fallback to [", b.fallbackTag, "], due to empty tag returned")
 			return b.fallbackTag, nil
