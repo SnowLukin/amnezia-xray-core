@@ -25,6 +25,13 @@ type ConnectionObserver interface {
 	StartDial(ctx context.Context, tag string, server net.Destination, abort func()) DialTracker
 }
 
+// ContextConnectionObserver may bypass all per-connection wrappers for traffic
+// that has no enabled consumer. Core-owned probes can opt in by context even
+// while every optional user hook is disabled.
+type ContextConnectionObserver interface {
+	NeedsObservation(context.Context, string) bool
+}
+
 // DispatchGuard rejects a routed link before DNS, mux or proxy processing.
 // It is optional for a ConnectionObserver and also protects a handler replaced
 // after a router selected its tag. Implementations must not block.

@@ -299,19 +299,22 @@ type wakeSettings struct {
 }
 
 type settings struct {
-	udpProbe     *udpSettings
-	wake         wakeSettings
-	paths        sync.Map
-	baseOrder    map[string][]string
-	passive      passiveSettings
-	probes       []probeSettings
-	connectivity *connectivitySettings
-	schedule     scheduleSettings
-	maxEvents    int
-	maxBytes     int
-	remember     bool
-	maxNetworks  int
-	providers    []*providerSettings
+	disabledProviders map[string]bool
+	features          featureSettings
+	witnesses         []string
+	udpProbe          *udpSettings
+	wake              wakeSettings
+	paths             sync.Map
+	baseOrder         map[string][]string
+	passive           passiveSettings
+	probes            []probeSettings
+	connectivity      *connectivitySettings
+	schedule          scheduleSettings
+	maxEvents         int
+	maxBytes          int
+	remember          bool
+	maxNetworks       int
+	providers         []*providerSettings
 	// Zero turns the periodic report off.
 	reportInterval   time.Duration
 	reportQuietShare float64
@@ -325,8 +328,12 @@ type settings struct {
 }
 
 type providerSettings struct {
-	tag string
-	url string
+	leaseRenewal    bool
+	enabled         bool
+	backendSchedule bool
+	expiredFallback bool
+	tag             string
+	url             string
 	// http.MethodPost or http.MethodGet.
 	method   string
 	headers  map[string]string
@@ -391,41 +398,52 @@ func optionalNum(v int32, def int) int {
 }
 
 func newProviderSettings(c *ProviderConfig) *providerSettings {
+	f := c.GetFeatures()
+	if f == nil {
+		f = &ProviderFeatureConfig{}
+	}
 	t := c.GetTriggers()
+	if t == nil {
+		t = &ProviderTriggers{}
+	}
 	l := c.GetLimits()
 	a := c.GetApply()
 	maxOutbounds := min(num(a.GetMaxOutbounds(), defaultMaxOutbounds), maxProviderOutbounds)
 	p := &providerSettings{
-		tag:      c.GetTag(),
-		url:      c.GetUrl(),
-		method:   http.MethodPost,
-		headers:  c.GetHeaders(),
-		via:      c.GetVia(),
-		timeout:  dur(c.GetTimeout(), defaultProviderTimeout),
-		maxBytes: min(size(c.GetMaxBytes(), int64(maxOutbounds)*answerBytesPerOutbound), maxAnswerBytes),
-		initial:  c.GetInitialAnswer(),
+		enabled:         featureValue(c.IsEnabled, false),
+		backendSchedule: featureValue(f.BackendSchedule, true),
+		leaseRenewal:    featureValue(f.LeaseRenewal, true),
+		expiredFallback: featureValue(f.ExpiredLeaseFallback, true),
+		tag:             c.GetTag(),
+		url:             c.GetUrl(),
+		method:          http.MethodPost,
+		headers:         c.GetHeaders(),
+		via:             c.GetVia(),
+		timeout:         dur(c.GetTimeout(), defaultProviderTimeout),
+		maxBytes:        min(int64(maxOutbounds)*answerBytesPerOutbound, maxAnswerBytes),
+		initial:         c.GetInitialAnswer(),
 		// The JSON loader refuses a longer one; an answer cannot name it.
 		baseVersion: cutText(c.GetBaseVersion(), maxBaseVersion),
 
 		interval:      optional(t.GetInterval(), defaultRefreshInterval),
 		minHealthy:    optionalNum(t.GetMinHealthyOutbounds(), defaultMinHealthy),
-		whenExhausted: !t.GetSkipRefreshWhenExhausted(),
+		whenExhausted: featureValue(f.Exhausted, true),
 		maxAge:        optional(t.GetMaxAge(), defaultMaxSetAge),
 		onNetwork:     t.GetNetworkChangeMode(),
-		networkSettle: dur(t.GetNetworkSettleDelay(), defaultNetworkSettle),
+		networkSettle: presentDelay(t.NetworkSettleDelay, defaultNetworkSettle),
 
 		minInterval:          optional(l.GetMinInterval(), defaultRefreshMinInterval),
 		exhaustedMinInterval: optional(l.GetExhaustedMinInterval(), defaultExhaustedMinInterval),
 		maxPerHour:           optionalNum(l.GetMaxRefreshesPerHour(), defaultRefreshesPerHour),
-		backoff:              toBackoff(l.GetBackoff(), defaultRefreshRetry),
-		authRetry:            optional(l.GetAuthRetryDelay(), defaultAuthRetry),
+		backoff:              defaultRefreshRetry,
+		authRetry:            defaultAuthRetry,
 
 		balancer:     a.GetBalancer(),
 		prefix:       a.GetTagPrefix(),
 		drain:        min(dur(a.GetDrainTimeout(), defaultDrain), maxDrain),
 		maxOutbounds: maxOutbounds,
 		protocols:    stringsOr(a.GetAllowedProtocols(), defaultProviderProtocols),
-		routing:      a.GetIsRoutingAccepted(),
+		routing:      false,
 	}
 	if strings.EqualFold(c.GetMethod(), http.MethodGet) {
 		p.method = http.MethodGet
@@ -439,20 +457,40 @@ func newProviderSettings(c *ProviderConfig) *providerSettings {
 			}
 		}
 	}
-	if t.GetJitterFraction() >= 0 {
-		p.jitter = jitter(t.GetJitterFraction(), defaultRefreshJitter)
-	}
+	p.jitter = defaultRefreshJitter
 	if ca := t.GetWhenCostAbove(); ca != nil {
 		p.costAbove = true
 		p.costThreshold = float64(ca.GetCost())
-		p.costAboveAfter = dur(ca.GetAfter(), defaultCostAboveAfter)
+		p.costAboveAfter = defaultCostAboveAfter
+		if ca.After != nil {
+			p.costAboveAfter = time.Duration(max(ca.GetAfter(), 0))
+		}
 	}
 	if ex := t.GetExpiry(); ex.GetRenewAtFraction() >= 0 {
 		p.renewAt = min(fnum(ex.GetRenewAtFraction(), defaultRenewAt), maxRenewAt)
 		p.urgentAt = min(max(fnum(ex.GetUrgentAtFraction(), defaultUrgentAt), p.renewAt), maxRenewAt)
-		if ex.GetJitterFraction() >= 0 {
-			p.renewJitter = min(fnum(ex.GetJitterFraction(), defaultRenewJitter), maxRenewJitter)
-		}
+		p.renewJitter = defaultRenewJitter
+	}
+	if !featureValue(f.Periodic, false) {
+		p.interval = 0
+	}
+	if !featureValue(f.MinHealthy, false) {
+		p.minHealthy = 0
+	}
+	if !featureValue(f.Exhausted, true) {
+		p.whenExhausted = false
+	}
+	if !featureValue(f.CostAbove, false) {
+		p.costAbove = false
+	}
+	if !featureValue(f.MaxAge, false) {
+		p.maxAge = 0
+	}
+	if !featureValue(f.NetworkChange, false) {
+		p.onNetwork = RefreshOnNetwork_REFRESH_NEVER
+	}
+	if !featureValue(f.LeaseRenewal, true) {
+		p.renewAt = 0
 	}
 	return p
 }
@@ -511,8 +549,8 @@ func toBackoff(b *Backoff, def backoff) backoff {
 }
 
 func newSettings(c *Config) *settings {
-	s := &settings{baseOrder: map[string][]string{}}
-	if u := c.GetUdpProbe(); u != nil {
+	s := &settings{baseOrder: map[string][]string{}, features: newFeatureSettings(c.GetFeatures())}
+	if u := c.GetUdpProbe(); s.features.UdpProbes && u != nil {
 		s.udpProbe = &udpSettings{requests: num(u.Requests, 5), interval: dur(u.Interval, 200*time.Millisecond), timeout: dur(u.Timeout, 2*time.Second), perHour: num(u.PerHour, 6)}
 		for _, address := range u.Destinations {
 			destination, _ := net.ParseDestination("udp:" + address)
@@ -526,26 +564,32 @@ func newSettings(c *Config) *settings {
 	}
 	p := c.GetPassive()
 	s.passive = passiveSettings{
-		udpReplyTimeout:    optional(p.GetUdpReplyTimeout(), 5*time.Second),
-		loneFailureAfter:   optional(p.GetLoneFailureAfter(), 2*time.Minute),
-		window:             dur(p.GetWindow(), defaultWindow),
+		udpReplyTimeout:    dur(p.GetUdpReplyTimeout(), 5*time.Second),
+		loneFailureAfter:   dur(p.GetLoneFailureAfter(), 2*time.Minute),
+		window:             defaultWindow,
 		dialTimeout:        dur(p.GetDialTimeout(), defaultDialTimeout),
 		firstByteTimeout:   dur(p.GetFirstByteTimeout(), defaultFirstByteTimeout),
 		stallTimeout:       dur(p.GetStallTimeout(), defaultStallTimeout),
-		failures:           num(p.GetFailuresToSuspect(), defaultFailures),
-		minDistinctTargets: num(p.GetMinDistinctTargets(), defaultMinDistinctTargets),
-		successBytes:       size(p.GetSuccessBytes(), defaultSuccessBytes),
-		sweepInterval:      dur(p.GetSweepInterval(), defaultSweepInterval),
-		dialOnly:           p.GetIsDialOnly(),
+		failures:           defaultFailures,
+		minDistinctTargets: defaultMinDistinctTargets,
+		successBytes:       defaultSuccessBytes,
+		sweepInterval:      defaultSweepInterval,
+		dialOnly:           false,
 		partialStallAge:    dur(p.GetPartialStallMaxAge(), defaultPartialStallAge),
-		stallMinWrite:      size(p.GetStallMinWriteBytes(), defaultStallMinWrite),
-		partialMinBytes:    size(p.GetPartialStallMinBytes(), defaultPartialMinBytes),
-		keepPending:        p.GetShouldKeepPendingOnDown(),
-		keepSilent:         p.GetShouldKeepSilentOnDown(),
-		skipQuality:        p.GetShouldSkipQuality(),
+		stallMinWrite:      defaultStallMinWrite,
+		partialMinBytes:    defaultPartialMinBytes,
+		keepPending:        false,
+		keepSilent:         false,
+		skipQuality:        !s.features.Quality,
 	}
-	if p.GetShouldIgnorePartialStalls() {
+	if !s.features.PartialStalls {
 		s.passive.partialStallAge = 0
+	}
+	if !s.features.UdpReplies {
+		s.passive.udpReplyTimeout = 0
+	}
+	if !s.features.LoneFailureProbe {
+		s.passive.loneFailureAfter = 0
 	}
 	for _, pp := range c.GetProbes() {
 		profile := probeSettings{
@@ -585,26 +629,29 @@ func newSettings(c *Config) *settings {
 		}
 		s.probes = append(s.probes, profile)
 	}
-	if cc := c.GetConnectivity(); cc != nil && cc.GetOutbound() != "" && cc.GetDestination() != "" {
+	if cc := c.GetConnectivity(); s.features.Connectivity && cc != nil && cc.GetOutbound() != "" && cc.GetDestination() != "" {
 		s.connectivity = &connectivitySettings{
 			outbound:    cc.GetOutbound(),
 			destination: cc.GetDestination(),
 			timeout:     min(dur(cc.GetTimeout(), defaultConnectivityTimeout), maxProbeTimeout),
-			recheck:     toBackoff(cc.GetRecheckBackoff(), defaultConnRecheck),
-			maxPause:    dur(cc.GetMaxPause(), defaultMaxPause),
+			recheck:     defaultConnRecheck,
+			maxPause:    defaultMaxPause,
 			witnesses:   cc.GetWitnesses(),
 		}
 	}
+	if s.features.Witnesses {
+		s.witnesses = c.GetConnectivity().GetWitnesses()
+	}
 	sc := c.GetSchedule()
 	s.schedule = scheduleSettings{
-		idleAfter:                    dur(sc.GetIdleAfter(), defaultIdleAfter),
-		quarantine:                   toBackoff(sc.GetQuarantine(), defaultQuarantine),
+		idleAfter:                    defaultIdleAfter,
+		quarantine:                   defaultQuarantine,
 		concurrent:                   min(num(sc.GetMaxConcurrentProbes(), defaultConcurrent), maxConcurrent),
-		spacing:                      dur(sc.GetMinProbeInterval(), defaultSpacing),
-		spacingJitter:                jitter(sc.GetProbeJitterFraction(), defaultSpacingJitter),
+		spacing:                      defaultSpacing,
+		spacingJitter:                defaultSpacingJitter,
 		probesPerServerNamePerMinute: num(sc.GetProbesPerServerNamePerMinute(), defaultProbesPerServerNamePerMinute),
 		perMinute:                    num(sc.GetProbesPerMinute(), defaultPerMinute),
-		suspectCooldown:              dur(sc.GetSuspectCooldown(), defaultSuspectCooldown),
+		suspectCooldown:              defaultSuspectCooldown,
 	}
 	po := sc.GetProbeOnly()
 	s.schedule.probeOnly = probeOnlySettings{
@@ -615,26 +662,40 @@ func newSettings(c *Config) *settings {
 	s.schedule.hostProbes = hostProbeSettings{
 		// The observer keeps at least half of the budget for finding failures.
 		perMinute:    min(num(hp.GetProbesPerMinute(), defaultHostPerMinute), max(s.schedule.perMinute/2, 1)),
-		reuse:        min(dur(hp.GetReuseWindow(), defaultHostReuse), maxHostReuse),
+		reuse:        defaultHostReuse,
 		maxOutbounds: min(num(hp.GetMaxOutbounds(), defaultHostMaxOutbounds), maxHostOutbounds),
 		timeout:      min(dur(hp.GetTimeout(), defaultHostTimeout), maxHostTimeout),
 	}
 	s.maxEvents = min(num(c.GetEvents().GetMaxEvents(), defaultMaxEvents), maxEvents)
 	s.maxBytes = int(min(size(c.GetEvents().GetMaxBytes(), defaultMaxEventBytes), maxEventBytes))
-	s.reportInterval = optional(c.GetReport().GetInterval(), defaultReportInterval)
-	s.reportQuietShare = c.GetReport().GetQuietShare()
-	if after := optional(c.GetSleep().GetAfterLastUse(), defaultSleepAfter); after > 0 {
+	if s.features.Report {
+		s.reportInterval = dur(c.GetReport().GetInterval(), defaultReportInterval)
+	}
+	if s.features.Report {
+		s.reportQuietShare = c.GetReport().GetQuietShare()
+	}
+	if !s.features.Events {
+		s.maxEvents, s.maxBytes = 0, 0
+	}
+	if after := dur(c.GetSleep().GetAfterLastUse(), defaultSleepAfter); s.features.TunnelSleep && after > 0 {
 		// The JSON loader refuses a shorter one; a config built without it
 		// must not cut connections that are still closing either.
 		s.sleepAfter = max(after, minSleepAfter)
-		// The JSON loader refuses a value out of bounds as well.
-		if n := time.Duration(c.GetSleep().GetCloseIdleAfter()); n > 0 {
-			s.closeIdleAfter = min(max(n, minCloseIdleAfter), maxCloseIdleAfter)
-		}
 	}
-	s.remember = !c.GetNetwork().GetNoMemory()
+	if s.features.CloseUnchosenIdle {
+		n := dur(c.GetSleep().GetCloseIdleAfter(), 15*time.Second)
+		s.closeIdleAfter = min(max(n, minCloseIdleAfter), maxCloseIdleAfter)
+	}
+	s.remember = s.features.NetworkMemory
 	s.maxNetworks = min(num(c.GetNetwork().GetMaxNetworks(), defaultMaxNetworks), maxNetworks)
 	for _, pc := range c.GetProviders() {
+		if !featureValue(pc.IsEnabled, false) {
+			if s.disabledProviders == nil {
+				s.disabledProviders = make(map[string]bool)
+			}
+			s.disabledProviders[pc.GetTag()] = true
+			continue
+		}
 		ps := newProviderSettings(pc)
 		s.providers = append(s.providers, ps)
 	}
@@ -647,7 +708,7 @@ func (s *settings) observes(tag string) bool {
 }
 
 func (s *settings) witness(tag string) bool {
-	return s.connectivity != nil && len(s.connectivity.witnesses) > 0 && matchesAny(tag, s.connectivity.witnesses)
+	return len(s.witnesses) > 0 && matchesAny(tag, s.witnesses)
 }
 
 func (s *settings) isProbeOnly(tag string) bool {
@@ -692,6 +753,9 @@ func (s *settings) probeFor(tag string) *probeSettings {
 }
 
 type selectorSettings struct {
+	closePending     bool
+	closeSilent      bool
+	closeSilentAfter time.Duration
 	raw              *SelectorConfig
 	paths            map[string]*costEntrySettings
 	baseOrder        []string
@@ -712,6 +776,7 @@ type costEntrySettings struct {
 	cost           float64
 	lazy           bool
 	returnInterval int64
+	returnEnabled  *bool
 	probe          string
 	isProbeOnly    bool
 }
@@ -730,6 +795,10 @@ type returnToCheaperSettings struct {
 
 func newSelectorSettings(c *SelectorConfig) *selectorSettings {
 	u := c.GetReturnToCheaper()
+	f := c.GetFeatures()
+	if f == nil {
+		f = &SelectorFeatureConfig{}
+	}
 	groups := map[string]*PathGroup{}
 	for _, g := range c.GetGroups() {
 		groups[g.Name] = g
@@ -737,35 +806,39 @@ func newSelectorSettings(c *SelectorConfig) *selectorSettings {
 	paths := map[string]*costEntrySettings{}
 	order := make([]string, 0, len(c.GetPaths()))
 	for _, p := range c.GetPaths() {
-		entry := &costEntrySettings{cost: float64(p.Cost), lazy: p.IsLazy, returnInterval: p.ReturnInterval, probe: p.Probe, isProbeOnly: p.IsProbeOnly}
+		entry := &costEntrySettings{cost: float64(p.Cost), lazy: p.IsLazy, returnInterval: p.ReturnInterval, returnEnabled: p.ReturnIsEnabled, probe: p.Probe, isProbeOnly: p.IsProbeOnly}
 		if g := groups[p.Group]; g != nil && p.Group != "" {
 			entry.groupName = g.Name
 			entry.groupLimit = min(max(num(g.FailedInRowToLeave, 3), 1), 16)
 			entry.cost = float64(g.Cost)
 			entry.lazy = g.IsLazy
 			entry.returnInterval = g.ReturnInterval
+			entry.returnEnabled = g.ReturnIsEnabled
 			entry.probe = g.Probe
 		}
 		paths[p.Tag] = entry
 		order = append(order, p.Tag)
 	}
-	return &selectorSettings{
+	result := &selectorSettings{
+		closePending:     featureValue(f.ClosePending, true),
+		closeSilent:      featureValue(f.CloseSilent, true),
+		closeSilentAfter: dur(c.GetCloseSilentAfter(), defaultStallTimeout),
 		raw:              c,
 		paths:            paths,
 		baseOrder:        order,
-		switchAfterProbe: !c.GetSkipProbeBeforeSwitch(),
+		switchAfterProbe: featureValue(f.ProbeBeforeSwitch, true),
 		confirm:          c.GetConfirmWithProbe(),
-		skipDownAudit:    c.GetShouldSkipDownAudit(),
-		minHoldTime:      dur(c.GetMinHoldTime(), defaultMinHoldTime),
+		skipDownAudit:    !featureValue(f.DownAudit, false),
+		minHoldTime:      presentDelay(c.MinHoldTime, defaultMinHoldTime),
 		returnToCheaper: returnToCheaperSettings{
 			interval:            dur(u.GetInterval(), defaultReturnToCheaperInterval),
-			randomPhase:         !u.GetSkipRandomPhase(),
-			successes:           num(u.GetProbesToReturn(), defaultReturnToCheaperSuccesses),
-			spacing:             dur(u.GetProbeInterval(), defaultReturnToCheaperSpacing),
-			penaltyWindow:       dur(u.GetPenaltyWindow(), defaultPenaltyWindow),
-			penaltyMultiplier:   fnum(u.GetPenaltyMultiplier(), defaultPenaltyMultiplier),
-			maxPenalty:          dur(u.GetMaxPenaltyDelay(), defaultMaxPenalty),
-			onNetworkChange:     !u.GetSkipTryOnNetworkChange(),
+			randomPhase:         true,
+			successes:           defaultReturnToCheaperSuccesses,
+			spacing:             defaultReturnToCheaperSpacing,
+			penaltyWindow:       defaultPenaltyWindow,
+			penaltyMultiplier:   defaultPenaltyMultiplier,
+			maxPenalty:          defaultMaxPenalty,
+			onNetworkChange:     featureValue(f.ReturnOnNetworkChange, false),
 			unknownNetworksOnly: !u.GetTryOnAllNetworks(),
 		},
 		startPinned:     c.GetStartPinnedOutbound(),
@@ -773,6 +846,16 @@ func newSelectorSettings(c *SelectorConfig) *selectorSettings {
 		startOutbound:   c.GetStartOutbound(),
 		onNetworkChange: c.GetNetworkChangeAction(),
 	}
+	if !featureValue(f.ReturnToCheaper, false) {
+		result.returnToCheaper.interval = 0
+	}
+	if !featureValue(f.NetworkChanges, false) {
+		result.onNetworkChange = NetworkChangeMode_IGNORE
+	}
+	if !featureValue(f.StartupPin, false) {
+		result.startPinned = ""
+	}
+	return result
 }
 
 func (s *selectorSettings) cost(tag string) float64 {
@@ -783,8 +866,14 @@ func (s *selectorSettings) cost(tag string) float64 {
 }
 
 func (s *selectorSettings) returnInterval(tag string) time.Duration {
+	if s.returnToCheaper.interval == 0 {
+		return 0
+	}
 	if p := s.paths[tag]; p != nil {
-		return optional(p.returnInterval, s.returnToCheaper.interval)
+		if !featureValue(p.returnEnabled, true) {
+			return 0
+		}
+		return dur(p.returnInterval, s.returnToCheaper.interval)
 	}
 	return s.returnToCheaper.interval
 }
@@ -832,4 +921,11 @@ func stringOr(v, def string) string {
 		return def
 	}
 	return v
+}
+
+func presentDelay(value *int64, fallback time.Duration) time.Duration {
+	if value == nil {
+		return fallback
+	}
+	return time.Duration(max(*value, 0))
 }

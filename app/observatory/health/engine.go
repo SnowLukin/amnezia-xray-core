@@ -226,8 +226,6 @@ func newEngine(s *settings, seed int64) *engine {
 		events:           newEventLog(s.maxEvents, s.maxBytes),
 		running:          map[uint64]*probeJob{},
 		startsByName:     map[string][]time.Time{},
-		udpStartsByName:  map[string][]time.Time{},
-		networks:         map[string]map[string]string{},
 		pendingSuspicion: map[string]verdict{},
 		serverNameFor:    func(tag string) string { return tag },
 		retiring:         map[string]bool{},
@@ -235,10 +233,13 @@ func newEngine(s *settings, seed int64) *engine {
 		expired:          map[string]bool{},
 		fetchVia:         map[string]int{},
 	}
+	if s.remember {
+		e.networks = make(map[string]map[string]string)
+	}
 	for _, ps := range s.providers {
 		e.providers = append(e.providers, newProvider(ps))
 	}
-	if s.reportQuietShare > 0 {
+	if s.features.Report && s.reportQuietShare > 0 {
 		e.report.quietSample = s.reportQuietShare >= 1 || e.rnd.Float64() < s.reportQuietShare
 	}
 	return e
@@ -324,7 +325,9 @@ func (e *engine) pathAt(tag string, now time.Time) *path {
 
 func (e *engine) emit(now time.Time, typ string, fields map[string]any) {
 	e.events.add(now, typ, fields)
-	e.report.count(typ, fields)
+	if e.s.features.Report {
+		e.report.count(typ, fields)
+	}
 }
 
 func (e *engine) noteDemand(now time.Time) {
@@ -351,7 +354,7 @@ func (e *engine) active(tag string) bool {
 // ---- passive evidence -----------------------------------------------------
 
 func (e *engine) onFailure(tag string, kind failureKind, target string, conn uint32, now time.Time) {
-	if e.networkDown || e.isProbeOnly(tag) {
+	if !e.s.features.failure(kind) || e.networkDown || e.isProbeOnly(tag) {
 		return
 	}
 	if e.s.passive.dialOnly && !kind.pathLevel() {
@@ -530,6 +533,16 @@ func (e *engine) decideSuspect(p *path, v verdict, now time.Time) {
 const auditWindow = 30 * time.Second
 
 func (e *engine) queueDownAudit(p *path, now time.Time) {
+	pathEvidence := false
+	for _, f := range p.failures {
+		if f.kind.pathLevel() && e.s.features.failure(f.kind) {
+			pathEvidence = true
+			break
+		}
+	}
+	if !pathEvidence {
+		return
+	}
 	if p.status == statusDown && p.quarantined(now) {
 		return
 	}
@@ -661,6 +674,7 @@ type downMark struct {
 	reason string
 
 	pending, watch, silent bool
+	silentAfter            time.Duration
 }
 
 // noteDown asks the observer to end what waits on p. While the network
@@ -672,8 +686,17 @@ func (e *engine) noteDown(p *path, watch bool, now time.Time) {
 	if p.status != statusDown || p.provisional {
 		return
 	}
-	d := downMark{tag: p.tag, at: now, reason: p.reason,
-		pending: !e.s.passive.keepPending, watch: watch && !e.s.passive.keepSilent}
+	d := downMark{tag: p.tag, at: now, reason: p.reason}
+	for _, sel := range e.selectors {
+		if !sel.hasCandidate(p.tag) {
+			continue
+		}
+		d.pending = d.pending || sel.cfg.closePending
+		d.watch = d.watch || (watch && sel.cfg.closeSilent)
+		if sel.cfg.closeSilent {
+			d.silentAfter = max(d.silentAfter, sel.cfg.closeSilentAfter)
+		}
+	}
 	if !d.pending && !d.watch {
 		return
 	}
@@ -890,7 +913,7 @@ func (e *engine) ranked(s *selector, now time.Time, skip func(string) bool) []st
 	}
 	var items []item
 	for i, c := range s.candidates {
-		if skip != nil && skip(c) {
+		if !e.expiredLeaseUsable(c) || (skip != nil && skip(c)) {
 			continue
 		}
 		p := e.pathAt(c, now)
@@ -1048,7 +1071,7 @@ func (e *engine) start(s *selector, now time.Time) {
 }
 
 func (e *engine) switchTo(s *selector, tag string, reason string, now time.Time) {
-	if tag == "" || e.isProbeOnly(tag) || s.cfg.isProbeOnly(tag) || !s.hasCandidate(tag) {
+	if tag == "" || !e.expiredLeaseUsable(tag) || e.isProbeOnly(tag) || s.cfg.isProbeOnly(tag) || !s.hasCandidate(tag) {
 		return
 	}
 	from := s.current()
@@ -1171,6 +1194,10 @@ func (e *engine) leaveOutbound(s *selector, now time.Time) {
 			return
 		}
 	} else if e.probeCandidates(s, now, e.expired) {
+		return
+	}
+	if !e.expiredLeaseUsable(cur) {
+		e.exhaust(s, now)
 		return
 	}
 	// Staying; once the drain ends or the lease is renewed, a failover
@@ -2534,6 +2561,9 @@ func (e *engine) onNetworkLost(now time.Time) {
 // setMemoryLow switches to or from low memory and reports whether that
 // changed anything.
 func (e *engine) setMemoryLow(low bool, now time.Time) bool {
+	if !e.s.features.MemoryPressure {
+		return false
+	}
 	if e.memoryLow == low {
 		return false
 	}
@@ -2560,6 +2590,9 @@ func (e *engine) remember(tag string) {
 		m := e.networks[e.networkID]
 		if m == nil {
 			m = map[string]string{}
+			if e.networks == nil {
+				e.networks = make(map[string]map[string]string)
+			}
 			e.networks[e.networkID] = m
 			e.netOrder = append(e.netOrder, e.networkID)
 			if len(e.netOrder) > e.s.maxNetworks {
@@ -2583,6 +2616,9 @@ func (e *engine) rememberedFor(s *selector) string {
 }
 
 func (e *engine) pin(selectorTag, tag string, now time.Time) bool {
+	if !e.s.features.Pinning {
+		return false
+	}
 	s := e.selectors[selectorTag]
 	if s == nil || !s.hasCandidate(tag) || e.isProbeOnly(tag) || s.cfg.isProbeOnly(tag) {
 		return false
@@ -2787,4 +2823,14 @@ func maxTime(a, b time.Time) time.Time {
 		return a
 	}
 	return b
+}
+
+// expiredLeaseUsable applies the owning provider's explicit last-resort policy.
+func (e *engine) expiredLeaseUsable(tag string) bool {
+	for _, p := range e.providers {
+		if p.retiredExpired[tag] || (e.expired[tag] && slices.Contains(p.tags, tag)) {
+			return p.cfg.expiredFallback
+		}
+	}
+	return true
 }

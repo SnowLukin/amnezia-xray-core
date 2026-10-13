@@ -220,15 +220,15 @@ func TestQualityReportProjectionKeepsSnapshotsAndCurrentAcrossTake(t *testing.T)
 	qualityProjectionSeed(o.e, "direct", true)
 	// Merely collecting quality is no report decision and must not cut it.
 	clk.advance(2 * time.Second)
-	if o.TakeReport(false) != nil || o.Report() != nil {
+	if o.TakeReport(false) != nil || o.PeekReport() != nil {
 		t.Fatal("quality measurement created a report decision")
 	}
 	if len(o.e.quality.open.paths) != 1 {
 		t.Fatal("nil report consumed the quality window")
 	}
-	o.e.emit(clk.now(), "provider_restart_needed", map[string]any{"provider": "p"})
-	snapshot := o.Report()
-	again := o.Report()
+	o.e.emit(clk.now(), "switch", map[string]any{"balancer": "auto", "from": "a1", "to": "a2", "reason": "failover"})
+	snapshot := o.PeekReport()
+	again := o.PeekReport()
 	if !bytes.Equal(snapshot, again) {
 		t.Fatal("repeated report snapshot changed measured data")
 	}

@@ -3,6 +3,7 @@ package health
 import (
 	"context"
 	"fmt"
+	"google.golang.org/protobuf/proto"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -30,7 +31,7 @@ func qualityIntegrationObserver(skip bool) (*Observer, *fakeClock) {
 func TestQualityIntegrationActualConstructor(t *testing.T) {
 	for _, skip := range []bool{false, true} {
 		t.Run(fmt.Sprintf("skip_%v", skip), func(t *testing.T) {
-			o := newObserver(context.Background(), &Config{Paths: observed("a1"), Passive: &PassiveConfig{ShouldSkipQuality: skip}})
+			o := newObserver(context.Background(), &Config{Features: &FeatureConfig{Quality: proto.Bool(!skip), Report: proto.Bool(true)}, Paths: observed("a1"), Passive: &PassiveConfig{ShouldSkipQuality: skip}})
 			t.Cleanup(func() { _ = o.Close() })
 			if skip {
 				if o.e.quality != nil {

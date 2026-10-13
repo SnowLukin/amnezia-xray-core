@@ -431,7 +431,7 @@ func TestGroupBoundedAcrossCandidateAndSelectorChanges(t *testing.T) {
 	for i := range 100 {
 		tag := fmt.Sprintf("new%d", i)
 		cfg := &SelectorConfig{Paths: []*PathDefinition{{Tag: tag, Group: tag}}, Groups: []*PathGroup{{Name: tag, Cost: 1}}}
-		te.addSelector(te.sel.tag, newSelectorSettings(cfg))
+		te.addSelector(te.sel.tag, legacyScenarioSelector(cfg, nil))
 		te.updateCandidates(te.sel, []string{tag}, t0)
 		if len(te.sel.groups) != 1 || len(te.sel.groups[tag].members) != 1 {
 			t.Fatal("old groups retained")

@@ -208,7 +208,7 @@ func TestSharedPathUsesLongestActivePenaltyWindow(t *testing.T) {
 	otherConfig := &SelectorConfig{SkipProbeBeforeSwitch: true,
 		Paths:           []*PathDefinition{{Tag: "a1", Balancer: "other", Cost: 1}, {Tag: "b1", Balancer: "other", Cost: 3}},
 		ReturnToCheaper: &ReturnToCheaperConfig{PenaltyWindow: int64(10 * time.Minute)}}
-	other := te.addSelector("other", newSelectorSettings(otherConfig))
+	other := te.addSelector("other", legacyScenarioSelector(otherConfig, nil))
 	te.updateCandidates(other, []string{"a1", "b1"}, t0)
 	j := startAudit(t, te)
 	te.onProbeResult(j, probeResult{ok: true}, at(2*time.Second))
@@ -230,7 +230,7 @@ func TestAuditPreservesDegradedProbeResult(t *testing.T) {
 }
 
 func TestAuditedPathReturnsAfterHoldAndThreeProbes(t *testing.T) {
-	sc := &SelectorConfig{SkipProbeBeforeSwitch: true, MinHoldTime: int64(5 * time.Second),
+	sc := &SelectorConfig{SkipProbeBeforeSwitch: true, MinHoldTime: v2Int64(int64(5 * time.Second)),
 		ReturnToCheaper: &ReturnToCheaperConfig{Interval: int64(time.Hour), SkipRandomPhase: true,
 			ProbesToReturn: 3, ProbeInterval: int64(time.Second)}}
 	te := newAuditEngine(t, sc)

@@ -51,9 +51,9 @@ func TestProbeIsolatedMuxKeepsSlowFirstByte(t *testing.T) {
 			"settings": {"vnext": [{"address": "127.0.0.1", "port": %d,
 				"users": [{"id": %q, "encryption": "none"}]}]},
 			"mux": {"enabled": true, "concurrency": 8},
-			"path": {"balancer": "auto", "cost": 1}}],
-		"routing": {"balancers": [{"tag": "auto", "strategy": {"type": "leastCost"}}]},
-		"healthObservatory": {"passive": {"dialTimeout": "1s"}}
+			"selection": {"balancer": "auto", "cost": 1}}],
+		"routing": {"balancers": [{"tag": "auto", "fallbackTag":"block", "strategy": {"type": "leastCost"}}]},
+		"healthObservatory": {"evidence": {"dialTimeout": {"timeout": "1s"}}}
 	}`, serverPort, userID)
 	client := startProbeMuxInstance(t, clientConfig)
 	defer client.Close()

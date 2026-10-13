@@ -188,12 +188,15 @@ type Config struct {
 	Events       *EventsConfig       `protobuf:"bytes,6,opt,name=events,proto3" json:"events,omitempty"`
 	Network      *NetworkConfig      `protobuf:"bytes,7,opt,name=network,proto3" json:"network,omitempty"`
 	// Sources of fresh outbounds for balancers.
-	Providers     []*ProviderConfig `protobuf:"bytes,8,rep,name=providers,proto3" json:"providers,omitempty"`
-	Report        *ReportConfig     `protobuf:"bytes,9,opt,name=report,proto3" json:"report,omitempty"`
-	Sleep         *SleepConfig      `protobuf:"bytes,10,opt,name=sleep,proto3" json:"sleep,omitempty"`
-	Paths         []*PathDefinition `protobuf:"bytes,11,rep,name=paths,proto3" json:"paths,omitempty"`
-	Wake          *WakeConfig       `protobuf:"bytes,12,opt,name=wake,proto3" json:"wake,omitempty"`
-	UdpProbe      *UDPProbeConfig   `protobuf:"bytes,13,opt,name=udp_probe,json=udpProbe,proto3" json:"udp_probe,omitempty"`
+	Providers     []*ProviderConfig   `protobuf:"bytes,8,rep,name=providers,proto3" json:"providers,omitempty"`
+	Report        *ReportConfig       `protobuf:"bytes,9,opt,name=report,proto3" json:"report,omitempty"`
+	Sleep         *SleepConfig        `protobuf:"bytes,10,opt,name=sleep,proto3" json:"sleep,omitempty"`
+	Paths         []*PathDefinition   `protobuf:"bytes,11,rep,name=paths,proto3" json:"paths,omitempty"`
+	Wake          *WakeConfig         `protobuf:"bytes,12,opt,name=wake,proto3" json:"wake,omitempty"`
+	UdpProbe      *UDPProbeConfig     `protobuf:"bytes,13,opt,name=udp_probe,json=udpProbe,proto3" json:"udp_probe,omitempty"`
+	Features      *FeatureConfig      `protobuf:"bytes,14,opt,name=features,proto3" json:"features,omitempty"`
+	SessionLabels map[string]string   `protobuf:"bytes,15,rep,name=session_labels,json=sessionLabels,proto3" json:"session_labels,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	LabelRequest  *LabelRequestConfig `protobuf:"bytes,16,opt,name=label_request,json=labelRequest,proto3" json:"label_request,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -308,6 +311,27 @@ func (x *Config) GetWake() *WakeConfig {
 func (x *Config) GetUdpProbe() *UDPProbeConfig {
 	if x != nil {
 		return x.UdpProbe
+	}
+	return nil
+}
+
+func (x *Config) GetFeatures() *FeatureConfig {
+	if x != nil {
+		return x.Features
+	}
+	return nil
+}
+
+func (x *Config) GetSessionLabels() map[string]string {
+	if x != nil {
+		return x.SessionLabels
+	}
+	return nil
+}
+
+func (x *Config) GetLabelRequest() *LabelRequestConfig {
+	if x != nil {
+		return x.LabelRequest
 	}
 	return nil
 }
@@ -1431,17 +1455,19 @@ func (x *NetworkConfig) GetMaxNetworks() int32 {
 }
 
 type PathDefinition struct {
-	state          protoimpl.MessageState `protogen:"open.v1"`
-	Tag            string                 `protobuf:"bytes,1,opt,name=tag,proto3" json:"tag,omitempty"`
-	Balancer       string                 `protobuf:"bytes,2,opt,name=balancer,proto3" json:"balancer,omitempty"`
-	Group          string                 `protobuf:"bytes,3,opt,name=group,proto3" json:"group,omitempty"`
-	Cost           float32                `protobuf:"fixed32,4,opt,name=cost,proto3" json:"cost,omitempty"`
-	IsLazy         bool                   `protobuf:"varint,5,opt,name=is_lazy,json=isLazy,proto3" json:"is_lazy,omitempty"`
-	ReturnInterval int64                  `protobuf:"varint,6,opt,name=return_interval,json=returnInterval,proto3" json:"return_interval,omitempty"`
-	Probe          string                 `protobuf:"bytes,7,opt,name=probe,proto3" json:"probe,omitempty"`
-	IsProbeOnly    bool                   `protobuf:"varint,8,opt,name=is_probe_only,json=isProbeOnly,proto3" json:"is_probe_only,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	state           protoimpl.MessageState `protogen:"open.v1"`
+	Tag             string                 `protobuf:"bytes,1,opt,name=tag,proto3" json:"tag,omitempty"`
+	Balancer        string                 `protobuf:"bytes,2,opt,name=balancer,proto3" json:"balancer,omitempty"`
+	Group           string                 `protobuf:"bytes,3,opt,name=group,proto3" json:"group,omitempty"`
+	Cost            float32                `protobuf:"fixed32,4,opt,name=cost,proto3" json:"cost,omitempty"`
+	IsLazy          bool                   `protobuf:"varint,5,opt,name=is_lazy,json=isLazy,proto3" json:"is_lazy,omitempty"`
+	ReturnInterval  int64                  `protobuf:"varint,6,opt,name=return_interval,json=returnInterval,proto3" json:"return_interval,omitempty"`
+	Probe           string                 `protobuf:"bytes,7,opt,name=probe,proto3" json:"probe,omitempty"`
+	IsProbeOnly     bool                   `protobuf:"varint,8,opt,name=is_probe_only,json=isProbeOnly,proto3" json:"is_probe_only,omitempty"`
+	ReturnIsEnabled *bool                  `protobuf:"varint,9,opt,name=return_is_enabled,json=returnIsEnabled,proto3,oneof" json:"return_is_enabled,omitempty"`
+	Labels          map[string]string      `protobuf:"bytes,10,rep,name=labels,proto3" json:"labels,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *PathDefinition) Reset() {
@@ -1530,6 +1556,20 @@ func (x *PathDefinition) GetIsProbeOnly() bool {
 	return false
 }
 
+func (x *PathDefinition) GetReturnIsEnabled() bool {
+	if x != nil && x.ReturnIsEnabled != nil {
+		return *x.ReturnIsEnabled
+	}
+	return false
+}
+
+func (x *PathDefinition) GetLabels() map[string]string {
+	if x != nil {
+		return x.Labels
+	}
+	return nil
+}
+
 type PathGroup struct {
 	state              protoimpl.MessageState `protogen:"open.v1"`
 	Name               string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
@@ -1538,6 +1578,8 @@ type PathGroup struct {
 	ReturnInterval     int64                  `protobuf:"varint,4,opt,name=return_interval,json=returnInterval,proto3" json:"return_interval,omitempty"`
 	Probe              string                 `protobuf:"bytes,5,opt,name=probe,proto3" json:"probe,omitempty"`
 	FailedInRowToLeave int32                  `protobuf:"varint,6,opt,name=failed_in_row_to_leave,json=failedInRowToLeave,proto3" json:"failed_in_row_to_leave,omitempty"`
+	ReturnIsEnabled    *bool                  `protobuf:"varint,7,opt,name=return_is_enabled,json=returnIsEnabled,proto3,oneof" json:"return_is_enabled,omitempty"`
+	Labels             map[string]string      `protobuf:"bytes,8,rep,name=labels,proto3" json:"labels,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	unknownFields      protoimpl.UnknownFields
 	sizeCache          protoimpl.SizeCache
 }
@@ -1614,6 +1656,20 @@ func (x *PathGroup) GetFailedInRowToLeave() int32 {
 	return 0
 }
 
+func (x *PathGroup) GetReturnIsEnabled() bool {
+	if x != nil && x.ReturnIsEnabled != nil {
+		return *x.ReturnIsEnabled
+	}
+	return false
+}
+
+func (x *PathGroup) GetLabels() map[string]string {
+	if x != nil {
+		return x.Labels
+	}
+	return nil
+}
+
 type SelectorConfig struct {
 	state  protoimpl.MessageState `protogen:"open.v1"`
 	Paths  []*PathDefinition      `protobuf:"bytes,1,rep,name=paths,proto3" json:"paths,omitempty"`
@@ -1623,7 +1679,7 @@ type SelectorConfig struct {
 	// When to probe the current outbound before leaving it.
 	ConfirmWithProbe ConfirmMode `protobuf:"varint,5,opt,name=confirm_with_probe,json=confirmWithProbe,proto3,enum=xray.core.app.observatory.health.ConfirmMode" json:"confirm_with_probe,omitempty"`
 	// Minimum time on an outbound before returning to a cheaper one.
-	MinHoldTime     int64                  `protobuf:"varint,6,opt,name=min_hold_time,json=minHoldTime,proto3" json:"min_hold_time,omitempty"`
+	MinHoldTime     *int64                 `protobuf:"varint,6,opt,name=min_hold_time,json=minHoldTime,proto3,oneof" json:"min_hold_time,omitempty"`
 	ReturnToCheaper *ReturnToCheaperConfig `protobuf:"bytes,7,opt,name=return_to_cheaper,json=returnToCheaper,proto3" json:"return_to_cheaper,omitempty"`
 	// Start pinned to this tag until the host releases the pin.
 	StartPinnedOutbound string            `protobuf:"bytes,8,opt,name=start_pinned_outbound,json=startPinnedOutbound,proto3" json:"start_pinned_outbound,omitempty"`
@@ -1637,7 +1693,9 @@ type SelectorConfig struct {
 	// when it fails. Zero keeps the pin until the host releases it.
 	StartPinTimeout int64 `protobuf:"varint,11,opt,name=start_pin_timeout,json=startPinTimeout,proto3" json:"start_pin_timeout,omitempty"`
 	// Skip the probe that checks a strong down after failover.
-	ShouldSkipDownAudit bool `protobuf:"varint,12,opt,name=should_skip_down_audit,json=shouldSkipDownAudit,proto3" json:"should_skip_down_audit,omitempty"`
+	ShouldSkipDownAudit bool                   `protobuf:"varint,12,opt,name=should_skip_down_audit,json=shouldSkipDownAudit,proto3" json:"should_skip_down_audit,omitempty"`
+	Features            *SelectorFeatureConfig `protobuf:"bytes,13,opt,name=features,proto3" json:"features,omitempty"`
+	CloseSilentAfter    int64                  `protobuf:"varint,14,opt,name=close_silent_after,json=closeSilentAfter,proto3" json:"close_silent_after,omitempty"`
 	unknownFields       protoimpl.UnknownFields
 	sizeCache           protoimpl.SizeCache
 }
@@ -1701,8 +1759,8 @@ func (x *SelectorConfig) GetConfirmWithProbe() ConfirmMode {
 }
 
 func (x *SelectorConfig) GetMinHoldTime() int64 {
-	if x != nil {
-		return x.MinHoldTime
+	if x != nil && x.MinHoldTime != nil {
+		return *x.MinHoldTime
 	}
 	return 0
 }
@@ -1747,6 +1805,20 @@ func (x *SelectorConfig) GetShouldSkipDownAudit() bool {
 		return x.ShouldSkipDownAudit
 	}
 	return false
+}
+
+func (x *SelectorConfig) GetFeatures() *SelectorFeatureConfig {
+	if x != nil {
+		return x.Features
+	}
+	return nil
+}
+
+func (x *SelectorConfig) GetCloseSilentAfter() int64 {
+	if x != nil {
+		return x.CloseSilentAfter
+	}
+	return 0
 }
 
 // ReturnToCheaperConfig controls returns to cheaper outbounds while the current one
@@ -1900,7 +1972,9 @@ type ProviderConfig struct {
 	// Names the config the core was started with, as the backend that
 	// generated it named it. An answer that names another one tells the host
 	// to fetch the config anew. Empty takes the one of a fresh initial.
-	BaseVersion   string `protobuf:"bytes,12,opt,name=base_version,json=baseVersion,proto3" json:"base_version,omitempty"`
+	BaseVersion   string                 `protobuf:"bytes,12,opt,name=base_version,json=baseVersion,proto3" json:"base_version,omitempty"`
+	IsEnabled     *bool                  `protobuf:"varint,13,opt,name=is_enabled,json=isEnabled,proto3,oneof" json:"is_enabled,omitempty"`
+	Features      *ProviderFeatureConfig `protobuf:"bytes,14,opt,name=features,proto3" json:"features,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2019,6 +2093,20 @@ func (x *ProviderConfig) GetBaseVersion() string {
 	return ""
 }
 
+func (x *ProviderConfig) GetIsEnabled() bool {
+	if x != nil && x.IsEnabled != nil {
+		return *x.IsEnabled
+	}
+	return false
+}
+
+func (x *ProviderConfig) GetFeatures() *ProviderFeatureConfig {
+	if x != nil {
+		return x.Features
+	}
+	return nil
+}
+
 type ProviderTriggers struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Refresh this long after the previous successful refresh. Negative
@@ -2037,7 +2125,7 @@ type ProviderTriggers struct {
 	MaxAge            int64            `protobuf:"varint,6,opt,name=max_age,json=maxAge,proto3" json:"max_age,omitempty"`
 	NetworkChangeMode RefreshOnNetwork `protobuf:"varint,7,opt,name=network_change_mode,json=networkChangeMode,proto3,enum=xray.core.app.observatory.health.RefreshOnNetwork" json:"network_change_mode,omitempty"`
 	// How long after a network change the balancer is judged.
-	NetworkSettleDelay int64 `protobuf:"varint,8,opt,name=network_settle_delay,json=networkSettleDelay,proto3" json:"network_settle_delay,omitempty"`
+	NetworkSettleDelay *int64 `protobuf:"varint,8,opt,name=network_settle_delay,json=networkSettleDelay,proto3,oneof" json:"network_settle_delay,omitempty"`
 	// Renewal of the leases an answer gives its outbounds.
 	Expiry        *ExpiryTrigger `protobuf:"bytes,9,opt,name=expiry,proto3" json:"expiry,omitempty"`
 	unknownFields protoimpl.UnknownFields
@@ -2124,8 +2212,8 @@ func (x *ProviderTriggers) GetNetworkChangeMode() RefreshOnNetwork {
 }
 
 func (x *ProviderTriggers) GetNetworkSettleDelay() int64 {
-	if x != nil {
-		return x.NetworkSettleDelay
+	if x != nil && x.NetworkSettleDelay != nil {
+		return *x.NetworkSettleDelay
 	}
 	return 0
 }
@@ -2206,8 +2294,8 @@ func (x *ExpiryTrigger) GetJitterFraction() float64 {
 type CostTrigger struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	Cost  float32                `protobuf:"fixed32,1,opt,name=cost,proto3" json:"cost,omitempty"`
-	// How long the balancer has to keep such outbounds.
-	After         int64 `protobuf:"varint,2,opt,name=after,proto3" json:"after,omitempty"`
+	// Absence uses the default; an explicit zero is immediate.
+	After         *int64 `protobuf:"varint,2,opt,name=after,proto3,oneof" json:"after,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2250,8 +2338,8 @@ func (x *CostTrigger) GetCost() float32 {
 }
 
 func (x *CostTrigger) GetAfter() int64 {
-	if x != nil {
-		return x.After
+	if x != nil && x.After != nil {
+		return *x.After
 	}
 	return 0
 }
@@ -2529,11 +2617,581 @@ func (x *UDPProbeConfig) GetPerHour() int32 {
 	return 0
 }
 
+// Present-aware feature switches. Missing essential TCP evidence defaults to
+// true; all optional features default to false.
+type FeatureConfig struct {
+	state             protoimpl.MessageState `protogen:"open.v1"`
+	DialFailures      *bool                  `protobuf:"varint,1,opt,name=dial_failures,json=dialFailures,proto3,oneof" json:"dial_failures,omitempty"`
+	DialTimeout       *bool                  `protobuf:"varint,2,opt,name=dial_timeout,json=dialTimeout,proto3,oneof" json:"dial_timeout,omitempty"`
+	ServerUnverified  *bool                  `protobuf:"varint,3,opt,name=server_unverified,json=serverUnverified,proto3,oneof" json:"server_unverified,omitempty"`
+	FirstReply        *bool                  `protobuf:"varint,4,opt,name=first_reply,json=firstReply,proto3,oneof" json:"first_reply,omitempty"`
+	EarlyClose        *bool                  `protobuf:"varint,5,opt,name=early_close,json=earlyClose,proto3,oneof" json:"early_close,omitempty"`
+	StalledRequests   *bool                  `protobuf:"varint,6,opt,name=stalled_requests,json=stalledRequests,proto3,oneof" json:"stalled_requests,omitempty"`
+	PartialStalls     *bool                  `protobuf:"varint,7,opt,name=partial_stalls,json=partialStalls,proto3,oneof" json:"partial_stalls,omitempty"`
+	UdpReplies        *bool                  `protobuf:"varint,8,opt,name=udp_replies,json=udpReplies,proto3,oneof" json:"udp_replies,omitempty"`
+	LoneFailureProbe  *bool                  `protobuf:"varint,9,opt,name=lone_failure_probe,json=loneFailureProbe,proto3,oneof" json:"lone_failure_probe,omitempty"`
+	StepProfiles      *bool                  `protobuf:"varint,10,opt,name=step_profiles,json=stepProfiles,proto3,oneof" json:"step_profiles,omitempty"`
+	Candidates        *bool                  `protobuf:"varint,11,opt,name=candidates,proto3,oneof" json:"candidates,omitempty"`
+	ProbeRequests     *bool                  `protobuf:"varint,12,opt,name=probe_requests,json=probeRequests,proto3,oneof" json:"probe_requests,omitempty"`
+	UdpProbes         *bool                  `protobuf:"varint,13,opt,name=udp_probes,json=udpProbes,proto3,oneof" json:"udp_probes,omitempty"`
+	Connectivity      *bool                  `protobuf:"varint,14,opt,name=connectivity,proto3,oneof" json:"connectivity,omitempty"`
+	Witnesses         *bool                  `protobuf:"varint,15,opt,name=witnesses,proto3,oneof" json:"witnesses,omitempty"`
+	NetworkMemory     *bool                  `protobuf:"varint,16,opt,name=network_memory,json=networkMemory,proto3,oneof" json:"network_memory,omitempty"`
+	HostLabels        *bool                  `protobuf:"varint,17,opt,name=host_labels,json=hostLabels,proto3,oneof" json:"host_labels,omitempty"`
+	LabelRequest      *bool                  `protobuf:"varint,18,opt,name=label_request,json=labelRequest,proto3,oneof" json:"label_request,omitempty"`
+	Pinning           *bool                  `protobuf:"varint,19,opt,name=pinning,proto3,oneof" json:"pinning,omitempty"`
+	UserPresent       *bool                  `protobuf:"varint,20,opt,name=user_present,json=userPresent,proto3,oneof" json:"user_present,omitempty"`
+	MemoryPressure    *bool                  `protobuf:"varint,21,opt,name=memory_pressure,json=memoryPressure,proto3,oneof" json:"memory_pressure,omitempty"`
+	TunnelSleep       *bool                  `protobuf:"varint,22,opt,name=tunnel_sleep,json=tunnelSleep,proto3,oneof" json:"tunnel_sleep,omitempty"`
+	CloseUnchosenIdle *bool                  `protobuf:"varint,23,opt,name=close_unchosen_idle,json=closeUnchosenIdle,proto3,oneof" json:"close_unchosen_idle,omitempty"`
+	Events            *bool                  `protobuf:"varint,24,opt,name=events,proto3,oneof" json:"events,omitempty"`
+	Report            *bool                  `protobuf:"varint,25,opt,name=report,proto3,oneof" json:"report,omitempty"`
+	Quality           *bool                  `protobuf:"varint,26,opt,name=quality,proto3,oneof" json:"quality,omitempty"`
+	PathLabels        *bool                  `protobuf:"varint,27,opt,name=path_labels,json=pathLabels,proto3,oneof" json:"path_labels,omitempty"`
+	ProbeMeasurements *bool                  `protobuf:"varint,28,opt,name=probe_measurements,json=probeMeasurements,proto3,oneof" json:"probe_measurements,omitempty"`
+	Metrics           *bool                  `protobuf:"varint,29,opt,name=metrics,proto3,oneof" json:"metrics,omitempty"`
+	SessionLabels     *bool                  `protobuf:"varint,30,opt,name=session_labels,json=sessionLabels,proto3,oneof" json:"session_labels,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
+}
+
+func (x *FeatureConfig) Reset() {
+	*x = FeatureConfig{}
+	mi := &file_app_observatory_health_config_proto_msgTypes[25]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *FeatureConfig) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*FeatureConfig) ProtoMessage() {}
+
+func (x *FeatureConfig) ProtoReflect() protoreflect.Message {
+	mi := &file_app_observatory_health_config_proto_msgTypes[25]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use FeatureConfig.ProtoReflect.Descriptor instead.
+func (*FeatureConfig) Descriptor() ([]byte, []int) {
+	return file_app_observatory_health_config_proto_rawDescGZIP(), []int{25}
+}
+
+func (x *FeatureConfig) GetDialFailures() bool {
+	if x != nil && x.DialFailures != nil {
+		return *x.DialFailures
+	}
+	return false
+}
+
+func (x *FeatureConfig) GetDialTimeout() bool {
+	if x != nil && x.DialTimeout != nil {
+		return *x.DialTimeout
+	}
+	return false
+}
+
+func (x *FeatureConfig) GetServerUnverified() bool {
+	if x != nil && x.ServerUnverified != nil {
+		return *x.ServerUnverified
+	}
+	return false
+}
+
+func (x *FeatureConfig) GetFirstReply() bool {
+	if x != nil && x.FirstReply != nil {
+		return *x.FirstReply
+	}
+	return false
+}
+
+func (x *FeatureConfig) GetEarlyClose() bool {
+	if x != nil && x.EarlyClose != nil {
+		return *x.EarlyClose
+	}
+	return false
+}
+
+func (x *FeatureConfig) GetStalledRequests() bool {
+	if x != nil && x.StalledRequests != nil {
+		return *x.StalledRequests
+	}
+	return false
+}
+
+func (x *FeatureConfig) GetPartialStalls() bool {
+	if x != nil && x.PartialStalls != nil {
+		return *x.PartialStalls
+	}
+	return false
+}
+
+func (x *FeatureConfig) GetUdpReplies() bool {
+	if x != nil && x.UdpReplies != nil {
+		return *x.UdpReplies
+	}
+	return false
+}
+
+func (x *FeatureConfig) GetLoneFailureProbe() bool {
+	if x != nil && x.LoneFailureProbe != nil {
+		return *x.LoneFailureProbe
+	}
+	return false
+}
+
+func (x *FeatureConfig) GetStepProfiles() bool {
+	if x != nil && x.StepProfiles != nil {
+		return *x.StepProfiles
+	}
+	return false
+}
+
+func (x *FeatureConfig) GetCandidates() bool {
+	if x != nil && x.Candidates != nil {
+		return *x.Candidates
+	}
+	return false
+}
+
+func (x *FeatureConfig) GetProbeRequests() bool {
+	if x != nil && x.ProbeRequests != nil {
+		return *x.ProbeRequests
+	}
+	return false
+}
+
+func (x *FeatureConfig) GetUdpProbes() bool {
+	if x != nil && x.UdpProbes != nil {
+		return *x.UdpProbes
+	}
+	return false
+}
+
+func (x *FeatureConfig) GetConnectivity() bool {
+	if x != nil && x.Connectivity != nil {
+		return *x.Connectivity
+	}
+	return false
+}
+
+func (x *FeatureConfig) GetWitnesses() bool {
+	if x != nil && x.Witnesses != nil {
+		return *x.Witnesses
+	}
+	return false
+}
+
+func (x *FeatureConfig) GetNetworkMemory() bool {
+	if x != nil && x.NetworkMemory != nil {
+		return *x.NetworkMemory
+	}
+	return false
+}
+
+func (x *FeatureConfig) GetHostLabels() bool {
+	if x != nil && x.HostLabels != nil {
+		return *x.HostLabels
+	}
+	return false
+}
+
+func (x *FeatureConfig) GetLabelRequest() bool {
+	if x != nil && x.LabelRequest != nil {
+		return *x.LabelRequest
+	}
+	return false
+}
+
+func (x *FeatureConfig) GetPinning() bool {
+	if x != nil && x.Pinning != nil {
+		return *x.Pinning
+	}
+	return false
+}
+
+func (x *FeatureConfig) GetUserPresent() bool {
+	if x != nil && x.UserPresent != nil {
+		return *x.UserPresent
+	}
+	return false
+}
+
+func (x *FeatureConfig) GetMemoryPressure() bool {
+	if x != nil && x.MemoryPressure != nil {
+		return *x.MemoryPressure
+	}
+	return false
+}
+
+func (x *FeatureConfig) GetTunnelSleep() bool {
+	if x != nil && x.TunnelSleep != nil {
+		return *x.TunnelSleep
+	}
+	return false
+}
+
+func (x *FeatureConfig) GetCloseUnchosenIdle() bool {
+	if x != nil && x.CloseUnchosenIdle != nil {
+		return *x.CloseUnchosenIdle
+	}
+	return false
+}
+
+func (x *FeatureConfig) GetEvents() bool {
+	if x != nil && x.Events != nil {
+		return *x.Events
+	}
+	return false
+}
+
+func (x *FeatureConfig) GetReport() bool {
+	if x != nil && x.Report != nil {
+		return *x.Report
+	}
+	return false
+}
+
+func (x *FeatureConfig) GetQuality() bool {
+	if x != nil && x.Quality != nil {
+		return *x.Quality
+	}
+	return false
+}
+
+func (x *FeatureConfig) GetPathLabels() bool {
+	if x != nil && x.PathLabels != nil {
+		return *x.PathLabels
+	}
+	return false
+}
+
+func (x *FeatureConfig) GetProbeMeasurements() bool {
+	if x != nil && x.ProbeMeasurements != nil {
+		return *x.ProbeMeasurements
+	}
+	return false
+}
+
+func (x *FeatureConfig) GetMetrics() bool {
+	if x != nil && x.Metrics != nil {
+		return *x.Metrics
+	}
+	return false
+}
+
+func (x *FeatureConfig) GetSessionLabels() bool {
+	if x != nil && x.SessionLabels != nil {
+		return *x.SessionLabels
+	}
+	return false
+}
+
+type LabelRequestConfig struct {
+	state           protoimpl.MessageState `protogen:"open.v1"`
+	Outbound        string                 `protobuf:"bytes,1,opt,name=outbound,proto3" json:"outbound,omitempty"`
+	Destination     string                 `protobuf:"bytes,2,opt,name=destination,proto3" json:"destination,omitempty"`
+	Labels          map[string]string      `protobuf:"bytes,3,rep,name=labels,proto3" json:"labels,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	Timeout         int64                  `protobuf:"varint,4,opt,name=timeout,proto3" json:"timeout,omitempty"`
+	RequestsPerHour int32                  `protobuf:"varint,5,opt,name=requests_per_hour,json=requestsPerHour,proto3" json:"requests_per_hour,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
+}
+
+func (x *LabelRequestConfig) Reset() {
+	*x = LabelRequestConfig{}
+	mi := &file_app_observatory_health_config_proto_msgTypes[26]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *LabelRequestConfig) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*LabelRequestConfig) ProtoMessage() {}
+
+func (x *LabelRequestConfig) ProtoReflect() protoreflect.Message {
+	mi := &file_app_observatory_health_config_proto_msgTypes[26]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use LabelRequestConfig.ProtoReflect.Descriptor instead.
+func (*LabelRequestConfig) Descriptor() ([]byte, []int) {
+	return file_app_observatory_health_config_proto_rawDescGZIP(), []int{26}
+}
+
+func (x *LabelRequestConfig) GetOutbound() string {
+	if x != nil {
+		return x.Outbound
+	}
+	return ""
+}
+
+func (x *LabelRequestConfig) GetDestination() string {
+	if x != nil {
+		return x.Destination
+	}
+	return ""
+}
+
+func (x *LabelRequestConfig) GetLabels() map[string]string {
+	if x != nil {
+		return x.Labels
+	}
+	return nil
+}
+
+func (x *LabelRequestConfig) GetTimeout() int64 {
+	if x != nil {
+		return x.Timeout
+	}
+	return 0
+}
+
+func (x *LabelRequestConfig) GetRequestsPerHour() int32 {
+	if x != nil {
+		return x.RequestsPerHour
+	}
+	return 0
+}
+
+type SelectorFeatureConfig struct {
+	state                 protoimpl.MessageState `protogen:"open.v1"`
+	ProbeBeforeSwitch     *bool                  `protobuf:"varint,1,opt,name=probe_before_switch,json=probeBeforeSwitch,proto3,oneof" json:"probe_before_switch,omitempty"`
+	ClosePending          *bool                  `protobuf:"varint,2,opt,name=close_pending,json=closePending,proto3,oneof" json:"close_pending,omitempty"`
+	CloseSilent           *bool                  `protobuf:"varint,3,opt,name=close_silent,json=closeSilent,proto3,oneof" json:"close_silent,omitempty"`
+	DownAudit             *bool                  `protobuf:"varint,4,opt,name=down_audit,json=downAudit,proto3,oneof" json:"down_audit,omitempty"`
+	Groups                *bool                  `protobuf:"varint,5,opt,name=groups,proto3,oneof" json:"groups,omitempty"`
+	ReturnToCheaper       *bool                  `protobuf:"varint,6,opt,name=return_to_cheaper,json=returnToCheaper,proto3,oneof" json:"return_to_cheaper,omitempty"`
+	ReturnOnNetworkChange *bool                  `protobuf:"varint,7,opt,name=return_on_network_change,json=returnOnNetworkChange,proto3,oneof" json:"return_on_network_change,omitempty"`
+	NetworkChanges        *bool                  `protobuf:"varint,8,opt,name=network_changes,json=networkChanges,proto3,oneof" json:"network_changes,omitempty"`
+	StartupPin            *bool                  `protobuf:"varint,9,opt,name=startup_pin,json=startupPin,proto3,oneof" json:"startup_pin,omitempty"`
+	unknownFields         protoimpl.UnknownFields
+	sizeCache             protoimpl.SizeCache
+}
+
+func (x *SelectorFeatureConfig) Reset() {
+	*x = SelectorFeatureConfig{}
+	mi := &file_app_observatory_health_config_proto_msgTypes[27]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SelectorFeatureConfig) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SelectorFeatureConfig) ProtoMessage() {}
+
+func (x *SelectorFeatureConfig) ProtoReflect() protoreflect.Message {
+	mi := &file_app_observatory_health_config_proto_msgTypes[27]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SelectorFeatureConfig.ProtoReflect.Descriptor instead.
+func (*SelectorFeatureConfig) Descriptor() ([]byte, []int) {
+	return file_app_observatory_health_config_proto_rawDescGZIP(), []int{27}
+}
+
+func (x *SelectorFeatureConfig) GetProbeBeforeSwitch() bool {
+	if x != nil && x.ProbeBeforeSwitch != nil {
+		return *x.ProbeBeforeSwitch
+	}
+	return false
+}
+
+func (x *SelectorFeatureConfig) GetClosePending() bool {
+	if x != nil && x.ClosePending != nil {
+		return *x.ClosePending
+	}
+	return false
+}
+
+func (x *SelectorFeatureConfig) GetCloseSilent() bool {
+	if x != nil && x.CloseSilent != nil {
+		return *x.CloseSilent
+	}
+	return false
+}
+
+func (x *SelectorFeatureConfig) GetDownAudit() bool {
+	if x != nil && x.DownAudit != nil {
+		return *x.DownAudit
+	}
+	return false
+}
+
+func (x *SelectorFeatureConfig) GetGroups() bool {
+	if x != nil && x.Groups != nil {
+		return *x.Groups
+	}
+	return false
+}
+
+func (x *SelectorFeatureConfig) GetReturnToCheaper() bool {
+	if x != nil && x.ReturnToCheaper != nil {
+		return *x.ReturnToCheaper
+	}
+	return false
+}
+
+func (x *SelectorFeatureConfig) GetReturnOnNetworkChange() bool {
+	if x != nil && x.ReturnOnNetworkChange != nil {
+		return *x.ReturnOnNetworkChange
+	}
+	return false
+}
+
+func (x *SelectorFeatureConfig) GetNetworkChanges() bool {
+	if x != nil && x.NetworkChanges != nil {
+		return *x.NetworkChanges
+	}
+	return false
+}
+
+func (x *SelectorFeatureConfig) GetStartupPin() bool {
+	if x != nil && x.StartupPin != nil {
+		return *x.StartupPin
+	}
+	return false
+}
+
+type ProviderFeatureConfig struct {
+	state                protoimpl.MessageState `protogen:"open.v1"`
+	Periodic             *bool                  `protobuf:"varint,1,opt,name=periodic,proto3,oneof" json:"periodic,omitempty"`
+	MinHealthy           *bool                  `protobuf:"varint,2,opt,name=min_healthy,json=minHealthy,proto3,oneof" json:"min_healthy,omitempty"`
+	CostAbove            *bool                  `protobuf:"varint,3,opt,name=cost_above,json=costAbove,proto3,oneof" json:"cost_above,omitempty"`
+	MaxAge               *bool                  `protobuf:"varint,4,opt,name=max_age,json=maxAge,proto3,oneof" json:"max_age,omitempty"`
+	NetworkChange        *bool                  `protobuf:"varint,5,opt,name=network_change,json=networkChange,proto3,oneof" json:"network_change,omitempty"`
+	Exhausted            *bool                  `protobuf:"varint,6,opt,name=exhausted,proto3,oneof" json:"exhausted,omitempty"`
+	LeaseRenewal         *bool                  `protobuf:"varint,7,opt,name=lease_renewal,json=leaseRenewal,proto3,oneof" json:"lease_renewal,omitempty"`
+	BackendSchedule      *bool                  `protobuf:"varint,8,opt,name=backend_schedule,json=backendSchedule,proto3,oneof" json:"backend_schedule,omitempty"`
+	ExpiredLeaseFallback *bool                  `protobuf:"varint,9,opt,name=expired_lease_fallback,json=expiredLeaseFallback,proto3,oneof" json:"expired_lease_fallback,omitempty"`
+	unknownFields        protoimpl.UnknownFields
+	sizeCache            protoimpl.SizeCache
+}
+
+func (x *ProviderFeatureConfig) Reset() {
+	*x = ProviderFeatureConfig{}
+	mi := &file_app_observatory_health_config_proto_msgTypes[28]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ProviderFeatureConfig) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ProviderFeatureConfig) ProtoMessage() {}
+
+func (x *ProviderFeatureConfig) ProtoReflect() protoreflect.Message {
+	mi := &file_app_observatory_health_config_proto_msgTypes[28]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ProviderFeatureConfig.ProtoReflect.Descriptor instead.
+func (*ProviderFeatureConfig) Descriptor() ([]byte, []int) {
+	return file_app_observatory_health_config_proto_rawDescGZIP(), []int{28}
+}
+
+func (x *ProviderFeatureConfig) GetPeriodic() bool {
+	if x != nil && x.Periodic != nil {
+		return *x.Periodic
+	}
+	return false
+}
+
+func (x *ProviderFeatureConfig) GetMinHealthy() bool {
+	if x != nil && x.MinHealthy != nil {
+		return *x.MinHealthy
+	}
+	return false
+}
+
+func (x *ProviderFeatureConfig) GetCostAbove() bool {
+	if x != nil && x.CostAbove != nil {
+		return *x.CostAbove
+	}
+	return false
+}
+
+func (x *ProviderFeatureConfig) GetMaxAge() bool {
+	if x != nil && x.MaxAge != nil {
+		return *x.MaxAge
+	}
+	return false
+}
+
+func (x *ProviderFeatureConfig) GetNetworkChange() bool {
+	if x != nil && x.NetworkChange != nil {
+		return *x.NetworkChange
+	}
+	return false
+}
+
+func (x *ProviderFeatureConfig) GetExhausted() bool {
+	if x != nil && x.Exhausted != nil {
+		return *x.Exhausted
+	}
+	return false
+}
+
+func (x *ProviderFeatureConfig) GetLeaseRenewal() bool {
+	if x != nil && x.LeaseRenewal != nil {
+		return *x.LeaseRenewal
+	}
+	return false
+}
+
+func (x *ProviderFeatureConfig) GetBackendSchedule() bool {
+	if x != nil && x.BackendSchedule != nil {
+		return *x.BackendSchedule
+	}
+	return false
+}
+
+func (x *ProviderFeatureConfig) GetExpiredLeaseFallback() bool {
+	if x != nil && x.ExpiredLeaseFallback != nil {
+		return *x.ExpiredLeaseFallback
+	}
+	return false
+}
+
 var File_app_observatory_health_config_proto protoreflect.FileDescriptor
 
 const file_app_observatory_health_config_proto_rawDesc = "" +
 	"\n" +
-	"#app/observatory/health/config.proto\x12 xray.core.app.observatory.health\"\x92\a\n" +
+	"#app/observatory/health/config.proto\x12 xray.core.app.observatory.health\"\xe0\t\n" +
 	"\x06Config\x12I\n" +
 	"\apassive\x18\x02 \x01(\v2/.xray.core.app.observatory.health.PassiveConfigR\apassive\x12F\n" +
 	"\x06probes\x18\x03 \x03(\v2..xray.core.app.observatory.health.ProbeProfileR\x06probes\x12X\n" +
@@ -2547,7 +3205,13 @@ const file_app_observatory_health_config_proto_rawDesc = "" +
 	" \x01(\v2-.xray.core.app.observatory.health.SleepConfigR\x05sleep\x12F\n" +
 	"\x05paths\x18\v \x03(\v20.xray.core.app.observatory.health.PathDefinitionR\x05paths\x12@\n" +
 	"\x04wake\x18\f \x01(\v2,.xray.core.app.observatory.health.WakeConfigR\x04wake\x12M\n" +
-	"\tudp_probe\x18\r \x01(\v20.xray.core.app.observatory.health.UDPProbeConfigR\budpProbeJ\x04\b\x01\x10\x02\"M\n" +
+	"\tudp_probe\x18\r \x01(\v20.xray.core.app.observatory.health.UDPProbeConfigR\budpProbe\x12K\n" +
+	"\bfeatures\x18\x0e \x01(\v2/.xray.core.app.observatory.health.FeatureConfigR\bfeatures\x12b\n" +
+	"\x0esession_labels\x18\x0f \x03(\v2;.xray.core.app.observatory.health.Config.SessionLabelsEntryR\rsessionLabels\x12Y\n" +
+	"\rlabel_request\x18\x10 \x01(\v24.xray.core.app.observatory.health.LabelRequestConfigR\flabelRequest\x1a@\n" +
+	"\x12SessionLabelsEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01J\x04\b\x01\x10\x02\"M\n" +
 	"\n" +
 	"WakeConfig\x12\x1c\n" +
 	"\tfreshness\x18\x01 \x01(\x03R\tfreshness\x12!\n" +
@@ -2644,7 +3308,7 @@ const file_app_observatory_health_config_proto_rawDesc = "" +
 	"\x10close_idle_after\x18\x02 \x01(\x03R\x0ecloseIdleAfter\"O\n" +
 	"\rNetworkConfig\x12\x1b\n" +
 	"\tno_memory\x18\x01 \x01(\bR\bnoMemory\x12!\n" +
-	"\fmax_networks\x18\x02 \x01(\x05R\vmaxNetworks\"\xe4\x01\n" +
+	"\fmax_networks\x18\x02 \x01(\x05R\vmaxNetworks\"\xbc\x03\n" +
 	"\x0ePathDefinition\x12\x10\n" +
 	"\x03tag\x18\x01 \x01(\tR\x03tag\x12\x1a\n" +
 	"\bbalancer\x18\x02 \x01(\tR\bbalancer\x12\x14\n" +
@@ -2653,27 +3317,43 @@ const file_app_observatory_health_config_proto_rawDesc = "" +
 	"\ais_lazy\x18\x05 \x01(\bR\x06isLazy\x12'\n" +
 	"\x0freturn_interval\x18\x06 \x01(\x03R\x0ereturnInterval\x12\x14\n" +
 	"\x05probe\x18\a \x01(\tR\x05probe\x12\"\n" +
-	"\ris_probe_only\x18\b \x01(\bR\visProbeOnly\"\xbf\x01\n" +
+	"\ris_probe_only\x18\b \x01(\bR\visProbeOnly\x12/\n" +
+	"\x11return_is_enabled\x18\t \x01(\bH\x00R\x0freturnIsEnabled\x88\x01\x01\x12T\n" +
+	"\x06labels\x18\n" +
+	" \x03(\v2<.xray.core.app.observatory.health.PathDefinition.LabelsEntryR\x06labels\x1a9\n" +
+	"\vLabelsEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01B\x14\n" +
+	"\x12_return_is_enabled\"\x92\x03\n" +
 	"\tPathGroup\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x12\n" +
 	"\x04cost\x18\x02 \x01(\x02R\x04cost\x12\x17\n" +
 	"\ais_lazy\x18\x03 \x01(\bR\x06isLazy\x12'\n" +
 	"\x0freturn_interval\x18\x04 \x01(\x03R\x0ereturnInterval\x12\x14\n" +
 	"\x05probe\x18\x05 \x01(\tR\x05probe\x122\n" +
-	"\x16failed_in_row_to_leave\x18\x06 \x01(\x05R\x12failedInRowToLeave\"\xe7\x05\n" +
+	"\x16failed_in_row_to_leave\x18\x06 \x01(\x05R\x12failedInRowToLeave\x12/\n" +
+	"\x11return_is_enabled\x18\a \x01(\bH\x00R\x0freturnIsEnabled\x88\x01\x01\x12O\n" +
+	"\x06labels\x18\b \x03(\v27.xray.core.app.observatory.health.PathGroup.LabelsEntryR\x06labels\x1a9\n" +
+	"\vLabelsEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01B\x14\n" +
+	"\x12_return_is_enabled\"\x81\a\n" +
 	"\x0eSelectorConfig\x12F\n" +
 	"\x05paths\x18\x01 \x03(\v20.xray.core.app.observatory.health.PathDefinitionR\x05paths\x12C\n" +
 	"\x06groups\x18\x02 \x03(\v2+.xray.core.app.observatory.health.PathGroupR\x06groups\x127\n" +
 	"\x18skip_probe_before_switch\x18\x04 \x01(\bR\x15skipProbeBeforeSwitch\x12[\n" +
-	"\x12confirm_with_probe\x18\x05 \x01(\x0e2-.xray.core.app.observatory.health.ConfirmModeR\x10confirmWithProbe\x12\"\n" +
-	"\rmin_hold_time\x18\x06 \x01(\x03R\vminHoldTime\x12c\n" +
+	"\x12confirm_with_probe\x18\x05 \x01(\x0e2-.xray.core.app.observatory.health.ConfirmModeR\x10confirmWithProbe\x12'\n" +
+	"\rmin_hold_time\x18\x06 \x01(\x03H\x00R\vminHoldTime\x88\x01\x01\x12c\n" +
 	"\x11return_to_cheaper\x18\a \x01(\v27.xray.core.app.observatory.health.ReturnToCheaperConfigR\x0freturnToCheaper\x122\n" +
 	"\x15start_pinned_outbound\x18\b \x01(\tR\x13startPinnedOutbound\x12g\n" +
 	"\x15network_change_action\x18\t \x01(\x0e23.xray.core.app.observatory.health.NetworkChangeModeR\x13networkChangeAction\x12%\n" +
 	"\x0estart_outbound\x18\n" +
 	" \x01(\tR\rstartOutbound\x12*\n" +
 	"\x11start_pin_timeout\x18\v \x01(\x03R\x0fstartPinTimeout\x123\n" +
-	"\x16should_skip_down_audit\x18\f \x01(\bR\x13shouldSkipDownAuditJ\x04\b\x03\x10\x04\"\x9d\x03\n" +
+	"\x16should_skip_down_audit\x18\f \x01(\bR\x13shouldSkipDownAudit\x12S\n" +
+	"\bfeatures\x18\r \x01(\v27.xray.core.app.observatory.health.SelectorFeatureConfigR\bfeatures\x12,\n" +
+	"\x12close_silent_after\x18\x0e \x01(\x03R\x10closeSilentAfterB\x10\n" +
+	"\x0e_min_hold_timeJ\x04\b\x03\x10\x04\"\x9d\x03\n" +
 	"\x15ReturnToCheaperConfig\x12\x1a\n" +
 	"\binterval\x18\x01 \x01(\x03R\binterval\x12*\n" +
 	"\x11skip_random_phase\x18\x02 \x01(\bR\x0fskipRandomPhase\x12(\n" +
@@ -2683,7 +3363,7 @@ const file_app_observatory_health_config_proto_rawDesc = "" +
 	"\x12penalty_multiplier\x18\x06 \x01(\x01R\x11penaltyMultiplier\x12*\n" +
 	"\x11max_penalty_delay\x18\a \x01(\x03R\x0fmaxPenaltyDelay\x12:\n" +
 	"\x1askip_try_on_network_change\x18\b \x01(\bR\x16skipTryOnNetworkChange\x12-\n" +
-	"\x13try_on_all_networks\x18\t \x01(\bR\x10tryOnAllNetworks\"\xd5\x04\n" +
+	"\x13try_on_all_networks\x18\t \x01(\bR\x10tryOnAllNetworks\"\xdd\x05\n" +
 	"\x0eProviderConfig\x12\x10\n" +
 	"\x03tag\x18\x01 \x01(\tR\x03tag\x12\x10\n" +
 	"\x03url\x18\x02 \x01(\tR\x03url\x12W\n" +
@@ -2697,10 +3377,14 @@ const file_app_observatory_health_config_proto_rawDesc = "" +
 	"\x06method\x18\n" +
 	" \x01(\tR\x06method\x12%\n" +
 	"\x0einitial_answer\x18\v \x01(\fR\rinitialAnswer\x12!\n" +
-	"\fbase_version\x18\f \x01(\tR\vbaseVersion\x1a:\n" +
+	"\fbase_version\x18\f \x01(\tR\vbaseVersion\x12\"\n" +
+	"\n" +
+	"is_enabled\x18\r \x01(\bH\x00R\tisEnabled\x88\x01\x01\x12S\n" +
+	"\bfeatures\x18\x0e \x01(\v27.xray.core.app.observatory.health.ProviderFeatureConfigR\bfeatures\x1a:\n" +
 	"\fHeadersEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x99\x04\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01B\r\n" +
+	"\v_is_enabled\"\xb7\x04\n" +
 	"\x10ProviderTriggers\x12\x1a\n" +
 	"\binterval\x18\x01 \x01(\x03R\binterval\x12'\n" +
 	"\x0fjitter_fraction\x18\x02 \x01(\x01R\x0ejitterFraction\x122\n" +
@@ -2708,16 +3392,18 @@ const file_app_observatory_health_config_proto_rawDesc = "" +
 	"\x1bskip_refresh_when_exhausted\x18\x04 \x01(\bR\x18skipRefreshWhenExhausted\x12U\n" +
 	"\x0fwhen_cost_above\x18\x05 \x01(\v2-.xray.core.app.observatory.health.CostTriggerR\rwhenCostAbove\x12\x17\n" +
 	"\amax_age\x18\x06 \x01(\x03R\x06maxAge\x12b\n" +
-	"\x13network_change_mode\x18\a \x01(\x0e22.xray.core.app.observatory.health.RefreshOnNetworkR\x11networkChangeMode\x120\n" +
-	"\x14network_settle_delay\x18\b \x01(\x03R\x12networkSettleDelay\x12G\n" +
-	"\x06expiry\x18\t \x01(\v2/.xray.core.app.observatory.health.ExpiryTriggerR\x06expiry\"\x92\x01\n" +
+	"\x13network_change_mode\x18\a \x01(\x0e22.xray.core.app.observatory.health.RefreshOnNetworkR\x11networkChangeMode\x125\n" +
+	"\x14network_settle_delay\x18\b \x01(\x03H\x00R\x12networkSettleDelay\x88\x01\x01\x12G\n" +
+	"\x06expiry\x18\t \x01(\v2/.xray.core.app.observatory.health.ExpiryTriggerR\x06expiryB\x17\n" +
+	"\x15_network_settle_delay\"\x92\x01\n" +
 	"\rExpiryTrigger\x12*\n" +
 	"\x11renew_at_fraction\x18\x01 \x01(\x01R\x0frenewAtFraction\x12,\n" +
 	"\x12urgent_at_fraction\x18\x02 \x01(\x01R\x10urgentAtFraction\x12'\n" +
-	"\x0fjitter_fraction\x18\x03 \x01(\x01R\x0ejitterFraction\"7\n" +
+	"\x0fjitter_fraction\x18\x03 \x01(\x01R\x0ejitterFraction\"F\n" +
 	"\vCostTrigger\x12\x12\n" +
-	"\x04cost\x18\x01 \x01(\x02R\x04cost\x12\x14\n" +
-	"\x05after\x18\x02 \x01(\x03R\x05after\"\x8d\x02\n" +
+	"\x04cost\x18\x01 \x01(\x02R\x04cost\x12\x19\n" +
+	"\x05after\x18\x02 \x01(\x03H\x00R\x05after\x88\x01\x01B\b\n" +
+	"\x06_after\"\x8d\x02\n" +
 	"\x0eProviderLimits\x12!\n" +
 	"\fmin_interval\x18\x01 \x01(\x03R\vminInterval\x124\n" +
 	"\x16exhausted_min_interval\x18\x02 \x01(\x03R\x14exhaustedMinInterval\x123\n" +
@@ -2739,7 +3425,135 @@ const file_app_observatory_health_config_proto_rawDesc = "" +
 	"\brequests\x18\x02 \x01(\x05R\brequests\x12\x1a\n" +
 	"\binterval\x18\x03 \x01(\x03R\binterval\x12\x18\n" +
 	"\atimeout\x18\x04 \x01(\x03R\atimeout\x12\x19\n" +
-	"\bper_hour\x18\x05 \x01(\x05R\aperHour*.\n" +
+	"\bper_hour\x18\x05 \x01(\x05R\aperHour\"\xcc\r\n" +
+	"\rFeatureConfig\x12(\n" +
+	"\rdial_failures\x18\x01 \x01(\bH\x00R\fdialFailures\x88\x01\x01\x12&\n" +
+	"\fdial_timeout\x18\x02 \x01(\bH\x01R\vdialTimeout\x88\x01\x01\x120\n" +
+	"\x11server_unverified\x18\x03 \x01(\bH\x02R\x10serverUnverified\x88\x01\x01\x12$\n" +
+	"\vfirst_reply\x18\x04 \x01(\bH\x03R\n" +
+	"firstReply\x88\x01\x01\x12$\n" +
+	"\vearly_close\x18\x05 \x01(\bH\x04R\n" +
+	"earlyClose\x88\x01\x01\x12.\n" +
+	"\x10stalled_requests\x18\x06 \x01(\bH\x05R\x0fstalledRequests\x88\x01\x01\x12*\n" +
+	"\x0epartial_stalls\x18\a \x01(\bH\x06R\rpartialStalls\x88\x01\x01\x12$\n" +
+	"\vudp_replies\x18\b \x01(\bH\aR\n" +
+	"udpReplies\x88\x01\x01\x121\n" +
+	"\x12lone_failure_probe\x18\t \x01(\bH\bR\x10loneFailureProbe\x88\x01\x01\x12(\n" +
+	"\rstep_profiles\x18\n" +
+	" \x01(\bH\tR\fstepProfiles\x88\x01\x01\x12#\n" +
+	"\n" +
+	"candidates\x18\v \x01(\bH\n" +
+	"R\n" +
+	"candidates\x88\x01\x01\x12*\n" +
+	"\x0eprobe_requests\x18\f \x01(\bH\vR\rprobeRequests\x88\x01\x01\x12\"\n" +
+	"\n" +
+	"udp_probes\x18\r \x01(\bH\fR\tudpProbes\x88\x01\x01\x12'\n" +
+	"\fconnectivity\x18\x0e \x01(\bH\rR\fconnectivity\x88\x01\x01\x12!\n" +
+	"\twitnesses\x18\x0f \x01(\bH\x0eR\twitnesses\x88\x01\x01\x12*\n" +
+	"\x0enetwork_memory\x18\x10 \x01(\bH\x0fR\rnetworkMemory\x88\x01\x01\x12$\n" +
+	"\vhost_labels\x18\x11 \x01(\bH\x10R\n" +
+	"hostLabels\x88\x01\x01\x12(\n" +
+	"\rlabel_request\x18\x12 \x01(\bH\x11R\flabelRequest\x88\x01\x01\x12\x1d\n" +
+	"\apinning\x18\x13 \x01(\bH\x12R\apinning\x88\x01\x01\x12&\n" +
+	"\fuser_present\x18\x14 \x01(\bH\x13R\vuserPresent\x88\x01\x01\x12,\n" +
+	"\x0fmemory_pressure\x18\x15 \x01(\bH\x14R\x0ememoryPressure\x88\x01\x01\x12&\n" +
+	"\ftunnel_sleep\x18\x16 \x01(\bH\x15R\vtunnelSleep\x88\x01\x01\x123\n" +
+	"\x13close_unchosen_idle\x18\x17 \x01(\bH\x16R\x11closeUnchosenIdle\x88\x01\x01\x12\x1b\n" +
+	"\x06events\x18\x18 \x01(\bH\x17R\x06events\x88\x01\x01\x12\x1b\n" +
+	"\x06report\x18\x19 \x01(\bH\x18R\x06report\x88\x01\x01\x12\x1d\n" +
+	"\aquality\x18\x1a \x01(\bH\x19R\aquality\x88\x01\x01\x12$\n" +
+	"\vpath_labels\x18\x1b \x01(\bH\x1aR\n" +
+	"pathLabels\x88\x01\x01\x122\n" +
+	"\x12probe_measurements\x18\x1c \x01(\bH\x1bR\x11probeMeasurements\x88\x01\x01\x12\x1d\n" +
+	"\ametrics\x18\x1d \x01(\bH\x1cR\ametrics\x88\x01\x01\x12*\n" +
+	"\x0esession_labels\x18\x1e \x01(\bH\x1dR\rsessionLabels\x88\x01\x01B\x10\n" +
+	"\x0e_dial_failuresB\x0f\n" +
+	"\r_dial_timeoutB\x14\n" +
+	"\x12_server_unverifiedB\x0e\n" +
+	"\f_first_replyB\x0e\n" +
+	"\f_early_closeB\x13\n" +
+	"\x11_stalled_requestsB\x11\n" +
+	"\x0f_partial_stallsB\x0e\n" +
+	"\f_udp_repliesB\x15\n" +
+	"\x13_lone_failure_probeB\x10\n" +
+	"\x0e_step_profilesB\r\n" +
+	"\v_candidatesB\x11\n" +
+	"\x0f_probe_requestsB\r\n" +
+	"\v_udp_probesB\x0f\n" +
+	"\r_connectivityB\f\n" +
+	"\n" +
+	"_witnessesB\x11\n" +
+	"\x0f_network_memoryB\x0e\n" +
+	"\f_host_labelsB\x10\n" +
+	"\x0e_label_requestB\n" +
+	"\n" +
+	"\b_pinningB\x0f\n" +
+	"\r_user_presentB\x12\n" +
+	"\x10_memory_pressureB\x0f\n" +
+	"\r_tunnel_sleepB\x16\n" +
+	"\x14_close_unchosen_idleB\t\n" +
+	"\a_eventsB\t\n" +
+	"\a_reportB\n" +
+	"\n" +
+	"\b_qualityB\x0e\n" +
+	"\f_path_labelsB\x15\n" +
+	"\x13_probe_measurementsB\n" +
+	"\n" +
+	"\b_metricsB\x11\n" +
+	"\x0f_session_labels\"\xad\x02\n" +
+	"\x12LabelRequestConfig\x12\x1a\n" +
+	"\boutbound\x18\x01 \x01(\tR\boutbound\x12 \n" +
+	"\vdestination\x18\x02 \x01(\tR\vdestination\x12X\n" +
+	"\x06labels\x18\x03 \x03(\v2@.xray.core.app.observatory.health.LabelRequestConfig.LabelsEntryR\x06labels\x12\x18\n" +
+	"\atimeout\x18\x04 \x01(\x03R\atimeout\x12*\n" +
+	"\x11requests_per_hour\x18\x05 \x01(\x05R\x0frequestsPerHour\x1a9\n" +
+	"\vLabelsEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xce\x04\n" +
+	"\x15SelectorFeatureConfig\x123\n" +
+	"\x13probe_before_switch\x18\x01 \x01(\bH\x00R\x11probeBeforeSwitch\x88\x01\x01\x12(\n" +
+	"\rclose_pending\x18\x02 \x01(\bH\x01R\fclosePending\x88\x01\x01\x12&\n" +
+	"\fclose_silent\x18\x03 \x01(\bH\x02R\vcloseSilent\x88\x01\x01\x12\"\n" +
+	"\n" +
+	"down_audit\x18\x04 \x01(\bH\x03R\tdownAudit\x88\x01\x01\x12\x1b\n" +
+	"\x06groups\x18\x05 \x01(\bH\x04R\x06groups\x88\x01\x01\x12/\n" +
+	"\x11return_to_cheaper\x18\x06 \x01(\bH\x05R\x0freturnToCheaper\x88\x01\x01\x12<\n" +
+	"\x18return_on_network_change\x18\a \x01(\bH\x06R\x15returnOnNetworkChange\x88\x01\x01\x12,\n" +
+	"\x0fnetwork_changes\x18\b \x01(\bH\aR\x0enetworkChanges\x88\x01\x01\x12$\n" +
+	"\vstartup_pin\x18\t \x01(\bH\bR\n" +
+	"startupPin\x88\x01\x01B\x16\n" +
+	"\x14_probe_before_switchB\x10\n" +
+	"\x0e_close_pendingB\x0f\n" +
+	"\r_close_silentB\r\n" +
+	"\v_down_auditB\t\n" +
+	"\a_groupsB\x14\n" +
+	"\x12_return_to_cheaperB\x1b\n" +
+	"\x19_return_on_network_changeB\x12\n" +
+	"\x10_network_changesB\x0e\n" +
+	"\f_startup_pin\"\x9f\x04\n" +
+	"\x15ProviderFeatureConfig\x12\x1f\n" +
+	"\bperiodic\x18\x01 \x01(\bH\x00R\bperiodic\x88\x01\x01\x12$\n" +
+	"\vmin_healthy\x18\x02 \x01(\bH\x01R\n" +
+	"minHealthy\x88\x01\x01\x12\"\n" +
+	"\n" +
+	"cost_above\x18\x03 \x01(\bH\x02R\tcostAbove\x88\x01\x01\x12\x1c\n" +
+	"\amax_age\x18\x04 \x01(\bH\x03R\x06maxAge\x88\x01\x01\x12*\n" +
+	"\x0enetwork_change\x18\x05 \x01(\bH\x04R\rnetworkChange\x88\x01\x01\x12!\n" +
+	"\texhausted\x18\x06 \x01(\bH\x05R\texhausted\x88\x01\x01\x12(\n" +
+	"\rlease_renewal\x18\a \x01(\bH\x06R\fleaseRenewal\x88\x01\x01\x12.\n" +
+	"\x10backend_schedule\x18\b \x01(\bH\aR\x0fbackendSchedule\x88\x01\x01\x129\n" +
+	"\x16expired_lease_fallback\x18\t \x01(\bH\bR\x14expiredLeaseFallback\x88\x01\x01B\v\n" +
+	"\t_periodicB\x0e\n" +
+	"\f_min_healthyB\r\n" +
+	"\v_cost_aboveB\n" +
+	"\n" +
+	"\b_max_ageB\x11\n" +
+	"\x0f_network_changeB\f\n" +
+	"\n" +
+	"_exhaustedB\x10\n" +
+	"\x0e_lease_renewalB\x13\n" +
+	"\x11_backend_scheduleB\x19\n" +
+	"\x17_expired_lease_fallback*.\n" +
 	"\vConfirmMode\x12\b\n" +
 	"\x04AUTO\x10\x00\x12\n" +
 	"\n" +
@@ -2771,7 +3585,7 @@ func file_app_observatory_health_config_proto_rawDescGZIP() []byte {
 }
 
 var file_app_observatory_health_config_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
-var file_app_observatory_health_config_proto_msgTypes = make([]protoimpl.MessageInfo, 26)
+var file_app_observatory_health_config_proto_msgTypes = make([]protoimpl.MessageInfo, 34)
 var file_app_observatory_health_config_proto_goTypes = []any{
 	(ConfirmMode)(0),              // 0: xray.core.app.observatory.health.ConfirmMode
 	(NetworkChangeMode)(0),        // 1: xray.core.app.observatory.health.NetworkChangeMode
@@ -2801,7 +3615,15 @@ var file_app_observatory_health_config_proto_goTypes = []any{
 	(*ProviderLimits)(nil),        // 25: xray.core.app.observatory.health.ProviderLimits
 	(*ProviderApply)(nil),         // 26: xray.core.app.observatory.health.ProviderApply
 	(*UDPProbeConfig)(nil),        // 27: xray.core.app.observatory.health.UDPProbeConfig
-	nil,                           // 28: xray.core.app.observatory.health.ProviderConfig.HeadersEntry
+	(*FeatureConfig)(nil),         // 28: xray.core.app.observatory.health.FeatureConfig
+	(*LabelRequestConfig)(nil),    // 29: xray.core.app.observatory.health.LabelRequestConfig
+	(*SelectorFeatureConfig)(nil), // 30: xray.core.app.observatory.health.SelectorFeatureConfig
+	(*ProviderFeatureConfig)(nil), // 31: xray.core.app.observatory.health.ProviderFeatureConfig
+	nil,                           // 32: xray.core.app.observatory.health.Config.SessionLabelsEntry
+	nil,                           // 33: xray.core.app.observatory.health.PathDefinition.LabelsEntry
+	nil,                           // 34: xray.core.app.observatory.health.PathGroup.LabelsEntry
+	nil,                           // 35: xray.core.app.observatory.health.ProviderConfig.HeadersEntry
+	nil,                           // 36: xray.core.app.observatory.health.LabelRequestConfig.LabelsEntry
 }
 var file_app_observatory_health_config_proto_depIdxs = []int32{
 	5,  // 0: xray.core.app.observatory.health.Config.passive:type_name -> xray.core.app.observatory.health.PassiveConfig
@@ -2816,29 +3638,37 @@ var file_app_observatory_health_config_proto_depIdxs = []int32{
 	17, // 9: xray.core.app.observatory.health.Config.paths:type_name -> xray.core.app.observatory.health.PathDefinition
 	4,  // 10: xray.core.app.observatory.health.Config.wake:type_name -> xray.core.app.observatory.health.WakeConfig
 	27, // 11: xray.core.app.observatory.health.Config.udp_probe:type_name -> xray.core.app.observatory.health.UDPProbeConfig
-	7,  // 12: xray.core.app.observatory.health.ProbeProfile.steps:type_name -> xray.core.app.observatory.health.ProbeStep
-	9,  // 13: xray.core.app.observatory.health.ConnectivityConfig.recheck_backoff:type_name -> xray.core.app.observatory.health.Backoff
-	9,  // 14: xray.core.app.observatory.health.ScheduleConfig.quarantine:type_name -> xray.core.app.observatory.health.Backoff
-	12, // 15: xray.core.app.observatory.health.ScheduleConfig.host_probes:type_name -> xray.core.app.observatory.health.HostProbesConfig
-	11, // 16: xray.core.app.observatory.health.ScheduleConfig.probe_only:type_name -> xray.core.app.observatory.health.ProbeOnlyConfig
-	17, // 17: xray.core.app.observatory.health.SelectorConfig.paths:type_name -> xray.core.app.observatory.health.PathDefinition
-	18, // 18: xray.core.app.observatory.health.SelectorConfig.groups:type_name -> xray.core.app.observatory.health.PathGroup
-	0,  // 19: xray.core.app.observatory.health.SelectorConfig.confirm_with_probe:type_name -> xray.core.app.observatory.health.ConfirmMode
-	20, // 20: xray.core.app.observatory.health.SelectorConfig.return_to_cheaper:type_name -> xray.core.app.observatory.health.ReturnToCheaperConfig
-	1,  // 21: xray.core.app.observatory.health.SelectorConfig.network_change_action:type_name -> xray.core.app.observatory.health.NetworkChangeMode
-	28, // 22: xray.core.app.observatory.health.ProviderConfig.headers:type_name -> xray.core.app.observatory.health.ProviderConfig.HeadersEntry
-	22, // 23: xray.core.app.observatory.health.ProviderConfig.triggers:type_name -> xray.core.app.observatory.health.ProviderTriggers
-	25, // 24: xray.core.app.observatory.health.ProviderConfig.limits:type_name -> xray.core.app.observatory.health.ProviderLimits
-	26, // 25: xray.core.app.observatory.health.ProviderConfig.apply:type_name -> xray.core.app.observatory.health.ProviderApply
-	24, // 26: xray.core.app.observatory.health.ProviderTriggers.when_cost_above:type_name -> xray.core.app.observatory.health.CostTrigger
-	2,  // 27: xray.core.app.observatory.health.ProviderTriggers.network_change_mode:type_name -> xray.core.app.observatory.health.RefreshOnNetwork
-	23, // 28: xray.core.app.observatory.health.ProviderTriggers.expiry:type_name -> xray.core.app.observatory.health.ExpiryTrigger
-	9,  // 29: xray.core.app.observatory.health.ProviderLimits.backoff:type_name -> xray.core.app.observatory.health.Backoff
-	30, // [30:30] is the sub-list for method output_type
-	30, // [30:30] is the sub-list for method input_type
-	30, // [30:30] is the sub-list for extension type_name
-	30, // [30:30] is the sub-list for extension extendee
-	0,  // [0:30] is the sub-list for field type_name
+	28, // 12: xray.core.app.observatory.health.Config.features:type_name -> xray.core.app.observatory.health.FeatureConfig
+	32, // 13: xray.core.app.observatory.health.Config.session_labels:type_name -> xray.core.app.observatory.health.Config.SessionLabelsEntry
+	29, // 14: xray.core.app.observatory.health.Config.label_request:type_name -> xray.core.app.observatory.health.LabelRequestConfig
+	7,  // 15: xray.core.app.observatory.health.ProbeProfile.steps:type_name -> xray.core.app.observatory.health.ProbeStep
+	9,  // 16: xray.core.app.observatory.health.ConnectivityConfig.recheck_backoff:type_name -> xray.core.app.observatory.health.Backoff
+	9,  // 17: xray.core.app.observatory.health.ScheduleConfig.quarantine:type_name -> xray.core.app.observatory.health.Backoff
+	12, // 18: xray.core.app.observatory.health.ScheduleConfig.host_probes:type_name -> xray.core.app.observatory.health.HostProbesConfig
+	11, // 19: xray.core.app.observatory.health.ScheduleConfig.probe_only:type_name -> xray.core.app.observatory.health.ProbeOnlyConfig
+	33, // 20: xray.core.app.observatory.health.PathDefinition.labels:type_name -> xray.core.app.observatory.health.PathDefinition.LabelsEntry
+	34, // 21: xray.core.app.observatory.health.PathGroup.labels:type_name -> xray.core.app.observatory.health.PathGroup.LabelsEntry
+	17, // 22: xray.core.app.observatory.health.SelectorConfig.paths:type_name -> xray.core.app.observatory.health.PathDefinition
+	18, // 23: xray.core.app.observatory.health.SelectorConfig.groups:type_name -> xray.core.app.observatory.health.PathGroup
+	0,  // 24: xray.core.app.observatory.health.SelectorConfig.confirm_with_probe:type_name -> xray.core.app.observatory.health.ConfirmMode
+	20, // 25: xray.core.app.observatory.health.SelectorConfig.return_to_cheaper:type_name -> xray.core.app.observatory.health.ReturnToCheaperConfig
+	1,  // 26: xray.core.app.observatory.health.SelectorConfig.network_change_action:type_name -> xray.core.app.observatory.health.NetworkChangeMode
+	30, // 27: xray.core.app.observatory.health.SelectorConfig.features:type_name -> xray.core.app.observatory.health.SelectorFeatureConfig
+	35, // 28: xray.core.app.observatory.health.ProviderConfig.headers:type_name -> xray.core.app.observatory.health.ProviderConfig.HeadersEntry
+	22, // 29: xray.core.app.observatory.health.ProviderConfig.triggers:type_name -> xray.core.app.observatory.health.ProviderTriggers
+	25, // 30: xray.core.app.observatory.health.ProviderConfig.limits:type_name -> xray.core.app.observatory.health.ProviderLimits
+	26, // 31: xray.core.app.observatory.health.ProviderConfig.apply:type_name -> xray.core.app.observatory.health.ProviderApply
+	31, // 32: xray.core.app.observatory.health.ProviderConfig.features:type_name -> xray.core.app.observatory.health.ProviderFeatureConfig
+	24, // 33: xray.core.app.observatory.health.ProviderTriggers.when_cost_above:type_name -> xray.core.app.observatory.health.CostTrigger
+	2,  // 34: xray.core.app.observatory.health.ProviderTriggers.network_change_mode:type_name -> xray.core.app.observatory.health.RefreshOnNetwork
+	23, // 35: xray.core.app.observatory.health.ProviderTriggers.expiry:type_name -> xray.core.app.observatory.health.ExpiryTrigger
+	9,  // 36: xray.core.app.observatory.health.ProviderLimits.backoff:type_name -> xray.core.app.observatory.health.Backoff
+	36, // 37: xray.core.app.observatory.health.LabelRequestConfig.labels:type_name -> xray.core.app.observatory.health.LabelRequestConfig.LabelsEntry
+	38, // [38:38] is the sub-list for method output_type
+	38, // [38:38] is the sub-list for method input_type
+	38, // [38:38] is the sub-list for extension type_name
+	38, // [38:38] is the sub-list for extension extendee
+	0,  // [0:38] is the sub-list for field type_name
 }
 
 func init() { file_app_observatory_health_config_proto_init() }
@@ -2846,13 +3676,22 @@ func file_app_observatory_health_config_proto_init() {
 	if File_app_observatory_health_config_proto != nil {
 		return
 	}
+	file_app_observatory_health_config_proto_msgTypes[14].OneofWrappers = []any{}
+	file_app_observatory_health_config_proto_msgTypes[15].OneofWrappers = []any{}
+	file_app_observatory_health_config_proto_msgTypes[16].OneofWrappers = []any{}
+	file_app_observatory_health_config_proto_msgTypes[18].OneofWrappers = []any{}
+	file_app_observatory_health_config_proto_msgTypes[19].OneofWrappers = []any{}
+	file_app_observatory_health_config_proto_msgTypes[21].OneofWrappers = []any{}
+	file_app_observatory_health_config_proto_msgTypes[25].OneofWrappers = []any{}
+	file_app_observatory_health_config_proto_msgTypes[27].OneofWrappers = []any{}
+	file_app_observatory_health_config_proto_msgTypes[28].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_app_observatory_health_config_proto_rawDesc), len(file_app_observatory_health_config_proto_rawDesc)),
 			NumEnums:      3,
-			NumMessages:   26,
+			NumMessages:   34,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

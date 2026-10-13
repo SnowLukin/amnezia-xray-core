@@ -25,8 +25,8 @@ func probeInstance(t *testing.T) *health.Observer {
 	t.Helper()
 	cfg, err := serial.LoadJSONConfig(strings.NewReader(`{
 		"log": {"loglevel": "none"},
-		"outbounds": [{"tag": "a1", "protocol": "freedom", "settings": {"finalRules": [{"action": "allow"}]}, "path":{"balancer":"auto","cost":1}}],
-		"routing": {"balancers":[{"tag":"auto","strategy":{"type":"leastCost"}}]},
+		"outbounds": [{"tag": "a1", "protocol": "freedom", "settings": {"finalRules": [{"action": "allow"}]}, "selection":{"balancer":"auto","cost":1}}],
+		"routing": {"balancers":[{"tag":"auto","fallbackTag":"block","strategy":{"type":"leastCost"}}]},
 		"healthObservatory": {}
 	}`))
 	if err != nil {
@@ -178,10 +178,10 @@ func TestCloseEndsRunningProbesWithoutCountingThem(t *testing.T) {
 	}()
 	cfg, err := serial.LoadJSONConfig(strings.NewReader(`{
 		"log": {"loglevel": "none"},
-		"outbounds": [{"tag": "a1", "protocol": "freedom", "settings": {"finalRules": [{"action": "allow"}]}, "path":{"balancer":"auto","cost":1,"probe":"silent"}}],
-		"routing": {"balancers":[{"tag":"auto","strategy":{"type":"leastCost"}}]},
+		"outbounds": [{"tag": "a1", "protocol": "freedom", "settings": {"finalRules": [{"action": "allow"}]}, "selection":{"balancer":"auto","cost":1,"probe":"silent"}}],
+		"routing": {"balancers":[{"tag":"auto","fallbackTag":"block","strategy":{"type":"leastCost"}}]},
 		"healthObservatory": {
-			"probes": [{"name":"silent","destination": "http://` + ln.Addr().String() + `/silent", "timeout": "3s", "progressTimeout": "3s"}]}
+			"probes": {"profiles":[{"name":"silent","steps":[{"name":"transport","destinations": ["http://` + ln.Addr().String() + `/silent"], "timeout": "3s", "progressTimeout": "3s"}]}]}}
 	}`))
 	if err != nil {
 		t.Fatal(err)

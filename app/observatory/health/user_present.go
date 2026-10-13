@@ -15,6 +15,9 @@ func (o *Observer) UserPresent() {
 }
 
 func (e *engine) userPresent(now time.Time) {
+	if !e.s.features.UserPresent {
+		return
+	}
 	if e.networkDown || e.doubt {
 		return
 	}

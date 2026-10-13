@@ -334,6 +334,9 @@ type expiryWant struct {
 
 func (p *provider) expiryWant(now time.Time) expiryWant {
 	var w expiryWant
+	if !p.cfg.leaseRenewal {
+		return w
+	}
 	for _, l := range p.leases {
 		if l.asked {
 			continue

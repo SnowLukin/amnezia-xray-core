@@ -24,7 +24,7 @@ func TestPathReturnIntervalUsesDeclaredPath(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			sc := &SelectorConfig{
 				Paths:         append([]*PathDefinition{{Tag: "a1", Cost: 1}}, tc.entries...),
-				StartOutbound: "b1", MinHoldTime: int64(time.Minute),
+				StartOutbound: "b1", MinHoldTime: v2Int64(int64(time.Minute)),
 				ReturnToCheaper: &ReturnToCheaperConfig{Interval: int64(5 * time.Minute), SkipRandomPhase: true},
 			}
 			candidates := make([]string, 0, len(sc.Paths))
@@ -54,7 +54,7 @@ func TestPathReturnIntervalUsesDeclaredPath(t *testing.T) {
 func TestCostReturnIntervalFollowsSelectedOutbound(t *testing.T) {
 	sc := &SelectorConfig{
 		Paths:         []*PathDefinition{{Tag: "a1", Cost: 1}, {Tag: "b1", Cost: 3, ReturnInterval: int64(40 * time.Second)}, {Tag: "c1", Cost: 5}},
-		StartOutbound: "c1", MinHoldTime: int64(time.Second),
+		StartOutbound: "c1", MinHoldTime: v2Int64(int64(time.Second)),
 		ReturnToCheaper: &ReturnToCheaperConfig{Interval: int64(5 * time.Minute), SkipRandomPhase: true},
 	}
 	te := newTestEngine(t, nil, sc, "a1", "b1", "c1")
@@ -74,7 +74,7 @@ func TestCostReturnIntervalFollowsSelectedOutbound(t *testing.T) {
 func TestCostReturnIntervalControlsPenaltyDelay(t *testing.T) {
 	sc := &SelectorConfig{
 		Paths:         []*PathDefinition{{Tag: "a1", Cost: 1}, {Tag: "b1", Cost: 3, ReturnInterval: int64(2 * time.Minute)}},
-		StartOutbound: "b1", MinHoldTime: int64(time.Minute),
+		StartOutbound: "b1", MinHoldTime: v2Int64(int64(time.Minute)),
 		ReturnToCheaper: &ReturnToCheaperConfig{Interval: int64(5 * time.Minute), SkipRandomPhase: true},
 	}
 	te := newTestEngine(t, nil, sc, "a1", "b1")
@@ -89,7 +89,7 @@ func TestCostReturnIntervalControlsPenaltyDelay(t *testing.T) {
 func TestDisabledCostReturnPeriodStillAllowsSoonReturn(t *testing.T) {
 	sc := &SelectorConfig{
 		Paths:         []*PathDefinition{{Tag: "a1", Cost: 1}, {Tag: "b1", Cost: 3, ReturnInterval: -1}},
-		StartOutbound: "b1", MinHoldTime: int64(time.Minute),
+		StartOutbound: "b1", MinHoldTime: v2Int64(int64(time.Minute)),
 		ReturnToCheaper: &ReturnToCheaperConfig{Interval: int64(5 * time.Minute), SkipRandomPhase: true},
 	}
 	te := newTestEngine(t, nil, sc, "a1", "b1")
@@ -105,7 +105,7 @@ func TestDisabledCostReturnPeriodStillAllowsSoonReturn(t *testing.T) {
 func TestCostReturnIntervalAppliesToDynamicOutbound(t *testing.T) {
 	sc := &SelectorConfig{
 		Paths:           []*PathDefinition{{Tag: "a1", Cost: 1}},
-		MinHoldTime:     int64(time.Second),
+		MinHoldTime:     v2Int64(int64(time.Second)),
 		ReturnToCheaper: &ReturnToCheaperConfig{Interval: int64(5 * time.Minute), SkipRandomPhase: true},
 	}
 	te := newProviderEngine(t, quietProvider(nil), sc, "a1")
@@ -124,7 +124,7 @@ func TestCostReturnIntervalAppliesToDynamicOutbound(t *testing.T) {
 func TestCostReturnIntervalBoundsRandomPhaseAndRescueSpread(t *testing.T) {
 	sc := &SelectorConfig{
 		Paths:         []*PathDefinition{{Tag: "a1", Cost: 1}, {Tag: "b1", Cost: 3, ReturnInterval: int64(30 * time.Second)}},
-		StartOutbound: "b1", MinHoldTime: int64(time.Second),
+		StartOutbound: "b1", MinHoldTime: v2Int64(int64(time.Second)),
 		ReturnToCheaper: &ReturnToCheaperConfig{Interval: int64(5 * time.Minute)},
 	}
 	for seed := int64(1); seed <= 5; seed++ {
@@ -153,7 +153,7 @@ func TestCostReturnIntervalCapsPenaltyAfterSelectingOutbound(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			sc := &SelectorConfig{
 				Paths:         []*PathDefinition{{Tag: "a1", Cost: 1}, {Tag: "b1", Cost: 3, ReturnInterval: int64(tc.own)}},
-				StartOutbound: "b1", MinHoldTime: int64(time.Second), SkipProbeBeforeSwitch: true,
+				StartOutbound: "b1", MinHoldTime: v2Int64(int64(time.Second)), SkipProbeBeforeSwitch: true,
 				ReturnToCheaper: &ReturnToCheaperConfig{Interval: int64(tc.global), SkipRandomPhase: true,
 					MaxPenaltyDelay: int64(tc.limit)},
 			}
@@ -182,7 +182,7 @@ func TestCostReturnIntervalCapsPenaltyAfterSelectingOutbound(t *testing.T) {
 func TestZeroCostReturnIntervalAndHoldKeepPenaltyFinite(t *testing.T) {
 	sc := &SelectorConfig{
 		Paths:         []*PathDefinition{{Tag: "a1", Cost: 1}, {Tag: "b1", Cost: 3, ReturnInterval: -1}},
-		StartOutbound: "b1", MinHoldTime: -1, SkipProbeBeforeSwitch: true,
+		StartOutbound: "b1", MinHoldTime: v2Int64(-1), SkipProbeBeforeSwitch: true,
 		ReturnToCheaper: &ReturnToCheaperConfig{Interval: int64(time.Minute), SkipRandomPhase: true,
 			MaxPenaltyDelay: int64(time.Hour)},
 	}
@@ -225,7 +225,7 @@ func TestZeroCostReturnIntervalAndHoldKeepPenaltyFinite(t *testing.T) {
 func TestCostReturnPenaltyRecoversAfterDelayAndHold(t *testing.T) {
 	sc := &SelectorConfig{
 		Paths:         []*PathDefinition{{Tag: "a1", Cost: 1}, {Tag: "b1", Cost: 3, ReturnInterval: int64(10 * time.Second)}},
-		StartOutbound: "b1", MinHoldTime: int64(time.Second), SkipProbeBeforeSwitch: true,
+		StartOutbound: "b1", MinHoldTime: v2Int64(int64(time.Second)), SkipProbeBeforeSwitch: true,
 		ReturnToCheaper: &ReturnToCheaperConfig{Interval: int64(time.Minute), SkipRandomPhase: true,
 			PenaltyWindow: int64(time.Minute), MaxPenaltyDelay: int64(time.Hour)},
 	}
@@ -252,7 +252,7 @@ func TestCostReturnPenaltyRecoversAfterDelayAndHold(t *testing.T) {
 func TestGlobalReturnPenaltyKeepsExistingLimit(t *testing.T) {
 	sc := &SelectorConfig{
 		Paths:         []*PathDefinition{{Tag: "a1", Cost: 1}, {Tag: "b1", Cost: 3}},
-		StartOutbound: "b1", MinHoldTime: int64(time.Second), SkipProbeBeforeSwitch: true,
+		StartOutbound: "b1", MinHoldTime: v2Int64(int64(time.Second)), SkipProbeBeforeSwitch: true,
 		ReturnToCheaper: &ReturnToCheaperConfig{Interval: int64(time.Minute), SkipRandomPhase: true,
 			MaxPenaltyDelay: int64(3 * time.Minute)},
 	}

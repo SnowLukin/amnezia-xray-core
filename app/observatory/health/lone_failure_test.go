@@ -229,7 +229,7 @@ func TestLoneFailureOrdinaryStrongEvidenceWins(t *testing.T) {
 
 func TestLoneFailureSelectedByAnotherBalancerAndIdle(t *testing.T) {
 	te := newLoneEngine(t)
-	other := te.addSelector("other", newSelectorSettings(&SelectorConfig{Paths: []*PathDefinition{{Tag: "a1", Cost: 1}}, SkipProbeBeforeSwitch: true}))
+	other := te.addSelector("other", legacyScenarioSelector(&SelectorConfig{Paths: []*PathDefinition{{Tag: "a1", Cost: 1}}, SkipProbeBeforeSwitch: true}, nil))
 	te.updateCandidates(other, []string{"a1"}, at(0))
 	te.switchTo(te.sel, "b1", "host", at(time.Minute))
 	te.s.schedule.idleAfter = time.Minute
@@ -244,10 +244,10 @@ func TestLoneFailureSettingsPresence(t *testing.T) {
 		cfg  *Config
 		want time.Duration
 	}{
-		{&Config{}, 2 * time.Minute},
-		{&Config{Passive: &PassiveConfig{}}, 2 * time.Minute},
-		{&Config{Passive: &PassiveConfig{LoneFailureAfter: -1}}, 0},
-		{&Config{Passive: &PassiveConfig{LoneFailureAfter: int64(4 * time.Minute)}}, 4 * time.Minute},
+		{&Config{}, 0},
+		{&Config{Features: &FeatureConfig{LoneFailureProbe: v2Bool(true)}, Passive: &PassiveConfig{}}, 2 * time.Minute},
+		{&Config{Features: &FeatureConfig{LoneFailureProbe: v2Bool(false)}, Passive: &PassiveConfig{LoneFailureAfter: int64(time.Minute)}}, 0},
+		{&Config{Features: &FeatureConfig{LoneFailureProbe: v2Bool(true)}, Passive: &PassiveConfig{LoneFailureAfter: int64(4 * time.Minute)}}, 4 * time.Minute},
 	} {
 		if got := newSettings(tc.cfg).passive.loneFailureAfter; got != tc.want {
 			t.Fatalf("loneFailureAfter=%v, want %v", got, tc.want)

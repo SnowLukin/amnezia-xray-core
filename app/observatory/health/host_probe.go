@@ -98,8 +98,11 @@ func (e *engine) requestProbe(balancer string, outbounds []string, now time.Time
 }
 
 func (e *engine) requestProbeKind(balancer string, outbounds []string, isUDP bool, now time.Time) (uint64, []string, error) {
+	if !e.s.features.ProbeRequests {
+		return 0, nil, NewCommandError("feature_disabled", "probes.requests.isEnabled is false")
+	}
 	if isUDP && e.s.udpProbe == nil {
-		return 0, nil, fmt.Errorf("UDP probes are disabled")
+		return 0, nil, NewCommandError("feature_disabled", "UDP probes are disabled")
 	}
 	s := e.selectors[balancer]
 	if s == nil {
@@ -439,6 +442,7 @@ type probeItemView struct {
 }
 
 type probeRequestView struct {
+	Run       string          `json:"run"`
 	IsUDP     bool            `json:"is_udp"`
 	ID        uint64          `json:"id"`
 	Balancer  string          `json:"balancer"`
@@ -473,6 +477,14 @@ func (r *probeRequest) view(now time.Time) probeRequestView {
 // with TCP is evidence like any other: a failed one may move the balancer away.
 // UDP results only report measurements.
 func (o *Observer) RequestProbe(r ProbeRequest) (ProbeTicket, error) {
+	if err := o.FeatureError("probe_requests"); err != nil {
+		return ProbeTicket{}, err
+	}
+	if r.IsUDP {
+		if err := o.FeatureError("udp_probe"); err != nil {
+			return ProbeTicket{}, err
+		}
+	}
 	o.mu.Lock()
 	id, tags, err := o.e.requestProbeKind(r.Balancer, r.Outbounds, r.IsUDP, o.now())
 	o.mu.Unlock()
@@ -485,21 +497,24 @@ func (o *Observer) RequestProbe(r ProbeRequest) (ProbeTicket, error) {
 
 // ProbeResult returns the request with the id as JSON, as Status shows it,
 // and whether it has ended; nil when the observer no longer keeps it.
-func (o *Observer) ProbeResult(id uint64) ([]byte, bool) {
+func (o *Observer) ProbeResult(run string, id uint64) ([]byte, bool, error) {
 	o.mu.Lock()
-	var v *probeRequestView
+	defer o.mu.Unlock()
+	if run == "" || run != o.run {
+		return nil, false, NewCommandError("stale_run", "probe ticket belongs to another run")
+	}
+	if !o.s.features.ProbeRequests {
+		return nil, false, NewCommandError("feature_disabled", "probe_requests is disabled")
+	}
 	for _, r := range o.e.requests {
 		if r.id == id {
-			rv := r.view(o.now())
-			v = &rv
+			v := r.view(o.now())
+			v.Run = o.run
+			out, _ := json.Marshal(v)
+			return out, v.IsDone, nil
 		}
 	}
-	o.mu.Unlock()
-	if v == nil {
-		return nil, false
-	}
-	out, _ := json.Marshal(v)
-	return out, v.IsDone
+	return nil, false, NewCommandError("not_found", "probe ticket is no longer available")
 }
 
 func (e *engine) serveUDP(s *selector, r *probeRequest, now time.Time) bool {

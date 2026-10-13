@@ -7,24 +7,24 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-func TestHealthQualitySkipFlag(t *testing.T) {
+func TestHealthQualityFlag(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		raw  string
 		want bool
 	}{
 		{"default", `{}`, false},
-		{"empty_passive", `{"passive":{}}`, false},
-		{"explicit_false", `{"passive":{"shouldSkipQuality":false}}`, false},
-		{"enabled", `{"passive":{"shouldSkipQuality":true}}`, true},
+		{"empty_quality", `{"telemetry":{"quality":{}}}`, false},
+		{"explicit_false", `{"telemetry":{"quality":{"isEnabled":false}}}`, false},
+		{"enabled", `{"telemetry":{"quality":{"isEnabled":true}}}`, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg, err := buildHealth(t, tc.raw)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got := cfg.GetPassive().GetShouldSkipQuality(); got != tc.want {
-				t.Fatalf("shouldSkipQuality %v, want %v", got, tc.want)
+			if got := cfg.GetFeatures().GetQuality(); got != tc.want {
+				t.Fatalf("quality.isEnabled %v, want %v", got, tc.want)
 			}
 			wire, err := proto.Marshal(cfg)
 			if err != nil {
@@ -34,14 +34,14 @@ func TestHealthQualitySkipFlag(t *testing.T) {
 			if err := proto.Unmarshal(wire, &restored); err != nil {
 				t.Fatal(err)
 			}
-			if !proto.Equal(cfg, &restored) || restored.GetPassive().GetShouldSkipQuality() != tc.want {
+			if !proto.Equal(cfg, &restored) || restored.GetFeatures().GetQuality() != tc.want {
 				t.Fatal("protobuf round trip changed the quality flag")
 			}
 		})
 	}
 }
 
-func TestHealthQualitySkipFlagWireField(t *testing.T) {
+func TestHealthQualityFlagWireField(t *testing.T) {
 	field := (&health.PassiveConfig{}).ProtoReflect().Descriptor().Fields().ByName("should_skip_quality")
 	if field == nil || field.Number() != 32 || field.JSONName() != "shouldSkipQuality" {
 		t.Fatalf("quality flag protobuf contract changed: %v", field)

@@ -33,7 +33,7 @@ func TestProviderProbeOnlyPathBoolean(t *testing.T) {
 				path = `"group":"relay"`
 				groups = `,"groups":[{"name":"relay","cost":1}]`
 			}
-			a, err := parseAnswer([]byte(`{"outbounds":[{"tag":"x","protocol":"vless","path":{"balancer":"auto",` + path + tc.field + `}}]` + groups + `}`))
+			a, err := parseAnswer([]byte(`{"outbounds":[{"tag":"x","protocol":"vless","selection":{"balancer":"auto",` + path + tc.field + `}}]` + groups + `}`))
 			if err != nil {
 				t.Fatal(err)
 			}

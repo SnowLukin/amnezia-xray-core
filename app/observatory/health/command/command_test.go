@@ -3,21 +3,22 @@ package command_test
 import (
 	"context"
 	"encoding/json"
-	gonet "net"
-	"net/http"
-	"net/http/httptest"
-	"strings"
-	"testing"
-	"time"
-
 	"github.com/xtls/xray-core/app/observatory/health"
 	"github.com/xtls/xray-core/app/observatory/health/command"
 	"github.com/xtls/xray-core/common/net"
+	"github.com/xtls/xray-core/common/serial"
 	"github.com/xtls/xray-core/common/session"
 	"github.com/xtls/xray-core/core"
 	"github.com/xtls/xray-core/features/routing"
 	routing_session "github.com/xtls/xray-core/features/routing/session"
 	_ "github.com/xtls/xray-core/main/distro/all"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protoreflect"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
 )
 
 func service(t *testing.T, config string) (command.HealthServiceServer, *core.Instance) {
@@ -30,7 +31,7 @@ func service(t *testing.T, config string) (command.HealthServiceServer, *core.In
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := inst.Start(); err != nil {
+	if err = inst.Start(); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { inst.Close() })
@@ -40,260 +41,213 @@ func service(t *testing.T, config string) (command.HealthServiceServer, *core.In
 	}
 	return s.(command.HealthServiceServer), inst
 }
-
-func TestGetReport(t *testing.T) {
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(`{"outbounds": [{"tag": "x1", "protocol": "freedom", "path":{"balancer":"auto","cost":1}}]}`))
-	}))
-	defer ts.Close()
-	s, inst := service(t, `{
-	  "log": {"loglevel": "none"},
-	  "outbounds": [{"tag": "direct", "protocol": "freedom"}, {"tag": "block", "protocol": "blackhole"}],
-	  "routing": {"balancers": [{"tag": "auto", "strategy": {"type": "leastCost"}, "fallbackTag": "block"}]},
-	  "healthObservatory": {"providers": [{
-	    "tag": "fresh", "url": "`+ts.URL+`", "via": ["direct"], "isPlainHttpAllowed": true,
-	    "triggers": {"interval": "0s", "minHealthyOutbounds": 0, "shouldRefreshWhenExhausted": false, "maxAge": "0s", "networkChangeMode": "never"},
-	    "apply": {"balancer": "auto", "tagPrefix": "p-", "allowedProtocols": ["freedom"]}}]}
-	}`)
-	ctx := context.Background()
-	get := func(r *command.GetReportRequest) map[string]any {
-		t.Helper()
-		resp, err := s.GetReport(ctx, r)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if resp.Json == "" {
-			return nil
-		}
-		var out map[string]any
-		if err := json.Unmarshal([]byte(resp.Json), &out); err != nil {
-			t.Fatal(err)
-		}
-		return out
+func requireCode(t *testing.T, r *command.Result, err error, code string) {
+	t.Helper()
+	if err != nil || r == nil || r.Success || r.Error == nil || r.Error.Code != code {
+		t.Fatalf("result %+v error %v, want %s", r, err, code)
 	}
-	if r := get(&command.GetReportRequest{}); r != nil {
-		t.Fatalf("snapshot before any decision: %v", r)
+}
+func decodeData(t *testing.T, r *command.Result, err error, out any) {
+	t.Helper()
+	if err != nil || !r.Success {
+		t.Fatalf("result %+v error %v", r, err)
 	}
-	// A provider set applied is a decision.
-	health.FromInstance(inst).RequestRefresh("fresh")
-	var snap map[string]any
-	for deadline := time.Now().Add(5 * time.Second); snap == nil && time.Now().Before(deadline); {
-		time.Sleep(20 * time.Millisecond)
-		snap = get(&command.GetReportRequest{})
-	}
-	if snap == nil || snap["report_reason"] != "snapshot" || snap["provider_applied"] != 1.0 {
-		t.Fatalf("snapshot %v", snap)
-	}
-	if r := get(&command.GetReportRequest{Take: true}); r != nil {
-		t.Fatalf("a report is due before the interval: %v", r)
-	}
-	final := get(&command.GetReportRequest{Final: true})
-	if final == nil || final["report_reason"] != "stop" || final["provider_applied"] != 1.0 {
-		t.Fatalf("final report %v", final)
-	}
-	if r := get(&command.GetReportRequest{Take: true, Final: true}); r != nil {
-		t.Fatalf("a second final report: %v", r)
+	if out != nil && json.Unmarshal([]byte(r.Data), out) != nil {
+		t.Fatalf("invalid data %s", r.Data)
 	}
 }
 
-func TestProbe(t *testing.T) {
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusNoContent)
-	}))
+func TestExplicitCommandMethods(t *testing.T) {
+	descriptor := command.File_app_observatory_health_command_command_proto.Services().ByName("HealthService")
+	for _, name := range []string{"GetStatus", "GetReport", "Probe", "Refresh", "GetProviderSet"} {
+		if descriptor.Methods().ByName(protoreflect.Name(name)) != nil {
+			t.Fatalf("legacy alias %s remains", name)
+		}
+	}
+	for _, name := range []string{"Status", "PeekReport", "TakeReport", "Release", "NetworkLost", "SetMemoryLow", "ProbeResult", "RequestProbe", "RequestProviderRefresh", "ExportProviderSet"} {
+		if descriptor.Methods().ByName(protoreflect.Name(name)) == nil {
+			t.Fatalf("missing method %s", name)
+		}
+	}
+}
+func TestJSONCommandsWithoutObservatory(t *testing.T) {
+	s, _ := service(t, `{"log":{"loglevel":"none"},"outbounds":[{"tag":"direct","protocol":"freedom"}]}`)
+	ctx := context.Background()
+	calls := []func() (*command.Result, error){
+		func() (*command.Result, error) { return s.Status(ctx, &command.StatusRequest{}) },
+		func() (*command.Result, error) { return s.DrainEvents(ctx, &command.DrainEventsRequest{}) },
+		func() (*command.Result, error) { return s.PeekReport(ctx, &command.PeekReportRequest{}) },
+		func() (*command.Result, error) { return s.TakeReport(ctx, &command.TakeReportRequest{IsFinal: true}) },
+		func() (*command.Result, error) { return s.RequestProbe(ctx, &command.RequestProbeRequest{}) },
+		func() (*command.Result, error) {
+			return s.ProbeResult(ctx, &command.ProbeResultRequest{Run: "old", Id: 1})
+		},
+		func() (*command.Result, error) { return s.ExportProviderSet(ctx, &command.ExportProviderSetRequest{}) },
+		func() (*command.Result, error) {
+			return s.SetProviderHeaders(ctx, &command.SetProviderHeadersRequest{})
+		},
+	}
+	for _, call := range calls {
+		r, err := call()
+		requireCode(t, r, err, "not_running")
+	}
+}
+func TestDisabledCommandsAndLocalStatus(t *testing.T) {
+	s, _ := service(t, `{"log":{"loglevel":"none"},"outbounds":[{"tag":"direct","protocol":"freedom"}],"healthObservatory":{}}`)
+	ctx := context.Background()
+	calls := []func() (*command.Result, error){
+		func() (*command.Result, error) { return s.DrainEvents(ctx, &command.DrainEventsRequest{}) },
+		func() (*command.Result, error) { return s.PeekReport(ctx, &command.PeekReportRequest{}) },
+		func() (*command.Result, error) { return s.TakeReport(ctx, &command.TakeReportRequest{IsFinal: true}) },
+		func() (*command.Result, error) { return s.RequestProbe(ctx, &command.RequestProbeRequest{}) },
+		func() (*command.Result, error) { return s.UserPresent(ctx, &command.UserPresentRequest{}) },
+		func() (*command.Result, error) { return s.SetMemoryLow(ctx, &command.SetMemoryLowRequest{IsLow: true}) },
+		func() (*command.Result, error) {
+			return s.Pin(ctx, &command.PinRequest{Balancer: "auto", Outbound: "x"})
+		},
+		func() (*command.Result, error) {
+			return s.RequestProviderRefresh(ctx, &command.RequestProviderRefreshRequest{})
+		},
+	}
+	for _, call := range calls {
+		r, err := call()
+		requireCode(t, r, err, "feature_disabled")
+	}
+	var status struct {
+		IsLocalOnly bool            `json:"is_local_only"`
+		Features    map[string]bool `json:"features"`
+	}
+	r, err := s.Status(ctx, &command.StatusRequest{})
+	decodeData(t, r, err, &status)
+	if !status.IsLocalOnly || len(status.Features) < 29 || status.Features["quality"] || !status.Features["dial_failures"] {
+		t.Fatalf("status %+v", status)
+	}
+}
+func TestProbeRunAndWait(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(204) }))
 	defer ts.Close()
-	// b1 reaches a server that accepts and never answers.
-	silent, err := gonet.Listen("tcp", "127.0.0.1:0")
+	s, inst := service(t, `{"log":{"loglevel":"none"},"outbounds":[{"tag":"drop","protocol":"blackhole"},{"tag":"a1","protocol":"freedom","selection":{"balancer":"auto","cost":1,"probe":"check"}}],"routing":{"rules":[{"domain":["full:a.test"],"balancerTag":"auto"}],"balancers":[{"tag":"auto","strategy":{"type":"leastCost"},"fallbackTag":"drop"}]},"healthObservatory":{"probes":{"requests":{"isEnabled":true},"profiles":[{"name":"check","steps":[{"name":"transport","destinations":["`+ts.URL+`/204"]}]}]}}}`)
+	router := inst.GetFeature(routing.RouterType()).(routing.Router)
+	_, err := router.PickRoute(routing_session.AsRoutingContext(session.ContextWithOutbounds(context.Background(), []*session.Outbound{{Target: net.TCPDestination(net.DomainAddress("a.test"), 80)}})))
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer silent.Close()
-	go func() {
-		var held []gonet.Conn
-		for {
-			c, err := silent.Accept()
-			if err != nil {
-				for _, c := range held {
-					c.Close()
-				}
-				return
-			}
-			held = append(held, c)
-		}
-	}()
-	s, inst := service(t, `{
-	  "log": {"loglevel": "none"},
-	  "outbounds": [{"tag": "drop", "protocol": "blackhole"}, {"tag": "a1", "protocol": "freedom", "path":{"balancer":"auto","cost":1,"probe":"check"}},
-	    {"tag": "b1", "protocol": "freedom", "settings": {"redirect": "`+silent.Addr().String()+`"}, "path":{"balancer":"auto","cost":3,"probe":"check"}}],
-	  "routing": {"rules": [{"domain": ["full:a.test"], "balancerTag": "auto"}],
-	    "balancers": [{"tag": "auto", "strategy": {"type": "leastCost"}, "fallbackTag": "drop"}]},
-	  "healthObservatory": {"schedule": {"minProbeInterval": "10ms"},
-	    "probes": [{"name":"check","destination": "`+ts.URL+`/204", "timeout": "3s", "progressTimeout": "1s"}]}
-	}`)
-	r := inst.GetFeature(routing.RouterType()).(routing.Router)
-	if _, err := r.PickRoute(routing_session.AsRoutingContext(session.ContextWithOutbounds(context.Background(),
-		[]*session.Outbound{{Target: net.TCPDestination(net.DomainAddress("a.test"), 80)}}))); err != nil {
-		t.Fatal(err)
+	ctx := context.Background()
+	r, err := s.RequestProbe(ctx, &command.RequestProbeRequest{Balancer: "auto", Outbounds: []string{"a1"}, WaitMs: 2000})
+	var ticket health.ProbeTicket
+	decodeData(t, r, err, &ticket)
+	if ticket.ID == 0 || ticket.Run == "" {
+		t.Fatalf("ticket %+v", ticket)
 	}
-	type result struct {
-		ID        uint64 `json:"id"`
-		IsDone    bool   `json:"is_done"`
+	var view struct {
+		IsDone    bool `json:"is_done"`
 		Outbounds []struct {
 			Result string `json:"result"`
 		} `json:"outbounds"`
 	}
-	probe := func(ctx context.Context, req *command.ProbeRequest) (*command.ProbeResponse, result, time.Duration) {
-		t.Helper()
-		start := time.Now()
-		resp, err := s.Probe(ctx, req)
-		if err != nil {
-			t.Fatal(err)
-		}
-		var out result
-		if err := json.Unmarshal([]byte(resp.Json), &out); err != nil {
-			t.Fatal(err)
-		}
-		return resp, out, time.Since(start)
+	r, err = s.ProbeResult(ctx, &command.ProbeResultRequest{Run: ticket.Run, Id: ticket.ID})
+	decodeData(t, r, err, &view)
+	if !view.IsDone || len(view.Outbounds) != 1 || view.Outbounds[0].Result != "ok" {
+		t.Fatalf("probe %+v", view)
 	}
-	ctx := context.Background()
-	// The probe of b1 fails after a second without progress.
-	resp, res, took := probe(ctx, &command.ProbeRequest{Balancer: "auto", Outbounds: []string{"b1"}})
-	if resp.Id != 1 || resp.Run == "" || res.IsDone || took > 100*time.Millisecond {
-		t.Fatalf("without a wait: %+v %+v after %v", resp, res, took)
-	}
-	short, cancel := context.WithTimeout(ctx, 600*time.Millisecond)
-	resp, res, took = probe(short, &command.ProbeRequest{Balancer: "auto", Outbounds: []string{"b1"}, WaitMs: 10_000})
-	cancel()
-	if resp.Id != 1 || res.IsDone || took >= 600*time.Millisecond {
-		t.Fatalf("a wait cut by the deadline: %+v %+v after %v", resp, res, took)
-	}
-	resp, res, _ = probe(ctx, &command.ProbeRequest{Balancer: "auto", Outbounds: []string{"b1"}, WaitMs: 10_000})
-	if resp.Id != 1 || !res.IsDone || res.Outbounds[0].Result != "failed" {
-		t.Fatalf("with a wait: %+v %+v", resp, res)
-	}
-	resp, res, _ = probe(ctx, &command.ProbeRequest{Balancer: "auto", WaitMs: 10_000})
-	if resp.Id != 2 || !res.IsDone || len(res.Outbounds) != 2 || res.Outbounds[0].Result != "ok" || res.Outbounds[1].Result != "down" {
-		t.Fatalf("a request for the balancer: %+v %+v", resp, res)
-	}
-	if _, err := s.Probe(ctx, &command.ProbeRequest{Balancer: "auto", Outbounds: []string{"x1"}}); err == nil {
-		t.Fatal("a probe of an outbound the balancer does not have")
-	}
+	r, err = s.ProbeResult(ctx, &command.ProbeResultRequest{Run: "previous-run", Id: ticket.ID})
+	requireCode(t, r, err, "stale_run")
+	r, err = s.RequestProbe(ctx, &command.RequestProbeRequest{Balancer: "auto", IsUdp: true})
+	requireCode(t, r, err, "feature_disabled")
+	r, err = s.RequestProbe(ctx, &command.RequestProbeRequest{Balancer: "auto", Outbounds: []string{"unknown"}})
+	requireCode(t, r, err, "unknown_outbound")
 }
-
-func TestProbeWithoutObservatory(t *testing.T) {
-	s, _ := service(t, `{"log": {"loglevel": "none"}, "outbounds": [{"tag": "direct", "protocol": "freedom"}]}`)
-	if _, err := s.Probe(context.Background(), &command.ProbeRequest{Balancer: "auto"}); err == nil {
-		t.Fatal("a probe without a health observatory")
-	}
-}
-
-func TestGetReportWithoutObservatory(t *testing.T) {
-	s, _ := service(t, `{"log": {"loglevel": "none"}, "outbounds": [{"tag": "direct", "protocol": "freedom"}]}`)
-	if _, err := s.GetReport(context.Background(), &command.GetReportRequest{}); err == nil {
-		t.Fatal("a report without a health observatory")
-	}
-}
-
-func TestSetProviderHeaders(t *testing.T) {
-	s, inst := service(t, `{
-	  "log": {"loglevel": "none"},
-	  "outbounds": [{"tag": "direct", "protocol": "freedom"}, {"tag": "block", "protocol": "blackhole"}],
-	  "routing": {"balancers": [{"tag": "auto", "strategy": {"type": "leastCost"}, "fallbackTag": "block"}]},
-	  "healthObservatory": {"providers": [{
-	    "tag": "fresh", "url": "https://provider.test/set", "headers": {"Authorization": "Bearer config"},
-	    "triggers": {"interval": "0s", "minHealthyOutbounds": 0, "shouldRefreshWhenExhausted": false, "maxAge": "0s", "networkChangeMode": "never"},
-	    "apply": {"balancer": "auto", "tagPrefix": "p-"}}]}
-	}`)
-	ctx := context.Background()
-	if _, err := s.SetProviderHeaders(ctx, &command.SetProviderHeadersRequest{Provider: "fresh",
-		Headers: map[string]string{"authorization": "Bearer host-secret"}}); err != nil {
-		t.Fatal(err)
-	}
-	var st struct {
-		Providers []struct {
-			Headers []string `json:"headers"`
-		} `json:"providers"`
-	}
-	status := health.FromInstance(inst).Status()
-	if err := json.Unmarshal(status, &st); err != nil || len(st.Providers) != 1 || strings.Join(st.Providers[0].Headers, ",") != "Authorization" {
-		t.Fatalf("status %s: %v", status, err)
-	}
-	if strings.Contains(string(status), "host-secret") {
-		t.Fatal("the status shows the value")
-	}
-	for name, req := range map[string]*command.SetProviderHeadersRequest{
-		"no such provider": {Provider: "other", Headers: map[string]string{"Authorization": "Bearer host-secret"}},
-		"bad name":         {Provider: "fresh", Headers: map[string]string{"Host": "provider.test"}},
-		"bad value":        {Provider: "fresh", Headers: map[string]string{"Authorization": "Bearer host-secret\r\n"}},
-	} {
-		_, err := s.SetProviderHeaders(ctx, req)
-		if err == nil {
-			t.Errorf("%s: accepted", name)
-		} else if strings.Contains(err.Error(), "host-secret") {
-			t.Errorf("%s: the error quotes the value: %v", name, err)
-		}
-	}
-}
-
-func TestSetProviderHeadersWithoutObservatory(t *testing.T) {
-	s, _ := service(t, `{"log": {"loglevel": "none"}, "outbounds": [{"tag": "direct", "protocol": "freedom"}]}`)
-	if _, err := s.SetProviderHeaders(context.Background(), &command.SetProviderHeadersRequest{Provider: "fresh"}); err == nil {
-		t.Fatal("headers without a health observatory")
-	}
-}
-
-func TestGetProviderSet(t *testing.T) {
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(`{"version": "v1", "outbounds": [{"tag": "x1", "protocol": "freedom", "path":{"balancer":"auto","cost":1}}],
-		  "headers": {"Authorization": "Bearer t2"}}`))
+func TestReportAndProviderExportObject(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"protocol":1,"version":"v1","outbounds":[{"tag":"x1","protocol":"freedom","selection":{"balancer":"auto","cost":1}}],"headers":{"Authorization":"Bearer secret"}}`))
 	}))
 	defer ts.Close()
-	s, inst := service(t, `{
-	  "log": {"loglevel": "none"},
-	  "outbounds": [{"tag": "direct", "protocol": "freedom"}, {"tag": "block", "protocol": "blackhole"}],
-	  "routing": {"balancers": [{"tag": "auto", "strategy": {"type": "leastCost"}, "fallbackTag": "block"}]},
-	  "healthObservatory": {"providers": [{
-	    "tag": "fresh", "url": "`+ts.URL+`", "via": ["direct"], "isPlainHttpAllowed": true,
-	    "triggers": {"interval": "0s", "minHealthyOutbounds": 0, "shouldRefreshWhenExhausted": false, "maxAge": "0s", "networkChangeMode": "never"},
-	    "apply": {"balancer": "auto", "tagPrefix": "p-", "allowedProtocols": ["freedom"]}}]}
-	}`)
+	s, inst := service(t, `{"log":{"loglevel":"none"},"outbounds":[{"tag":"direct","protocol":"freedom"},{"tag":"drop","protocol":"blackhole"}],"routing":{"balancers":[{"tag":"auto","strategy":{"type":"leastCost"},"fallbackTag":"drop"}]},"healthObservatory":{"telemetry":{"report":{"isEnabled":true}},"providers":[{"isEnabled":true,"tag":"fresh","url":"`+ts.URL+`","isPlainHttpAllowed":true,"via":["direct"],"triggers":{"exhausted":{"isEnabled":false},"leaseRenewal":{"isEnabled":false},"backendSchedule":{"isEnabled":false}},"apply":{"balancer":"auto","tagPrefix":"p-","allowedProtocols":["freedom"]}}]}}`)
+	selector, selectErr := health.FromInstance(inst).OutboundSelector("auto", nil)
+	if selectErr != nil {
+		t.Fatal(selectErr)
+	}
+	selector.Select(nil)
 	ctx := context.Background()
-	get := func(after uint64) *command.GetProviderSetResponse {
-		t.Helper()
-		r, err := s.GetProviderSet(ctx, &command.GetProviderSetRequest{Provider: "fresh", After: after})
-		if err != nil {
-			t.Fatal(err)
-		}
-		return r
+	r, err := s.RequestProviderRefresh(ctx, &command.RequestProviderRefreshRequest{Provider: "fresh"})
+	var refresh health.RefreshData
+	decodeData(t, r, err, &refresh)
+	if !refresh.IsQueued {
+		t.Fatalf("refresh %+v", refresh)
 	}
-	first := get(0)
-	if first.Json != "" {
-		t.Fatalf("before an answer: %+v", first)
-	}
-	health.FromInstance(inst).RequestRefresh("fresh")
-	var r *command.GetProviderSetResponse
+	var data health.ProviderSetData
 	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
-		if r = get(0); r.Json != "" {
+		r, err = s.ExportProviderSet(ctx, &command.ExportProviderSetRequest{Provider: "fresh"})
+		if r.Data != "" {
+			decodeData(t, r, err, &data)
 			break
 		}
 	}
-	var set struct {
-		Version string            `json:"version"`
-		Headers map[string]string `json:"headers"`
+	var set map[string]any
+	if json.Unmarshal(data.Set, &set) != nil || data.Seq == 0 || set["version"] != "v1" {
+		t.Fatalf("set %s", r.Data)
 	}
-	if err := json.Unmarshal([]byte(r.Json), &set); err != nil || r.Seq != first.Seq+1 || set.Version != "v1" || set.Headers["Authorization"] != "Bearer t2" {
-		t.Fatalf("set %+v: %v", r, err)
+	r, err = s.ExportProviderSet(ctx, &command.ExportProviderSetRequest{Provider: "fresh", After: data.Seq})
+	decodeData(t, r, err, nil)
+	if r.Data != "" {
+		t.Fatalf("unchanged export %s", r.Data)
 	}
-	if again := get(r.Seq); again.Json != "" || again.Seq != r.Seq {
-		t.Fatalf("nothing newer: %+v", again)
+	r, err = s.PeekReport(ctx, &command.PeekReportRequest{})
+	var snapshot map[string]any
+	decodeData(t, r, err, &snapshot)
+	if snapshot["report_reason"] != "snapshot" || snapshot["provider_applied"] != 1.0 {
+		t.Fatalf("snapshot %s", r.Data)
 	}
-	if _, err := s.GetProviderSet(ctx, &command.GetProviderSetRequest{Provider: "other"}); err == nil {
-		t.Fatal("a set of no provider")
+	r, err = s.TakeReport(ctx, &command.TakeReportRequest{IsFinal: true})
+	var final map[string]any
+	decodeData(t, r, err, &final)
+	if final["report_reason"] != "stop" {
+		t.Fatalf("final %s", r.Data)
+	}
+	r, err = s.SetProviderHeaders(ctx, &command.SetProviderHeadersRequest{Provider: "fresh", Headers: map[string]string{"Authorization": "secret\r\n"}})
+	requireCode(t, r, err, "invalid_argument")
+	if strings.Contains(r.Error.Message, "secret") {
+		t.Fatal("credential in command error")
 	}
 }
 
-func TestGetProviderSetWithoutObservatory(t *testing.T) {
-	s, _ := service(t, `{"log": {"loglevel": "none"}, "outbounds": [{"tag": "direct", "protocol": "freedom"}]}`)
-	if _, err := s.GetProviderSet(context.Background(), &command.GetProviderSetRequest{Provider: "fresh"}); err == nil {
-		t.Fatal("a set without a health observatory")
+func TestDirectProviderLimitsCannotDisableAdmission(t *testing.T) {
+	for _, field := range []string{"minInterval", "urgentMinInterval", "quota"} {
+		pc := &health.ProviderConfig{IsEnabled: proto.Bool(true), Tag: "fresh", Url: "https://provider.test/set", Apply: &health.ProviderApply{Balancer: "auto", TagPrefix: "p-"}, Limits: &health.ProviderLimits{}}
+		switch field {
+		case "minInterval":
+			pc.Limits.MinInterval = -1
+		case "urgentMinInterval":
+			pc.Limits.ExhaustedMinInterval = -1
+		case "quota":
+			pc.Limits.MaxRefreshesPerHour = -1
+		}
+		cfg := &core.Config{App: []*serial.TypedMessage{serial.ToTypedMessage(&health.Config{Providers: []*health.ProviderConfig{pc}})}}
+		inst, err := core.New(cfg)
+		if inst != nil {
+			inst.Close()
+		}
+		if err == nil {
+			t.Fatalf("direct protobuf %s=-1 disabled admission guard", field)
+		}
+	}
+	// Zero protobuf scalars mean the same positive defaults as omitted JSON.
+	pc := &health.ProviderConfig{IsEnabled: proto.Bool(true), Tag: "fresh", Url: "https://provider.test/set", Apply: &health.ProviderApply{Balancer: "auto", TagPrefix: "p-"}, Limits: &health.ProviderLimits{}}
+	cfg := &core.Config{App: []*serial.TypedMessage{serial.ToTypedMessage(&health.Config{Providers: []*health.ProviderConfig{pc}})}}
+	inst, err := core.New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer inst.Close()
+	o := health.FromInstance(inst)
+	selector, err := o.OutboundSelector("auto", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	selector.Select(nil)
+	o.RequestProviderRefresh("fresh")
+	data, err := o.ProviderRefreshInfo("fresh")
+	if err != nil || !data.IsQueued {
+		t.Fatalf("default admission %+v,%v", data, err)
 	}
 }

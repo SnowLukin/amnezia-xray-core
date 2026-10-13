@@ -28,14 +28,16 @@ func newSilenceFixture(t *testing.T, passive *PassiveConfig, sc *SelectorConfig)
 	declared := fixtureSelector(sc, []string{"a1", "b1"})
 	cfg := &Config{Paths: declared.Paths, Passive: passive,
 		Schedule: &ScheduleConfig{IdleAfter: int64(time.Hour)}}
-	f := &silenceFixture{t: t, o: newObserver(context.Background(), cfg), clk: &fakeClock{t: t0}, ended: map[string]bool{}}
+	f := &silenceFixture{t: t, o: newObserver(context.Background(), legacyScenarioConfig(cfg)), clk: &fakeClock{t: t0}, ended: map[string]bool{}}
 	t.Cleanup(func() { f.o.Close() })
+	f.o.s = legacyScenarioSettings(cfg)
+	f.o.e.s = f.o.s
 	f.o.clock = f.clk.now
 	f.o.base = t0.Add(-time.Second)
 	// The tests sweep by hand.
 	f.o.sweeping = true
 	f.o.mu.Lock()
-	s := f.o.e.addSelector("auto", newSelectorSettings(declared))
+	s := f.o.e.addSelector("auto", legacyScenarioSelector(declared, cfg))
 	f.o.e.noteDemand(t0)
 	f.o.e.updateCandidates(s, []string{"a1", "b1"}, t0)
 	f.o.mu.Unlock()
@@ -203,7 +205,7 @@ func TestSilentConnectionsEndStallTimeoutAfterADown(t *testing.T) {
 	var report struct {
 		PendingClosed int64 `json:"pending_closed_count"`
 	}
-	if err := json.Unmarshal(f.o.Report(), &report); err != nil || report.PendingClosed != 3 {
+	if err := json.Unmarshal(f.o.PeekReport(), &report); err != nil || report.PendingClosed != 3 {
 		t.Fatalf("report pending_closed %d (%v), want 3: both kinds count there", report.PendingClosed, err)
 	}
 	f.engine(func(e *engine) {

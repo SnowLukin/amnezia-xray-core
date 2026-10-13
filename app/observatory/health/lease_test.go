@@ -3,6 +3,7 @@ package health
 import (
 	"encoding/json"
 	"fmt"
+	"google.golang.org/protobuf/proto"
 	"slices"
 	"strings"
 	"testing"
@@ -528,7 +529,7 @@ func TestNewBalancerIgnoresExpiredRememberedOutbound(t *testing.T) {
 		{Tag: "x1", Balancer: "other", Cost: 1},
 		{Tag: "x2", Balancer: "other", Cost: 2},
 	}
-	e := newEngine(newSettings(&Config{Paths: paths}), 1)
+	e := newEngine(newSettings(&Config{Features: &FeatureConfig{NetworkMemory: proto.Bool(true)}, Paths: paths}), 1)
 	s := e.addSelector("other", newSelectorSettings(&SelectorConfig{Paths: paths, StartOutbound: "x1"}))
 	e.expired["x1"] = true
 	e.networks["home"] = map[string]string{"other": "x1"}
@@ -1164,6 +1165,8 @@ func TestAnyRefreshRenews(t *testing.T) {
 	te.setMemoryLow(true, at(20*time.Minute))
 	expectNoRefresh(t, te, at(40*time.Minute))
 	te.requestRefresh("fresh")
+	expectNoRefresh(t, te, at(41*time.Minute))
+	te.setMemoryLow(false, at(41*time.Minute))
 	j = expectRefresh(t, te, at(41*time.Minute), "host")
 	if fmt.Sprint(j.asked) != fmt.Sprint([]askedLease{{"p-x2", at(time.Hour)}}) {
 		t.Fatalf("the host refresh asks about %+v", j.asked)
@@ -1209,12 +1212,12 @@ func TestExpiryTriggerDefaultsAndCeilings(t *testing.T) {
 		renew, urgent, spread float64
 	}{
 		{nil, 0.5, 0.8, 0.1},
-		{&ExpiryTrigger{RenewAtFraction: 0.3, UrgentAtFraction: 0.6, JitterFraction: 0.2}, 0.3, 0.6, 0.2},
+		{&ExpiryTrigger{RenewAtFraction: 0.3, UrgentAtFraction: 0.6, JitterFraction: 0.2}, 0.3, 0.6, defaultRenewJitter},
 		{&ExpiryTrigger{RenewAtFraction: -1}, 0, 0, 0},
-		{&ExpiryTrigger{JitterFraction: -1}, 0.5, 0.8, 0},
+		{&ExpiryTrigger{JitterFraction: -1}, 0.5, 0.8, defaultRenewJitter},
 		// urgentAt is never before renewAt, neither goes past 0.95.
 		{&ExpiryTrigger{RenewAtFraction: 0.9}, 0.9, 0.9, 0.1},
-		{&ExpiryTrigger{RenewAtFraction: 2, UrgentAtFraction: 3, JitterFraction: 2}, maxRenewAt, maxRenewAt, maxRenewJitter},
+		{&ExpiryTrigger{RenewAtFraction: 2, UrgentAtFraction: 3, JitterFraction: 2}, maxRenewAt, maxRenewAt, defaultRenewJitter},
 	} {
 		p := newProviderSettings(quietProvider(func(p *ProviderConfig) { p.Triggers.Expiry = tc.in }))
 		if p.renewAt != tc.renew || p.urgentAt != tc.urgent || p.renewJitter != tc.spread {

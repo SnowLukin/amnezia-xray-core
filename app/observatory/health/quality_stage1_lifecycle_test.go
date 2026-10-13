@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"google.golang.org/protobuf/proto"
 	"reflect"
 	"sync"
 	"sync/atomic"
@@ -23,8 +24,9 @@ func qualityStage1Observer(t *testing.T, share float64) (*Observer, *fakeClock) 
 	t.Helper()
 	o, clk := newTestObserver()
 	o.s = newSettings(&Config{
-		Paths:  observed("a1", "a2"),
-		Report: &ReportConfig{Interval: int64(time.Second), QuietShare: share},
+		Features: &FeatureConfig{Quality: proto.Bool(true), Report: proto.Bool(true), Events: proto.Bool(true), UdpReplies: proto.Bool(true)},
+		Paths:    observed("a1", "a2"),
+		Report:   &ReportConfig{Interval: int64(time.Second), QuietShare: share},
 	})
 	// Exercise Stage 1's actual once-per-run selection at the two deterministic
 	// endpoints. The test never assigns report.quietSample or draws controller RNG.
@@ -168,7 +170,7 @@ func TestQualityStage1QuietGateIncludesUserQualityAndFinalUDP(t *testing.T) {
 			}
 			clk.advance(2 * time.Second)
 			for range 2 {
-				raw := o.Report()
+				raw := o.PeekReport()
 				if (raw != nil) != wantQuiet {
 					t.Fatal("quietShare changed snapshot eligibility")
 				}
@@ -213,7 +215,7 @@ func TestQualityStage1QuietGateIncludesUserQualityAndFinalUDP(t *testing.T) {
 			_ = o.Close()
 			_ = o.Close()
 			if o.e.path("a1").stats.udp != stats || o.e.path("a1").udpFlowsActive != 0 ||
-				o.Report() != nil || o.TakeReport(false) != nil || o.TakeReport(true) != nil ||
+				o.PeekReport() != nil || o.TakeReport(false) != nil || o.TakeReport(true) != nil ||
 				o.StartUDPFlow(context.Background(), "a1", 53) != nil || o.e.report.quietSample != wantQuiet {
 				t.Fatal("late UDP I/O/finish/Close reopened or changed the terminal run")
 			}
@@ -252,7 +254,7 @@ func TestQualityStage1WindowCutKeepsCurrentAndResetsUDPReplyHistogram(t *testing
 				!bytes.Equal(currentBefore, qualityStage1JSON(t, o.e.currentQuality(clk.now()).Paths)) || o.e.report.quietSample != wantQuiet {
 				t.Fatal("interval cut finalized open UDP, retained a window histogram, or cleared/resampled current state")
 			}
-			empty := qualityStage1Decode(t, o.Report())
+			empty := qualityStage1Decode(t, o.PeekReport())
 			qualityStage1UDP(t, empty.Paths["a1"], reportPath{})
 			if len(empty.Quality) != 0 || o.TakeReport(false) != nil || crossesCut.closed {
 				t.Fatal("new window or nil take replayed quality/UDP or finalized the open association")
@@ -279,7 +281,7 @@ func TestQualityStage1WindowCutKeepsCurrentAndResetsUDPReplyHistogram(t *testing
 			qualityStage1UDP(t, final.Paths["a1"], reportPath{UDPFlows: 1, UDPFlowsUnanswered: 1, UDPBytesUp: 8,
 				UDPWrites: 1, UDPPorts: map[string]reportUDPPort{"stun": {Flows: 1, Unanswered: 1}}})
 			if len(final.Quality) != 0 || final.Index != 3 || final.IsQuietSample != wantQuiet || !last.closed ||
-				o.e.report.quietSample != wantQuiet || o.Report() != nil || o.TakeReport(true) != nil ||
+				o.e.report.quietSample != wantQuiet || o.PeekReport() != nil || o.TakeReport(true) != nil ||
 				!bytes.Equal(frozen, qualityStage1JSON(t, snapshot)) {
 				t.Fatal("final cut replayed old quality, lost the run bit, or reopened/mutated reports")
 			}
@@ -426,7 +428,7 @@ func TestQualityStage1DeferredPublicationWithUDPReportBoundaries(t *testing.T) {
 				final := qualityStage1Decode(t, o.TakeReport(true))
 				qualityStage1UDP(t, final.Paths["a1"], reportPath{UDPFlows: 1, UDPBytesUp: 12, UDPBytesDown: 7,
 					UDPWrites: 2, UDPReads: 1, UDPFirstReplyP50Ms: 50, UDPPorts: map[string]reportUDPPort{"dns": {Flows: 1}}})
-				if len(final.Quality) != 0 || o.Report() != nil || o.TakeReport(true) != nil {
+				if len(final.Quality) != 0 || o.PeekReport() != nil || o.TakeReport(true) != nil {
 					t.Fatal("rejected deferred quality reopened or entered a final report")
 				}
 				return
@@ -449,11 +451,11 @@ func TestQualityStage1DeferredPublicationWithUDPReportBoundaries(t *testing.T) {
 				qualitySummaryInt(t, p.BulkKbpsMax, 16775)
 			}
 			if tc.boundary == "final" {
-				if boundaryReport.Reason != reportStop || o.Report() != nil || o.TakeReport(false) != nil || o.TakeReport(true) != nil {
+				if boundaryReport.Reason != reportStop || o.PeekReport() != nil || o.TakeReport(false) != nil || o.TakeReport(true) != nil {
 					t.Fatal("post-final quality publication reopened its terminal report")
 				}
 			} else {
-				later := qualityStage1Decode(t, o.Report())
+				later := qualityStage1Decode(t, o.PeekReport())
 				qualityStage1ReportQuality(t, later, counted, 1)
 				qualityStage1UDP(t, later.Paths["a1"], reportPath{})
 				if later.Index != boundaryReport.Index+1 || o.e.path("a1").stats.udpFirstReply.total != 0 {

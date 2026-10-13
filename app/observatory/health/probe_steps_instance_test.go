@@ -56,22 +56,26 @@ func TestJSONProbeStepsThroughRequestProbe(t *testing.T) {
 				"log":{"loglevel":"none"},
 				"outbounds":[
 					{"tag":"drop","protocol":"blackhole"},
-					{"tag":"a1","protocol":"freedom","path":{"balancer":"auto","cost":1,"probe":"full"}}
+					{"tag":"a1","protocol":"freedom","selection":{"balancer":"auto","cost":1,"probe":"full"}}
 				],
 				"routing":{"rules":[{"domain":["full:a.test"],"balancerTag":"auto"}],
 					"balancers":[{"tag":"auto","fallbackTag":"drop","strategy":{"type":"leastCost","settings":{}}}]},
-				"healthObservatory":{"probes":[{"name":"full","steps":[
+				"healthObservatory":{"probes":{"requests":{"isEnabled":true},"stepProfiles":{"isEnabled":true},"profiles":[{"name":"full","steps":[
 					{"name":"transport","destinations":[%q],"minBytes":4096,"timeout":"2s","progressTimeout":"500ms"},
 					{"name":"egress","isOptional":true,"destinations":[%q],"timeout":"2s","progressTimeout":"500ms"},
 					{"name":"egress_ip","isOptional":true,"destinations":[%q],"minBytes":4096,"timeout":"2s","progressTimeout":"500ms"}
-				]}],"schedule":{"minProbeInterval":"10ms"}}
+				]}]}}
 			}`, srv.URL+"/transport", srv.URL+"/egress", srv.URL+"/egress_ip")
 			cfg, err := core.LoadConfig("json", strings.NewReader(config))
 			if err != nil {
 				t.Fatal(err)
 			}
+			tuneInstanceProbeSpacing(t, cfg)
 			inst, err := core.New(cfg)
 			if err != nil {
+				t.Fatal(err)
+			}
+			if err := health.TuneInstanceScenario(inst, cfg); err != nil {
 				t.Fatal(err)
 			}
 			if err := inst.Start(); err != nil {
@@ -92,7 +96,7 @@ func TestJSONProbeStepsThroughRequestProbe(t *testing.T) {
 			}
 			var view probeView
 			for deadline := time.Now().Add(5 * time.Second); !view.IsDone && time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
-				raw, _ := obs.ProbeResult(ticket.ID)
+				raw, _, _ := obs.ProbeResult(ticket.Run, ticket.ID)
 				if err := json.Unmarshal(raw, &view); err != nil {
 					t.Fatal(err)
 				}

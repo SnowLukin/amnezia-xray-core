@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"google.golang.org/protobuf/proto"
 	"io"
 	gonet "net"
 	"reflect"
@@ -350,7 +351,7 @@ type qualitySpliceDecisionSide struct {
 
 func qualitySpliceDecisionFixture(t *testing.T, skip, skipProbe bool, client gonet.Conn) *qualitySpliceDecisionSide {
 	t.Helper()
-	cfg := &Config{
+	cfg := &Config{Features: &FeatureConfig{Quality: proto.Bool(!skip), Report: proto.Bool(true), Events: proto.Bool(true)},
 		Passive:      &PassiveConfig{ShouldSkipQuality: skip},
 		Schedule:     &ScheduleConfig{IdleAfter: int64(time.Hour)},
 		Connectivity: &ConnectivityConfig{Outbound: "net", Destination: "https://x.test/204"},

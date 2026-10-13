@@ -211,15 +211,15 @@ func (c *InboundDetourConfig) Build() (*core.InboundHandlerConfig, error) {
 }
 
 type OutboundDetourConfig struct {
-	Protocol       string              `json:"protocol"`
-	SendThrough    *string             `json:"sendThrough"`
-	Tag            string              `json:"tag"`
-	Settings       *json.RawMessage    `json:"settings"`
-	StreamSetting  *StreamConfig       `json:"streamSettings"`
-	ProxySettings  *ProxyConfig        `json:"proxySettings"`
-	MuxSettings    *MuxConfig          `json:"mux"`
-	TargetStrategy string              `json:"targetStrategy"`
-	Path           *OutboundPathConfig `json:"path"`
+	Protocol       string                   `json:"protocol"`
+	SendThrough    *string                  `json:"sendThrough"`
+	Tag            string                   `json:"tag"`
+	Settings       *json.RawMessage         `json:"settings"`
+	StreamSetting  *StreamConfig            `json:"streamSettings"`
+	ProxySettings  *ProxyConfig             `json:"proxySettings"`
+	MuxSettings    *MuxConfig               `json:"mux"`
+	TargetStrategy string                   `json:"targetStrategy"`
+	Selection      *OutboundSelectionConfig `json:"selection"`
 }
 
 func (c *OutboundDetourConfig) checkChainProxyConfig() error {
@@ -370,7 +370,7 @@ func (c *OutboundDetourConfig) Build() (*core.OutboundHandlerConfig, error) {
 	return &core.OutboundHandlerConfig{
 		SenderSettings: serial.ToTypedMessage(senderSettings),
 		Tag:            c.Tag,
-		IsProbeOnly:    c.Path != nil && c.Path.IsProbeOnly,
+		IsProbeOnly:    c.Selection != nil && c.Selection.IsProbeOnly,
 		ProxySettings:  serial.ToTypedMessage(ts),
 	}, nil
 }

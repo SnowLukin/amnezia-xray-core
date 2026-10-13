@@ -210,6 +210,9 @@ func (e *engine) beginUDP(j *probeJob, now time.Time) {
 	e.hostStarts = append(e.hostStarts, now)
 	name := e.serverName(j.tag)
 	e.startsByName[name] = append(e.startsByName[name], now)
+	if e.udpStartsByName == nil {
+		e.udpStartsByName = make(map[string][]time.Time)
+	}
 	e.udpStartsByName[name] = append(pruneTimes(e.udpStartsByName[name], now), now)
 	p := j.udpPath
 	if j.reason == reasonUDPSwitch {

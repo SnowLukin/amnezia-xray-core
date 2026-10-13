@@ -51,7 +51,8 @@ type connTracker struct {
 	udpEpoch       uint64
 	udpIncarnation uint64
 	// UDP flows have no request and answer to wait for; only their dial is judged.
-	udp bool
+	udp      bool
+	activity bool
 	// Ends the user connection; nil when none waits for this dial.
 	abort func()
 
@@ -117,6 +118,9 @@ func (t *connTracker) has(flag uint32) bool {
 }
 
 func (t *connTracker) watch() {
+	if !t.needsSweep() {
+		return
+	}
 	if !t.watched.Load() && t.watched.CompareAndSwap(false, true) {
 		t.o.watch(t)
 	}
@@ -145,6 +149,7 @@ func (t *connTracker) Dialed(conn net.Conn, err error, read, write stats.Counter
 	t.write = write
 	t.state.Store(trackerOpen)
 	t.readCounter.t, t.writeCounter.t = t, t
+	t.watch()
 	return &t.readCounter, &t.writeCounter
 }
 
@@ -230,6 +235,9 @@ func (t *connTracker) onRead(n int64) {
 	if n <= 0 {
 		return
 	}
+	if t.activity {
+		t.o.e.lastDemand.Store(t.o.now().UnixNano())
+	}
 	total := t.bytesRead.Add(n)
 	if t.pendingWrite.Load() != 0 {
 		t.pendingWrite.Store(0)
@@ -262,7 +270,9 @@ func (t *connTracker) onRead(n int64) {
 		if from == 0 {
 			from = t.dialed.Load()
 		}
-		t.ttfb.Store(now - from)
+		if t.o.s.features.Report || t.o.s.features.Metrics {
+			t.ttfb.Store(now - from)
+		}
 	}
 	t.quality.mark(t.o, now, total)
 	if total >= p.successBytes {
@@ -279,6 +289,9 @@ func (t *connTracker) onRead(n int64) {
 func (t *connTracker) onWrite(n int64) {
 	if n <= 0 {
 		return
+	}
+	if t.activity {
+		t.o.e.lastDemand.Store(t.o.now().UnixNano())
 	}
 	now := t.o.nowNano()
 	t.bytesWritten.Add(n)
@@ -306,7 +319,7 @@ func (t *connTracker) Finished(err error) {
 	// Ended by a failure before any answer: a transport that connects
 	// lazily, such as XHTTP, shows a dead server this way. A connection the
 	// user closed ends canceled and tells nothing.
-	if err != nil && !goerrors.Is(err, context.Canceled) && !t.udp && !t.spliced.Load() && !t.has(reportedAborted) &&
+	if t.o.s.features.EarlyClose && err != nil && !goerrors.Is(err, context.Canceled) && !t.udp && !t.spliced.Load() && !t.has(reportedAborted) &&
 		t.firstRead.Load() == 0 && t.mark(reportedNoResponse) {
 		t.o.failure(t, failClosed)
 	}
@@ -332,7 +345,7 @@ func (t *connTracker) sweep(now int64) (watching, drop bool) {
 	}
 	switch t.state.Load() {
 	case trackerDialing:
-		if now-t.started > int64(p.dialTimeout) && t.mark(reportedDialTimeout) {
+		if t.o.s.features.DialTimeout && now-t.started > int64(p.dialTimeout) && t.mark(reportedDialTimeout) {
 			t.o.failure(t, failDialTimeout)
 		}
 		// A dial that never reports back would otherwise be watched forever.
@@ -340,7 +353,7 @@ func (t *connTracker) sweep(now int64) (watching, drop bool) {
 		// tunnel, whose dial ends only when the server answers, may wait
 		// longer, and closePending must still end it when its outbound is
 		// found down. An abandoned one goes with the others, see track.
-		return now-t.started <= 4*int64(p.dialTimeout), false
+		return t.o.s.features.DialTimeout && now-t.started <= 4*int64(p.dialTimeout), false
 	case trackerOpen:
 	default:
 		return false, true
@@ -354,6 +367,9 @@ func (t *connTracker) sweep(now int64) (watching, drop bool) {
 	firstWrite, firstRead := t.firstWrite.Load(), t.firstRead.Load()
 	lastWrite, lastRead := t.lastWrite.Load(), t.lastRead.Load()
 	if firstRead == 0 {
+		if !t.o.s.features.FirstReply {
+			return false, false
+		}
 		if t.has(reportedNoResponse) {
 			return false, false
 		}
@@ -371,7 +387,7 @@ func (t *connTracker) sweep(now int64) (watching, drop bool) {
 		return true, false
 	}
 	pending := t.pendingWrite.Load()
-	if pending >= p.stallMinWrite && !t.has(reportedStall) {
+	if t.o.s.features.StalledRequests && pending >= p.stallMinWrite && !t.has(reportedStall) {
 		if now-lastWrite > int64(p.stallTimeout) && t.mark(reportedStall) {
 			t.o.failure(t, failStall)
 			return false, false
@@ -661,4 +677,24 @@ func destString(d net.Destination) string {
 		return ""
 	}
 	return d.Address.String()
+}
+
+// needsSweep is evaluated before admitting a connection to the deadline registry.
+// Closure and UDP TCP-proof counters have no passive deadline of their own.
+func (t *connTracker) needsSweep() bool {
+	f := t.o.s.features
+	if t.state.Load() == trackerDialing {
+		return f.DialTimeout
+	}
+	if t.udp {
+		return false
+	}
+	if t.spliced.Load() {
+		return f.PartialStalls
+	}
+	if t.firstRead.Load() == 0 {
+		return f.FirstReply
+	}
+	return (f.StalledRequests && t.pendingWrite.Load() >= t.o.s.passive.stallMinWrite) ||
+		(f.PartialStalls && t.bytesRead.Load() >= t.o.s.passive.partialMinBytes && !t.has(reportedSuccess))
 }

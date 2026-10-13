@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"strconv"
+	"strings"
 	"unicode/utf8"
 
 	healthService "github.com/xtls/xray-core/app/observatory/health/command"
@@ -15,7 +16,7 @@ import (
 
 var cmdHealth = &base.Command{
 	CustomFlags: true,
-	UsageLine:   "{{.Exec}} api health [--server=127.0.0.1:8080] <status|events|network [id]|lost|present|pin <balancer> <outbound> [run]|release <balancer> [run]|refresh [provider]|report [take|final]|probe [--udp] <balancer> [outbound...]|headers <provider>|set <provider> [after]>",
+	UsageLine:   "{{.Exec}} api health [--server=127.0.0.1:8080] <status|events|network [id]|lost|present|pin <balancer> <outbound> [run]|release <balancer> [run]|refresh [provider]|report [take|final]|probe [--udp] <balancer> [outbound...]|headers <provider>|set <provider> [after]|probe-result <run> <id>|memory --low=true>",
 	Short:       "Query and control the health observatory",
 	Long: `
 Query and control the health observatory. Output is JSON.
@@ -54,7 +55,7 @@ Commands:
 	                            value removes one. Never from arguments,
 	                            which the process list shows
 	set <provider> [after]      the last set the provider applied, valid
-	                            as its initial, with the token: {"seq": n,
+	                            as its initialAnswer, with the token: {"seq": n,
 	                            "set": {...}}; set is null when nothing
 	                            changed since the seq after
 
@@ -91,87 +92,76 @@ func executeHealth(cmd *base.Command, args []string) {
 	conn, ctx, close := dialAPIServer()
 	defer close()
 	client := healthService.NewHealthServiceClient(conn)
+
+	var response *healthService.Result
+	var err error
 	switch a[0] {
 	case "status":
-		r, err := client.GetStatus(ctx, &healthService.GetStatusRequest{})
-		if err != nil {
-			base.Fatalf("health status: %s", err)
-		}
-		fmt.Println(r.Json)
+		response, err = client.Status(ctx, &healthService.StatusRequest{})
 	case "events":
-		r, err := client.DrainEvents(ctx, &healthService.DrainEventsRequest{})
-		if err != nil {
-			base.Fatalf("health events: %s", err)
-		}
-		fmt.Printf("{\"dropped\":%d,\"events\":%s}\n", r.Dropped, r.Json)
-	case "present":
-		if len(a) != 1 {
-			base.Fatalf("health present: no arguments expected")
-		}
-		if _, err := client.UserPresent(ctx, &healthService.UserPresentRequest{}); err != nil {
-			base.Fatalf("health present: %s", err)
-		}
-		fmt.Println("{}")
-	case "network", "lost":
-		req := &healthService.NetworkChangedRequest{Lost: a[0] == "lost"}
-		if len(a) > 1 {
-			req.Network = a[1]
-		}
-		if _, err := client.NetworkChanged(ctx, req); err != nil {
-			base.Fatalf("health %s: %s", a[0], err)
-		}
-		fmt.Println("{}")
-	case "pin", "release":
-		req := &healthService.PinRequest{}
-		if len(a) > 1 {
-			req.Balancer = a[1]
-		}
-		run := 2
-		if a[0] == "pin" {
-			if len(a) < 3 {
-				base.Fatalf("health pin: need balancer and outbound")
+		response, err = client.DrainEvents(ctx, &healthService.DrainEventsRequest{})
+	case "network":
+		req := &healthService.NetworkChangedRequest{}
+		labels := map[string]string{}
+		for i := 1; i < len(a); i++ {
+			if a[i] == "--label" && i+1 < len(a) {
+				i++
+				pair := strings.SplitN(a[i], "=", 2)
+				if len(pair) != 2 {
+					base.Fatalf("health network: label needs key=value")
+				}
+				labels[pair[0]] = pair[1]
+			} else if req.Network == "" {
+				req.Network = a[i]
+			} else {
+				base.Fatalf("health network: unexpected argument")
 			}
-			req.Outbound = a[2]
-			run = 3
 		}
-		if len(a) > run {
-			req.Run = a[run]
+		if len(labels) > 0 {
+			response, err = client.NetworkChangedWithLabels(ctx, &healthService.NetworkChangedWithLabelsRequest{Network: req.Network, Labels: labels})
+		} else {
+			response, err = client.NetworkChanged(ctx, req)
 		}
-		r, err := client.Pin(ctx, req)
-		if err != nil {
-			base.Fatalf("health %s: %s", a[0], err)
+	case "lost":
+		response, err = client.NetworkLost(ctx, &healthService.NetworkLostRequest{})
+	case "present":
+		response, err = client.UserPresent(ctx, &healthService.UserPresentRequest{})
+	case "memory":
+		if len(a) != 2 || (a[1] != "--low=true" && a[1] != "--low=false") {
+			base.Fatalf("health memory: expected --low=true or --low=false")
 		}
-		fmt.Printf("{\"ok\":%t}\n", r.Ok)
+		response, err = client.SetMemoryLow(ctx, &healthService.SetMemoryLowRequest{IsLow: a[1] == "--low=true"})
+	case "pin":
+		if len(a) < 3 {
+			base.Fatalf("health pin: need balancer and outbound")
+		}
+		req := &healthService.PinRequest{Balancer: a[1], Outbound: a[2]}
+		if len(a) > 3 {
+			req.Run = a[3]
+		}
+		response, err = client.Pin(ctx, req)
+	case "release":
+		if len(a) < 2 {
+			base.Fatalf("health release: need balancer")
+		}
+		req := &healthService.ReleaseRequest{Balancer: a[1]}
+		if len(a) > 2 {
+			req.Run = a[2]
+		}
+		response, err = client.Release(ctx, req)
 	case "refresh":
-		req := &healthService.RefreshRequest{}
+		req := &healthService.RequestProviderRefreshRequest{}
 		if len(a) > 1 {
 			req.Provider = a[1]
 		}
-		r, err := client.Refresh(ctx, req)
-		if err != nil {
-			base.Fatalf("health refresh: %s", err)
-		}
-		fmt.Printf("{\"ok\":%t}\n", r.Ok)
+		response, err = client.RequestProviderRefresh(ctx, req)
 	case "report":
-		req := &healthService.GetReportRequest{}
-		if len(a) > 1 {
-			switch a[1] {
-			case "take":
-				req.Take = true
-			case "final":
-				req.Final = true
-			default:
-				base.Fatalf("health report: unknown argument %s", a[1])
-			}
-		}
-		r, err := client.GetReport(ctx, req)
-		if err != nil {
-			base.Fatalf("health report: %s", err)
-		}
-		if r.Json == "" {
-			fmt.Println("null")
+		if len(a) == 1 {
+			response, err = client.PeekReport(ctx, &healthService.PeekReportRequest{})
+		} else if a[1] == "take" || a[1] == "final" {
+			response, err = client.TakeReport(ctx, &healthService.TakeReportRequest{IsFinal: a[1] == "final"})
 		} else {
-			fmt.Println(r.Json)
+			base.Fatalf("health report: expected take or final")
 		}
 	case "probe":
 		isUDP := false
@@ -187,45 +177,38 @@ func executeHealth(cmd *base.Command, args []string) {
 		if len(a) < 2 {
 			base.Fatalf("health probe: need balancer")
 		}
-		req := &healthService.ProbeRequest{Balancer: a[1], Outbounds: a[2:], IsUdp: isUDP, WaitMs: int64(apiTimeout) * 1000}
-		r, err := client.Probe(ctx, req)
-		if err != nil {
-			base.Fatalf("health probe: %s", err)
+		response, err = client.RequestProbe(ctx, &healthService.RequestProbeRequest{Balancer: a[1], Outbounds: a[2:], IsUdp: isUDP, WaitMs: int64(apiTimeout) * 1000})
+	case "probe-result":
+		if len(a) != 3 {
+			base.Fatalf("health probe-result: need run and id")
 		}
-		request := r.Json
-		if request == "" {
-			request = "null"
+		id, parseErr := strconv.ParseUint(a[2], 10, 64)
+		if parseErr != nil {
+			base.Fatalf("health probe-result: id must be a number")
 		}
-		fmt.Printf("{\"id\":%d,\"run\":%q,\"request\":%s}\n", r.Id, r.Run, request)
+		response, err = client.ProbeResult(ctx, &healthService.ProbeResultRequest{Run: a[1], Id: id})
 	case "set":
 		if len(a) < 2 {
 			base.Fatalf("health set: need provider")
 		}
-		req := &healthService.GetProviderSetRequest{Provider: a[1]}
+		req := &healthService.ExportProviderSetRequest{Provider: a[1]}
 		if len(a) > 2 {
-			after, err := strconv.ParseUint(a[2], 10, 64)
-			if err != nil {
+			after, parseErr := strconv.ParseUint(a[2], 10, 64)
+			if parseErr != nil {
 				base.Fatalf("health set: after must be a number")
 			}
 			req.After = after
 		}
-		r, err := client.GetProviderSet(ctx, req)
-		if err != nil {
-			base.Fatalf("health set: %s", err)
-		}
-		set := r.Json
-		if set == "" {
-			set = "null"
-		}
-		fmt.Printf("{\"seq\":%d,\"set\":%s}\n", r.Seq, set)
+		response, err = client.ExportProviderSet(ctx, req)
 	case "headers":
-		if _, err := client.SetProviderHeaders(ctx, &healthService.SetProviderHeadersRequest{Provider: a[1], Headers: headers}); err != nil {
-			base.Fatalf("health headers: %s", err)
-		}
-		fmt.Println("{\"ok\":true}")
+		response, err = client.SetProviderHeaders(ctx, &healthService.SetProviderHeadersRequest{Provider: a[1], Headers: headers})
 	default:
 		base.Fatalf("health: unknown command %s", a[0])
 	}
+	if err != nil {
+		base.Fatalf("health %s: %s", a[0], err)
+	}
+	fmt.Println(string(decodedHealthResult(response)))
 }
 
 // maxHeadersInput bounds what providerHeaders reads: eight values of 4 KiB
@@ -253,4 +236,16 @@ func providerHeaders(in io.Reader) (map[string]string, error) {
 		return nil, errors.New(`stdin must hold a JSON object of strings, such as {"Authorization": "Bearer ..."}`)
 	}
 	return headers, nil
+}
+
+// Render the shared Result without encoding its data object a second time.
+func decodedHealthResult(r *healthService.Result) []byte {
+	out := struct {
+		Success bool                        `json:"success"`
+		Run     string                      `json:"run,omitempty"`
+		Data    json.RawMessage             `json:"data,omitempty"`
+		Error   *healthService.CommandError `json:"error,omitempty"`
+	}{r.Success, r.Run, json.RawMessage(r.Data), r.Error}
+	raw, _ := json.Marshal(out)
+	return raw
 }

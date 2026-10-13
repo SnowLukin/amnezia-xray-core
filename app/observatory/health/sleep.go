@@ -90,7 +90,7 @@ func (e *engine) used(tag string, now time.Time) bool {
 	p.usedAt = now
 	p.uses++
 	p.sleepTries, p.nextSleepTry = 0, time.Time{}
-	return woke && e.s.sleepAfter > 0 && p.sleeper != sleeperNo
+	return woke && (e.s.sleepAfter > 0 || e.s.closeIdleAfter > 0) && p.sleeper != sleeperNo
 }
 
 // processStarted counts a connection the proxy of an outbound that can
@@ -124,7 +124,7 @@ func (e *engine) processEnded(tag string, now time.Time) bool {
 	}
 	p.processes--
 	e.used(tag, now)
-	return p.processes == 0 && e.s.sleepAfter > 0 && !e.keptAwake(tag, e.idle(now))
+	return p.processes == 0 && (e.s.sleepAfter > 0 || e.s.closeIdleAfter > 0) && !e.keptAwake(tag, e.idle(now))
 }
 
 // fetchingVia counts the provider requests under way through an outbound:
@@ -148,7 +148,7 @@ func (e *engine) fetchingVia(tag string, delta int, now time.Time) {
 // Nothing is planned while a batch is under way: its end kicks the loop.
 func (e *engine) planSleeps(now time.Time) time.Time {
 	after := e.s.sleepAfter
-	if after <= 0 {
+	if after <= 0 && e.s.closeIdleAfter <= 0 {
 		return time.Time{}
 	}
 	e.noteNetwork(now)
@@ -164,6 +164,15 @@ func (e *engine) planSleeps(now time.Time) time.Time {
 		if p.sleeper == sleeperUnknown {
 			e.sleeps = append(e.sleeps, sleepJob{tag: tag, p: p, uses: p.uses})
 			p.sleeping = true
+			continue
+		}
+		if e.s.closeIdleAfter > 0 && p.processes > 0 {
+			wake = soonestOf(wake, e.planIdleCheck(tag, p, now, idle))
+			if p.sleeping {
+				continue
+			}
+		}
+		if after <= 0 {
 			continue
 		}
 		if e.keptAwake(tag, idle) {

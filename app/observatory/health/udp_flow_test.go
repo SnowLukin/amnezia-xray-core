@@ -14,7 +14,7 @@ import (
 
 func newUDPObserver(t testing.TB) *Observer {
 	t.Helper()
-	o := newObserver(context.Background(), &Config{Paths: observed("a1", "b1"), Report: &ReportConfig{Interval: int64(time.Second)}})
+	o := newObserver(context.Background(), &Config{Features: &FeatureConfig{Report: v2Bool(true), UdpReplies: v2Bool(true)}, Paths: observed("a1", "b1"), Report: &ReportConfig{Interval: int64(time.Second)}})
 	return o
 }
 
@@ -126,7 +126,7 @@ func TestUDPFlowTwoLogicalLinksAndFinalOnce(t *testing.T) {
 	first.Uplink(4, 1)
 	second.Uplink(8, 2)
 	first.Finished()
-	snapshot := udpReport(t, o.Report())
+	snapshot := udpReport(t, o.PeekReport())
 	if snapshot.Paths["a1"].UDPFlows != 1 || snapshot.Paths["a1"].UDPPorts["stun"].Flows != 0 {
 		t.Fatalf("snapshot finalized an open logical link: %+v", snapshot.Paths["a1"])
 	}
@@ -256,7 +256,7 @@ func TestQuietSampleOnlyMakesFinalReportDue(t *testing.T) {
 	if raw := o.TakeReport(false); raw != nil {
 		t.Fatalf("quiet interval report: %s", raw)
 	}
-	snapshot := udpReport(t, o.Report())
+	snapshot := udpReport(t, o.PeekReport())
 	if !snapshot.IsQuietSample || snapshot.Reason != reportSnapshot {
 		t.Fatalf("quiet snapshot: %+v", snapshot)
 	}

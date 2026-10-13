@@ -104,15 +104,19 @@ func newSleepFixture(t *testing.T, cfg *Config, sc *SelectorConfig, candidates .
 		sc = &SelectorConfig{Paths: pathSpecs("a", 1, "w", 3)}
 	}
 	f := &sleepFixture{m: newFakeManager(), now: t0, handlers: map[string]*fakeHandler{}, proxies: map[string]*sleepyProxy{}}
-	f.o = newObserver(context.Background(), cfg)
+	f.o = newObserver(context.Background(), legacyScenarioConfig(cfg))
+	f.o.s = legacyScenarioSettings(cfg)
+	f.o.e.s = f.o.s
 	t.Cleanup(func() { f.o.Close() })
 	f.o.clock = func() time.Time { return f.now }
+	f.o.base = t0.Add(-time.Second)
+	f.o.e.report.begin(t0)
 	f.o.ohm = f.m
 	for _, tag := range candidates {
 		f.add(tag)
 	}
 	f.o.mu.Lock()
-	s := f.o.e.addSelector("auto", newSelectorSettings(fixtureSelector(sc, candidates)))
+	s := f.o.e.addSelector("auto", legacyScenarioSelector(fixtureSelector(sc, candidates), cfg))
 	f.o.e.noteDemand(t0)
 	f.o.e.updateCandidates(s, candidates, t0)
 	f.o.mu.Unlock()
@@ -258,7 +262,7 @@ func TestNeverSleepsChosenPinnedTargetProbedQueuedOrFetchVia(t *testing.T) {
 			e.switchTo(s, "w1", "failover", now)
 		}},
 		{"pinned by another balancer", func(t *testing.T, e *engine, s *selector, now time.Time) {
-			other := e.addSelector("other", newSelectorSettings(&SelectorConfig{Paths: pathSpecs("a1", 1, "w1", 3)}))
+			other := e.addSelector("other", legacyScenarioSelector(&SelectorConfig{Paths: pathSpecs("a1", 1, "w1", 3)}, nil))
 			e.updateCandidates(other, []string{"a1", "w1"}, now)
 			if !e.pin("other", "w1", now) {
 				t.Fatal("setup: pin refused")
@@ -603,7 +607,7 @@ func TestDownSleepRetriesSoon(t *testing.T) {
 	f := newDownFixture(t)
 	// The check for silent connections would wake the loop between the
 	// retries; nothing here has connections.
-	f.o.s.passive.keepSilent = true
+	f.o.e.selectors["auto"].cfg.closeSilent = false
 	f.proxies["w1"].setBusy(true)
 	now := at(time.Minute)
 	f.failW1(now)
@@ -968,6 +972,9 @@ func TestGCKeepsAnAwakeSleeperUntilItSleeps(t *testing.T) {
 // on while the outbound refuses to sleep, and ends once it lets go.
 func TestDrainAsksAnOutboundThatCanSleep(t *testing.T) {
 	f := newApplyFixture(t, time.Hour)
+	f.o.s.features.TunnelSleep = true
+	f.o.s.sleepAfter = defaultSleepAfter
+	f.o.s.features.MemoryPressure = true
 	build := f.o.newHandler
 	var tunnel *sleepyProxy
 	f.o.newHandler = func(c *core.OutboundHandlerConfig) (outbound.Handler, error) {

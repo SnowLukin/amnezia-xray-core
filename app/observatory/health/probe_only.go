@@ -105,6 +105,9 @@ func (e *engine) candidateCurrent(j *probeJob) bool {
 }
 
 func (e *engine) updateProbeOnly(s *selector, now time.Time) time.Time {
+	if !e.s.features.Candidates {
+		return time.Time{}
+	}
 	if !e.probeOnlyNeeded(s) {
 		if s.probeOnlyActive {
 			s.probeOnlyActive = false

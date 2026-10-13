@@ -117,7 +117,7 @@ func (e *engine) groupOrder(s *selector, now time.Time, skip func(string) bool, 
 		}
 		p := e.pathAt(t, now)
 		g := s.groupFor(t)
-		if !p.usable(now) || (g != nil && g.down && reason != reasonRecheck && reason != reasonHost) {
+		if !e.expiredLeaseUsable(t) || !p.usable(now) || (g != nil && g.down && reason != reasonRecheck && reason != reasonHost) {
 			continue
 		}
 		it := item{tag: t, key: t, cost: e.cost(s, t), expired: e.expired[t], quality: e.pathQuality(t), pathOrder: i}

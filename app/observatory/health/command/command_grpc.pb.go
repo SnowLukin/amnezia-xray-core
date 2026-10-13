@@ -19,32 +19,44 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	HealthService_GetStatus_FullMethodName          = "/xray.core.app.observatory.health.command.HealthService/GetStatus"
-	HealthService_DrainEvents_FullMethodName        = "/xray.core.app.observatory.health.command.HealthService/DrainEvents"
-	HealthService_NetworkChanged_FullMethodName     = "/xray.core.app.observatory.health.command.HealthService/NetworkChanged"
-	HealthService_UserPresent_FullMethodName        = "/xray.core.app.observatory.health.command.HealthService/UserPresent"
-	HealthService_Pin_FullMethodName                = "/xray.core.app.observatory.health.command.HealthService/Pin"
-	HealthService_Refresh_FullMethodName            = "/xray.core.app.observatory.health.command.HealthService/Refresh"
-	HealthService_GetReport_FullMethodName          = "/xray.core.app.observatory.health.command.HealthService/GetReport"
-	HealthService_Probe_FullMethodName              = "/xray.core.app.observatory.health.command.HealthService/Probe"
-	HealthService_SetProviderHeaders_FullMethodName = "/xray.core.app.observatory.health.command.HealthService/SetProviderHeaders"
-	HealthService_GetProviderSet_FullMethodName     = "/xray.core.app.observatory.health.command.HealthService/GetProviderSet"
+	HealthService_Status_FullMethodName                   = "/xray.core.app.observatory.health.command.HealthService/Status"
+	HealthService_DrainEvents_FullMethodName              = "/xray.core.app.observatory.health.command.HealthService/DrainEvents"
+	HealthService_NetworkChanged_FullMethodName           = "/xray.core.app.observatory.health.command.HealthService/NetworkChanged"
+	HealthService_NetworkChangedWithLabels_FullMethodName = "/xray.core.app.observatory.health.command.HealthService/NetworkChangedWithLabels"
+	HealthService_NetworkLost_FullMethodName              = "/xray.core.app.observatory.health.command.HealthService/NetworkLost"
+	HealthService_UserPresent_FullMethodName              = "/xray.core.app.observatory.health.command.HealthService/UserPresent"
+	HealthService_SetMemoryLow_FullMethodName             = "/xray.core.app.observatory.health.command.HealthService/SetMemoryLow"
+	HealthService_Pin_FullMethodName                      = "/xray.core.app.observatory.health.command.HealthService/Pin"
+	HealthService_Release_FullMethodName                  = "/xray.core.app.observatory.health.command.HealthService/Release"
+	HealthService_RequestProviderRefresh_FullMethodName   = "/xray.core.app.observatory.health.command.HealthService/RequestProviderRefresh"
+	HealthService_PeekReport_FullMethodName               = "/xray.core.app.observatory.health.command.HealthService/PeekReport"
+	HealthService_TakeReport_FullMethodName               = "/xray.core.app.observatory.health.command.HealthService/TakeReport"
+	HealthService_RequestProbe_FullMethodName             = "/xray.core.app.observatory.health.command.HealthService/RequestProbe"
+	HealthService_ProbeResult_FullMethodName              = "/xray.core.app.observatory.health.command.HealthService/ProbeResult"
+	HealthService_SetProviderHeaders_FullMethodName       = "/xray.core.app.observatory.health.command.HealthService/SetProviderHeaders"
+	HealthService_ExportProviderSet_FullMethodName        = "/xray.core.app.observatory.health.command.HealthService/ExportProviderSet"
 )
 
 // HealthServiceClient is the client API for HealthService service.
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type HealthServiceClient interface {
-	GetStatus(ctx context.Context, in *GetStatusRequest, opts ...grpc.CallOption) (*GetStatusResponse, error)
-	DrainEvents(ctx context.Context, in *DrainEventsRequest, opts ...grpc.CallOption) (*DrainEventsResponse, error)
-	NetworkChanged(ctx context.Context, in *NetworkChangedRequest, opts ...grpc.CallOption) (*NetworkChangedResponse, error)
-	UserPresent(ctx context.Context, in *UserPresentRequest, opts ...grpc.CallOption) (*UserPresentResponse, error)
-	Pin(ctx context.Context, in *PinRequest, opts ...grpc.CallOption) (*PinResponse, error)
-	Refresh(ctx context.Context, in *RefreshRequest, opts ...grpc.CallOption) (*RefreshResponse, error)
-	GetReport(ctx context.Context, in *GetReportRequest, opts ...grpc.CallOption) (*GetReportResponse, error)
-	Probe(ctx context.Context, in *ProbeRequest, opts ...grpc.CallOption) (*ProbeResponse, error)
-	SetProviderHeaders(ctx context.Context, in *SetProviderHeadersRequest, opts ...grpc.CallOption) (*SetProviderHeadersResponse, error)
-	GetProviderSet(ctx context.Context, in *GetProviderSetRequest, opts ...grpc.CallOption) (*GetProviderSetResponse, error)
+	Status(ctx context.Context, in *StatusRequest, opts ...grpc.CallOption) (*Result, error)
+	DrainEvents(ctx context.Context, in *DrainEventsRequest, opts ...grpc.CallOption) (*Result, error)
+	NetworkChanged(ctx context.Context, in *NetworkChangedRequest, opts ...grpc.CallOption) (*Result, error)
+	NetworkChangedWithLabels(ctx context.Context, in *NetworkChangedWithLabelsRequest, opts ...grpc.CallOption) (*Result, error)
+	NetworkLost(ctx context.Context, in *NetworkLostRequest, opts ...grpc.CallOption) (*Result, error)
+	UserPresent(ctx context.Context, in *UserPresentRequest, opts ...grpc.CallOption) (*Result, error)
+	SetMemoryLow(ctx context.Context, in *SetMemoryLowRequest, opts ...grpc.CallOption) (*Result, error)
+	Pin(ctx context.Context, in *PinRequest, opts ...grpc.CallOption) (*Result, error)
+	Release(ctx context.Context, in *ReleaseRequest, opts ...grpc.CallOption) (*Result, error)
+	RequestProviderRefresh(ctx context.Context, in *RequestProviderRefreshRequest, opts ...grpc.CallOption) (*Result, error)
+	PeekReport(ctx context.Context, in *PeekReportRequest, opts ...grpc.CallOption) (*Result, error)
+	TakeReport(ctx context.Context, in *TakeReportRequest, opts ...grpc.CallOption) (*Result, error)
+	RequestProbe(ctx context.Context, in *RequestProbeRequest, opts ...grpc.CallOption) (*Result, error)
+	ProbeResult(ctx context.Context, in *ProbeResultRequest, opts ...grpc.CallOption) (*Result, error)
+	SetProviderHeaders(ctx context.Context, in *SetProviderHeadersRequest, opts ...grpc.CallOption) (*Result, error)
+	ExportProviderSet(ctx context.Context, in *ExportProviderSetRequest, opts ...grpc.CallOption) (*Result, error)
 }
 
 type healthServiceClient struct {
@@ -55,19 +67,19 @@ func NewHealthServiceClient(cc grpc.ClientConnInterface) HealthServiceClient {
 	return &healthServiceClient{cc}
 }
 
-func (c *healthServiceClient) GetStatus(ctx context.Context, in *GetStatusRequest, opts ...grpc.CallOption) (*GetStatusResponse, error) {
+func (c *healthServiceClient) Status(ctx context.Context, in *StatusRequest, opts ...grpc.CallOption) (*Result, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(GetStatusResponse)
-	err := c.cc.Invoke(ctx, HealthService_GetStatus_FullMethodName, in, out, cOpts...)
+	out := new(Result)
+	err := c.cc.Invoke(ctx, HealthService_Status_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func (c *healthServiceClient) DrainEvents(ctx context.Context, in *DrainEventsRequest, opts ...grpc.CallOption) (*DrainEventsResponse, error) {
+func (c *healthServiceClient) DrainEvents(ctx context.Context, in *DrainEventsRequest, opts ...grpc.CallOption) (*Result, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(DrainEventsResponse)
+	out := new(Result)
 	err := c.cc.Invoke(ctx, HealthService_DrainEvents_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
@@ -75,9 +87,9 @@ func (c *healthServiceClient) DrainEvents(ctx context.Context, in *DrainEventsRe
 	return out, nil
 }
 
-func (c *healthServiceClient) NetworkChanged(ctx context.Context, in *NetworkChangedRequest, opts ...grpc.CallOption) (*NetworkChangedResponse, error) {
+func (c *healthServiceClient) NetworkChanged(ctx context.Context, in *NetworkChangedRequest, opts ...grpc.CallOption) (*Result, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(NetworkChangedResponse)
+	out := new(Result)
 	err := c.cc.Invoke(ctx, HealthService_NetworkChanged_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
@@ -85,9 +97,29 @@ func (c *healthServiceClient) NetworkChanged(ctx context.Context, in *NetworkCha
 	return out, nil
 }
 
-func (c *healthServiceClient) UserPresent(ctx context.Context, in *UserPresentRequest, opts ...grpc.CallOption) (*UserPresentResponse, error) {
+func (c *healthServiceClient) NetworkChangedWithLabels(ctx context.Context, in *NetworkChangedWithLabelsRequest, opts ...grpc.CallOption) (*Result, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(UserPresentResponse)
+	out := new(Result)
+	err := c.cc.Invoke(ctx, HealthService_NetworkChangedWithLabels_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *healthServiceClient) NetworkLost(ctx context.Context, in *NetworkLostRequest, opts ...grpc.CallOption) (*Result, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(Result)
+	err := c.cc.Invoke(ctx, HealthService_NetworkLost_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *healthServiceClient) UserPresent(ctx context.Context, in *UserPresentRequest, opts ...grpc.CallOption) (*Result, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(Result)
 	err := c.cc.Invoke(ctx, HealthService_UserPresent_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
@@ -95,9 +127,19 @@ func (c *healthServiceClient) UserPresent(ctx context.Context, in *UserPresentRe
 	return out, nil
 }
 
-func (c *healthServiceClient) Pin(ctx context.Context, in *PinRequest, opts ...grpc.CallOption) (*PinResponse, error) {
+func (c *healthServiceClient) SetMemoryLow(ctx context.Context, in *SetMemoryLowRequest, opts ...grpc.CallOption) (*Result, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(PinResponse)
+	out := new(Result)
+	err := c.cc.Invoke(ctx, HealthService_SetMemoryLow_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *healthServiceClient) Pin(ctx context.Context, in *PinRequest, opts ...grpc.CallOption) (*Result, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(Result)
 	err := c.cc.Invoke(ctx, HealthService_Pin_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
@@ -105,39 +147,69 @@ func (c *healthServiceClient) Pin(ctx context.Context, in *PinRequest, opts ...g
 	return out, nil
 }
 
-func (c *healthServiceClient) Refresh(ctx context.Context, in *RefreshRequest, opts ...grpc.CallOption) (*RefreshResponse, error) {
+func (c *healthServiceClient) Release(ctx context.Context, in *ReleaseRequest, opts ...grpc.CallOption) (*Result, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(RefreshResponse)
-	err := c.cc.Invoke(ctx, HealthService_Refresh_FullMethodName, in, out, cOpts...)
+	out := new(Result)
+	err := c.cc.Invoke(ctx, HealthService_Release_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func (c *healthServiceClient) GetReport(ctx context.Context, in *GetReportRequest, opts ...grpc.CallOption) (*GetReportResponse, error) {
+func (c *healthServiceClient) RequestProviderRefresh(ctx context.Context, in *RequestProviderRefreshRequest, opts ...grpc.CallOption) (*Result, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(GetReportResponse)
-	err := c.cc.Invoke(ctx, HealthService_GetReport_FullMethodName, in, out, cOpts...)
+	out := new(Result)
+	err := c.cc.Invoke(ctx, HealthService_RequestProviderRefresh_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func (c *healthServiceClient) Probe(ctx context.Context, in *ProbeRequest, opts ...grpc.CallOption) (*ProbeResponse, error) {
+func (c *healthServiceClient) PeekReport(ctx context.Context, in *PeekReportRequest, opts ...grpc.CallOption) (*Result, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(ProbeResponse)
-	err := c.cc.Invoke(ctx, HealthService_Probe_FullMethodName, in, out, cOpts...)
+	out := new(Result)
+	err := c.cc.Invoke(ctx, HealthService_PeekReport_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func (c *healthServiceClient) SetProviderHeaders(ctx context.Context, in *SetProviderHeadersRequest, opts ...grpc.CallOption) (*SetProviderHeadersResponse, error) {
+func (c *healthServiceClient) TakeReport(ctx context.Context, in *TakeReportRequest, opts ...grpc.CallOption) (*Result, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(SetProviderHeadersResponse)
+	out := new(Result)
+	err := c.cc.Invoke(ctx, HealthService_TakeReport_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *healthServiceClient) RequestProbe(ctx context.Context, in *RequestProbeRequest, opts ...grpc.CallOption) (*Result, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(Result)
+	err := c.cc.Invoke(ctx, HealthService_RequestProbe_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *healthServiceClient) ProbeResult(ctx context.Context, in *ProbeResultRequest, opts ...grpc.CallOption) (*Result, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(Result)
+	err := c.cc.Invoke(ctx, HealthService_ProbeResult_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *healthServiceClient) SetProviderHeaders(ctx context.Context, in *SetProviderHeadersRequest, opts ...grpc.CallOption) (*Result, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(Result)
 	err := c.cc.Invoke(ctx, HealthService_SetProviderHeaders_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
@@ -145,10 +217,10 @@ func (c *healthServiceClient) SetProviderHeaders(ctx context.Context, in *SetPro
 	return out, nil
 }
 
-func (c *healthServiceClient) GetProviderSet(ctx context.Context, in *GetProviderSetRequest, opts ...grpc.CallOption) (*GetProviderSetResponse, error) {
+func (c *healthServiceClient) ExportProviderSet(ctx context.Context, in *ExportProviderSetRequest, opts ...grpc.CallOption) (*Result, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(GetProviderSetResponse)
-	err := c.cc.Invoke(ctx, HealthService_GetProviderSet_FullMethodName, in, out, cOpts...)
+	out := new(Result)
+	err := c.cc.Invoke(ctx, HealthService_ExportProviderSet_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -159,16 +231,22 @@ func (c *healthServiceClient) GetProviderSet(ctx context.Context, in *GetProvide
 // All implementations must embed UnimplementedHealthServiceServer
 // for forward compatibility.
 type HealthServiceServer interface {
-	GetStatus(context.Context, *GetStatusRequest) (*GetStatusResponse, error)
-	DrainEvents(context.Context, *DrainEventsRequest) (*DrainEventsResponse, error)
-	NetworkChanged(context.Context, *NetworkChangedRequest) (*NetworkChangedResponse, error)
-	UserPresent(context.Context, *UserPresentRequest) (*UserPresentResponse, error)
-	Pin(context.Context, *PinRequest) (*PinResponse, error)
-	Refresh(context.Context, *RefreshRequest) (*RefreshResponse, error)
-	GetReport(context.Context, *GetReportRequest) (*GetReportResponse, error)
-	Probe(context.Context, *ProbeRequest) (*ProbeResponse, error)
-	SetProviderHeaders(context.Context, *SetProviderHeadersRequest) (*SetProviderHeadersResponse, error)
-	GetProviderSet(context.Context, *GetProviderSetRequest) (*GetProviderSetResponse, error)
+	Status(context.Context, *StatusRequest) (*Result, error)
+	DrainEvents(context.Context, *DrainEventsRequest) (*Result, error)
+	NetworkChanged(context.Context, *NetworkChangedRequest) (*Result, error)
+	NetworkChangedWithLabels(context.Context, *NetworkChangedWithLabelsRequest) (*Result, error)
+	NetworkLost(context.Context, *NetworkLostRequest) (*Result, error)
+	UserPresent(context.Context, *UserPresentRequest) (*Result, error)
+	SetMemoryLow(context.Context, *SetMemoryLowRequest) (*Result, error)
+	Pin(context.Context, *PinRequest) (*Result, error)
+	Release(context.Context, *ReleaseRequest) (*Result, error)
+	RequestProviderRefresh(context.Context, *RequestProviderRefreshRequest) (*Result, error)
+	PeekReport(context.Context, *PeekReportRequest) (*Result, error)
+	TakeReport(context.Context, *TakeReportRequest) (*Result, error)
+	RequestProbe(context.Context, *RequestProbeRequest) (*Result, error)
+	ProbeResult(context.Context, *ProbeResultRequest) (*Result, error)
+	SetProviderHeaders(context.Context, *SetProviderHeadersRequest) (*Result, error)
+	ExportProviderSet(context.Context, *ExportProviderSetRequest) (*Result, error)
 	mustEmbedUnimplementedHealthServiceServer()
 }
 
@@ -179,35 +257,53 @@ type HealthServiceServer interface {
 // pointer dereference when methods are called.
 type UnimplementedHealthServiceServer struct{}
 
-func (UnimplementedHealthServiceServer) GetStatus(context.Context, *GetStatusRequest) (*GetStatusResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method GetStatus not implemented")
+func (UnimplementedHealthServiceServer) Status(context.Context, *StatusRequest) (*Result, error) {
+	return nil, status.Error(codes.Unimplemented, "method Status not implemented")
 }
-func (UnimplementedHealthServiceServer) DrainEvents(context.Context, *DrainEventsRequest) (*DrainEventsResponse, error) {
+func (UnimplementedHealthServiceServer) DrainEvents(context.Context, *DrainEventsRequest) (*Result, error) {
 	return nil, status.Error(codes.Unimplemented, "method DrainEvents not implemented")
 }
-func (UnimplementedHealthServiceServer) NetworkChanged(context.Context, *NetworkChangedRequest) (*NetworkChangedResponse, error) {
+func (UnimplementedHealthServiceServer) NetworkChanged(context.Context, *NetworkChangedRequest) (*Result, error) {
 	return nil, status.Error(codes.Unimplemented, "method NetworkChanged not implemented")
 }
-func (UnimplementedHealthServiceServer) UserPresent(context.Context, *UserPresentRequest) (*UserPresentResponse, error) {
+func (UnimplementedHealthServiceServer) NetworkChangedWithLabels(context.Context, *NetworkChangedWithLabelsRequest) (*Result, error) {
+	return nil, status.Error(codes.Unimplemented, "method NetworkChangedWithLabels not implemented")
+}
+func (UnimplementedHealthServiceServer) NetworkLost(context.Context, *NetworkLostRequest) (*Result, error) {
+	return nil, status.Error(codes.Unimplemented, "method NetworkLost not implemented")
+}
+func (UnimplementedHealthServiceServer) UserPresent(context.Context, *UserPresentRequest) (*Result, error) {
 	return nil, status.Error(codes.Unimplemented, "method UserPresent not implemented")
 }
-func (UnimplementedHealthServiceServer) Pin(context.Context, *PinRequest) (*PinResponse, error) {
+func (UnimplementedHealthServiceServer) SetMemoryLow(context.Context, *SetMemoryLowRequest) (*Result, error) {
+	return nil, status.Error(codes.Unimplemented, "method SetMemoryLow not implemented")
+}
+func (UnimplementedHealthServiceServer) Pin(context.Context, *PinRequest) (*Result, error) {
 	return nil, status.Error(codes.Unimplemented, "method Pin not implemented")
 }
-func (UnimplementedHealthServiceServer) Refresh(context.Context, *RefreshRequest) (*RefreshResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method Refresh not implemented")
+func (UnimplementedHealthServiceServer) Release(context.Context, *ReleaseRequest) (*Result, error) {
+	return nil, status.Error(codes.Unimplemented, "method Release not implemented")
 }
-func (UnimplementedHealthServiceServer) GetReport(context.Context, *GetReportRequest) (*GetReportResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method GetReport not implemented")
+func (UnimplementedHealthServiceServer) RequestProviderRefresh(context.Context, *RequestProviderRefreshRequest) (*Result, error) {
+	return nil, status.Error(codes.Unimplemented, "method RequestProviderRefresh not implemented")
 }
-func (UnimplementedHealthServiceServer) Probe(context.Context, *ProbeRequest) (*ProbeResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method Probe not implemented")
+func (UnimplementedHealthServiceServer) PeekReport(context.Context, *PeekReportRequest) (*Result, error) {
+	return nil, status.Error(codes.Unimplemented, "method PeekReport not implemented")
 }
-func (UnimplementedHealthServiceServer) SetProviderHeaders(context.Context, *SetProviderHeadersRequest) (*SetProviderHeadersResponse, error) {
+func (UnimplementedHealthServiceServer) TakeReport(context.Context, *TakeReportRequest) (*Result, error) {
+	return nil, status.Error(codes.Unimplemented, "method TakeReport not implemented")
+}
+func (UnimplementedHealthServiceServer) RequestProbe(context.Context, *RequestProbeRequest) (*Result, error) {
+	return nil, status.Error(codes.Unimplemented, "method RequestProbe not implemented")
+}
+func (UnimplementedHealthServiceServer) ProbeResult(context.Context, *ProbeResultRequest) (*Result, error) {
+	return nil, status.Error(codes.Unimplemented, "method ProbeResult not implemented")
+}
+func (UnimplementedHealthServiceServer) SetProviderHeaders(context.Context, *SetProviderHeadersRequest) (*Result, error) {
 	return nil, status.Error(codes.Unimplemented, "method SetProviderHeaders not implemented")
 }
-func (UnimplementedHealthServiceServer) GetProviderSet(context.Context, *GetProviderSetRequest) (*GetProviderSetResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method GetProviderSet not implemented")
+func (UnimplementedHealthServiceServer) ExportProviderSet(context.Context, *ExportProviderSetRequest) (*Result, error) {
+	return nil, status.Error(codes.Unimplemented, "method ExportProviderSet not implemented")
 }
 func (UnimplementedHealthServiceServer) mustEmbedUnimplementedHealthServiceServer() {}
 func (UnimplementedHealthServiceServer) testEmbeddedByValue()                       {}
@@ -230,20 +326,20 @@ func RegisterHealthServiceServer(s grpc.ServiceRegistrar, srv HealthServiceServe
 	s.RegisterService(&HealthService_ServiceDesc, srv)
 }
 
-func _HealthService_GetStatus_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(GetStatusRequest)
+func _HealthService_Status_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(StatusRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(HealthServiceServer).GetStatus(ctx, in)
+		return srv.(HealthServiceServer).Status(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: HealthService_GetStatus_FullMethodName,
+		FullMethod: HealthService_Status_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(HealthServiceServer).GetStatus(ctx, req.(*GetStatusRequest))
+		return srv.(HealthServiceServer).Status(ctx, req.(*StatusRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -284,6 +380,42 @@ func _HealthService_NetworkChanged_Handler(srv interface{}, ctx context.Context,
 	return interceptor(ctx, in, info, handler)
 }
 
+func _HealthService_NetworkChangedWithLabels_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(NetworkChangedWithLabelsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(HealthServiceServer).NetworkChangedWithLabels(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: HealthService_NetworkChangedWithLabels_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(HealthServiceServer).NetworkChangedWithLabels(ctx, req.(*NetworkChangedWithLabelsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _HealthService_NetworkLost_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(NetworkLostRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(HealthServiceServer).NetworkLost(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: HealthService_NetworkLost_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(HealthServiceServer).NetworkLost(ctx, req.(*NetworkLostRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _HealthService_UserPresent_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(UserPresentRequest)
 	if err := dec(in); err != nil {
@@ -298,6 +430,24 @@ func _HealthService_UserPresent_Handler(srv interface{}, ctx context.Context, de
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(HealthServiceServer).UserPresent(ctx, req.(*UserPresentRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _HealthService_SetMemoryLow_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetMemoryLowRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(HealthServiceServer).SetMemoryLow(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: HealthService_SetMemoryLow_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(HealthServiceServer).SetMemoryLow(ctx, req.(*SetMemoryLowRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -320,56 +470,110 @@ func _HealthService_Pin_Handler(srv interface{}, ctx context.Context, dec func(i
 	return interceptor(ctx, in, info, handler)
 }
 
-func _HealthService_Refresh_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(RefreshRequest)
+func _HealthService_Release_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ReleaseRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(HealthServiceServer).Refresh(ctx, in)
+		return srv.(HealthServiceServer).Release(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: HealthService_Refresh_FullMethodName,
+		FullMethod: HealthService_Release_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(HealthServiceServer).Refresh(ctx, req.(*RefreshRequest))
+		return srv.(HealthServiceServer).Release(ctx, req.(*ReleaseRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
 
-func _HealthService_GetReport_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(GetReportRequest)
+func _HealthService_RequestProviderRefresh_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RequestProviderRefreshRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(HealthServiceServer).GetReport(ctx, in)
+		return srv.(HealthServiceServer).RequestProviderRefresh(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: HealthService_GetReport_FullMethodName,
+		FullMethod: HealthService_RequestProviderRefresh_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(HealthServiceServer).GetReport(ctx, req.(*GetReportRequest))
+		return srv.(HealthServiceServer).RequestProviderRefresh(ctx, req.(*RequestProviderRefreshRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
 
-func _HealthService_Probe_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(ProbeRequest)
+func _HealthService_PeekReport_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PeekReportRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(HealthServiceServer).Probe(ctx, in)
+		return srv.(HealthServiceServer).PeekReport(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: HealthService_Probe_FullMethodName,
+		FullMethod: HealthService_PeekReport_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(HealthServiceServer).Probe(ctx, req.(*ProbeRequest))
+		return srv.(HealthServiceServer).PeekReport(ctx, req.(*PeekReportRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _HealthService_TakeReport_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(TakeReportRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(HealthServiceServer).TakeReport(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: HealthService_TakeReport_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(HealthServiceServer).TakeReport(ctx, req.(*TakeReportRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _HealthService_RequestProbe_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RequestProbeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(HealthServiceServer).RequestProbe(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: HealthService_RequestProbe_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(HealthServiceServer).RequestProbe(ctx, req.(*RequestProbeRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _HealthService_ProbeResult_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ProbeResultRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(HealthServiceServer).ProbeResult(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: HealthService_ProbeResult_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(HealthServiceServer).ProbeResult(ctx, req.(*ProbeResultRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -392,20 +596,20 @@ func _HealthService_SetProviderHeaders_Handler(srv interface{}, ctx context.Cont
 	return interceptor(ctx, in, info, handler)
 }
 
-func _HealthService_GetProviderSet_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(GetProviderSetRequest)
+func _HealthService_ExportProviderSet_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ExportProviderSetRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(HealthServiceServer).GetProviderSet(ctx, in)
+		return srv.(HealthServiceServer).ExportProviderSet(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: HealthService_GetProviderSet_FullMethodName,
+		FullMethod: HealthService_ExportProviderSet_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(HealthServiceServer).GetProviderSet(ctx, req.(*GetProviderSetRequest))
+		return srv.(HealthServiceServer).ExportProviderSet(ctx, req.(*ExportProviderSetRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -418,8 +622,8 @@ var HealthService_ServiceDesc = grpc.ServiceDesc{
 	HandlerType: (*HealthServiceServer)(nil),
 	Methods: []grpc.MethodDesc{
 		{
-			MethodName: "GetStatus",
-			Handler:    _HealthService_GetStatus_Handler,
+			MethodName: "Status",
+			Handler:    _HealthService_Status_Handler,
 		},
 		{
 			MethodName: "DrainEvents",
@@ -430,32 +634,56 @@ var HealthService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _HealthService_NetworkChanged_Handler,
 		},
 		{
+			MethodName: "NetworkChangedWithLabels",
+			Handler:    _HealthService_NetworkChangedWithLabels_Handler,
+		},
+		{
+			MethodName: "NetworkLost",
+			Handler:    _HealthService_NetworkLost_Handler,
+		},
+		{
 			MethodName: "UserPresent",
 			Handler:    _HealthService_UserPresent_Handler,
+		},
+		{
+			MethodName: "SetMemoryLow",
+			Handler:    _HealthService_SetMemoryLow_Handler,
 		},
 		{
 			MethodName: "Pin",
 			Handler:    _HealthService_Pin_Handler,
 		},
 		{
-			MethodName: "Refresh",
-			Handler:    _HealthService_Refresh_Handler,
+			MethodName: "Release",
+			Handler:    _HealthService_Release_Handler,
 		},
 		{
-			MethodName: "GetReport",
-			Handler:    _HealthService_GetReport_Handler,
+			MethodName: "RequestProviderRefresh",
+			Handler:    _HealthService_RequestProviderRefresh_Handler,
 		},
 		{
-			MethodName: "Probe",
-			Handler:    _HealthService_Probe_Handler,
+			MethodName: "PeekReport",
+			Handler:    _HealthService_PeekReport_Handler,
+		},
+		{
+			MethodName: "TakeReport",
+			Handler:    _HealthService_TakeReport_Handler,
+		},
+		{
+			MethodName: "RequestProbe",
+			Handler:    _HealthService_RequestProbe_Handler,
+		},
+		{
+			MethodName: "ProbeResult",
+			Handler:    _HealthService_ProbeResult_Handler,
 		},
 		{
 			MethodName: "SetProviderHeaders",
 			Handler:    _HealthService_SetProviderHeaders_Handler,
 		},
 		{
-			MethodName: "GetProviderSet",
-			Handler:    _HealthService_GetProviderSet_Handler,
+			MethodName: "ExportProviderSet",
+			Handler:    _HealthService_ExportProviderSet_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

@@ -3,7 +3,6 @@ package health
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
 	"maps"
 	"time"
 )
@@ -68,12 +67,12 @@ func (e *engine) keepAnswer(p *provider, a *providerAnswer, raw []byte, changed 
 // every run from the wall clock in milliseconds, so it grows across runs
 // as well. Asked with the number it returned, it allocates nothing, so a
 // host may ask often.
-func (o *Observer) ProviderSet(provider string, after uint64) ([]byte, uint64, error) {
+func (o *Observer) ExportProviderSet(provider string, after uint64) ([]byte, uint64, error) {
 	o.mu.Lock()
 	p := o.e.provider(provider)
 	if p == nil {
 		o.mu.Unlock()
-		return nil, 0, fmt.Errorf("no provider %s", provider)
+		return nil, 0, o.providerCommandError(provider)
 	}
 	seq := p.seq
 	if p.last.raw == nil || seq <= after {

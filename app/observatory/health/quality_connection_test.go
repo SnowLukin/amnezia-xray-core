@@ -3,6 +3,7 @@ package health
 import (
 	"context"
 	"errors"
+	"google.golang.org/protobuf/proto"
 	"math"
 	gonet "net"
 	"reflect"
@@ -40,8 +41,9 @@ func qualityOpenPath(o *Observer, clk *fakeClock, conn gonet.Conn, dial time.Dur
 func qualityWitnessObserver(skip bool) (*Observer, *fakeClock) {
 	o, clk := newTestObserver()
 	o.s = newSettings(&Config{
-		Paths:   observed("a1", "a2"),
-		Passive: &PassiveConfig{ShouldSkipQuality: skip},
+		Features: &FeatureConfig{Quality: proto.Bool(!skip), Report: proto.Bool(true), Events: proto.Bool(true), Connectivity: proto.Bool(true), Witnesses: proto.Bool(true)},
+		Paths:    observed("a1", "a2"),
+		Passive:  &PassiveConfig{ShouldSkipQuality: skip},
 		Connectivity: &ConnectivityConfig{
 			Outbound: "direct", Destination: "https://x.test/204", Witnesses: []string{"direct"},
 		},

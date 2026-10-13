@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"google.golang.org/protobuf/proto"
 	"runtime"
 	"strings"
 	"sync"
@@ -32,17 +33,23 @@ type fakeHandler struct {
 	slept  int
 }
 
-func TestLoadOutboundsAcceptsPathMetadata(t *testing.T) {
+func TestLoadOutboundsAcceptsSelectionAndRejectsRetiredPath(t *testing.T) {
 	for _, keys := range []string{
-		`"path":{"balancer":"auto","cost":1}`,
+		`"selection":{"balancer":"auto","cost":1}`,
 		`"Path":{"balancer":"auto","cost":1}`,
 		`"PATH":{"balancer":"auto","cost":1}`,
 		`"pAtH":{"balancer":"auto","cost":1}`,
-		`"path":{"balancer":"auto","cost":1},"PATH":{"balancer":"auto","cost":1}`,
+		`"selection":{"balancer":"auto","cost":1},"PATH":{"balancer":"auto","cost":1}`,
 	} {
 		t.Run(keys, func(t *testing.T) {
 			raw := json.RawMessage(`[{"tag":"x1","protocol":"freedom",` + keys + `}]`)
 			outbounds, err := loadOutbounds(raw)
+			if keys != `"selection":{"balancer":"auto","cost":1}` {
+				if err == nil {
+					t.Fatal("retired path alias accepted")
+				}
+				return
+			}
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -144,7 +151,7 @@ type fakeOutbound struct {
 	Protocol string          `json:"protocol"`
 	V        int64           `json:"v"`
 	Bad      bool            `json:"bad"`
-	Path     json.RawMessage `json:"path,omitempty"`
+	Path     json.RawMessage `json:"selection,omitempty"`
 }
 
 func fakeSettings(v int64) *serial.TypedMessage {
@@ -168,7 +175,7 @@ func newApplyFixture(t *testing.T, drain time.Duration, mods ...func(*ProviderCo
 			mod(p)
 		}
 	})
-	o := newObserver(context.Background(), &Config{Providers: []*ProviderConfig{pc}})
+	o := newObserver(context.Background(), &Config{Providers: []*ProviderConfig{pc}, Features: &FeatureConfig{Events: proto.Bool(true), Report: proto.Bool(true), Quality: proto.Bool(true), MemoryPressure: proto.Bool(true), Candidates: proto.Bool(true)}})
 	t.Cleanup(func() { o.Close() })
 	f := &applyFixture{o: o, rt: o.providers[0], m: newFakeManager(), seq0: o.e.providers[0].seq}
 	o.ohm = f.m
@@ -198,7 +205,7 @@ func newApplyFixture(t *testing.T, drain time.Duration, mods ...func(*ProviderCo
 		f.created = append(f.created, h)
 		return h, nil
 	}
-	s := o.e.addSelector("auto", newSelectorSettings(&SelectorConfig{Paths: pathSpecs("p-", 1)}))
+	s := o.e.addSelector("auto", newSelectorSettings(&SelectorConfig{Features: &SelectorFeatureConfig{Groups: proto.Bool(true), ReturnToCheaper: proto.Bool(true)}, Paths: pathSpecs("p-", 1)}))
 	o.e.noteDemand(time.Now())
 	o.e.updateCandidates(s, []string{"p-x1"}, time.Now())
 	return f
@@ -233,11 +240,11 @@ func fixtureAnswerBody(raw []byte) []byte {
 	}
 	changed := false
 	for _, outbound := range outbounds {
-		if _, exists := outbound["path"]; exists {
+		if _, exists := outbound["selection"]; exists {
 			continue
 		}
 		path, _ := json.Marshal(map[string]any{"balancer": "auto", "cost": 1})
-		outbound["path"] = path
+		outbound["selection"] = path
 		changed = true
 	}
 	if !changed {
@@ -269,8 +276,8 @@ func (f *applyFixture) apply(t *testing.T, a *providerAnswer) (bool, error) {
 	}
 	_ = json.Unmarshal(sections["outbounds"], &heads)
 	for i := range a.heads {
-		if a.heads[i].Path == nil && i < len(heads) {
-			a.heads[i].Path = heads[i].Path
+		if a.heads[i].Selection == nil && i < len(heads) {
+			a.heads[i].Selection = heads[i].Selection
 		}
 	}
 	return f.o.applySet(f.rt, a, &refreshJob{p: f.rt.p, trigger: triggerHost})
@@ -373,7 +380,7 @@ func TestApplyBrokenSetChangesNothing(t *testing.T) {
 		"build x3: ":    {{Tag: "x2", V: 1}, {Tag: "x3", Bad: true}},
 		"not allowed":   {{Tag: "x2", V: 1}, {Tag: "x3", Protocol: "freedom"}},
 		// The reason quotes the tag, as large as the answer allows.
-		"outbound " + strings.Repeat("x", 40): {{Tag: "x2", V: 1}, {Tag: strings.Repeat("x", 100_000), Protocol: "freedom"}},
+		"needs a tag of at most 128 bytes including its prefix": {{Tag: "x2", V: 1}, {Tag: strings.Repeat("x", 100_000), Protocol: "freedom"}},
 	}
 	for name, set := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -412,7 +419,7 @@ func TestApplyBrokenSetChangesNothing(t *testing.T) {
 func TestApplyRejectsPathCostNotAboveZero(t *testing.T) {
 	for _, cost := range []string{"0", "-1"} {
 		f := newApplyFixture(t, time.Minute)
-		a, err := parseAnswer([]byte(`{"outbounds": [{"tag": "x1", "protocol": "vless", "v": 1, "path":{"balancer":"auto","cost":` + cost + `}}]}`))
+		a, err := parseAnswer([]byte(`{"outbounds": [{"tag": "x1", "protocol": "vless", "v": 1, "selection":{"balancer":"auto","cost":` + cost + `}}]}`))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -474,10 +481,10 @@ func TestApplySameVersionDoesNothing(t *testing.T) {
 // were. One that passes counts the outbounds of the applied set.
 func TestApplySameVersionChecksItsOutbounds(t *testing.T) {
 	for name, set := range map[string][]fakeOutbound{
-		"has no tag":      {{Tag: "x1", V: 1}, {V: 1}},
-		"duplicate tag":   {{Tag: "x1", V: 1}, {Tag: "x1", V: 2}},
-		"not allowed":     {{Tag: "x1", V: 1}, {Tag: "x3", Protocol: "freedom"}},
-		"path needs cost": {{Tag: "x1", V: 1}},
+		"has no tag":           {{Tag: "x1", V: 1}, {V: 1}},
+		"duplicate tag":        {{Tag: "x1", V: 1}, {Tag: "x1", V: 2}},
+		"not allowed":          {{Tag: "x1", V: 1}, {Tag: "x3", Protocol: "freedom"}},
+		"selection needs cost": {{Tag: "x1", V: 1}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			f := newApplyFixture(t, time.Minute)
@@ -488,8 +495,8 @@ func TestApplySameVersionChecksItsOutbounds(t *testing.T) {
 			}
 			kept, seq := f.providerSet(t, 0)
 			a := answer(t, set...)
-			if name == "path needs cost" {
-				a.heads[0].Path = json.RawMessage(`{"balancer":"auto","cost":-1}`)
+			if name == "selection needs cost" {
+				a.heads[0].Selection = json.RawMessage(`{"balancer":"auto","cost":-1}`)
 			}
 			a.version = "v1"
 			if _, err := f.apply(t, a); err == nil {
@@ -575,8 +582,8 @@ func TestParseAge(t *testing.T) {
 }
 
 func TestParseAnswer(t *testing.T) {
-	a, err := parseAnswer([]byte(`{"outbounds": [{"tag": "x", "path":{"balancer":"auto","cost":3}}], "nextRefreshIn": "90m"}`))
-	if err != nil || a.nextRefreshIn != 90*time.Minute || a.heads[0].Path == nil {
+	a, err := parseAnswer([]byte(`{"outbounds": [{"tag": "x", "selection":{"balancer":"auto","cost":3}}], "nextRefreshIn": "90m"}`))
+	if err != nil || a.nextRefreshIn != 90*time.Minute || a.heads[0].Selection == nil {
 		t.Fatalf("parsed %+v, %v", a, err)
 	}
 	if _, err := parseAnswer([]byte(`{"outbounds": [{"tag": "x"}], "nextRefreshIn": 600}`)); err == nil {
@@ -626,7 +633,7 @@ func TestParseAnswer(t *testing.T) {
 		`{"outbounds": [{"tag": "x"}], "healthObservatory": {}}`:                "healthObservatory is not accepted in an answer",
 		`{"outbounds": [{"tag": "x"}], "receivedAt": "2026-10-08T12:00:00Z"}`:   `unknown key "receivedAt"`,
 		`{"outbounds": [{"tag": "x"}], "baseVersion": 12}`:                      "baseVersion must be a string",
-		`{"outbounds": [{"tag": "x"}], "routing": {"rules": [], "foo": 1}}`:     `routing: unknown key "foo"`,
+		`{"outbounds": [{"tag": "x"}], "routing": {"rules": [], "foo": 1}}`:     `unknown key "routing"`,
 		`{"outbounds": [{"tag": "x"}], "nextRefreshIn": "soon"}`:                "nextRefreshIn",
 		`{"outbounds": [{"tag": "x"}], "nextRefreshIn": null}`:                  "nextRefreshIn",
 		`{"outbounds": [{"tag": "x"}], "` + strings.Repeat("k", 1000) + `": 1}`: "...",
@@ -644,16 +651,16 @@ func TestParseAnswer(t *testing.T) {
 // The version names the set: an answer that differs only in how to take it
 // is the applied set again, not a new one to build.
 func TestVersionIgnoresMetaKeys(t *testing.T) {
-	a1, _ := parseAnswer([]byte(`{"outbounds": [{"tag": "x", "path":{"balancer":"auto","cost":2}}]}`))
-	a2, _ := parseAnswer([]byte(`{"protocol": 1, "outbounds": [{"tag": "x", "path":{"balancer":"auto","cost":2}}], "nextRefreshIn": "1h",
+	a1, _ := parseAnswer([]byte(`{"outbounds": [{"tag": "x", "selection":{"balancer":"auto","cost":2}}]}`))
+	a2, _ := parseAnswer([]byte(`{"protocol": 1, "outbounds": [{"tag": "x", "selection":{"balancer":"auto","cost":2}}], "nextRefreshIn": "1h",
 		"serverTime": "2026-10-08T12:00:00Z", "expiresAt": {"x": "2026-10-09T12:00:00Z"}, "baseVersion": "cfg-12"}`))
-	a3, _ := parseAnswer([]byte(`{"outbounds": [{"tag": "x", "path":{"balancer":"auto","cost":3}}]}`))
-	a4, _ := parseAnswer([]byte(`{"outbounds": [{"tag": "x", "path":{"balancer":"auto","cost":2}}], "routing": {"rules": []}}`))
+	a3, _ := parseAnswer([]byte(`{"outbounds": [{"tag": "x", "selection":{"balancer":"auto","cost":3}}]}`))
+	a4, _ := parseAnswer([]byte(`{"outbounds": [{"tag": "x", "selection":{"balancer":"auto","cost":2}}], "groups": [{"name":"g","cost":3}]}`))
 	if a1.version != a2.version || a1.version == a3.version || a1.version == a4.version {
 		t.Fatalf("versions %s %s %s %s; want the first two equal and the others apart", a1.version, a2.version, a3.version, a4.version)
 	}
 	// A set the host saved is the set it saved, with a fresh token or not.
-	saved, err := parseInitial([]byte(`{"outbounds": [{"tag": "x", "path":{"balancer":"auto","cost":2}}], "headers": {"Authorization": "Bearer t2"},
+	saved, err := parseInitial([]byte(`{"outbounds": [{"tag": "x", "selection":{"balancer":"auto","cost":2}}], "headers": {"Authorization": "Bearer t2"},
 		"receivedAt": "2026-10-08T12:00:00Z"}`))
 	if err != nil || saved.version != a1.version || saved.receivedAt.IsZero() {
 		t.Fatalf("saved set %+v, %v", saved, err)
@@ -682,7 +689,7 @@ func TestReplacedOutboundForgetsItsServer(t *testing.T) {
 // An outbound gone from the set leaves nothing behind once its drain ends.
 func TestDrainedOutboundLeavesNothingBehind(t *testing.T) {
 	f := newApplyFixture(t, 50*time.Millisecond)
-	f.o.e.addSelector("auto", newSelectorSettings(&SelectorConfig{Paths: pathSpecs("p-", 1), SkipProbeBeforeSwitch: true}))
+	f.o.e.addSelector("auto", newSelectorSettings(&SelectorConfig{Paths: pathSpecs("p-", 1), Features: &SelectorFeatureConfig{ProbeBeforeSwitch: proto.Bool(false), Groups: proto.Bool(true), ReturnToCheaper: proto.Bool(true)}}))
 	if _, err := f.apply(t, answer(t, fakeOutbound{Tag: "x1", V: 1}, fakeOutbound{Tag: "x2", V: 1})); err != nil {
 		t.Fatal(err)
 	}
@@ -720,7 +727,7 @@ func TestDrainedOutboundLeavesNothingBehind(t *testing.T) {
 // would and leave a retired one without probing.
 func (f *applyFixture) follow(tags ...string) {
 	f.o.mu.Lock()
-	s := f.o.e.addSelector("auto", newSelectorSettings(&SelectorConfig{Paths: pathSpecs("p-", 1), SkipProbeBeforeSwitch: true}))
+	s := f.o.e.addSelector("auto", newSelectorSettings(&SelectorConfig{Paths: pathSpecs("p-", 1), Features: &SelectorFeatureConfig{ProbeBeforeSwitch: proto.Bool(false), Groups: proto.Bool(true), ReturnToCheaper: proto.Bool(true)}}))
 	f.o.e.updateCandidates(s, tags, time.Now())
 	f.o.mu.Unlock()
 }
@@ -870,7 +877,7 @@ func TestAnswerLimitFollowsTheSetSize(t *testing.T) {
 		{0, 0, 256 << 10},
 		{16, 0, 64 << 10},
 		{128, 0, 512 << 10},
-		{0, 300_000, 300_000},
+		{0, 300_000, 256 << 10},
 	} {
 		p := newProviderSettings(quietProvider(func(p *ProviderConfig) {
 			p.Apply.MaxOutbounds = tc.outbounds
@@ -891,7 +898,7 @@ func TestAnswerIsParsedInOnePass(t *testing.T) {
 		outs = append(outs, fmt.Sprintf(`{"tag": "x%d", "protocol": "vless", "settings": {"pad": %q}}`, i, pad))
 	}
 	body := []byte(`{"outbounds": [` + strings.Join(outs, ",") + `],
-		"routing": {"rules": [], "balancers": []}, "nextRefreshIn": "1h"}`)
+		"nextRefreshIn": "1h"}`)
 	var before, after runtime.MemStats
 	runtime.GC()
 	runtime.ReadMemStats(&before)

@@ -75,7 +75,7 @@ func (f *applyFixture) requestBase(t *testing.T) any {
 	j.request = f.o.e.providerRequest(f.rt.p, j, f.o.now())
 	f.o.mu.Unlock()
 	var body map[string]any
-	if err := json.Unmarshal(f.o.requestBody(f.rt, j), &body); err != nil {
+	if err := json.Unmarshal(mustRequestBody(t, f.o, f.rt, j), &body); err != nil {
 		t.Fatal(err)
 	}
 	return body["baseVersion"]

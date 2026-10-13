@@ -115,7 +115,7 @@ func TestRotatedHeadersBoundedTogether(t *testing.T) {
 	if _, err := f.o.applySet(f.rt, one, job()); err != nil {
 		t.Fatal(err)
 	}
-	raw, _, err := f.o.ProviderSet("fresh", 0)
+	raw, _, err := f.o.ExportProviderSet("fresh", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -277,7 +277,11 @@ func TestAuthFailureHoldsAllButTheHost(t *testing.T) {
 		t.Fatalf("status %+v", st)
 	}
 	te.requestRefresh("fresh")
-	expectRefresh(t, te, at(10*time.Minute), "host")
+	expectNoRefresh(t, te, at(10*time.Minute))
+	if !te.prov().host {
+		t.Fatal("auth hold lost queued manual request")
+	}
+	expectRefresh(t, te, p.authRetryAt, "host")
 }
 
 // After the pause one refresh tries the headers again, for any trigger: a
@@ -402,7 +406,7 @@ func TestSetProviderHeadersRejectsBadNames(t *testing.T) {
 		headers  map[string]string
 		want     string
 	}{
-		{"other", map[string]string{"Authorization": "Bearer x"}, "no provider other"},
+		{"other", map[string]string{"Authorization": "Bearer x"}, "provider is unknown"},
 		{"fresh", map[string]string{"Bad Name": "x"}, "is not a token"},
 		{"fresh", map[string]string{"host": "example.com"}, "header Host cannot be set"},
 		{"fresh", map[string]string{"Proxy-Authorization": "x"}, "header Proxy-Authorization cannot be set"},

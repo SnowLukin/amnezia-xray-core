@@ -24,6 +24,9 @@ message Config {
   repeated PathDefinition paths = 11;
   WakeConfig wake = 12;
   UDPProbeConfig udp_probe = 13;
+  FeatureConfig features = 14;
+  map<string, string> session_labels = 15;
+  LabelRequestConfig label_request = 16;
 }
 
 // User presence checks stale selected paths even while idle. Zero keeps the
@@ -234,6 +237,8 @@ message PathDefinition {
   int64 return_interval = 6;
   string probe = 7;
   bool is_probe_only = 8;
+  optional bool return_is_enabled = 9;
+  map<string, string> labels = 10;
 }
 
 message PathGroup {
@@ -243,6 +248,8 @@ message PathGroup {
   int64 return_interval = 4;
   string probe = 5;
   int32 failed_in_row_to_leave = 6;
+  optional bool return_is_enabled = 7;
+  map<string, string> labels = 8;
 }
 
 message SelectorConfig {
@@ -254,7 +261,7 @@ message SelectorConfig {
   // When to probe the current outbound before leaving it.
   ConfirmMode confirm_with_probe = 5;
   // Minimum time on an outbound before returning to a cheaper one.
-  int64 min_hold_time = 6;
+  optional int64 min_hold_time = 6;
   ReturnToCheaperConfig return_to_cheaper = 7;
   // Start pinned to this tag until the host releases the pin.
   string start_pinned_outbound = 8;
@@ -269,6 +276,8 @@ message SelectorConfig {
   int64 start_pin_timeout = 11;
   // Skip the probe that checks a strong down after failover.
   bool should_skip_down_audit = 12;
+  SelectorFeatureConfig features = 13;
+  int64 close_silent_after = 14;
 }
 
 enum ConfirmMode {
@@ -342,6 +351,8 @@ message ProviderConfig {
   // generated it named it. An answer that names another one tells the host
   // to fetch the config anew. Empty takes the one of a fresh initial.
   string base_version = 12;
+  optional bool is_enabled = 13;
+  ProviderFeatureConfig features = 14;
 }
 
 message ProviderTriggers {
@@ -361,7 +372,7 @@ message ProviderTriggers {
   int64 max_age = 6;
   RefreshOnNetwork network_change_mode = 7;
   // How long after a network change the balancer is judged.
-  int64 network_settle_delay = 8;
+  optional int64 network_settle_delay = 8;
   // Renewal of the leases an answer gives its outbounds.
   ExpiryTrigger expiry = 9;
 }
@@ -380,8 +391,8 @@ message ExpiryTrigger {
 
 message CostTrigger {
   float cost = 1;
-  // How long the balancer has to keep such outbounds.
-  int64 after = 2;
+  // Absence uses the default; an explicit zero is immediate.
+  optional int64 after = 2;
 }
 
 enum RefreshOnNetwork {
@@ -439,4 +450,71 @@ message UDPProbeConfig {
   int64 interval = 3;
   int64 timeout = 4;
   int32 per_hour = 5;
+}
+
+// Present-aware feature switches. Missing essential TCP evidence defaults to
+// true; all optional features default to false.
+message FeatureConfig {
+  optional bool dial_failures = 1;
+  optional bool dial_timeout = 2;
+  optional bool server_unverified = 3;
+  optional bool first_reply = 4;
+  optional bool early_close = 5;
+  optional bool stalled_requests = 6;
+  optional bool partial_stalls = 7;
+  optional bool udp_replies = 8;
+  optional bool lone_failure_probe = 9;
+  optional bool step_profiles = 10;
+  optional bool candidates = 11;
+  optional bool probe_requests = 12;
+  optional bool udp_probes = 13;
+  optional bool connectivity = 14;
+  optional bool witnesses = 15;
+  optional bool network_memory = 16;
+  optional bool host_labels = 17;
+  optional bool label_request = 18;
+  optional bool pinning = 19;
+  optional bool user_present = 20;
+  optional bool memory_pressure = 21;
+  optional bool tunnel_sleep = 22;
+  optional bool close_unchosen_idle = 23;
+  optional bool events = 24;
+  optional bool report = 25;
+  optional bool quality = 26;
+  optional bool path_labels = 27;
+  optional bool probe_measurements = 28;
+  optional bool metrics = 29;
+  optional bool session_labels = 30;
+}
+
+message LabelRequestConfig {
+  string outbound = 1;
+  string destination = 2;
+  map<string, string> labels = 3;
+  int64 timeout = 4;
+  int32 requests_per_hour = 5;
+}
+
+message SelectorFeatureConfig {
+  optional bool probe_before_switch = 1;
+  optional bool close_pending = 2;
+  optional bool close_silent = 3;
+  optional bool down_audit = 4;
+  optional bool groups = 5;
+  optional bool return_to_cheaper = 6;
+  optional bool return_on_network_change = 7;
+  optional bool network_changes = 8;
+  optional bool startup_pin = 9;
+}
+
+message ProviderFeatureConfig {
+  optional bool periodic = 1;
+  optional bool min_healthy = 2;
+  optional bool cost_above = 3;
+  optional bool max_age = 4;
+  optional bool network_change = 5;
+  optional bool exhausted = 6;
+  optional bool lease_renewal = 7;
+  optional bool backend_schedule = 8;
+  optional bool expired_lease_fallback = 9;
 }

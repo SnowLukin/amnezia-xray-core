@@ -15,6 +15,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/xtls/xray-core/app/metrics"
 	"github.com/xtls/xray-core/app/observatory"
 	"github.com/xtls/xray-core/app/router"
 	"github.com/xtls/xray-core/common"
@@ -52,6 +53,7 @@ type Observer struct {
 	trackMu sync.Mutex
 	// Every open connection, for statistics when it ends.
 	trackers map[*connTracker]struct{}
+	closures map[*closureTracker]struct{}
 	// Connections with a deadline the sweep has to check.
 	watching map[*connTracker]struct{}
 	sweeping bool
@@ -87,6 +89,9 @@ type Observer struct {
 
 // New creates the observer.
 func New(ctx context.Context, config *Config) (*Observer, error) {
+	if err := config.ValidateFeatures(); err != nil {
+		return nil, err
+	}
 	if err := validateQuietShare(config.GetReport()); err != nil {
 		return nil, err
 	}
@@ -110,6 +115,11 @@ func New(ctx context.Context, config *Config) (*Observer, error) {
 	if err != nil {
 		return nil, err
 	}
+	if o.s.features.Metrics {
+		if err := core.RequireFeatures(ctx, func(*metrics.MetricsHandler) {}); err != nil {
+			return nil, errors.New("healthObservatory.telemetry.metrics.isEnabled requires metrics exporter: ", err)
+		}
+	}
 	return o, nil
 }
 
@@ -120,8 +130,6 @@ func newObserver(ctx context.Context, config *Config) *Observer {
 		ctx:            ctx,
 		e:              newEngine(s, time.Now().UnixNano()),
 		kick:           make(chan struct{}, 1),
-		trackers:       map[*connTracker]struct{}{},
-		watching:       map[*connTracker]struct{}{},
 		parseOutbounds: loadOutbounds,
 		parseRouting:   loadRouting,
 		clock:          time.Now,
@@ -135,9 +143,19 @@ func newObserver(ctx context.Context, config *Config) *Observer {
 	o.e.run = o.run
 	o.runCtx, o.stopRun = context.WithCancel(ctx)
 	o.newHandler = o.createHandler
-	o.e.report.begin(o.clock())
+	collectorStart := time.Time{}
+	if s.features.Report || s.features.Quality {
+		collectorStart = o.clock()
+	}
+	if s.features.Report {
+		o.e.report.begin(collectorStart)
+	}
 	if !s.passive.skipQuality {
-		o.e.quality = newQualitySummary(o.e.report.started)
+		o.e.quality = newQualitySummary(collectorStart)
+		o.e.quality.reporting = s.features.Report
+		if !s.features.Report {
+			o.e.quality.open = qualityCollection{}
+		}
 	}
 	o.qualityEpoch.Store(o.e.qualityEpoch)
 	// The number of the kept set starts from the wall clock in
@@ -415,19 +433,35 @@ func (o *Observer) StartDial(ctx context.Context, tag string, server net.Destina
 		return nil
 	}
 	target, udp := targetFrom(ctx)
+	// Capture the measurement epoch before any traffic activity clock reads.
+	quality := o.newConnectionQuality(udp, 0)
+	registry := o.connectionRegistry(tag)
+	activity, proofSignal := o.connectionSignals(tag)
+	o.mu.Lock()
+	o.e.noteDemand(o.now())
+	o.e.used(tag, o.now())
+	o.mu.Unlock()
+	if !o.s.features.passiveTCP() && !o.s.features.Quality && !o.s.features.Report && !o.s.features.Metrics {
+		proof := !udp && o.s.features.UdpReplies
+		proofSignal = proofSignal && !udp
+		if registry || proof || activity || proofSignal {
+			return o.newClosureTracker(tag, abort, proof, registry, activity, proofSignal)
+		}
+		return nil
+	}
 	// Capture the measurement epoch before the start timestamp. A network
 	// change during construction must not label an older dial as new traffic.
-	quality := o.newConnectionQuality(udp, 0)
 	t := &connTracker{
-		o:       o,
-		tag:     tag,
-		target:  target,
-		server:  destString(server),
-		conn:    connFrom(ctx),
-		udp:     udp,
-		abort:   abort,
-		started: o.nowNano(),
-		network: o.generation.Load(),
+		o:        o,
+		tag:      tag,
+		target:   target,
+		server:   destString(server),
+		conn:     connFrom(ctx),
+		udp:      udp,
+		activity: activity,
+		abort:    abort,
+		started:  o.nowNano(),
+		network:  o.generation.Load(),
 	}
 	if quality != nil {
 		quality.started = t.started
@@ -447,6 +481,9 @@ func (o *Observer) StartDial(ctx context.Context, tag string, server net.Destina
 
 func (o *Observer) track(t *connTracker) {
 	o.trackMu.Lock()
+	if o.trackers == nil {
+		o.trackers = make(map[*connTracker]struct{})
+	}
 	o.trackers[t] = struct{}{}
 	o.tracked++
 	if o.tracked%256 == 0 {
@@ -465,13 +502,17 @@ func (o *Observer) track(t *connTracker) {
 
 // watch makes the sweep check t until it has no deadline left.
 func (o *Observer) watch(t *connTracker) {
-	if o.s.passive.sweepInterval == 0 {
+	if o.s.passive.sweepInterval == 0 || !t.needsSweep() {
+		t.watched.Store(false)
 		return
 	}
 	o.trackMu.Lock()
 	if t.state.Load() == trackerFinished {
 		o.trackMu.Unlock()
 		return
+	}
+	if o.watching == nil {
+		o.watching = make(map[*connTracker]struct{})
 	}
 	o.watching[t] = struct{}{}
 	start := !o.sweeping
@@ -513,6 +554,11 @@ func (o *Observer) closePending(d downMark) {
 		}
 		if t.mark(reportedAborted) {
 			aborts = append(aborts, t.abort)
+		}
+	}
+	for t := range o.closures {
+		if abort := t.closeFor(d, before); abort != nil {
+			aborts = append(aborts, abort)
 		}
 	}
 	o.trackMu.Unlock()
@@ -607,6 +653,9 @@ func (o *Observer) sweepLoop(done chan struct{}) {
 // change, and failure skips dials that waited through a network pause:
 // neither tells anything about outbounds now.
 func (o *Observer) failure(t *connTracker, kind failureKind) {
+	if !o.s.features.failure(kind) {
+		return
+	}
 	o.mu.Lock()
 	o.e.used(t.tag, o.now())
 	stale := false
@@ -666,16 +715,18 @@ func (o *Observer) finished(t *connTracker) {
 	o.mu.Lock()
 	o.collectQualityEnd(t.quality, t.tag, false, &t.bytesRead)
 	now := o.now()
-	st := &o.e.pathAt(t.tag, now).stats
-	if t.bytesRead.Load() > 0 {
-		st.connsOK++
-	} else if t.bytesWritten.Load() > 0 {
-		st.connsFailed++
-	}
-	st.bytesUp += t.bytesWritten.Load()
-	st.bytesDown += t.bytesRead.Load()
-	if ttfb := t.ttfb.Load(); ttfb > 0 {
-		st.ttfb.add(time.Duration(ttfb))
+	if o.s.features.Report || o.s.features.Metrics {
+		st := &o.e.pathAt(t.tag, now).stats
+		if t.bytesRead.Load() > 0 {
+			st.connsOK++
+		} else if t.bytesWritten.Load() > 0 {
+			st.connsFailed++
+		}
+		st.bytesUp += t.bytesWritten.Load()
+		st.bytesDown += t.bytesRead.Load()
+		if ttfb := t.ttfb.Load(); ttfb > 0 {
+			st.ttfb.add(time.Duration(ttfb))
+		}
 	}
 	// The loop plans the sleep of an outbound that has just woken; nothing
 	// else may wake it after the last connection ends. The end of one the
@@ -719,6 +770,9 @@ func (o *Observer) ProcessEnded(tag string) {
 
 // GetObservation implements extension.Observatory.
 func (o *Observer) GetObservation(context.Context) (proto.Message, error) {
+	if !o.s.features.Metrics {
+		return &observatory.ObservationResult{}, nil
+	}
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	tags := make([]string, 0, len(o.e.paths))
@@ -762,6 +816,9 @@ func (o *Observer) OutboundSelector(balancerTag string, settings *serial.TypedMe
 		}
 		cfg = c
 	}
+	if err := validateSelectorFeatures(cfg, o.s.features); err != nil {
+		return nil, err
+	}
 	o.mu.Lock()
 	s := o.e.addSelector(balancerTag, newSelectorSettings(cfg))
 	o.mu.Unlock()
@@ -788,6 +845,12 @@ func (h *selectorHandle) Select(candidates []string) string {
 	}
 	tag := h.s.current()
 	if h.o.s.isProbeOnly(tag) {
+		return ""
+	}
+	h.o.mu.Lock()
+	usable := h.o.e.expiredLeaseUsable(tag)
+	h.o.mu.Unlock()
+	if !usable {
 		return ""
 	}
 	return tag
@@ -910,11 +973,11 @@ func (o *Observer) TakeReport(final bool) []byte {
 	return o.marshalReport(v)
 }
 
-// Report returns the report the host would get from TakeReport(true) now,
+// PeekReport returns the report the host would get from TakeReport(true) now,
 // with report_reason snapshot, and closes nothing; nil when it would get
 // none. A host keeps it to send the window when the process is killed
 // before the stop.
-func (o *Observer) Report() []byte {
+func (o *Observer) PeekReport() []byte {
 	o.mu.Lock()
 	v := o.e.snapshotReport(o.now())
 	o.mu.Unlock()
@@ -950,4 +1013,30 @@ func init() {
 	common.Must(common.RegisterConfig((*Config)(nil), func(ctx context.Context, config interface{}) (interface{}, error) {
 		return New(ctx, config.(*Config))
 	}))
+}
+
+// NeedsObservation keeps optional user hooks off while retaining core-owned
+// probe hooks. Selection already records user demand for the minimal profile.
+func (o *Observer) NeedsObservation(ctx context.Context, tag string) bool {
+	if probeStateFrom(ctx) != nil {
+		return true
+	}
+	if o.s.witness(tag) {
+		return true
+	}
+	if !o.s.observes(tag) {
+		return false
+	}
+	f := o.s.features
+	if f.passiveTCP() || f.Quality || f.Report || f.Metrics || f.UdpReplies {
+		return true
+	}
+	activity, proof := o.connectionSignals(tag)
+	if activity || proof {
+		return true
+	}
+	if f.TunnelSleep && o.ohm != nil && sleeperOf(o.ohm.GetHandler(tag)) != nil {
+		return true
+	}
+	return o.connectionRegistry(tag)
 }

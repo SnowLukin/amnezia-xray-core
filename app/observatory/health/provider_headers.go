@@ -239,7 +239,7 @@ func headerFields(f map[string]any, names []string, stale bool) {
 func (e *engine) setProviderHeaders(tag string, headers map[string]string, now time.Time) error {
 	p := e.provider(tag)
 	if p == nil {
-		return fmt.Errorf("no provider %s", tag)
+		return e.providerCommandError(tag)
 	}
 	n := len(p.rotated)
 	for name, v := range headers {

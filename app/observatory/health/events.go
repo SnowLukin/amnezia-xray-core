@@ -28,10 +28,16 @@ type eventLog struct {
 }
 
 func newEventLog(maxEvents, maxBytes int) *eventLog {
+	if maxEvents <= 0 || maxBytes <= 0 {
+		return nil
+	}
 	return &eventLog{maxEvents: maxEvents, maxBytes: maxBytes}
 }
 
 func (l *eventLog) add(now time.Time, typ string, fields map[string]any) {
+	if l == nil {
+		return
+	}
 	l.seq++
 	raw, err := json.Marshal(Event{Seq: l.seq, Time: now.UnixMilli(), Type: typ, Fields: fields})
 	if err != nil {
@@ -56,6 +62,9 @@ func (l *eventLog) trim() {
 
 // drain returns kept events as a JSON array and forgets them.
 func (l *eventLog) drain() ([]byte, uint64) {
+	if l == nil {
+		return []byte("[]"), 0
+	}
 	out := make([]byte, 0, l.bytes+len(l.events)+2)
 	out = append(out, '[')
 	for i, e := range l.events {
@@ -112,4 +121,11 @@ func (h *histogram) quantile(q float64) time.Duration {
 		}
 	}
 	return histogramBounds[len(histogramBounds)-1]
+}
+
+func (l *eventLog) droppedCount() uint64 {
+	if l == nil {
+		return 0
+	}
+	return l.droppedTotal
 }

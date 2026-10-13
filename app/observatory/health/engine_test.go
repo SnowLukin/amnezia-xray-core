@@ -37,8 +37,8 @@ func newSeededTestEngine(t *testing.T, seed int64, cfg *Config, sc *SelectorConf
 	}
 	copySC := fixtureSelector(sc, candidates)
 	cfg.Paths = append(cfg.Paths, copySC.Paths...)
-	e := newEngine(newSettings(cfg), seed)
-	s := e.addSelector("auto", newSelectorSettings(copySC))
+	e := newEngine(legacyScenarioSettings(cfg), seed)
+	s := e.addSelector("auto", legacyScenarioSelector(copySC, cfg))
 	e.noteDemand(t0)
 	e.updateCandidates(s, candidates, t0)
 	return &testEngine{engine: e, sel: s}
@@ -426,7 +426,7 @@ func TestIdleExhaustedDoesNotProbe(t *testing.T) {
 func returnToCheaperConfig() *SelectorConfig {
 	return &SelectorConfig{
 		Paths:       pathSpecs("a", 1, "b", 3),
-		MinHoldTime: int64(time.Minute),
+		MinHoldTime: v2Int64(int64(time.Minute)),
 		ReturnToCheaper: &ReturnToCheaperConfig{
 			Interval:          int64(5 * time.Minute),
 			SkipRandomPhase:   true,
@@ -588,7 +588,7 @@ func TestNetworkChangeForgetsAndRemembersPerNetwork(t *testing.T) {
 }
 
 func TestUnknownNetworkSchedulesReturnToCheaperKnownDoesNot(t *testing.T) {
-	sc := &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3), MinHoldTime: int64(time.Second),
+	sc := &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3), MinHoldTime: v2Int64(int64(time.Second)),
 		ReturnToCheaper: &ReturnToCheaperConfig{ProbesToReturn: 1}}
 	te := newTestEngine(t, nil, sc, "a1", "b1")
 	failoverToB(t, te, at(0))
@@ -611,7 +611,7 @@ func TestUnknownNetworkSchedulesReturnToCheaperKnownDoesNot(t *testing.T) {
 	}
 	sc.ReturnToCheaper.TryOnAllNetworks = true
 	sc.Paths = pathSpecs("a1", 1, "b1", 3)
-	te.addSelector("auto", newSelectorSettings(sc))
+	te.addSelector("auto", legacyScenarioSelector(sc, nil))
 	te.onNetworkChange("cafe", at(4*time.Minute))
 	if !soon(at(4 * time.Minute)) {
 		t.Fatalf("with allNetworks a known network did not schedule an returnToCheaper at once")
@@ -994,7 +994,7 @@ func TestEventLogByteLimitAndDefaults(t *testing.T) {
 	if len(raw) > 300+2+10 || dropped == 0 {
 		t.Fatalf("%d bytes kept, %d dropped, want at most about 300 bytes", len(raw), dropped)
 	}
-	s := newSettings(&Config{})
+	s := newSettings(&Config{Features: &FeatureConfig{Events: v2Bool(true)}})
 	if s.maxEvents != 1000 || s.maxBytes != 64*1024 {
 		t.Fatalf("event limits by default %d events, %d bytes", s.maxEvents, s.maxBytes)
 	}
@@ -1042,10 +1042,10 @@ func TestStatusIsJSON(t *testing.T) {
 
 func TestProtoZeroValuesMatchJSONDefaults(t *testing.T) {
 	s := newSelectorSettings(&SelectorConfig{})
-	if !s.switchAfterProbe || !s.returnToCheaper.randomPhase || !s.returnToCheaper.onNetworkChange || !s.returnToCheaper.unknownNetworksOnly {
+	if !s.switchAfterProbe || !s.returnToCheaper.randomPhase || s.returnToCheaper.onNetworkChange || !s.returnToCheaper.unknownNetworksOnly || s.returnToCheaper.interval != 0 {
 		t.Fatalf("zero config: %+v", s)
 	}
-	if !newSettings(&Config{}).remember {
-		t.Fatalf("zero config does not remember networks")
+	if newSettings(&Config{}).remember {
+		t.Fatalf("zero config remembers networks without its flag")
 	}
 }

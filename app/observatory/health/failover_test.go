@@ -564,7 +564,7 @@ func TestRescueLeavesTheBalancerWhereItMoved(t *testing.T) {
 	}
 	// The failover planned the return for returnToCheaper.interval later; a1 did
 	// not fail, so it waits only for minHoldTime.
-	hold, spacing := time.Duration(sc.MinHoldTime), time.Duration(sc.ReturnToCheaper.ProbeInterval)
+	hold, spacing := time.Duration(sc.GetMinHoldTime()), time.Duration(sc.ReturnToCheaper.ProbeInterval)
 	var back time.Time
 	probes := 0
 	for now := at(4 * time.Second); now.Before(at(5*time.Minute)) && back.IsZero(); now = now.Add(time.Second) {

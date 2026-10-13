@@ -30,7 +30,7 @@ func foldReport(t *testing.T, raw []byte) (reportCounts, bool) {
 	if err := json.Unmarshal(raw, &events); err != nil {
 		t.Fatal(err)
 	}
-	c := reportCounts{SwitchReasons: map[string]int64{}, SwitchPath: []string{}, ProviderTriggers: map[string]int64{}}
+	c := reportCounts{SwitchReasons: map[string]int64{}, SwitchHistory: []ReportSwitch{}, ProviderTriggers: map[string]int64{}}
 	decided := false
 	num := func(v any) int64 { f, _ := v.(float64); return int64(f) }
 	for _, ev := range events {
@@ -41,9 +41,9 @@ func foldReport(t *testing.T, raw []byte) (reportCounts, bool) {
 			reason, _ := f["reason"].(string)
 			c.Switches++
 			c.SwitchReasons[reason]++
-			c.SwitchPath = append(c.SwitchPath, fmt.Sprintf("%v>%v:%s", f["from"], f["to"], reason))
-			if len(c.SwitchPath) > reportSwitches {
-				c.SwitchPath = c.SwitchPath[1:]
+			c.SwitchHistory = append(c.SwitchHistory, ReportSwitch{From: fmt.Sprint(f["from"]), To: fmt.Sprint(f["to"]), Reason: reason})
+			if len(c.SwitchHistory) > reportSwitches {
+				c.SwitchHistory = c.SwitchHistory[1:]
 			}
 			decided = decided || !slices.Contains([]string{"start", "start_pinned", "start_remembered", "start_with"}, reason)
 		case "exhausted":
@@ -163,8 +163,6 @@ func foldReport(t *testing.T, raw []byte) (reportCounts, bool) {
 			if f["is_ok"] == true && num(f["renewed"]) > 0 && f["trigger"] != "initial" {
 				c.ProviderRenewals++
 			}
-		case "provider_restart_needed":
-			c.ProviderRestartNeeded++
 			decided = true
 		case "provider_expired":
 			c.ProviderExpired++
@@ -258,7 +256,7 @@ func TestReportAddsUpTheEvents(t *testing.T) {
 	te.emit(now, "provider_apply", map[string]any{"provider": "p", "trigger": "expiry", "is_ok": true, "is_changed": false,
 		"leases": 2, "renewed": 2, "expired": 0})
 	te.emit(now, "provider_apply", map[string]any{"provider": "p", "trigger": "host", "is_ok": true, "is_changed": true})
-	te.emit(now, "provider_restart_needed", map[string]any{"provider": "p", "version": "1", "sections": []string{"dns"}})
+	te.emit(now, "provider_base_changed", map[string]any{"provider": "p", "version": "1", "sections": []string{"dns"}})
 	te.emit(now, "provider_expired", map[string]any{"provider": "p", "outbound": "p-x1", "was_active": true, "renewal": "failed"})
 	te.emit(now, "provider_auth_failed", map[string]any{"provider": "p", "trigger": "host", "status": 401, "via": "direct",
 		"code": "unauthorized"})
@@ -362,7 +360,7 @@ func TestReportDecisions(t *testing.T) {
 		}, false},
 		{"provider rejected", []emitted{{"provider_apply", map[string]any{"is_ok": false, "error": "x"}}}, true},
 		{"provider applied", []emitted{{"provider_apply", map[string]any{"is_ok": true, "is_changed": true}}}, true},
-		{"restart needed", []emitted{{"provider_restart_needed", map[string]any{"provider": "p"}}}, true},
+
 		{"lease ended", []emitted{{"provider_expired", map[string]any{"provider": "p", "renewal": "refused"}}}, true},
 		{"headers refused", []emitted{{"provider_auth_failed", map[string]any{"provider": "p", "status": 401}}}, true},
 		{"base changed", []emitted{{"provider_base_changed", map[string]any{"provider": "p", "from": "b1", "to": "b2"}}}, true},
@@ -612,16 +610,16 @@ func TestReportStaysBounded(t *testing.T) {
 		})
 	}
 	c := te.report.counts
-	if len(c.SwitchPath) != reportSwitches || cap(c.SwitchPath) > 2*reportSwitches || len(c.SwitchReasons) != len(reasons)+1 {
-		t.Fatalf("switch path %d (cap %d), reasons %d", len(c.SwitchPath), cap(c.SwitchPath), len(c.SwitchReasons))
+	if len(c.SwitchHistory) != reportSwitches || cap(c.SwitchHistory) > 2*reportSwitches || len(c.SwitchReasons) != len(reasons)+1 {
+		t.Fatalf("switch path %d (cap %d), reasons %d", len(c.SwitchHistory), cap(c.SwitchHistory), len(c.SwitchReasons))
 	}
-	if c.SwitchPath[reportSwitches-1] != "p-99999>p-100000:"+reasons[99_999%len(reasons)] {
-		t.Fatalf("latest switch %q", c.SwitchPath[reportSwitches-1])
+	if c.SwitchHistory[reportSwitches-1] != (ReportSwitch{From: "p-99999", To: "p-100000", Reason: reasons[99_999%len(reasons)]}) {
+		t.Fatalf("latest switch %+v", c.SwitchHistory[reportSwitches-1])
 	}
 
-	o := newObserver(context.Background(), &Config{Paths: observed("a")})
+	o := newObserver(context.Background(), &Config{Features: &FeatureConfig{Report: v2Bool(true)}, Paths: observed("a")})
 	if allocs := testing.AllocsPerRun(100, func() {
-		if o.TakeReport(false) != nil || o.Report() != nil {
+		if o.TakeReport(false) != nil || o.PeekReport() != nil {
 			t.Fatal("a report is due")
 		}
 	}); allocs != 0 {
@@ -630,22 +628,22 @@ func TestReportStaysBounded(t *testing.T) {
 }
 
 func TestObserverReport(t *testing.T) {
-	o := newObserver(context.Background(), &Config{Paths: observed("a"), Report: &ReportConfig{Interval: int64(time.Hour)}})
+	o := newObserver(context.Background(), &Config{Features: &FeatureConfig{Report: v2Bool(true)}, Paths: observed("a"), Report: &ReportConfig{Interval: int64(time.Hour)}})
 	clock := t0
 	o.clock = func() time.Time { return clock }
 	o.e.report.begin(clock)
-	o.emit("provider_restart_needed", map[string]any{"provider": "p", "version": "1", "sections": []string{"dns"}})
+	o.emit("provider_base_changed", map[string]any{"provider": "p", "version": "1", "sections": []string{"dns"}})
 
 	clock = clock.Add(30 * time.Minute)
 	if raw := o.TakeReport(false); raw != nil {
 		t.Fatalf("due before the interval: %s", raw)
 	}
 	var snap map[string]any
-	if err := json.Unmarshal(o.Report(), &snap); err != nil {
+	if err := json.Unmarshal(o.PeekReport(), &snap); err != nil {
 		t.Fatal(err)
 	}
 	if snap["health_run"] != o.run || snap["report_reason"] != "snapshot" || snap["report_index"] != 1.0 ||
-		snap["window_ms"] != 1800000.0 || snap["provider_restart_needed"] != 1.0 {
+		snap["window_ms"] != 1800000.0 || snap["provider_base_changed"] != 1.0 {
 		t.Fatalf("snapshot %v", snap)
 	}
 	clock = clock.Add(30 * time.Minute)
@@ -662,10 +660,10 @@ func TestObserverReport(t *testing.T) {
 		t.Fatal(err)
 	}
 	if final["report_reason"] != "stop" || final["report_index"] != 2.0 || final["session_ms"] != 3660000.0 ||
-		final["provider_restart_needed"] != 0.0 || final["health_run"] != o.run {
+		final["provider_base_changed"] != 0.0 || final["health_run"] != o.run {
 		t.Fatalf("final report %v", final)
 	}
-	if o.TakeReport(true) != nil || o.Report() != nil {
+	if o.TakeReport(true) != nil || o.PeekReport() != nil {
 		t.Fatal("a report after the final one")
 	}
 }

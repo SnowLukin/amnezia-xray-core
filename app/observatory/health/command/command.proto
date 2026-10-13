@@ -1,134 +1,58 @@
 syntax = "proto3";
-
 package xray.core.app.observatory.health.command;
 option csharp_namespace = "Xray.Core.App.Observatory.Health.Command";
 option go_package = "github.com/xtls/xray-core/app/observatory/health/command";
 option java_package = "com.xray.core.app.observatory.health.command";
 option java_multiple_files = true;
 
-message GetStatusRequest {}
-
-message GetStatusResponse {
-  // Current state of outbounds and balancers as JSON.
-  // Local diagnostics only: includes network identity, server_name and last_error.
-  // Never send this JSON to analytics; use GetReport for the privacy-safe summary.
-  string json = 1;
-}
-
+message CommandError { string code = 1; string message = 2; }
+// Same Result DTO as native JSON. data is JSON of the operation's typed data,
+// never a JSON-encoded string containing that object. Transport errors are
+// reserved for a failed RPC; command refusals live in error.
+message Result { bool success = 1; string run = 2; string data = 3; CommandError error = 4; }
+message StatusRequest {}
 message DrainEventsRequest {}
-
-message DrainEventsResponse {
-  // Events since the previous drain as a JSON array.
-  string json = 1;
-  // Events dropped because the buffer was full.
-  uint64 dropped = 2;
-}
-
-message NetworkChangedRequest {
-  // Identifies the network for remembering working outbounds. Empty when the
-  // host cannot tell networks apart.
-  string network = 1;
-  // The device has no network now; decisions pause until the next change.
-  bool lost = 2;
-}
-
-message NetworkChangedResponse {}
-
+message NetworkChangedRequest { string network = 1; }
+message NetworkChangedWithLabelsRequest { string network = 1; map<string,string> labels = 2; }
+message NetworkLostRequest {}
 message UserPresentRequest {}
-
-message UserPresentResponse {}
-
-message PinRequest {
-  string balancer = 1;
-  // Outbound to keep the balancer on. Empty releases the pin.
-  string outbound = 2;
-  // Run of the core the request is meant for, from the status; a request
-  // for another run is ignored. Empty skips the check.
-  string run = 3;
+message SetMemoryLowRequest { bool is_low = 1; }
+message PinRequest { string balancer = 1; string outbound = 2; string run = 3; }
+message ReleaseRequest { string balancer = 1; string run = 2; }
+message RequestProviderRefreshRequest { string provider = 1; }
+message PeekReportRequest {}
+message TakeReportRequest { bool is_final = 1; }
+message RequestProbeRequest {
+ string balancer = 1;
+ repeated string outbounds = 2;
+ // Transport convenience only: same ticket/work as an immediate request.
+ int64 wait_ms = 3;
+ bool is_udp = 4;
 }
-
-message PinResponse {
-  bool ok = 1;
+message ProbeResultRequest { string run = 1; uint64 id = 2; }
+message SetProviderHeadersRequest { string provider = 1; map<string,string> headers = 2; }
+message ExportProviderSetRequest {
+ string provider = 1;
+ uint64 after = 2;
+ // data.set is an object valid as providers[].initialAnswer. It contains
+ // credentials and belongs only in protected local storage.
 }
-
-message RefreshRequest {
-  // Provider to refresh. Empty refreshes every provider.
-  string provider = 1;
-}
-
-message RefreshResponse {
-  // False when no provider has this tag.
-  bool ok = 1;
-}
-
-message GetReportRequest {
-  // Take the report when one is due and start a new window. Without it the
-  // report is a snapshot of what a stop would bring, and nothing changes.
-  bool take = 1;
-  // The host is about to stop the core: the last report of this run. It
-  // implies take.
-  bool final = 2;
-}
-
-message GetReportResponse {
-  // The report as JSON; empty when there is nothing to report.
-  string json = 1;
-}
-
-message ProbeRequest {
-  string balancer = 1;
-  // Candidates of the balancer to probe. Empty lets the observatory choose:
-  // the outbound the balancer uses, then its other candidates.
-  repeated string outbounds = 2;
-  // Wait up to this long for the result; 0 answers at once. The deadline of
-  // the call shortens the wait.
-  int64 wait_ms = 3;
-  bool is_udp = 4;
-}
-
-message ProbeResponse {
-  // The request, as the status names it under probe_requests; ids start
-  // anew with every run of the core.
-  uint64 id = 1;
-  string run = 2;
-  // The request with the result per outbound as JSON, as in the status.
-  string json = 3;
-}
-
-message SetProviderHeadersRequest {
-  string provider = 1;
-  // Headers to put over those of the config, such as a new token. An empty
-  // value removes what the host or an answer set.
-  map<string, string> headers = 2;
-}
-
-message SetProviderHeadersResponse {}
-
-message GetProviderSetRequest {
-  string provider = 1;
-  // Only a set with a larger sequence number is returned.
-  uint64 after = 2;
-}
-
-message GetProviderSetResponse {
-  // The last set the provider applied as JSON, valid as providers[].initialAnswer;
-  // empty when none is newer than after. It holds the token of the
-  // provider and the keys of its outbounds.
-  string json = 1;
-  uint64 seq = 2;
-}
-
 service HealthService {
-  rpc GetStatus(GetStatusRequest) returns (GetStatusResponse) {}
-  rpc DrainEvents(DrainEventsRequest) returns (DrainEventsResponse) {}
-  rpc NetworkChanged(NetworkChangedRequest) returns (NetworkChangedResponse) {}
-  rpc UserPresent(UserPresentRequest) returns (UserPresentResponse) {}
-  rpc Pin(PinRequest) returns (PinResponse) {}
-  rpc Refresh(RefreshRequest) returns (RefreshResponse) {}
-  rpc GetReport(GetReportRequest) returns (GetReportResponse) {}
-  rpc Probe(ProbeRequest) returns (ProbeResponse) {}
-  rpc SetProviderHeaders(SetProviderHeadersRequest) returns (SetProviderHeadersResponse) {}
-  rpc GetProviderSet(GetProviderSetRequest) returns (GetProviderSetResponse) {}
+ rpc Status(StatusRequest) returns (Result) {}
+ rpc DrainEvents(DrainEventsRequest) returns (Result) {}
+ rpc NetworkChanged(NetworkChangedRequest) returns (Result) {}
+ rpc NetworkChangedWithLabels(NetworkChangedWithLabelsRequest) returns (Result) {}
+ rpc NetworkLost(NetworkLostRequest) returns (Result) {}
+ rpc UserPresent(UserPresentRequest) returns (Result) {}
+ rpc SetMemoryLow(SetMemoryLowRequest) returns (Result) {}
+ rpc Pin(PinRequest) returns (Result) {}
+ rpc Release(ReleaseRequest) returns (Result) {}
+ rpc RequestProviderRefresh(RequestProviderRefreshRequest) returns (Result) {}
+ rpc PeekReport(PeekReportRequest) returns (Result) {}
+ rpc TakeReport(TakeReportRequest) returns (Result) {}
+ rpc RequestProbe(RequestProbeRequest) returns (Result) {}
+ rpc ProbeResult(ProbeResultRequest) returns (Result) {}
+ rpc SetProviderHeaders(SetProviderHeadersRequest) returns (Result) {}
+ rpc ExportProviderSet(ExportProviderSetRequest) returns (Result) {}
 }
-
 message Config {}

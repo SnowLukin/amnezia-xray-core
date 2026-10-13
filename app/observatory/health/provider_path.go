@@ -3,6 +3,7 @@ package health
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"math"
 	"time"
 )
@@ -45,33 +46,79 @@ func answerCost(obj map[string]json.RawMessage, where string) (float32, error) {
 	return cost, nil
 }
 
-func answerInterval(obj map[string]json.RawMessage, where string) (int64, error) {
-	if len(obj["returnInterval"]) == 0 {
-		return 0, nil
+// ReturnIsEnabled preserves an omitted flag so selection inherits its balancer.
+func answerReturn(obj map[string]json.RawMessage, where string) (int64, *bool, error) {
+	raw := obj["returnToCheaper"]
+	if len(raw) == 0 {
+		return 0, nil, nil
 	}
-	value, err := answerString(obj, "returnInterval", where)
+	ret, err := answerObject(raw, where+".returnToCheaper", map[string]bool{"isEnabled": true, "interval": true})
 	if err != nil {
-		return 0, err
+		return 0, nil, err
+	}
+	var enabled *bool
+	if v := ret["isEnabled"]; len(v) > 0 {
+		var b bool
+		if json.Unmarshal(v, &b) != nil {
+			return 0, nil, fmt.Errorf("%s.returnToCheaper.isEnabled must be a boolean", where)
+		}
+		enabled = &b
+	}
+	if len(ret["interval"]) == 0 {
+		return 0, enabled, nil
+	}
+	value, err := answerString(ret, "interval", where+".returnToCheaper")
+	if err != nil {
+		return 0, nil, err
 	}
 	d, err := time.ParseDuration(value)
-	if err != nil || d < 0 {
-		return 0, fmt.Errorf("%s.returnInterval must be a nonnegative duration", where)
+	if err != nil || d <= 0 {
+		return 0, nil, fmt.Errorf("%s.returnToCheaper.interval must be a positive duration", where)
 	}
-	if d == 0 {
-		return -1, nil
-	}
-	return int64(d), nil
+	return int64(d), enabled, nil
 }
 
-func answerLazy(obj map[string]json.RawMessage, where string) (bool, error) {
-	if len(obj["isLazy"]) == 0 {
+func answerProbePolicy(obj map[string]json.RawMessage, where string) (bool, error) {
+	if len(obj["probePolicy"]) == 0 {
 		return false, nil
 	}
-	var lazy bool
-	if err := json.Unmarshal(obj["isLazy"], &lazy); err != nil {
-		return false, fmt.Errorf("%s.isLazy must be a boolean", where)
+	policy, err := answerString(obj, "probePolicy", where)
+	if err != nil {
+		return false, err
 	}
-	return lazy, nil
+	switch policy {
+	case "regular":
+		return false, nil
+	case "onDemand":
+		return true, nil
+	}
+	return false, fmt.Errorf("%s.probePolicy must be regular or onDemand", where)
+}
+
+func answerLabels(obj map[string]json.RawMessage, where string) (map[string]string, error) {
+	if len(obj["labels"]) == 0 {
+		return nil, nil
+	}
+	var labels map[string]string
+	if json.Unmarshal(obj["labels"], &labels) != nil || labels == nil || len(labels) > 6 {
+		return nil, fmt.Errorf("%s.labels must have at most 6 string labels", where)
+	}
+	for k, v := range labels {
+		if len(k) < 1 || len(k) > 24 || len(v) < 1 || len(v) > 32 {
+			return nil, fmt.Errorf("%s.labels has invalid bounded label", where)
+		}
+		for _, c := range k {
+			if !((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_') {
+				return nil, fmt.Errorf("%s.labels has invalid key", where)
+			}
+		}
+		for _, c := range v {
+			if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '.' || c == '_' || c == ':' || c == '-') {
+				return nil, fmt.Errorf("%s.labels has invalid value", where)
+			}
+		}
+	}
+	return labels, nil
 }
 
 func validateAnswerPaths(cfg *providerSettings, a *providerAnswer) error {
@@ -84,13 +131,13 @@ func validateAnswerPaths(cfg *providerSettings, a *providerAnswer) error {
 		}
 		for i, raw := range raws {
 			where := fmt.Sprintf("groups[%d]", i)
-			obj, err := answerObject(raw, where, map[string]bool{"name": true, "cost": true, "isLazy": true, "returnInterval": true, "probe": true, "failedInRowToLeave": true})
+			obj, err := answerObject(raw, where, map[string]bool{"name": true, "cost": true, "probePolicy": true, "returnToCheaper": true, "probe": true, "failedInRowToLeave": true, "labels": true})
 			if err != nil {
 				return err
 			}
 			name, err := answerString(obj, "name", where)
-			if err != nil || name == "" {
-				return fmt.Errorf("%s needs nonempty name", where)
+			if err != nil || name == "" || len(cfg.prefix+name) > 128 {
+				return fmt.Errorf("%s needs name of at most 128 bytes including its prefix", where)
 			}
 			if groups[name] != nil {
 				return fmt.Errorf("duplicate group %s", name)
@@ -99,11 +146,11 @@ func validateAnswerPaths(cfg *providerSettings, a *providerAnswer) error {
 			if err != nil {
 				return err
 			}
-			lazy, err := answerLazy(obj, where)
+			lazy, err := answerProbePolicy(obj, where)
 			if err != nil {
 				return err
 			}
-			interval, err := answerInterval(obj, where)
+			interval, returnEnabled, err := answerReturn(obj, where)
 			if err != nil {
 				return err
 			}
@@ -117,15 +164,23 @@ func validateAnswerPaths(cfg *providerSettings, a *providerAnswer) error {
 					return fmt.Errorf("%s.failedInRowToLeave must be from 1 to 16", where)
 				}
 			}
-			g := &PathGroup{Name: cfg.prefix + name, Cost: cost, IsLazy: lazy, ReturnInterval: interval, Probe: probe, FailedInRowToLeave: limit}
+			labels, err := answerLabels(obj, where)
+			if err != nil {
+				return err
+			}
+			g := &PathGroup{Labels: labels, ReturnIsEnabled: returnEnabled, Name: cfg.prefix + name, Cost: cost, IsLazy: lazy, ReturnInterval: interval, Probe: probe, FailedInRowToLeave: limit}
 			groups[name] = g
 			a.groups = append(a.groups, g)
 		}
 	}
+	if len(groups) > cfg.maxOutbounds {
+		return fmt.Errorf("groups exceed maxOutbounds")
+	}
+	usedGroups := map[string]bool{}
 	a.paths = nil
 	for _, head := range a.heads {
-		where := fmt.Sprintf("outbound %s path", head.Tag)
-		obj, err := answerObject(head.Path, where, map[string]bool{"balancer": true, "group": true, "cost": true, "isLazy": true, "returnInterval": true, "probe": true, "isProbeOnly": true})
+		where := fmt.Sprintf("outbound %s selection", head.Tag)
+		obj, err := answerObject(head.Selection, where, map[string]bool{"balancer": true, "group": true, "cost": true, "probePolicy": true, "returnToCheaper": true, "probe": true, "isProbeOnly": true, "labels": true})
 		if err != nil {
 			return err
 		}
@@ -138,7 +193,7 @@ func validateAnswerPaths(cfg *providerSettings, a *providerAnswer) error {
 			return err
 		}
 		if _, present := obj["group"]; present && group == "" {
-			return fmt.Errorf("%s.group needs nonempty name", where)
+			return fmt.Errorf("%s.group needs name of at most 128 bytes including its prefix", where)
 		}
 		p := &PathDefinition{Tag: cfg.prefix + head.Tag, Balancer: balancer}
 		if raw := obj["isProbeOnly"]; len(raw) > 0 {
@@ -151,22 +206,23 @@ func validateAnswerPaths(cfg *providerSettings, a *providerAnswer) error {
 			if g == nil {
 				return fmt.Errorf("%s: unknown group %s", where, group)
 			}
-			for _, key := range []string{"cost", "isLazy", "returnInterval", "probe"} {
+			for _, key := range []string{"cost", "probePolicy", "returnToCheaper", "probe"} {
 				if _, exists := obj[key]; exists {
 					return fmt.Errorf("%s.%s is set by group %s", where, key, group)
 				}
 			}
 			p.Group = g.Name
+			usedGroups[group] = true
 		} else {
 			p.Cost, err = answerCost(obj, where)
 			if err != nil {
 				return err
 			}
-			p.IsLazy, err = answerLazy(obj, where)
+			p.IsLazy, err = answerProbePolicy(obj, where)
 			if err != nil {
 				return err
 			}
-			p.ReturnInterval, err = answerInterval(obj, where)
+			p.ReturnInterval, p.ReturnIsEnabled, err = answerReturn(obj, where)
 			if err != nil {
 				return err
 			}
@@ -175,7 +231,27 @@ func validateAnswerPaths(cfg *providerSettings, a *providerAnswer) error {
 				return fmt.Errorf("%s.probe needs a name", where)
 			}
 		}
+		p.Labels, err = answerLabels(obj, where)
+		if err != nil {
+			return err
+		}
+		if group != "" {
+			merged := maps.Clone(groups[group].Labels)
+			if merged == nil {
+				merged = map[string]string{}
+			}
+			maps.Copy(merged, p.Labels)
+			if len(merged) > 6 {
+				return fmt.Errorf("%s.labels merged with its group exceeds 6", where)
+			}
+			p.Labels = merged
+		}
 		a.paths = append(a.paths, p)
+	}
+	for name := range groups {
+		if !usedGroups[name] {
+			return fmt.Errorf("unused group %s", name)
+		}
 	}
 	return nil
 }
@@ -186,6 +262,9 @@ func validateAnswerProbes(s *settings, a *providerAnswer) error {
 		known[p.name] = true
 	}
 	for _, p := range a.paths {
+		if p.IsProbeOnly && !s.features.Candidates {
+			return fmt.Errorf("selection isProbeOnly requires probes.candidates.isEnabled")
+		}
 		if p.Probe != "" && !known[p.Probe] {
 			return fmt.Errorf("outbound %s: unknown probe %s", p.Tag, p.Probe)
 		}

@@ -91,7 +91,7 @@ func qualityStage1ExportProbeBytes(t *testing.T, o *Observer, tag string) int64 
 func qualityStage1ExportProvider(t *testing.T, te *testEngine, o *Observer, now time.Time) (providerRequest, []byte) {
 	t.Helper()
 	r := te.providerRequest(te.prov(), &refreshJob{refresh: 1, trigger: triggerHost}, now)
-	body := o.requestBody(&providerRuntime{cfg: te.prov().cfg}, &refreshJob{request: r})
+	body := mustRequestBody(t,o,&providerRuntime{cfg:te.prov().cfg},&refreshJob{request:r})
 	var captured providerRequest
 	if err := json.Unmarshal(body, &captured); err != nil {
 		t.Fatal(err)

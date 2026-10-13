@@ -16,7 +16,7 @@ import (
 func leasedAnswer(t *testing.T, version string, server, end time.Time, more string) *providerAnswer {
 	t.Helper()
 	a, err := parseAnswer([]byte(fmt.Sprintf(`{"version": %q, "serverTime": %q, "expiresAt": {"x1": %q},
-		"outbounds": [{"tag": "x1", "protocol": "vless", "v": 1}, {"tag": "x2", "protocol": "vless", "v": 1}]%s}`,
+		"outbounds": [{"tag": "x1", "protocol": "vless", "v": 1,"selection":{"balancer":"auto","cost":1}}, {"tag": "x2", "protocol": "vless", "v": 1,"selection":{"balancer":"auto","cost":1}}]%s}`,
 		version, stamp(server), stamp(end), more)))
 	if err != nil {
 		t.Fatal(err)
@@ -29,7 +29,7 @@ func leasedAnswer(t *testing.T, version string, server, end time.Time, more stri
 // started with.
 func (f *applyFixture) providerSet(t *testing.T, after uint64) (map[string]json.RawMessage, uint64) {
 	t.Helper()
-	raw, seq, err := f.o.ProviderSet("fresh", f.seq0+after)
+	raw, seq, err := f.o.ExportProviderSet("fresh", f.seq0+after)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -46,7 +46,7 @@ func (f *applyFixture) providerSet(t *testing.T, after uint64) (map[string]json.
 
 func TestProviderSetNilUntilApplied(t *testing.T) {
 	f, _ := initialFixture(t, "")
-	if raw, seq, err := f.o.ProviderSet("other", 0); raw != nil || seq != 0 || err == nil || err.Error() != "no provider other" {
+	if raw, seq, err := f.o.ExportProviderSet("other", 0); raw != nil || seq != 0 || err == nil || CommandErrorOf(err).Code != "unknown_provider" {
 		t.Fatalf("another provider: %s, %d, %v", raw, seq, err)
 	}
 	// Headers alone are no set to start with.
@@ -84,7 +84,7 @@ func TestProviderSetRoundTripsAsInitial(t *testing.T) {
 	if err := f.o.SetProviderHeaders("fresh", map[string]string{"X-Session": "s1"}); err != nil {
 		t.Fatal(err)
 	}
-	raw, seq, err := f.o.ProviderSet("fresh", 0)
+	raw, seq, err := f.o.ExportProviderSet("fresh", 0)
 	if err != nil || seq != f.seq0+2 {
 		t.Fatalf("set %s, seq %d, %v", raw, seq, err)
 	}
@@ -120,7 +120,7 @@ func TestProviderSetRoundTripsAsInitial(t *testing.T) {
 		t.Fatalf("the same set: %v, %v", changed, err)
 	}
 	// What the second core keeps is what the first one kept.
-	again, seq, err := g.o.ProviderSet("fresh", 0)
+	again, seq, err := g.o.ExportProviderSet("fresh", 0)
 	if err != nil || seq != g.seq0+1 {
 		t.Fatalf("set of the second core %s, seq %d, %v", again, seq, err)
 	}
@@ -196,7 +196,7 @@ func TestProviderSetDoesNotWaitForAnApply(t *testing.T) {
 	}
 	got := make(chan set, 1)
 	go func() {
-		raw, seq, err := f.o.ProviderSet("fresh", 0)
+		raw, seq, err := f.o.ExportProviderSet("fresh", 0)
 		got <- set{raw, seq, err}
 	}()
 	select {
@@ -225,7 +225,7 @@ func TestProviderSetUnchangedAllocatesNothing(t *testing.T) {
 	}
 	_, seq := f.providerSet(t, 0)
 	if allocs := testing.AllocsPerRun(100, func() {
-		if raw, _, err := f.o.ProviderSet("fresh", f.seq0+seq); raw != nil || err != nil {
+		if raw, _, err := f.o.ExportProviderSet("fresh", f.seq0+seq); raw != nil || err != nil {
 			t.Fatal("a set newer than the one the host has")
 		}
 	}); allocs != 0 {
@@ -238,7 +238,7 @@ func TestProviderSetUnchangedAllocatesNothing(t *testing.T) {
 func TestProviderSetLeavesConfigHeadersOut(t *testing.T) {
 	f, _ := initialFixture(t, "")
 	f.rt.cfg.headers = map[string]string{"Authorization": "Bearer config", "X-Client": "core"}
-	a, err := parseAnswer([]byte(`{"outbounds": [{"tag": "x1", "protocol": "vless", "v": 1}], "headers": {}}`))
+	a, err := parseAnswer([]byte(`{"outbounds": [{"tag": "x1", "protocol": "vless", "v": 1,"selection":{"balancer":"auto","cost":1}}], "headers": {}}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -261,7 +261,7 @@ func TestProviderSetLeavesConfigHeadersOut(t *testing.T) {
 func TestKeptAnswerIsReplacedNotAdded(t *testing.T) {
 	f, _ := initialFixture(t, "")
 	for i := range 200 {
-		body := fmt.Sprintf("{ \"version\": \"v%d\",\n  \"outbounds\": [ {\"tag\": \"x1\", \"protocol\": \"vless\", \"v\": %d, \"path\": {\"balancer\":\"auto\",\"cost\":1},\n \"pad\": %q} ] }",
+		body := fmt.Sprintf("{ \"version\": \"v%d\",\n  \"outbounds\": [ {\"tag\": \"x1\", \"protocol\": \"vless\", \"v\": %d, \"selection\": {\"balancer\":\"auto\",\"cost\":1},\n \"pad\": %q} ] }",
 			i, i, strings.Repeat("p", i*100))
 		a, err := parseAnswer([]byte(body))
 		if err != nil {
@@ -288,7 +288,7 @@ func TestKeptAnswerIsReplacedNotAdded(t *testing.T) {
 // for what ProviderSet adds.
 func TestKeptSetOfALargeAnswerStartsTheNextCore(t *testing.T) {
 	f, _ := initialFixture(t, "")
-	head := `{"outbounds": [{"tag": "x1", "protocol": "vless", "v": 1, "path": {"balancer":"auto","cost":1}, "pad": "`
+	head := `{"outbounds": [{"tag": "x1", "protocol": "vless", "v": 1, "selection": {"balancer":"auto","cost":1}, "pad": "`
 	tail := `"}]}`
 	body := head + strings.Repeat("<&>", (int(f.rt.cfg.maxBytes)-len(head)-len(tail))/3) + tail
 	a, err := parseAnswer([]byte(body))
@@ -305,7 +305,7 @@ func TestKeptSetOfALargeAnswerStartsTheNextCore(t *testing.T) {
 	if err := f.o.SetProviderHeaders("fresh", host); err != nil {
 		t.Fatal(err)
 	}
-	raw, _, err := f.o.ProviderSet("fresh", 0)
+	raw, _, err := f.o.ExportProviderSet("fresh", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -329,7 +329,7 @@ func TestKeptLeaseRenewsAtTheSamePointAcrossRestarts(t *testing.T) {
 	if _, err := f.apply(t, leasedAnswer(t, "v1", wall, wall.Add(10*time.Hour), "")); err != nil {
 		t.Fatal(err)
 	}
-	raw, _, err := f.o.ProviderSet("fresh", 0)
+	raw, _, err := f.o.ExportProviderSet("fresh", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -347,7 +347,7 @@ func TestKeptLeaseRenewsAtTheSamePointAcrossRestarts(t *testing.T) {
 			t.Fatalf("started %v later: renewal at %v, urgent at %v; want 5h and 8h", after, renew, urgent)
 		}
 		// The core started on the kept set keeps it as it was.
-		if raw, _, err = g.o.ProviderSet("fresh", 0); err != nil {
+		if raw, _, err = g.o.ExportProviderSet("fresh", 0); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -365,7 +365,7 @@ func TestProviderSetSeqGrowsAcrossRuns(t *testing.T) {
 	if _, err := f.apply(t, answer(t, fakeOutbound{Tag: "x1", V: 1})); err != nil {
 		t.Fatal(err)
 	}
-	raw, kept, err := f.o.ProviderSet("fresh", 0)
+	raw, kept, err := f.o.ExportProviderSet("fresh", 0)
 	if err != nil || raw == nil {
 		t.Fatalf("set %s, %v", raw, err)
 	}
@@ -375,7 +375,7 @@ func TestProviderSetSeqGrowsAcrossRuns(t *testing.T) {
 	}
 	g, _ := initialFixture(t, string(raw))
 	g.o.applyInitial()
-	again, seq, err := g.o.ProviderSet("fresh", kept)
+	again, seq, err := g.o.ExportProviderSet("fresh", kept)
 	if err != nil || again == nil || seq <= kept {
 		t.Fatalf("asked with %d of the run before: set %v, seq %d, %v", kept, again != nil, seq, err)
 	}

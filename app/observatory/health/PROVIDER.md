@@ -1,103 +1,76 @@
-# Provider protocol 1
+# Provider protocol 1 — API v2
 
-This is the contract between the core and a backend that serves the set of
-a provider: what the core sends, what it accepts and how it reacts. The
-client side, the config of a provider and what the core does with a set,
-is in the [README](README.md#providers). The words must, should and may
-are meant as in RFC 2119.
+Протокол HTTP остаётся `1`; внешняя конфигурация источника и `selection` в ответах следуют API v2. Переименования выполнены на месте: старый `path` и изменение `routing` в ответе отклоняются. Backend не управляет полной конфигурацией VPN через динамический источник.
 
-A backend serves one protocol for every client. There are no adapters per
-client: what a client does not understand, it refuses, and it says so in
-its next request.
+## Конфигурация, запрос и ответ
 
-## Exchange
+```jsonc
+{
+  "healthObservatory": { "providers": [{
+    "isEnabled": true, "tag": "fresh",
+    "url": "https://api.example/set", "method": "POST",
+    "headers": { "Authorization": "Bearer <token>" }, "via": ["auto", "backup", "direct"],
+    "timeout": "10s", "isPlainHttpAllowed": false,
+    "triggers": {
+      "exhausted": { "isEnabled": true },
+      "periodic": { "isEnabled": false, "interval": "2h" },
+      "minHealthy": { "isEnabled": false, "outbounds": 2 },
+      "whenCostAbove": { "isEnabled": false, "cost": 10, "after": "15m" },
+      "maxAge": { "isEnabled": false, "age": "6h" },
+      "networkChange": { "isEnabled": false, "mode": "unknownNotCheapest", "settleDelay": "30s" },
+      "leaseRenewal": { "isEnabled": true, "renewAtFraction": 0.5, "urgentAtFraction": 0.8 },
+      "backendSchedule": { "isEnabled": true }
+    },
+    "limits": { "minInterval": "5m", "urgentMinInterval": "30s", "maxRefreshesPerHour": 6 },
+    "apply": { "balancer": "auto", "tagPrefix": "p-", "drainTimeout": "5m", "maxOutbounds": 64,
+               "allowedProtocols": ["vless", "vmess", "trojan", "shadowsocks", "wireguard", "hysteria", "socks", "http"],
+               "acceptedHeaders": ["Authorization"], "expiredLeaseFallback": { "isEnabled": true } },
+    "baseVersion": "cfg-12", "initialAnswer": null
+  }] }
+}
+```
 
-1. A trigger of the provider fires: an exhausted balancer, a lease due for
-   renewal, a timer, the host and so on, see
-   [When the core asks](#when-the-core-asks).
-2. The core sends one request through the first `via` entry of the
-   provider, an outbound or the current choice of a balancer, and on to
-   the next entry while the answer may have broken on the way. Every
-   attempt of one refresh sends the same body.
-3. The backend answers with a set of outbounds and what goes with them, or
-   with an error.
-4. The core checks the whole answer before anything changes. An answer it
-   accepts replaces the set of the provider in the balancer without a
-   restart; one it refuses changes nothing, and the reason goes with the
-   next request.
+Без массива или с `isEnabled: false` нет запросов, парсинга initialAnswer и runtime handler замен. Provider не требуется ни для одного базового маршрута. Его ошибки не удаляют конфиговые outbound и последний принятый рабочий набор. Каждое новое сообщение проверяется до применения, затем атомарно заменяется только принадлежащий источнику набор; соединения старых обработчиков доживают по drainTimeout.
 
-Keys are camelCase in the request and the answer. The request carries
-`"protocol": 1`. An answer carries `"protocol": 1` or no `protocol`, never a
-protocol above the one of the request, and only keys of its protocol: a new
-key of the answer is a new protocol. A backend must ignore fields of the
-request it does not know, since protocol 1 may gain fields in the request.
+Умолчания изменяют поводы запросов, но оставляют прежние защитные gates: idle, pin, network down, low memory, Retry-After, backoff и quota. Ручной refresh не обходит их. Отложенный ручной запрос возвращает причину и `retry_in_ms`; его не нужно повторять циклом. Хост может поставить новые headers; значения никогда не попадают в ошибки/сводку. POST остаётся основным; GET остаётся для статического файла.
 
-## When the core asks
+**API использует убрать возможность изменять routing из ответа провайдера.** Источник меняет адреса, группы, аренды и принятые headers, а изменение маршрутизации сигнализирует `baseVersion` и обновляется хостом целым конфигом. Это самый значимый отказ от существующей opt-in возможности: требует отдельного ответа Максима. До него текущий `isRoutingAccepted` остаётся как есть. Если возможность нужна, оставим отдельный `routingUpdates.isEnabled: false` с прежним валидатором; ни один другой флаг её не включает.
 
-The core asks only when it has a reason, and never more often than its
-limits allow. The `trigger` of the request names the reason:
+```jsonc
+// Запрос: protocol остаётся 1, camelCase, прежняя идентичность повтора
+{
+  "protocol": 1, "provider": "fresh", "run": "provider-scoped-hash",
+  "refreshNumber": 7, "trigger": "expiry", "retryLevel": 1,
+  "version": "slots-7", "baseVersion": "cfg-12", "clientTime": "2026-10-13T13:00:00Z",
+  "lastFailure": { "status": 503, "code": "status", "agoMs": 61000 },
+  "network": { "id": "provider-scoped-network-hash", "isKnown": false, "isUp": true,
+               "labels": { "type": "wifi" }, "ipLabels": { "asn": "12345" } },
+  "isMemoryLow": false,
+  "balancer": { "tag": "auto", "current": "x2", "isOwn": true, "cost": 3,
+                "isExhausted": false, "isPinned": false, "heldMs": 840000 },
+  "outbounds": [{ "tag": "x2", "isProbeOnly": false, "state": "up", "activeMs": 840000,
+                  "probe": { "profile": "full", "reason": "failover", "state": "up", "isPassed": true, "agoMs": 30000,
+                             "steps": [{ "name": "transport", "isPassed": true, "connectMs": 80, "ms": 180, "bytes": 32768, "destination": 0 }] },
+                  "udp": { "state": "ok", "rttMs": 41, "agoMs": 40000 },
+                  "quality": { "ttfbCount": 14, "ttfbP50Ms": 120, "tcpRttMinMs": 38, "bulkKbpsP90": 18000 } }],
+  "groups": [{ "group": "g", "state": "up", "members": 6, "healthy": 4, "quarantined": 1, "clientPosition": 2, "failed": 0, "quarantineMs": 0 }],
+  "witnessQuality": { "dialCount": 20, "dialP50Ms": 40 }
+}
+```
 
-| `trigger` | The core asks because |
-| --- | --- |
-| `host` | The host asked, for example after the user pressed reconnect. |
-| `exhausted` | The balancer has no usable outbound left. |
-| `expiry` | A lease reached its renewal point or ended, see [Leases](#leases). |
-| `min_healthy` | Fewer outbounds of the balancer work than the config wants. |
-| `cost_above` | The chosen outbound costs at least `whenCostAbove.cost`. With `after: "0s"`, the request starts in the same turn that chooses it, subject to the limits and gates; a positive `after` waits that long. |
-| `network_change` | The device moved to a network where the set does not work as well. |
-| `next_refresh` | The time the last answer asked for with `nextRefreshIn` came. |
-| `max_age` | The set is older than the config allows. |
-| `interval` | The regular refresh, `interval` after the previous one. |
+```jsonc
+// Ответ: полный набор источника; routing/dns/inbounds в рекомендуемом варианте запрещены
+{
+  "protocol": 1, "version": "slots-8",
+  "outbounds": [{ "tag": "x2", "protocol": "vless", "settings": {},
+                  "selection": { "balancer": "auto", "cost": 1, "probe": "full", "isProbeOnly": false } }],
+  "groups": [], "expiresAt": { "x2": "2026-10-14T13:00:00Z" },
+  "serverTime": "2026-10-13T13:00:00Z", "nextRefreshIn": "2h",
+  "headers": { "Authorization": "Bearer <new-token>" }, "baseVersion": "cfg-12"
+}
+```
 
-By default two refreshes start at least 5 minutes apart, or 30 seconds for
-an exhausted balancer, an urgent renewal, the host and cost feedback with
-`whenCostAbove.after: "0s"`; at most 6 start
-within an hour; after a failure the next waits for a backoff that starts at
-30 seconds and doubles up to 30 minutes, spread by 30%. Without user
-traffic only the host and the first renewal of a lease ask. While the
-network is down only the host asks. While the balancer of the provider is
-pinned, by the host or by the start pin of the config, only the host and
-the first request about a lease that reached its urgent point or ended ask,
-once per value of the lease: a host that verifies the pinned outbound stops
-the core when the check fails, and a refresh would only load the backend,
-but a lease must not end under a long pin. A retry of that request waits
-for the release. While memory is low only the host, an exhausted balancer
-and an urgent renewal ask, through the first usable `via` only. These
-limits live in the memory of the core: a host that restarts the core in a
-loop resets them, so a backend must limit requests by token on its side as
-well.
-
-## Probe-only capacity
-
-An answer may mark any member `path.isProbeOnly: true`, including members of a
-group. It is excluded from user selection and the real-member healthy threshold.
-Every request outbound carries `isProbeOnly`, including false. Below
-`minHealthyOutbounds`, the core sends `min_healthy` after the first candidate
-passes or after all candidates fail. Exhaustion can request a set immediately.
-The trigger rearms only when enough real members recover; a backend limited to
-one real slot at threshold two receives one request rather than a refresh storm.
-
-Candidates use the mandatory steps of their path profile, with ordinary probe
-budgets. Optional egress steps are skipped; real members use the full profile.
-`schedule.probeOnly.keepVerified` defaults to 1 (maximum 4), and
-`recheckInterval` to 15 minutes. Probe snapshots in the body identify the
-`candidate` reason and the steps actually attempted.
-
-Return the same tag with false and real credentials to promote it. Keep the
-endpoint and mandatory profile consistent with the address just verified: a
-fresh passed snapshot may be reused for `hostProbes.reuseWindow`. Mode changes
-apply even when the protocol configuration is otherwise identical. Real-to-probe
-changes stop new user selection before handler replacement; existing connections
-drain independently. Removed tags use the existing drain contract.
-
-Use probe credentials scoped to a user or small cohort and only its own nodes.
-Permit the probe destination and block other destinations. Probe credentials
-consume no real user slot. Two real slots keep the backend off the immediate
-failover path; one slot requires directly reachable provider access and adds
-slot-creation time to the interruption. Keep the old real slot alive until the
-client's next request confirms its new current path, or until a short lease
-covering `apply.drainTimeout` expires. Five to ten probe addresses are normally
-sufficient; more can arrive in later answers.
+Все прежние outbound counters, группы и качественные измерения сохраняются в запросе без переименования, если ниже не указано иное; объект опциональной фичи отсутствует, когда нет её данных. Ограничения: tag/group-name не длиннее 128 байт, version/baseVersion — 256 байт; метки по measurement-context (ключ до 24, значение до 32 символов, 6 у пути/IP и 8 у host/сессии). Provider POST имеет hard ceiling 256 KiB: при большом summary сначала опускаются optional quality details с явным isTruncated, essential identity/state/lease не обрезаются; если essential часть не влезла — отказ запроса с кодом request_too_large, без изменения маршрута. Это новая механика ограничения payload и отдельная provider-rich regression после GO. Неиспользуемые группы запрещены, число групп не больше maxOutbounds; это усиленная проверка, текущий 1MiB bound не отменяется. Новый bool не разрешает отправку адресов, SNI, URL ошибок, header values или raw network/run. Размер ответа выводится из maxOutbounds: 4 KiB на участника, максимум 1 MiB. Дополнительный ручной maxBytes убирается, общий hard ceiling остаётся. Ошибки ответа `{protocol:1,code:"rate_limited"}` и HTTP Retry-After сохраняются. Значения trigger (`host`, `expiry`, `min_healthy` и т.д.) сохраняются, хотя ключи включения поводов стали понятнее.
 
 ## Request
 
@@ -130,7 +103,7 @@ sufficient; more can arrive in later answers.
   "refreshNumber": 7,
   "trigger": "expiry",
   "retryLevel": 1,
-  "lastFailure": { "status": 503, "error": "status", "agoMs": 61000 },
+  "lastFailure": { "status": 503, "code": "status", "agoMs": 61000 },
   "version": "slots-7781",
   "baseVersion": "cfg-12",
   "clientTime": "2026-10-08T12:00:03Z",
@@ -167,7 +140,7 @@ Inside quality, measured zeros remain present; unavailable measurements are omit
 | `refreshNumber` | Always. Grows with every refresh of the run and is the same in every attempt of one refresh: `run` and `refreshNumber` together tell a request sent again through another `via` from a new one. |
 | `trigger` | Always. Why the core asks, see [When the core asks](#when-the-core-asks). |
 | `retryLevel` | Always. The level of the backoff this refresh waited for: refreshes in a row since the last success that failed, brought an answer the core refused, or, for an exhausted balancer, brought the same set again. A pause the backend asked for with `Retry-After` and refused headers leave it as it is; any other applied answer sets it back to 0. |
-| `lastFailure` | Only when the previous refresh failed: `status`, the HTTP status or 0; `agoMs`, how long ago; `error`, the reason the core refused a well-formed answer (at most 200 bytes, see [Answer](#answer)) or the class of the failure: `timeout`, `network`, `status`, `too_large` or `broken_json`. It is what the last `via` that was asked met. |
+| `lastFailure` | Only when the previous refresh failed: `status`, the HTTP status or 0; `agoMs`, how long ago; `code`, a bounded rejection or transport classification: `timeout`, `network`, `status`, `too_large` or `broken_json`. It is what the last `via` that was asked met. |
 | `version` | The set the core applies now, as the answer named it; none before the first set. |
 | `baseVersion` | The base config the core runs with, see [Base config](#base-config); none without one. |
 | `clientTime` | Always. The clock of the device in RFC 3339, UTC: the backend sees how far off it is. |
@@ -175,7 +148,7 @@ Inside quality, measured zeros remain present; unavailable measurements are omit
 | `isMemoryLow` | Always. The host reported that memory is short: the core asks only when it must. |
 | `balancer` | Always. The balancer the provider feeds: `tag`, always; `current`, the outbound it chose without the prefix of the provider and only when it is one of this provider, which `isOwn`, always, tells; `cost`, the cost of the chosen outbound; `isExhausted` and `isPinned`, always; `heldMs`, how long it has held the chosen outbound. |
 | `outbounds` | Always, maybe empty. The set of the provider in the order of the answer, by tag without the prefix; before the first answer the outbounds of the config with the prefix of the provider. Outbounds that left the set are not listed, ones whose lease ended are. |
-| `groups` | Present for explicit groups with members owned by this provider. Each summary has `group`, `state` (`up` or `down`), `members`, `healthy`, `quarantined`, `clientPosition`, `failed`, `quarantineMs` and optional `lastFailure`. Counts cover only this provider's members; `healthy` counts proven working members with live leases and is zero while the group is down. `clientPosition` is the zero-based position in the full group. A down group contributes no usable members to `minHealthyOutbounds`; it introduces no new provider trigger. |
+| `groups` | Present for explicit groups with members owned by this provider. Each summary has `group`, `state` (`up` or `down`), `members`, `healthy`, `quarantined`, `clientPosition`, `failed`, `quarantineMs` and optional `lastFailure`. Counts cover only this provider's members; `healthy` counts proven working members with live leases and is zero while the group is down. `clientPosition` is the zero-based position in the full group. A down group contributes no usable members to `triggers.minHealthy.outbounds`; it introduces no new provider trigger. |
 
 Per outbound:
 
@@ -207,181 +180,13 @@ as caller-chosen text. Actual probe measurements are retained in full.
 These are regression-fixture ceilings, not runtime truncation limits for
 arbitrary values.
 
-## Durations
+## Ограничения и применение
 
-Human and backend durations are Go strings parsed by `time.ParseDuration`.
+В ответе допускаются только protocol/version/baseVersion/serverTime/outbounds/groups/expiresAt/headers/nextRefreshIn/receivedAt. Набор — целиком, а не patch. У каждого outbound уникальный tag, разрешённый protocol и `selection.balancer`, равный `apply.balancer`; membership задаёт cost или объявленную group. Groups требуют включённый `leastCost.settings.groups`, а probe-only — `probes.candidates`. Profile override должен ссылаться на известный профиль. Объект `routing`, неизвестный ключ, неиспользуемая группа и превышение bounds отклоняют ответ целиком.
 
-| String | Meaning |
-| --- | --- |
-| `"500ms"`, `"6s"`, `"30m"`, `"2h"` | Units are `ms`, `s`, `m` and `h`. |
-| `"30m6s"`, `"1h30m"`, `"2h45m30s"` | Several units together, without spaces. |
-| `"1.5h"` | A fractional unit: 1 h 30 min. |
-| `"0s"`, `"0"` | Exactly zero. |
-| `"1d"` | Invalid: use `"24h"` for a day. |
-| `"30m 6s"` | Invalid: no spaces. |
-| `"30min"`, `"6S"` | Invalid: units and their case matter. |
-| `6` | Invalid: a duration must be a string. |
+Полный tag после `apply.tagPrefix` и group name ограничены 128 байтами; version/baseVersion — 256. Число групп не превышает maxOutbounds. Ответ ограничен 4 KiB × maxOutbounds, максимум 1 MiB. POST запроса — максимум 256 KiB: сначала убираются optional quality details с `isTruncated: true`; если essential identity/state/lease превышает потолок, fetch не начинается (`request_too_large`). При отказе текущий VPN-набор сохраняется.
 
-An omitted key uses its default. Explicit zero disables a period or limit,
-or removes a delay. A request or probe timeout and `returnToCheaper.interval` cannot be zero:
-the config is refused with the name of the key. `startPinTimeout: "0s"` keeps
-the start pin until the host releases it; `drainTimeout: "0s"` closes removed
-outbounds without a drain delay. Durations the core measures
-are integer milliseconds, with `Ms` in provider requests and `_ms` in host
-outputs. `nextRefreshIn` follows this table as well; a number is refused.
-
-
-### Quality measurements
-
-Protocol 1 requests may include `outbounds[].quality` for measured members
-of this provider's registered set, optional `witnessQuality`, and nonzero
-`qualitySamplesDropped`. Lookup uses the exact internal tag before removing
-its provider prefix for the body. Another provider's outbound measurements
-are not disclosed. The witness aggregates configured witness outbounds and
-is separate from the provider set.
-
-Quality covers the current network since the last `NetworkChanged`,
-independently of report windows. Every such call, including the same/empty ID
-and IGNORE routing policy, advances a separate measurement epoch; subsequent
-old-epoch phases are discarded. Quality does not parse the opaque network ID
-or export `networkType` or `networkOperator`. The existing provider-specific
-`network.id` hash still covers the complete host ID. Network/path/session
-labels belong to the separate measurement-context feature and are not
-implemented here. These measurements create no refresh trigger or client
-policy. They are request additions to protocol 1; unknown request fields must
-be ignored. Answer keys are unchanged.
-
-`qualitySamplesDropped` counts meaningful phases rejected across the current
-collection when its 64-tag or 16 KiB copied-tag admission budget is full,
-not distinct rejected tags. Histories of admitted tags remain until the next
-network change, including retired tags. The backend must consider this partial
-coverage alongside the histogram counts.
-
-Missing quality fields were not measured; measured zeros remain present,
-including `bytesDown`, `tcpRttMinMs`, `bulkKbpsMax`, `bulkSplicedCount`,
-`rxOutOfOrderFraction`, and `txRetransmitFraction`. Durations are integer
-milliseconds and speeds are decimal Kbit/s. A counted speed sample needs a
-positive interval between the first reply and the last observed 1/4/16/64 MiB
-mark. Completion publishes bytes, speed, S2, and fractions after admitted
-samples finish; a connection's Finished callback does not wait for them.
-
-Spliced bulk completions have no speed sample. An eligible path may retain
-TTFB and S1 when its existing passive socket sweep observes real receive
-progress; the completion byte counter cannot create a first-reply timestamp.
-Witness has no such sweep and can omit TTFB/S1 if splice began before its first
-counted reply. Quality adds no polling. Mux measurements describe the shared
-physical TCP connection to the server, not each user stream.
-
-| Quality field | Meaning |
-| --- | --- |
-| `bytesDown`, `bytesDownOverflow` | Completed-connection bytes; the optional true flag means saturation at int64 maximum. |
-| `ttfbCount`, `ttfbP50Ms`, `ttfbP90Ms` | TCP first-reply count and millisecond quantiles. |
-| `dialCount`, `dialP50Ms`, `dialP90Ms` | Successful individual raw-socket dial count and quantiles, including its handshake and any DNS. |
-| `tcpCount`, `tcpRttP50Ms`, `tcpRttP90Ms`, `tcpRttMinMs` | S1 RTT count, quantiles, and minimum measured S1 minimum RTT in output milliseconds. |
-| `bulkCount`, `bulkKbpsP50`, `bulkKbpsP90`, `bulkKbpsMax` | Valid counted bulk speeds and quantiles; maximum in output Kbit/s. |
-| `bulkRttP50Ms` | S2 load RTT, even when speed is unavailable. |
-| `bulkSplicedCount` | Completed spliced downloads of at least 1 MiB, with no speed sample. |
-| `rxOutOfOrderFraction` | Ratio of summed valid S1-to-S2 out-of-order/received deltas; decreasing pairs and zero denominators are omitted. |
-| `txRetransmitFraction` | Ratio of summed retransmitted/sent totals from each completed connection's last successful snapshot, included once. |
-
-Unsupported TCP fields are omitted, including fields beyond the returned
-socket-structure length. Linux minimum comes from valid S1 `Min_rtt`; Darwin
-minimum is the minimum sampled S1 `Srtt` in this scope. Darwin `Srtt` uses
-milliseconds and its S2 load RTT is a coarse sender estimate. Linux RX counters
-are packets; Darwin RX counters are bytes. Out-of-order is not a packet-loss
-percentage. TX uses saved S2 if present, otherwise S1; unavailable TX in that
-selected S2 does not fall back to the S1 pair. Witness and path can reach
-different destinations; compare relative load growth, retransmissions, and
-bulk p90/max with sufficient counts. Traffic-derived speed is a lower bound.
-
-Quality adds at most 64 measured path records and one witness record to the
-request. The existing legacy and raw probe-step fixture ceilings documented
-above remain separate. The earlier combined quality fixture used a 128 KiB
-core budget; it is not a whole-body bound with all Stage 1 probe steps or
-arbitrary backend-chosen tags/version. Record the actual combined serialized
-size after integration on the supported runtime.
-
-## Answer
-
-```json
-{
-  "protocol": 1,
-  "version": "slots-7781",
-  "outbounds": [
-    { "tag": "x1", "protocol": "vless", "settings": {}, "streamSettings": {},
-      "path": { "balancer": "auto", "group": "g" } },
-    { "tag": "x2", "protocol": "vless", "settings": {}, "streamSettings": {},
-      "path": { "balancer": "auto", "group": "g" } },
-    { "tag": "b", "protocol": "vless", "settings": {}, "streamSettings": {},
-      "path": { "balancer": "auto", "cost": 3, "isLazy": true, "returnInterval": "10m" } }
-  ],
-  "groups": [{ "name": "g", "cost": 1, "probe": "large", "failedInRowToLeave": 3 }],
-  "expiresAt": { "x1": "2026-10-09T12:00:00Z", "x2": "2026-10-09T12:00:00Z", "b": "2026-10-09T12:00:00Z" },
-  "serverTime": "2026-10-08T12:00:00Z",
-  "nextRefreshIn": "2h",
-  "headers": { "Authorization": "Bearer <new token>" },
-  "baseVersion": "cfg-12",
-  "routing": { "rules": [], "balancers": [], "domainStrategy": "IPIfNonMatch" }
-}
-```
-
-A 200 with a JSON object. These are all the keys of protocol 1:
-
-The example's `large` probe must be declared by the client's
-`healthObservatory.probes` with `name: "large"`. A path without `probe` uses
-the built-in `https://www.gstatic.com/generate_204` probe. There is no
-special named `default` profile.
-
-| Key | Rule | What the core does |
-| --- | --- | --- |
-| `protocol` | The number 1, or no key. | Anything else refuses the answer as `protocol N is not supported`, whatever its other keys. |
-| `outbounds` | Required, at least one. Each outbound needs a unique non-empty `tag`, an allowed protocol and `path.balancer` exactly equal to `apply.balancer`. Its `path` has either a positive `cost` with optional `isLazy`, `returnInterval` and `probe`, or only `group` naming a group of this answer. The default allowed protocols are `vless`, `vmess`, `trojan`, `shadowsocks`, `wireguard`, `hysteria`, `socks` and `http`; direct `freedom` is not allowed. At most 64 by default. | Every outbound gets `tagPrefix`. One whose settings did not change keeps its connections; a replaced or removed one is drained. Their array order determines group order and breaks ties between equal-cost paths. |
-| `groups` | Optional list with unique `name`, positive `cost`, optional `isLazy`, `returnInterval`, `probe` and `failedInRowToLeave` (default 3). A member cannot override these properties. A declared group may have no members in this answer. | Names receive `tagPrefix` and stay within this answer. A member cannot join a base or another provider's group. A collision with a foreign group rejects the whole answer; refreshing this provider's own group is allowed. |
-| `version` | A string. | Names the set. Without it the set is named by a hash of `outbounds`, `groups` and `routing`. |
-| `nextRefreshIn` | A Go duration string such as `"90m"`; numbers are refused. | Replaces the regular interval until the next refresh. `"0s"` asks immediately, subject to the provider limits; omission uses the regular interval, `null` is refused. |
-| `expiresAt` | Tag to a time in RFC 3339 with a zone. | Leases, see [Leases](#leases). Tags outside the set are ignored. |
-| `serverTime` | A time in RFC 3339 with a zone. | The clock the leases count from. |
-| `headers` | Header name to value, see [Token](#token). | Headers of the next requests. |
-| `baseVersion` | A string of at most 256 bytes. | See [Base config](#base-config). |
-| `routing` | Only `rules`, `balancers` and `domainStrategy` (`AsIs`, `IPIfNonMatch` or `IPOnDemand`), in the format of the config file. Rules and balancers refer to final tags with `tagPrefix`. | Replaces allowed routing settings when the client accepts routing; otherwise it is ignored. Strategy settings may change, but leastCost membership and order remain derived from assembled outbound paths. |
-
-Any other key refuses the whole answer: a section of the config such as
-`dns`, `inbounds` or `policy` as `unknown key "dns"`, and
-`healthObservatory` as `healthObservatory is not accepted in an answer`.
-The retired answer key `costs` is also refused. The base config likewise
-rejects `leastCost.selector`, `costs`, `defaultCost`, `lazyOutbounds`,
-`healthObservatory.subjectSelector` and `probes[].selector`; stock Xray
-strategies continue using their own selectors.
-The core never takes a section it would have to restart for, and a backend
-never takes a key for applied that the core threw away. `receivedAt` is a
-key of the kept set only, see [Initial and kept sets](#initial-and-kept-sets).
-
-The core checks, and changes nothing until every check passed:
-
-1. the body is a JSON object: otherwise it may have broken on the way, and
-   the next `via` is tried;
-2. the keys and `protocol`;
-3. the values of `expiresAt`, `serverTime`, `headers`, `baseVersion` and
-   `nextRefreshIn`;
-4. the outbounds: their number, tags, protocols and paths, the groups and
-   named probes, and that each
-   builds;
-5. `routing`: a rule or a fallback that goes to an outbound or a balancer
-   that does not exist, a webhook, dropping the balancer of the provider or
-   an invalid path definition refuse it.
-
-A refused answer changes nothing: neither the set, nor a lease, nor the
-token. The reason, cut to 200 bytes, goes with the next request in
-`lastFailure.error`, for example `invalid answer: unknown key "dns"` or
-`build x3: ...`. The next attempt waits for the backoff.
-
-**The same set.** An answer whose `version` is that of the applied set
-changes no outbound, while its leases, headers and base apply as in any
-other answer. This is the usual answer to a renewal: the same set with
-later ends. The core keeps such an answer for the next start as well, so
-its outbounds still go through the checks that need no build, their
-number, tags, protocols, paths and groups, and one that fails them is refused. The keys other than `outbounds`, `groups` and `routing` do not
-name the set, so a fresh `serverTime` does not make a new one.
+Неизменённый handler сохраняет соединения. Заменённый или удалённый прекращает принимать новые, draining продолжается до `apply.drainTimeout` (5m default). Renewals с тем же набором не пересоздают handler. Разобранный набор применяется только после validation/build; ошибка не публикует частичный набор.
 
 ## Errors and Retry-After
 
@@ -414,8 +219,8 @@ sent goes on to the next `via`:
 date counted from the `Date` of the same answer, so a wrong clock of the
 device neither stretches nor cuts the pause, or from the clock of the
 device without `Date`. Zero, a date gone by and anything unreadable count
-as none. The core waits at most its `backoff.maxDelay`, 30 minutes by default,
-then spreads the pause by up to its `backoff.jitterFraction`, 30%, upward only: no
+as none. The core waits at most the internal 30-minute cap,
+then spreads the pause by up to the internal 30% jitter, upward only: no
 client comes back sooner than asked, and clients told the same pause come
 back apart. The pause holds every trigger, the host and an exhausted
 balancer too.
@@ -447,14 +252,17 @@ Every request asks about the leases due by then, whatever its trigger. The
 core asks once per value of a lease: a backend that answers with the same
 end is not asked again for it, and the lease then ends. A request that
 fails is repeated after the backoff, and while the device is idle only
-with user traffic. The client may change these shares or turn renewal off.
+with user traffic. The shares and jitter are internal constants. `triggers.leaseRenewal.isEnabled: false` disables renewal fetches while lease expiration still applies.
 
-**The end.** An outbound whose lease ended stays a candidate of the
+**The end.** With `expiredLeaseFallback.isEnabled: true` (default), an outbound whose lease ended stays a candidate of the
 balancer, the last resort: new connections go to it only while no other
 usable outbound is left, so when every lease ended traffic still goes
 through those outbounds. Old connections are not ended. Such an outbound is
 not probed in the background, and while no balancer chooses it, failures of
 its old connections are not held against it.
+
+With `expiredLeaseFallback.isEnabled: false`, expired members are excluded from new choices. Existing connections continue; the explicitly configured balancer fallback is used when no usable member remains.
+
 
 ## Token
 
@@ -477,8 +285,8 @@ ran, the host wins, and the headers of the answer are not taken. The core
 never shows header values anywhere but in the requests of the provider.
 
 The backend refuses the headers with 401 or 403 and an error body with the
-code `unauthorized` or `forbidden`. Every trigger but the host then waits
-for an hour by default, spread, or until the headers change; after the
+code `unauthorized` or `forbidden`. Every trigger, including the host, waits
+for the internal one-hour auth retry, with internal jitter, or until the headers change; after the
 pause one refresh tries them again, once per pause, and the leases it
 asked about are asked about again. The host is told and fetches a new
 token when it can. A 401 or 403 without such a body is a failure like any
@@ -517,47 +325,10 @@ clock of the device when it arrived, and starts the next core with it when
 there is no fresh answer of a connect. The leases of a kept set count from
 its `serverTime` plus the time since `receivedAt` and are renewed when they
 would have been without the restart; a lease that ended meanwhile is asked
-about once at the start, also under a start pin. So after a restart the
+about once at the start, subject to the same pin/network/memory/activity gates as other refreshes. So after a restart the
 backend sees the token it rotated last, the `version` of the kept set and,
 after a long pause, an `expiry` request.
 
-## What a backend must do
+## Host
 
-- **Protocol.** Answer with `protocol` no higher than in the request and
-  only with keys of that protocol. Ignore fields of the request it does not
-  know.
-- **Clock.** Put `serverTime` into every answer.
-- **Outbounds.** Keep the tags and the settings of an outbound stable
-  between answers, so that it keeps its connections. Put IP addresses into
-  the outbounds and the server name apart: an answer cannot bring the `dns`
-  a new name may need. The core builds outbounds with the config loader
-  of Xray, so an outbound it would refuse at start is refused in an answer
-  too: for example, VLESS or Trojan without TLS or REALITY to a public
-  address.
-- **Paths and groups.** Put an explicit `path` on every returned outbound.
-  Keep the member order in the `outbounds` array and declare each group by
-  raw `name` in `groups`. Put cost, laziness, return interval and probe on
-  the group, never on its members. Validate generated base configs with
-  `xray run -test` before delivery; the core rejects an unused base group.
-- **Leases.** Give leases much longer than the refresh interval, a day for
-  a refresh every 2 hours, and at least ten times the shortest pause
-  between refreshes. Put an end for every leased outbound into every
-  answer: an answer renews every lease it names and drops those it leaves
-  out.
-- **Token.** Keep the previous token valid until a request brings the new
-  one and for 24 hours after it: the answer that rotated it may be lost, or
-  the process killed before the host kept the token. A token lives longer
-  than a lease.
-- **401 and 403.** Send them only for a token that is really invalid, and
-  always with an error body of the protocol.
-- **Load.** Answer 429 or 503 with `Retry-After`, different for different
-  clients, and limit requests per token: a host that restarts the core
-  resets its limits.
-- **Repeats.** Answer a request with the `run` and `refresh` of an earlier
-  one with the same outbounds.
-- **Base config.** Change `baseVersion` with every change of the config
-  outside the set, and roll the change out in cohorts: hosts that restart
-  at once load the backend like a storm.
-- **Errors.** Read `lastFailure.error`: an answer the core refused names
-  what it refused, and the backend should answer the next request without
-  it.
+`RequestProviderRefresh` ставит запрос и соблюдает все gates. JSON bridge возвращает `Result.data` с `is_queued`, отложенной `reason` и `retry_in_ms`. Повторять вызов циклом не требуется. `ExportProviderSet(provider, after)` возвращает `{seq,set}`: `set` — JSON object, не JSON-строка. Хост сохраняет set в защищённом хранилище и передаёт как `initialAnswer` при следующем старте; runtime tickets и run не сохраняются между запусками.

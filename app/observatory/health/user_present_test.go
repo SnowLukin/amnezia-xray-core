@@ -124,7 +124,7 @@ func TestUserPresentEligibility(t *testing.T) {
 func TestUserPresentDeduplicatesSelectorsAndCalls(t *testing.T) {
 	te := newWakeEngine(t)
 	cfg := fixtureSelector(&SelectorConfig{Paths: pathSpecs("a", 1, "b", 3)}, []string{"a1", "b1"})
-	other := te.addSelector("other", newSelectorSettings(cfg))
+	other := te.addSelector("other", legacyScenarioSelector(cfg, nil))
 	te.updateCandidates(other, []string{"a1", "b1"}, at(0))
 	for i := range 10 {
 		te.userPresent(at(3*time.Minute + time.Duration(i)*time.Second))

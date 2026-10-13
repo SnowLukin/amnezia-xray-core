@@ -3,6 +3,7 @@ package health
 import (
 	"encoding/json"
 	"fmt"
+	"google.golang.org/protobuf/proto"
 	"strings"
 	"testing"
 	"time"
@@ -45,7 +46,7 @@ func TestInitialZeroNextRefreshStaysImmediateInProviderSet(t *testing.T) {
 	if p := f.rt.p; !p.nextAt.Equal(now) || p.nextTrigger != triggerNextRefresh {
 		t.Fatalf("next refresh at %v with trigger %s, want immediate next_refresh", p.nextAt, p.nextTrigger)
 	}
-	raw, _, err := f.o.ProviderSet("fresh", 0)
+	raw, _, err := f.o.ExportProviderSet("fresh", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -200,7 +201,7 @@ func TestExpiredInitialRefreshesUnderTheStartPin(t *testing.T) {
 	e := f.o.e
 	// The first connection through the balancer starts it on the pin.
 	delete(e.selectors, "auto")
-	s := e.addSelector("auto", newSelectorSettings(&SelectorConfig{Paths: pathSpecs("p-", 1), StartPinnedOutbound: "p-x1"}))
+	s := e.addSelector("auto", newSelectorSettings(&SelectorConfig{Features: &SelectorFeatureConfig{StartupPin: proto.Bool(true)}, Paths: pathSpecs("p-", 1), StartPinnedOutbound: "p-x1"}))
 	e.updateCandidates(s, []string{"p-x1"}, now)
 	if s.pinned != "p-x1" {
 		t.Fatalf("setup: pinned %q", s.pinned)

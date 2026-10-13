@@ -139,7 +139,7 @@ func (c *fakeClock) now() time.Time          { return c.t }
 func (c *fakeClock) advance(d time.Duration) { c.t = c.t.Add(d) }
 
 func newTestObserver() (*Observer, *fakeClock) {
-	s := newSettings(&Config{Paths: observed("a1", "a2")})
+	s := legacyScenarioSettings(&Config{Paths: observed("a1", "a2")})
 	clk := &fakeClock{t: t0}
 	o := &Observer{
 		s:        s,
@@ -314,6 +314,7 @@ func TestDialTimeoutAndStuckDial(t *testing.T) {
 
 func TestWitnessConnectionEndsTheNetworkPause(t *testing.T) {
 	s := newSettings(&Config{
+		Features:     &FeatureConfig{Connectivity: v2Bool(true), Witnesses: v2Bool(true)},
 		Paths:        observed("a1"),
 		Connectivity: &ConnectivityConfig{Outbound: "direct", Destination: "http://x/204", Witnesses: []string{"direct"}},
 	})
@@ -441,6 +442,7 @@ func TestDownOutboundEndsConnectionsThatGotNothing(t *testing.T) {
 
 func TestDialsStartedInThePauseDoNotJudgeAfterIt(t *testing.T) {
 	s := newSettings(&Config{
+		Features:     &FeatureConfig{Connectivity: v2Bool(true)},
 		Paths:        observed("a1"),
 		Connectivity: &ConnectivityConfig{Outbound: "direct", Destination: "http://x/204"},
 	})
@@ -527,7 +529,7 @@ func TestRequestOfAnotherRunIsIgnored(t *testing.T) {
 	o, clk := newTestObserver()
 	o.run = "r2"
 	paths := []*PathDefinition{{Tag: "a1", Balancer: "auto", Cost: 1}, {Tag: "b1", Balancer: "auto", Cost: 2}}
-	o.e.updateCandidates(o.e.addSelector("auto", newSelectorSettings(&SelectorConfig{Paths: paths, StartPinnedOutbound: "a1"})), []string{"a1", "b1"}, clk.now())
+	o.e.updateCandidates(o.e.addSelector("auto", legacyScenarioSelector(&SelectorConfig{Paths: paths, StartPinnedOutbound: "a1"}, nil)), []string{"a1", "b1"}, clk.now())
 	if o.Release("auto", "r1") || o.e.selectors["auto"].pinned != "a1" {
 		t.Fatal("a release meant for the previous run lifted the pin")
 	}
@@ -541,7 +543,7 @@ func TestRequestOfAnotherRunIsIgnored(t *testing.T) {
 
 func TestDialsOfThePreviousNetworkDoNotJudgeTheNewOne(t *testing.T) {
 	o, clk := newTestObserver()
-	o.e.updateCandidates(o.e.addSelector("auto", newSelectorSettings(&SelectorConfig{})), []string{"a1", "b1"}, clk.now())
+	o.e.updateCandidates(o.e.addSelector("auto", legacyScenarioSelector(&SelectorConfig{}, nil)), []string{"a1", "b1"}, clk.now())
 	var dials []*connTracker
 	for i := 0; i < 3; i++ {
 		dials = append(dials, o.StartDial(context.Background(), "a1", net.Destination{}, nil).(*connTracker))

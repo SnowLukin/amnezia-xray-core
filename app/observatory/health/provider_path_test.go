@@ -2,6 +2,7 @@ package health
 
 import (
 	"errors"
+	"google.golang.org/protobuf/proto"
 	"slices"
 	"strings"
 	"testing"
@@ -28,7 +29,7 @@ func TestProviderOnlyPathObservedAtHandlerConstruction(t *testing.T) {
 		}
 		return &fakeHandler{tag: cfg.Tag, proxy: cfg.ProxySettings}, nil
 	}
-	a, err := parseAnswer([]byte(`{"outbounds":[{"tag":"x1","protocol":"freedom","path":{"balancer":"auto","group":"relay"}}],
+	a, err := parseAnswer([]byte(`{"outbounds":[{"tag":"x1","protocol":"freedom","selection":{"balancer":"auto","group":"relay"}}],
 		"groups":[{"name":"relay","cost":1}]}`))
 	if err != nil {
 		t.Fatal(err)
@@ -42,7 +43,7 @@ func TestProviderOnlyPathObservedAtHandlerConstruction(t *testing.T) {
 }
 
 func TestProviderPathStagingRollsBackOnFailure(t *testing.T) {
-	for _, failure := range []string{"build", "register", "routing"} {
+	for _, failure := range []string{"build", "register"} {
 		t.Run(failure, func(t *testing.T) {
 			f := newApplyFixture(t, time.Minute, func(p *ProviderConfig) {
 				p.Apply.AllowedProtocols = []string{"freedom"}
@@ -58,7 +59,7 @@ func TestProviderPathStagingRollsBackOnFailure(t *testing.T) {
 				}
 				return &fakeHandler{tag: cfg.Tag, proxy: cfg.ProxySettings}, nil
 			}
-			first, err := parseAnswer([]byte(`{"version":"old","outbounds":[{"tag":"x1","protocol":"freedom","path":{"balancer":"auto","cost":1}}]}`))
+			first, err := parseAnswer([]byte(`{"version":"old","outbounds":[{"tag":"x1","protocol":"freedom","selection":{"balancer":"auto","cost":1}}]}`))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -75,7 +76,7 @@ func TestProviderPathStagingRollsBackOnFailure(t *testing.T) {
 				f.o.replaceRules = func(*router.Config, bool) error { t.Fatal("invalid routing reached ReplaceRules"); return nil }
 				routing = `,"routing":{"rules":[],"balancers":[{"tag":"auto","strategy":{"type":"leastCost","settings":{}}},{"tag":"auto","strategy":{"type":"leastCost","settings":{}}}]}`
 			}
-			second, err := parseAnswer([]byte(`{"version":"new","outbounds":[{"tag":"x2","protocol":"freedom","path":{"balancer":"auto","cost":2}}]` + routing + `}`))
+			second, err := parseAnswer([]byte(`{"version":"new","outbounds":[{"tag":"x2","protocol":"freedom","selection":{"balancer":"auto","cost":2}}]` + routing + `}`))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -93,7 +94,7 @@ func TestProviderPathStagingRollsBackOnFailure(t *testing.T) {
 
 func TestProviderGroupCannotJoinBaseGroup(t *testing.T) {
 	f := newApplyFixture(t, time.Minute)
-	base := &SelectorConfig{
+	base := &SelectorConfig{Features: &SelectorFeatureConfig{Groups: proto.Bool(true)},
 		Paths:  []*PathDefinition{{Tag: "s1", Balancer: "auto", Group: "p-relay"}},
 		Groups: []*PathGroup{{Name: "p-relay", Cost: 1, FailedInRowToLeave: 3}},
 	}
@@ -103,7 +104,7 @@ func TestProviderGroupCannotJoinBaseGroup(t *testing.T) {
 		t.Fatal(err)
 	}
 	old := f.m.GetHandler("p-x1")
-	a, err := parseAnswer([]byte(`{"outbounds":[{"tag":"x2","protocol":"vless","v":1,"path":{"balancer":"auto","group":"relay"}}],"groups":[{"name":"relay","cost":2}]}`))
+	a, err := parseAnswer([]byte(`{"outbounds":[{"tag":"x2","protocol":"vless","v":1,"selection":{"balancer":"auto","group":"relay"}}],"groups":[{"name":"relay","cost":2}]}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,7 +122,7 @@ func TestProviderGroupCannotJoinBaseGroup(t *testing.T) {
 func TestProviderRefreshKeepsOwnGroupName(t *testing.T) {
 	f := newApplyFixture(t, time.Minute)
 	for _, tag := range []string{"x1", "x2"} {
-		a, err := parseAnswer([]byte(`{"outbounds":[{"tag":"` + tag + `","protocol":"vless","v":1,"path":{"balancer":"auto","group":"relay"}}],"groups":[{"name":"relay","cost":2}]}`))
+		a, err := parseAnswer([]byte(`{"outbounds":[{"tag":"` + tag + `","protocol":"vless","v":1,"selection":{"balancer":"auto","group":"relay"}}],"groups":[{"name":"relay","cost":2}]}`))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -135,64 +136,19 @@ func TestProviderRefreshKeepsOwnGroupName(t *testing.T) {
 	}
 }
 
-func TestProviderRoutingKeepsDeclaredPathsAndChangesSettings(t *testing.T) {
-	f := newApplyFixture(t, time.Minute)
-	base := &SelectorConfig{
-		Paths:  []*PathDefinition{{Tag: "s2", Balancer: "auto", Group: "base"}, {Tag: "s1", Balancer: "auto", Group: "base"}},
-		Groups: []*PathGroup{{Name: "base", Cost: 1, FailedInRowToLeave: 3}},
-	}
-	s := f.o.e.addSelector("auto", newSelectorSettings(base))
-	s.baseRaw = base
-	s.cfg.baseOrder = []string{"s2", "s1"}
-	f.rt.cfg.routing = true
-	var replaced *router.Config
-	f.o.replaceRules = func(rc *router.Config, _ bool) error { replaced = rc; return nil }
-	a, err := parseAnswer([]byte(`{"outbounds":[{"tag":"x1","protocol":"vless","v":1,"path":{"balancer":"auto","group":"relay"}}],
-		"groups":[{"name":"relay","cost":2}],
-		"routing":{"rules":[],"balancers":[{"tag":"auto","strategy":{"type":"leastCost","settings":{"minHoldTime":"7s","confirmWithProbe":"always"}}}]}}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if changed, err := f.apply(t, a); !changed || err != nil {
-		t.Fatalf("apply %v, %v", changed, err)
-	}
-	if replaced == nil || len(replaced.BalancingRule) != 1 {
-		t.Fatalf("routing %+v", replaced)
-	}
-	inst, err := replaced.BalancingRule[0].StrategySettings.GetInstance()
-	if err != nil {
-		t.Fatal(err)
-	}
-	cfg := inst.(*SelectorConfig)
-	if cfg.MinHoldTime != int64(7*time.Second) || cfg.ConfirmWithProbe != ConfirmMode_ALWAYS {
-		t.Fatalf("settings %+v", cfg)
-	}
-	if len(cfg.Paths) != 3 || cfg.Paths[0].Tag != "s2" || cfg.Paths[1].Tag != "s1" || cfg.Paths[2].Tag != "p-x1" {
-		t.Fatalf("paths %+v", cfg.Paths)
-	}
-	if len(cfg.Groups) != 2 || cfg.Groups[0].Name != "base" || cfg.Groups[1].Name != "p-relay" {
-		t.Fatalf("groups %+v", cfg.Groups)
-	}
-	s = f.o.e.selectors["auto"]
-	f.o.e.updateCandidates(s, []string{"p-x1", "s1", "s2"}, time.Now())
-	if len(s.candidates) != 3 || s.candidates[0] != "s2" || s.candidates[1] != "s1" || s.candidates[2] != "p-x1" {
-		t.Fatalf("candidate order %v", s.candidates)
-	}
-}
-
 func TestProviderPathValidationLeavesPreviousSet(t *testing.T) {
 	for _, tc := range []struct{ name, path, groups, want string }{
-		{"missing path", "", ``, "path must be an object"},
-		{"wrong balancer", `,"path":{"balancer":"other","cost":1}`, ``, "balancer must be auto"},
-		{"no cost", `,"path":{"balancer":"auto"}`, ``, "needs cost above zero"},
-		{"unknown group", `,"path":{"balancer":"auto","group":"missing"}`, ``, "unknown group missing"},
-		{"group cost", `,"path":{"balancer":"auto","group":"relay","cost":1}`, `,"groups":[{"name":"relay","cost":2}]`, "cost is set by group relay"},
-		{"group false", `,"path":{"balancer":"auto","group":"relay","isLazy":false}`, `,"groups":[{"name":"relay","cost":2}]`, "isLazy is set by group relay"},
-		{"group zero interval", `,"path":{"balancer":"auto","group":"relay","returnInterval":"0s"}`, `,"groups":[{"name":"relay","cost":2}]`, "returnInterval is set by group relay"},
-		{"group empty probe", `,"path":{"balancer":"auto","group":"relay","probe":""}`, `,"groups":[{"name":"relay","cost":2}]`, "probe is set by group relay"},
-		{"group null", `,"path":{"balancer":"auto","group":"relay","cost":null}`, `,"groups":[{"name":"relay","cost":2}]`, "must not be null"},
-		{"empty group name", `,"path":{"balancer":"auto","group":"","cost":1}`, ``, "group needs nonempty name"},
-		{"unknown probe", `,"path":{"balancer":"auto","cost":1,"probe":"missing"}`, ``, "unknown probe missing"},
+		{"missing path", "", ``, "selection must be an object"},
+		{"wrong balancer", `,"selection":{"balancer":"other","cost":1}`, ``, "balancer must be auto"},
+		{"no cost", `,"selection":{"balancer":"auto"}`, ``, "needs cost above zero"},
+		{"unknown group", `,"selection":{"balancer":"auto","group":"missing"}`, ``, "unknown group missing"},
+		{"group cost", `,"selection":{"balancer":"auto","group":"relay","cost":1}`, `,"groups":[{"name":"relay","cost":2}]`, "cost is set by group relay"},
+		{"group false", `,"selection":{"balancer":"auto","group":"relay","probePolicy":"regular"}`, `,"groups":[{"name":"relay","cost":2}]`, "probePolicy is set by group relay"},
+		{"group zero interval", `,"selection":{"balancer":"auto","group":"relay","returnToCheaper":{"isEnabled":false}}`, `,"groups":[{"name":"relay","cost":2}]`, "returnToCheaper is set by group relay"},
+		{"group empty probe", `,"selection":{"balancer":"auto","group":"relay","probe":""}`, `,"groups":[{"name":"relay","cost":2}]`, "probe is set by group relay"},
+		{"group null", `,"selection":{"balancer":"auto","group":"relay","cost":null}`, `,"groups":[{"name":"relay","cost":2}]`, "must not be null"},
+		{"empty group name", `,"selection":{"balancer":"auto","group":"","cost":1}`, ``, "group needs name of at most 128 bytes including its prefix"},
+		{"unknown probe", `,"selection":{"balancer":"auto","cost":1,"probe":"missing"}`, ``, "unknown probe missing"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newApplyFixture(t, time.Minute)
@@ -217,21 +173,18 @@ func TestProviderPathValidationLeavesPreviousSet(t *testing.T) {
 	}
 }
 
-func TestProviderEmptyGroupDeclarationIsAllowed(t *testing.T) {
+func TestProviderUnusedGroupDeclarationIsRejected(t *testing.T) {
 	f := newApplyFixture(t, time.Minute)
-	a, err := parseAnswer([]byte(`{"outbounds":[{"tag":"x1","protocol":"vless","v":1,"path":{"balancer":"auto","cost":1}}],"groups":[{"name":"unused","cost":2}]}`))
+	a, err := parseAnswer([]byte(`{"outbounds":[{"tag":"x1","protocol":"vless","v":1,"selection":{"balancer":"auto","cost":1}}],"groups":[{"name":"unused","cost":2}]}`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if changed, err := f.apply(t, a); !changed || err != nil {
-		t.Fatalf("apply %v, %v", changed, err)
-	}
-	if f.m.GetHandler("p-x1") == nil {
-		t.Fatal("valid path was not registered")
+	if changed, err := f.apply(t, a); changed || err == nil || !strings.Contains(err.Error(), "unused group") {
+		t.Fatalf("unused group apply %v,%v", changed, err)
 	}
 }
 
-func TestProviderReordersGroupAfterRoutingResponse(t *testing.T) {
+func TestProviderReordersOwnGroup(t *testing.T) {
 	f := newApplyFixture(t, time.Minute)
 	f.rt.cfg.routing = true
 	f.o.replaceRules = func(rc *router.Config, _ bool) error {
@@ -243,10 +196,9 @@ func TestProviderReordersGroupAfterRoutingResponse(t *testing.T) {
 		return nil
 	}
 	first, err := parseAnswer([]byte(`{"version":"first","outbounds":[
-		{"tag":"x1","protocol":"vless","v":1,"path":{"balancer":"auto","group":"relay"}},
-		{"tag":"x2","protocol":"vless","v":1,"path":{"balancer":"auto","group":"relay"}}],
-		"groups":[{"name":"relay","cost":1}],
-		"routing":{"rules":[],"balancers":[{"tag":"auto","strategy":{"type":"leastCost","settings":{}}}]}}`))
+		{"tag":"x1","protocol":"vless","v":1,"selection":{"balancer":"auto","group":"relay"}},
+		{"tag":"x2","protocol":"vless","v":1,"selection":{"balancer":"auto","group":"relay"}}],
+		"groups":[{"name":"relay","cost":1}]}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -256,8 +208,8 @@ func TestProviderReordersGroupAfterRoutingResponse(t *testing.T) {
 	s := f.o.e.selectors["auto"]
 	f.o.e.updateCandidates(s, []string{"p-x1", "p-x2"}, time.Now())
 	second, err := parseAnswer([]byte(`{"version":"second","outbounds":[
-		{"tag":"x2","protocol":"vless","v":1,"path":{"balancer":"auto","group":"relay"}},
-		{"tag":"x1","protocol":"vless","v":1,"path":{"balancer":"auto","group":"relay"}}],
+		{"tag":"x2","protocol":"vless","v":1,"selection":{"balancer":"auto","group":"relay"}},
+		{"tag":"x1","protocol":"vless","v":1,"selection":{"balancer":"auto","group":"relay"}}],
 		"groups":[{"name":"relay","cost":1}]}`))
 	if err != nil {
 		t.Fatal(err)
@@ -272,97 +224,6 @@ func TestProviderReordersGroupAfterRoutingResponse(t *testing.T) {
 	g := s.groups["p-relay"]
 	if g == nil || !slices.Equal(g.members, want) {
 		t.Fatalf("group members %+v, want %v", g, want)
-	}
-}
-
-func TestProviderRoutingDuplicateBalancerRejectsWholeSet(t *testing.T) {
-	f := newApplyFixture(t, time.Minute)
-	if _, err := f.apply(t, answer(t, fakeOutbound{Tag: "x1", V: 1})); err != nil {
-		t.Fatal(err)
-	}
-	old := f.m.GetHandler("p-x1")
-	oldVersion := f.rt.version
-	oldLease := f.rt.p.leases["p-x1"]
-	f.rt.cfg.routing = true
-	called := false
-	f.o.replaceRules = func(*router.Config, bool) error { called = true; return errors.New("duplicate balancer tag") }
-	a, err := parseAnswer([]byte(`{"version":"duplicate","outbounds":[{"tag":"x2","protocol":"vless","v":1,"path":{"balancer":"auto","cost":2}}],
-		"expiresAt":{"x2":"2026-10-11T12:00:00Z"},
-		"routing":{"rules":[],"balancers":[{"tag":"auto","strategy":{"type":"leastCost","settings":{}}},{"tag":"auto","strategy":{"type":"leastCost","settings":{}}}]}}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	changed, applyErr := f.apply(t, a)
-	if changed || applyErr == nil || !strings.Contains(applyErr.Error(), "duplicate balancer tag") {
-		t.Fatalf("apply %v, %v", changed, applyErr)
-	}
-	if called {
-		t.Fatal("invalid routing reached ReplaceRules")
-	}
-	if f.m.GetHandler("p-x1") != old || f.m.GetHandler("p-x2") != nil || f.rt.version != oldVersion || f.rt.p.leases["p-x1"] != oldLease || f.rt.p.leases["p-x2"] != nil {
-		t.Fatalf("rejected set changed handlers/version/leases: tags=%s version=%s leases=%v", f.m.tags(), f.rt.version, f.rt.p.leases)
-	}
-	if ev := f.lastApply(t); ev["is_ok"] != false {
-		t.Fatalf("provider_apply %+v", ev)
-	}
-	now := time.Now()
-	f.o.e.onRefreshDone(&refreshJob{p: f.rt.p, trigger: triggerHost}, refreshOutcome{err: applyErr.Error(), class: applyErr.Error()}, now)
-	request := f.o.e.providerRequest(f.rt.p, &refreshJob{p: f.rt.p, trigger: triggerHost}, now.Add(time.Second))
-	if request.LastFailure == nil || !strings.Contains(request.LastFailure.Error, "duplicate balancer tag") {
-		t.Fatalf("next request lastFailure %+v", request.LastFailure)
-	}
-}
-
-func TestProviderRoutingDuplicateRuleTagRejectsWholeSet(t *testing.T) {
-	f := newApplyFixture(t, time.Minute)
-	first, err := parseAnswer([]byte(`{"version":"old","outbounds":[{"tag":"x1","protocol":"vless","v":1,"path":{"balancer":"auto","group":"relay"}}],
-		"groups":[{"name":"relay","cost":1}],"serverTime":"2026-10-10T12:00:00Z","expiresAt":{"x1":"2026-10-11T12:00:00Z"}}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if changed, err := f.apply(t, first); !changed || err != nil {
-		t.Fatalf("first apply %v, %v", changed, err)
-	}
-	s := f.o.e.selectors["auto"]
-	oldCfg, oldGroup := s.cfg, s.groups["p-relay"]
-	oldMembers := slices.Clone(oldGroup.members)
-	oldHandler, oldVersion, oldLease := f.m.GetHandler("p-x1"), f.rt.version, f.rt.p.leases["p-x1"]
-	if oldLease == nil {
-		t.Fatal("first set did not establish a lease")
-	}
-	f.rt.cfg.routing = true
-	called := false
-	f.o.replaceRules = func(*router.Config, bool) error { called = true; return nil }
-	second, err := parseAnswer([]byte(`{"version":"new","outbounds":[{"tag":"x2","protocol":"vless","v":1,"path":{"balancer":"auto","group":"relay"}}],
-		"groups":[{"name":"relay","cost":3}],"serverTime":"2026-10-10T12:00:00Z","expiresAt":{"x2":"2026-10-11T12:00:00Z"},
-		"routing":{"rules":[{"ruleTag":"dup","domain":["full:a.test"],"balancerTag":"auto"},
-		{"ruleTag":"dup","domain":["full:b.test"],"balancerTag":"auto"}],
-		"balancers":[{"tag":"auto","strategy":{"type":"leastCost","settings":{"minHoldTime":"7s"}}}]}}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	changed, applyErr := f.apply(t, second)
-	if changed || applyErr == nil || !strings.Contains(applyErr.Error(), "duplicate ruleTag") {
-		t.Fatalf("apply %v, %v", changed, applyErr)
-	}
-	if called {
-		t.Fatal("invalid routing reached ReplaceRules")
-	}
-	if f.m.GetHandler("p-x1") != oldHandler || f.m.GetHandler("p-x2") != nil || f.rt.version != oldVersion ||
-		f.rt.p.leases["p-x1"] != oldLease || f.rt.p.leases["p-x2"] != nil {
-		t.Fatalf("rejected set changed handlers/version/leases: tags=%s version=%s leases=%v", f.m.tags(), f.rt.version, f.rt.p.leases)
-	}
-	if s.cfg != oldCfg || s.groups["p-relay"] != oldGroup || !slices.Equal(oldGroup.members, oldMembers) {
-		t.Fatalf("rejected set changed selector: cfg=%+v group=%+v", s.cfg, s.groups["p-relay"])
-	}
-	if ev := f.lastApply(t); ev["is_ok"] != false {
-		t.Fatalf("provider_apply %+v", ev)
-	}
-	now := time.Now()
-	f.o.e.onRefreshDone(&refreshJob{p: f.rt.p, trigger: triggerHost}, refreshOutcome{err: applyErr.Error(), class: applyErr.Error()}, now)
-	request := f.o.e.providerRequest(f.rt.p, &refreshJob{p: f.rt.p, trigger: triggerHost}, now.Add(time.Second))
-	if request.LastFailure == nil || !strings.Contains(request.LastFailure.Error, "duplicate ruleTag") {
-		t.Fatalf("next request lastFailure %+v", request.LastFailure)
 	}
 }
 

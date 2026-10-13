@@ -143,13 +143,14 @@ func startQualityProbeMuxFixture(t *testing.T) *qualityProbeMuxFixture {
 			"settings": {"vnext": [{"address": "127.0.0.1", "port": %d,
 				"users": [{"id": %q, "encryption": "none"}]}]},
 			"mux": {"enabled": true, "concurrency": 8},
-			"path": {"balancer": "auto", "cost": 1, "probe": "quality-local"}}],
-		"routing": {"balancers": [{"tag": "auto", "strategy": {"type": "leastCost",
-			"settings": {"startOutbound": "v1", "shouldProbeBeforeSwitch": false}}}]},
+			"selection": {"balancer": "auto", "cost": 1, "probe": "quality-local"}},{"tag":"drop","protocol":"blackhole"}],
+		"routing": {"balancers": [{"tag": "auto", "fallbackTag":"drop", "strategy": {"type": "leastCost",
+			"settings": {"startup":{"outbound":"v1"},"failover":{"shouldProbeBeforeSwitch":false}}}}]},
 		"healthObservatory": {
-			"passive": {"dialTimeout": "3s", "firstByteTimeout": "3s", "stallTimeout": "5s"},
-			"probes": [{"name": "quality-local", "destination": %q, "expectedStatuses": [200],
-				"minBytes": %d, "timeout": "4s", "progressTimeout": "2s"}]
+			"evidence":{"dialTimeout":{"timeout":"3s"},"firstReply":{"timeout":"3s"},"stalledRequests":{"timeout":"5s"}},
+            "telemetry":{"quality":{"isEnabled":true},"report":{"isEnabled":true}},
+            "probes":{"profiles":[{"name":"quality-local","steps":[{"name":"transport","destinations":[%q],"expectedStatuses":[200],
+                "minBytes":%d,"timeout":"4s","progressTimeout":"2s"}]}]}
 		}
 	}`, relayPort, userID, f.http.URL+"/configured-probe", qualityProbeMuxBodyBytes))
 	t.Cleanup(func() { _ = f.client.Close() })

@@ -42,11 +42,11 @@ type silenceCheck struct {
 func (e *engine) watchSilence(d downMark) {
 	for i := range e.silences {
 		if e.silences[i].mark.tag == d.tag {
-			e.silences[i] = silenceCheck{mark: d, due: d.at.Add(e.s.passive.stallTimeout), generation: e.generation}
+			e.silences[i] = silenceCheck{mark: d, due: d.at.Add(d.silentAfter), generation: e.generation}
 			return
 		}
 	}
-	e.silences = append(e.silences, silenceCheck{mark: d, due: d.at.Add(e.s.passive.stallTimeout), generation: e.generation})
+	e.silences = append(e.silences, silenceCheck{mark: d, due: d.at.Add(d.silentAfter), generation: e.generation})
 }
 
 type silenceVerdict int8

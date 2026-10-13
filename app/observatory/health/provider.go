@@ -63,6 +63,9 @@ func (t refreshTrigger) urgent() bool {
 // engine it never reads the clock and never blocks.
 type provider struct {
 	cfg *providerSettings
+	// Expired handlers removed from the live set still belong to this provider
+	// during drain. This is bounded by the registered draining handlers.
+	retiredExpired map[string]bool
 
 	started bool
 	// When the current set was fetched, or when the provider started.
@@ -261,9 +264,6 @@ func (e *engine) tickProviders(now time.Time) ([]*refreshJob, time.Time) {
 // limits allow, or "" when it does not.
 func (e *engine) heldBack(p *provider, t refreshTrigger, expiry expiryWant, idle bool, now time.Time) string {
 	switch {
-	case t == triggerHost:
-		// The host is always answered.
-		return ""
 	case idle && !(t == triggerExpiry && expiry.fresh):
 		// Without user traffic nobody needs fresh outbounds now; the next
 		// connection wakes the observer again. The first request for a
@@ -285,7 +285,7 @@ func (e *engine) heldBack(p *provider, t refreshTrigger, expiry expiryWant, idle
 		// never get a live one under a start pin. A retry after it failed
 		// waits for the release.
 		return "pinned"
-	case e.memoryLow && !t.urgent() && !(t == triggerExpiry && expiry.urgent):
+	case e.memoryLow && (t == triggerHost || !t.urgent()) && !(t == triggerExpiry && expiry.urgent):
 		// A refresh is the heaviest work of the observer. With low memory
 		// only the host, a balancer with nothing left and a lease that
 		// ended wait for one.
@@ -510,7 +510,7 @@ func (e *engine) startFromInitial(p *provider, age, nextRefreshIn time.Duration,
 func (e *engine) scheduleRefresh(p *provider, hint time.Duration, hasHint bool, now time.Time) {
 	p.nextAt = time.Time{}
 	switch {
-	case hasHint || hint > 0:
+	case p.cfg.backendSchedule && (hasHint || hint > 0):
 		p.nextAt = now.Add(e.jitter(hint, p.cfg.jitter))
 		p.nextTrigger = triggerNextRefresh
 	case p.cfg.interval > 0:
@@ -884,6 +884,7 @@ func (e *engine) dropProviderOutbound(tag string, now time.Time) {
 	}
 	for _, p := range e.providers {
 		e.dropLease(p, tag)
+		delete(p.retiredExpired, tag)
 	}
 	for _, s := range e.sortedSelectors() {
 		snap := s.snapshot.Load()

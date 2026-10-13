@@ -141,8 +141,8 @@ func TestMuxConnectionsAreObserved(t *testing.T) {
 			"log": {"loglevel": "none"},
 			"outbounds": [{"tag": "t1", "protocol": "trojan",
 				"settings": {"servers": [{"address": "127.0.0.1", "port": `+strconv.Itoa(deadPort(t))+`, "password": "x"}]}`+muxJSON+`,
-				"path": {"balancer": "auto", "cost": 1}}],
-			"routing": {"balancers": [{"tag": "auto", "strategy": {"type": "leastCost"}}]},
+				"selection": {"balancer": "auto", "cost": 1}}],
+			"routing": {"balancers": [{"tag": "auto", "fallbackTag": "t1", "strategy": {"type": "leastCost"}}]},
 			"healthObservatory": {}
 		}`)
 		c := observe(t, inst, "t1")
@@ -162,8 +162,8 @@ func TestRetriesOfOneConnectionShareAnID(t *testing.T) {
 		"log": {"loglevel": "none"},
 		"outbounds": [{"tag": "t1", "protocol": "trojan",
 			"settings": {"servers": [{"address": "127.0.0.1", "port": `+strconv.Itoa(deadPort(t))+`, "password": "x"}]},
-			"path": {"balancer": "auto", "cost": 1}}],
-		"routing": {"balancers": [{"tag": "auto", "strategy": {"type": "leastCost"}}]},
+			"selection": {"balancer": "auto", "cost": 1}}],
+		"routing": {"balancers": [{"tag": "auto", "fallbackTag": "t1", "strategy": {"type": "leastCost"}}]},
 		"healthObservatory": {}
 	}`)
 	defer inst.Close()
@@ -206,8 +206,8 @@ func TestAbortEndsAConnectionWaitingForAnAnswer(t *testing.T) {
 		"outbounds": [{"tag": "v1", "protocol": "vless",
 			"settings": {"address": "127.0.0.1", "port": `+strconv.Itoa(ln.Addr().(*gonet.TCPAddr).Port)+`,
 				"id": "27848739-7e62-4138-9fd3-098a63964b6b", "encryption": "none"},
-			"path": {"balancer": "auto", "cost": 1}}],
-		"routing": {"balancers": [{"tag": "auto", "strategy": {"type": "leastCost"}}]},
+			"selection": {"balancer": "auto", "cost": 1}}],
+		"routing": {"balancers": [{"tag": "auto", "fallbackTag": "t1", "strategy": {"type": "leastCost"}}]},
 		"healthObservatory": {}
 	}`)
 	defer inst.Close()
@@ -254,14 +254,15 @@ func TestOnlyWatchedOutboundsAreHooked(t *testing.T) {
 	inst := startInstance(t, `{
 		"log": {"loglevel": "none"},
 		"outbounds": [
-			{"tag": "a1", "protocol": "freedom", "path": {"balancer": "auto", "cost": 1}},
+			{"tag": "a1", "protocol": "freedom", "selection": {"balancer": "auto", "cost": 1}},
 			{"tag": "direct", "protocol": "freedom"},
 			{"tag": "check", "protocol": "freedom"},
 			{"tag": "dns-out", "protocol": "dns"},
 			{"tag": "block", "protocol": "blackhole"}],
-		"routing": {"balancers": [{"tag": "auto", "strategy": {"type": "leastCost"}}]},
-		"healthObservatory": {
-			"connectivity": {"outbound": "check", "destination": "https://check.test/", "witnesses": ["direct"]}}
+		"routing": {"balancers": [{"tag": "auto", "fallbackTag": "a1", "strategy": {"type": "leastCost"}}]},
+		"healthObservatory": {"network": {
+			"connectivity": {"isEnabled": true, "outbound": "check", "destination": "https://check.test/"},
+			"witnesses": {"isEnabled": true, "outbounds": ["direct"]}}}
 	}`)
 	defer inst.Close()
 	ohm := inst.GetFeature(obs.ManagerType()).(obs.Manager)
@@ -304,8 +305,8 @@ func TestPreconnectionsAreFinished(t *testing.T) {
 		"outbounds": [{"tag": "v1", "protocol": "vless",
 			"settings": {"address": "127.0.0.1", "port": `+strconv.Itoa(ln.Addr().(*gonet.TCPAddr).Port)+`,
 				"id": "27848739-7e62-4138-9fd3-098a63964b6b", "encryption": "none", "testpre": 1},
-			"path": {"balancer": "auto", "cost": 1}}],
-		"routing": {"balancers": [{"tag": "auto", "strategy": {"type": "leastCost"}}]},
+			"selection": {"balancer": "auto", "cost": 1}}],
+		"routing": {"balancers": [{"tag": "auto", "fallbackTag": "t1", "strategy": {"type": "leastCost"}}]},
 		"healthObservatory": {}
 	}`)
 	// The instance stays open: closing the VLESS outbound closes the channel
@@ -347,11 +348,11 @@ func BenchmarkConnection(b *testing.B) {
 		}
 	}()
 	dest := net.TCPDestination(net.LocalHostIP, net.Port(ln.Addr().(*gonet.TCPAddr).Port))
-	health := `, "routing": {"balancers": [{"tag": "auto", "strategy": {"type": "leastCost"}}]}, "healthObservatory": {}`
+	health := `, "routing": {"balancers": [{"tag": "auto", "fallbackTag": "a1", "strategy": {"type": "leastCost"}}]}, "healthObservatory": {}`
 	for _, tc := range []struct{ name, path, extra, health string }{
 		{"plain", "", "", ""},
-		{"observed", `, "path": {"balancer": "auto", "cost": 1}`, "", health},
-		{"unobserved", "", `, {"tag": "b1", "protocol": "blackhole", "path": {"balancer": "auto", "cost": 1}}`, health},
+		{"observed", `, "selection": {"balancer": "auto", "cost": 1}`, "", health},
+		{"unobserved", "", `, {"tag": "b1", "protocol": "blackhole", "selection": {"balancer": "auto", "cost": 1}}`, health},
 	} {
 		inst := startInstance(b, `{"log": {"loglevel": "none"},
 			"outbounds": [{"tag": "a1", "protocol": "freedom", "settings": {"finalRules": [{"action": "allow"}]}`+tc.path+`}`+tc.extra+`]`+tc.health+`}`)

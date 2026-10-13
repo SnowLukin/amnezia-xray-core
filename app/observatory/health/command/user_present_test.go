@@ -36,11 +36,11 @@ func TestUserPresentReturnsBeforeProbeFinishes(t *testing.T) {
 	  "log": {"loglevel": "none"},
 	  "outbounds": [{"tag": "drop", "protocol": "blackhole"},
 	    {"tag": "a1", "protocol": "freedom", "settings": {"finalRules": [{"action": "allow"}]},
-	      "path": {"balancer": "auto", "cost": 1, "probe": "check"}}],
+	      "selection": {"balancer": "auto", "cost": 1, "probe": "check"}}],
 	  "routing": {"rules": [{"domain": ["full:target.test"], "balancerTag": "auto"}],
 	    "balancers": [{"tag": "auto", "strategy": {"type": "leastCost"}, "fallbackTag": "drop"}]},
-	  "healthObservatory": {"report": {"quietShare": 1},
-	    "probes": [{"name": "check", "destination": "`+ts.URL+`/204", "timeout": "10s"}]}
+	  "healthObservatory": {"host":{"userPresent":{"isEnabled":true}},"telemetry":{"report":{"isEnabled":true,"quietSampleFraction":1}},
+	    "probes": {"profiles":[{"name":"check","steps":[{"name":"transport","destinations":["`+ts.URL+`/204"],"timeout":"10s"}]}]}}
 	}`)
 	router := inst.GetFeature(routing.RouterType()).(routing.Router)
 	if _, err := router.PickRoute(routing_session.AsRoutingContext(session.ContextWithOutbounds(context.Background(),
@@ -74,7 +74,7 @@ func TestUserPresentReturnsBeforeProbeFinishes(t *testing.T) {
 		Started int `json:"wake_probe_count"`
 		Skipped int `json:"wake_skipped_count"`
 	}
-	if err := json.Unmarshal(health.FromInstance(inst).Report(), &report); err != nil {
+	if err := json.Unmarshal(health.FromInstance(inst).PeekReport(), &report); err != nil {
 		t.Fatal(err)
 	}
 	if report.Started != 1 || report.Skipped != 2 {
@@ -85,7 +85,7 @@ func TestUserPresentReturnsBeforeProbeFinishes(t *testing.T) {
 
 func TestUserPresentWithoutObservatory(t *testing.T) {
 	s, _ := service(t, `{"log": {"loglevel": "none"}, "outbounds": [{"tag": "direct", "protocol": "freedom"}]}`)
-	if _, err := s.UserPresent(context.Background(), &command.UserPresentRequest{}); err == nil {
+	if r, err := s.UserPresent(context.Background(), &command.UserPresentRequest{}); err != nil || r.Error == nil || r.Error.Code != "not_running" {
 		t.Fatal("UserPresent accepted without a health observatory")
 	}
 }

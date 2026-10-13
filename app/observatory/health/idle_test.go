@@ -140,11 +140,11 @@ func TestIdleConnectionsEndOnceLeftAndSilent(t *testing.T) {
 
 	left := at(10 * time.Second)
 	f.leave(left)
-	closeAt := left.Add(after)
+	closeAt := left.Add(n)
 	if wake := f.turn(left); !wake.Equal(closeAt) {
-		t.Fatalf("wake %v after the switch off w1, want sleep.afterLastUse %v", wake.Sub(left), after)
+		t.Fatalf("wake %v after the switch off w1, want closeUnchosenIdle.after %v", wake.Sub(left), n)
 	}
-	f.now = left.Add(4 * time.Minute)
+	f.now = left.Add(time.Minute)
 	talking.r.Add(1)
 	bigTalking.r.Add(1)
 	f.turn(closeAt.Add(-time.Millisecond))
@@ -162,25 +162,25 @@ func TestIdleConnectionsEndOnceLeftAndSilent(t *testing.T) {
 		Decisions     int64 `json:"switches"`
 	}
 	// The report shows once there was a decision: the switch off w1 is one.
-	if err := json.Unmarshal(f.o.Report(), &report); err != nil || report.IdleClosed != 4 || report.PendingClosed != 0 {
+	if err := json.Unmarshal(f.o.PeekReport(), &report); err != nil || report.IdleClosed != 4 || report.PendingClosed != 0 {
 		t.Fatalf("report idle_closed %d, pending_closed %d (%v), want 4 and 0", report.IdleClosed, report.PendingClosed, err)
 	}
-	// talking received 4 minutes after the switch; big talking, past the
+	// talking received 1 minute after the switch; big talking, past the
 	// bytes the tracker times, received after the note at the switch and is
 	// noted anew now.
-	if want := left.Add(4*time.Minute + n); !wake.Equal(want) {
+	if want := left.Add(time.Minute + n); !wake.Equal(want) {
 		t.Fatalf("wake %v after the switch, want %v: talking silent for closeIdleAfter", wake.Sub(left), want.Sub(left))
 	}
 
 	// The ends restart neither the wait for sleep.afterLastUse nor the silence.
 	f.finish(closeAt.Add(100 * time.Millisecond))
-	if wake := f.turn(f.now); !wake.Equal(left.Add(4*time.Minute + n)) {
+	if wake := f.turn(f.now); !wake.Equal(left.Add(time.Minute + n)) {
 		t.Fatalf("after the ends: wake %v after the switch", wake.Sub(left))
 	}
 	if f.proxies["w1"].asked() != 0 {
 		t.Fatal("asked to sleep under kept connections")
 	}
-	wake = f.turn(left.Add(4*time.Minute + n))
+	wake = f.turn(left.Add(time.Minute + n))
 	f.check("quiet", "quiet udp", "big quiet", "pending", "talking")
 	if want := closeAt.Add(n); !wake.Equal(want) {
 		t.Fatalf("wake %v after the switch, want %v: big talking silent since the note", wake.Sub(left), want.Sub(left))
@@ -224,8 +224,8 @@ func TestIdleCloseWaitsForBothThresholds(t *testing.T) {
 		lastRead   time.Duration
 		wantFromLt time.Duration
 	}{
-		{"sleep.afterLastUse last", 5 * time.Minute, 2 * time.Minute, -5 * time.Second, 5 * time.Minute},
-		{"silence last", time.Minute, 2 * time.Minute, -5 * time.Second, 2*time.Minute - 5*time.Second},
+		{"long tunnel sleep", 5 * time.Minute, 2 * time.Minute, -5 * time.Second, 2 * time.Minute},
+		{"short tunnel sleep", time.Minute, 2 * time.Minute, -5 * time.Second, 2 * time.Minute},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newIdleFixture(t, tc.after, tc.n)
@@ -265,12 +265,12 @@ func TestIdleCloseWaitsSleepAfterAfterAUse(t *testing.T) {
 	f.now = used
 	other.tr.Finished(nil)
 	f.o.ProcessEnded("w1")
-	if wake := f.turn(used); !wake.Equal(used.Add(5 * time.Minute)) {
+	if wake := f.turn(used); !wake.Equal(used.Add(time.Minute)) {
 		t.Fatalf("wake %v after the use, want sleep.afterLastUse", wake.Sub(used))
 	}
-	f.turn(left.Add(5 * time.Minute))
+	f.turn(used.Add(time.Minute - time.Millisecond))
 	f.check()
-	f.turn(used.Add(5 * time.Minute))
+	f.turn(used.Add(time.Minute))
 	f.check("quiet")
 }
 
@@ -307,7 +307,7 @@ func TestIdleCloseKeepsWhatIsHeld(t *testing.T) {
 			e.switchTo(s, "w1", "failover", now)
 		}},
 		{"pinned by another balancer", func(t *testing.T, e *engine, s *selector, now time.Time) {
-			other := e.addSelector("other", newSelectorSettings(&SelectorConfig{Paths: pathSpecs("a1", 1, "w1", 3)}))
+			other := e.addSelector("other", legacyScenarioSelector(&SelectorConfig{Paths: pathSpecs("a1", 1, "w1", 3)}, nil))
 			e.updateCandidates(other, []string{"a1", "w1"}, now)
 			if !e.pin("other", "w1", now) {
 				t.Fatal("setup: pin refused")

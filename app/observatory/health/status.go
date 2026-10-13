@@ -28,32 +28,34 @@ func (p *path) statusUDP(now time.Time) UDPStatus {
 }
 
 type pathStatusView struct {
-	Quality         *qualityPathView `json:"quality,omitempty"`
-	Outbound        string           `json:"outbound"`
-	IsProbeOnly     bool             `json:"is_probe_only"`
-	State           string           `json:"state"`
-	Reason          string           `json:"reason,omitempty"`
-	ForMs           int64            `json:"for_ms"`
-	Failures        int              `json:"failures"`
-	QuarantineMs    int64            `json:"quarantine_ms,omitempty"`
-	QuarantineLevel int              `json:"quarantine_level,omitempty"`
-	IsProvisional   bool             `json:"is_provisional,omitempty"`
-	RTTMs           int64            `json:"rtt_ms,omitempty"`
-	LastError       string           `json:"last_error,omitempty"`
-	ServerName      string           `json:"server_name,omitempty"`
-	ConnsOK         int64            `json:"conns_ok"`
-	ConnsFailed     int64            `json:"conns_failed"`
-	BytesUp         int64            `json:"bytes_up"`
-	BytesDown       int64            `json:"bytes_down"`
-	FailuresByKind  map[string]int64 `json:"failures_by_kind,omitempty"`
-	TTFBP50Ms       int64            `json:"ttfb_p50_ms"`
-	TTFBP90Ms       int64            `json:"ttfb_p90_ms"`
-	Probes          int64            `json:"probes"`
-	ProbesFailed    int64            `json:"probes_failed"`
-	ProbeBytes      int64            `json:"probe_bytes"`
-	Probe           *statusProbeView `json:"probe,omitempty"`
-	UDP             UDPStatus        `json:"udp"`
-	ActiveMs        int64            `json:"active_ms"`
+	CanSleep             *bool            `json:"can_sleep,omitempty"`
+	CanCloseUnchosenIdle *bool            `json:"can_close_unchosen_idle,omitempty"`
+	Quality              *qualityPathView `json:"quality,omitempty"`
+	Outbound             string           `json:"outbound"`
+	IsProbeOnly          bool             `json:"is_probe_only"`
+	State                string           `json:"state"`
+	Reason               string           `json:"reason,omitempty"`
+	ForMs                int64            `json:"for_ms"`
+	Failures             int              `json:"failures"`
+	QuarantineMs         int64            `json:"quarantine_ms,omitempty"`
+	QuarantineLevel      int              `json:"quarantine_level,omitempty"`
+	IsProvisional        bool             `json:"is_provisional,omitempty"`
+	RTTMs                int64            `json:"rtt_ms,omitempty"`
+	LastError            string           `json:"last_error,omitempty"`
+	ServerName           string           `json:"server_name,omitempty"`
+	ConnsOK              int64            `json:"conns_ok"`
+	ConnsFailed          int64            `json:"conns_failed"`
+	BytesUp              int64            `json:"bytes_up"`
+	BytesDown            int64            `json:"bytes_down"`
+	FailuresByKind       map[string]int64 `json:"failures_by_kind,omitempty"`
+	TTFBP50Ms            int64            `json:"ttfb_p50_ms"`
+	TTFBP90Ms            int64            `json:"ttfb_p90_ms"`
+	Probes               int64            `json:"probes"`
+	ProbesFailed         int64            `json:"probes_failed"`
+	ProbeBytes           int64            `json:"probe_bytes"`
+	Probe                *statusProbeView `json:"probe,omitempty"`
+	UDP                  UDPStatus        `json:"udp"`
+	ActiveMs             int64            `json:"active_ms"`
 	// What is left of the provider lease, below zero once it ended; none
 	// without a lease.
 	ExpiresInMs *int64 `json:"expires_in_ms,omitempty"`
@@ -113,6 +115,8 @@ type providerStatusView struct {
 }
 
 type statusView struct {
+	IsLocalOnly           bool             `json:"is_local_only"`
+	Features              map[string]bool  `json:"features"`
 	WitnessQuality        *qualityPathView `json:"witness_quality,omitempty"`
 	QualitySamplesDropped uint64           `json:"quality_samples_dropped,omitempty"`
 	// Names this run of the core; pin and release requests may carry it.
@@ -137,6 +141,8 @@ type statusView struct {
 func (e *engine) status(now time.Time) statusView {
 	quality := e.currentQuality(now)
 	v := statusView{
+		IsLocalOnly:    true,
+		Features:       e.effectiveFeatures(),
 		Groups:         e.groupViews(now),
 		WitnessQuality: quality.Witness, QualitySamplesDropped: quality.SamplesDropped,
 		Network:      e.networkID,
@@ -203,6 +209,11 @@ func (e *engine) status(now time.Time) statusView {
 			UDP:          p.statusUDP(now),
 			ActiveMs:     (p.stats.activeTime + active[tag]).Milliseconds(),
 			IsAsleep:     p.asleep,
+		}
+		if p.sleeper != sleeperUnknown {
+			capable := p.sleeper == sleeperYes
+			pv.CanSleep = &capable
+			pv.CanCloseUnchosenIdle = &capable
 		}
 		if q, ok := quality.Paths[tag]; ok {
 			pv.Quality = &q
@@ -292,7 +303,9 @@ func (e *engine) status(now time.Time) statusView {
 		v.Providers = append(v.Providers, pv)
 	}
 	for _, r := range e.requests {
-		v.ProbeRequests = append(v.ProbeRequests, r.view(now))
+		view := r.view(now)
+		view.Run = e.run
+		v.ProbeRequests = append(v.ProbeRequests, view)
 	}
 	return v
 }
@@ -310,4 +323,42 @@ func (e *engine) connectivityState() string {
 	default:
 		return "ok"
 	}
+}
+
+// Construct this map only for a requested diagnostic snapshot.
+func (e *engine) effectiveFeatures() map[string]bool {
+	flags := e.s.features.status()
+	for tag, s := range e.selectors {
+		prefix := "balancers." + tag + "."
+		raw := s.cfg.raw.GetFeatures()
+		if raw == nil {
+			raw = &SelectorFeatureConfig{}
+		}
+		flags[prefix+"probe_before_switch"] = s.cfg.switchAfterProbe
+		flags[prefix+"close_pending"] = s.cfg.closePending
+		flags[prefix+"close_silent"] = s.cfg.closeSilent
+		flags[prefix+"down_audit"] = !s.cfg.skipDownAudit
+		flags[prefix+"groups"] = featureValue(raw.Groups, false)
+		flags[prefix+"return_to_cheaper"] = s.cfg.returnToCheaper.interval > 0
+		flags[prefix+"return_on_network_change"] = s.cfg.returnToCheaper.onNetworkChange
+		flags[prefix+"network_changes"] = s.cfg.onNetworkChange != NetworkChangeMode_IGNORE
+		flags[prefix+"startup_pin"] = s.cfg.startPinned != ""
+	}
+	for _, p := range e.providers {
+		prefix := "providers." + p.cfg.tag + "."
+		flags[prefix+"is_enabled"] = true
+		flags[prefix+"periodic"] = p.cfg.interval > 0
+		flags[prefix+"min_healthy"] = p.cfg.minHealthy > 0
+		flags[prefix+"cost_above"] = p.cfg.costAbove
+		flags[prefix+"max_age"] = p.cfg.maxAge > 0
+		flags[prefix+"network_change"] = p.cfg.onNetwork != RefreshOnNetwork_REFRESH_NEVER
+		flags[prefix+"exhausted"] = p.cfg.whenExhausted
+		flags[prefix+"lease_renewal"] = p.cfg.leaseRenewal
+		flags[prefix+"backend_schedule"] = p.cfg.backendSchedule
+		flags[prefix+"expired_lease_fallback"] = p.cfg.expiredFallback
+	}
+	for tag := range e.s.disabledProviders {
+		flags["providers."+tag+".is_enabled"] = false
+	}
+	return flags
 }

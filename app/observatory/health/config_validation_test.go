@@ -42,7 +42,7 @@ func TestNewRejectsInvalidProbeSteps(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.WithValue(context.Background(), core.XrayKey(1), new(core.Instance))
-			_, err := New(ctx, &Config{Probes: []*ProbeProfile{tc.profile}})
+			_, err := New(ctx, &Config{Features: &FeatureConfig{StepProfiles: v2Bool(true)}, Probes: []*ProbeProfile{tc.profile}})
 			if err == nil || !strings.Contains(err.Error(), tc.field) {
 				t.Fatalf("New error %v must name %s", err, tc.field)
 			}

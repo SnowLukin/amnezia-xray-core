@@ -11,30 +11,28 @@ func TestLeastCostReturnIntervalPresence(t *testing.T) {
 	for _, tc := range []struct {
 		value string
 		want  int64
-	}{
-		{``, 0}, {`,"returnInterval":"0s"`, -1}, {`,"returnInterval":"90s"`, int64(90 * time.Second)},
-	} {
+		flag  *bool
+	}{{``, 0, nil}, {`,"returnToCheaper":{"isEnabled":false}`, 0, boolPtr(false)}, {`,"returnToCheaper":{"isEnabled":true,"interval":"90s"}`, int64(90 * time.Second), boolPtr(true)}} {
 		var c Config
-		raw := `{"outbounds":[{"tag":"a","protocol":"freedom","path":{"balancer":"auto","cost":1` + tc.value + `}}],"routing":{"balancers":[{"tag":"auto","strategy":{"type":"leastCost","settings":{}}}]},"healthObservatory":{}}`
+		raw := pathConfig(`,"selection":{"balancer":"auto","cost":1`+tc.value+`}`, `{"returnToCheaper":{"isEnabled":true}}`, `{}`)
 		if err := json.Unmarshal([]byte(raw), &c); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := c.Build(); err != nil {
 			t.Fatal(err)
 		}
-		if got := c.HealthObservatory.Paths[0].ReturnInterval; got != tc.want {
-			t.Errorf("interval %d, want %d", got, tc.want)
+		p := c.HealthObservatory.Paths[0]
+		if p.ReturnInterval != tc.want || (p.ReturnIsEnabled == nil) != (tc.flag == nil) || (tc.flag != nil && *p.ReturnIsEnabled != *tc.flag) {
+			t.Fatalf("presence %v", p)
 		}
 	}
 }
-
-func TestLeastCostRejectsNegativeReturnInterval(t *testing.T) {
-	var c Config
-	raw := `{"outbounds":[{"tag":"a","protocol":"freedom","path":{"balancer":"auto","cost":1,"returnInterval":"-1s"}}],"routing":{"balancers":[{"tag":"auto","strategy":{"type":"leastCost","settings":{}}}]},"healthObservatory":{}}`
-	if err := json.Unmarshal([]byte(raw), &c); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := c.Build(); err == nil || !strings.Contains(err.Error(), "returnInterval") {
-		t.Fatal(err)
+func boolPtr(v bool) *bool { return &v }
+func TestLeastCostRejectsNonPositiveReturnInterval(t *testing.T) {
+	for _, value := range []string{"-1s", "0s"} {
+		raw := pathConfig(`,"selection":{"balancer":"auto","cost":1,"returnToCheaper":{"isEnabled":false,"interval":"`+value+`"}}`, `{}`, `{}`)
+		if err := pathConfigError(raw); err == nil || !strings.Contains(err.Error(), "returnToCheaper.interval") {
+			t.Fatal(err)
+		}
 	}
 }

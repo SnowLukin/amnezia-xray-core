@@ -107,9 +107,9 @@ type providerAnswer struct {
 }
 
 type outboundHead struct {
-	Tag      string          `json:"tag"`
-	Protocol string          `json:"protocol"`
-	Path     json.RawMessage `json:"path"`
+	Tag       string          `json:"tag"`
+	Protocol  string          `json:"protocol"`
+	Selection json.RawMessage `json:"selection"`
 }
 
 // Keys of an answer in protocol 1. The set keys make up the set, and an
@@ -118,7 +118,7 @@ type outboundHead struct {
 // set. Any other key refuses the whole answer, so a backend never takes a
 // key for applied that the core threw away; a new key is protocol 2.
 var (
-	setKeys  = map[string]bool{"outbounds": true, "groups": true, "routing": true}
+	setKeys  = map[string]bool{"outbounds": true, "groups": true}
 	metaKeys = map[string]bool{"protocol": true, "version": true, "nextRefreshIn": true,
 		"expiresAt": true, "serverTime": true, "headers": true, "baseVersion": true}
 )
@@ -245,32 +245,11 @@ func readAnswer(body []byte, initial bool) (*providerAnswer, error) {
 		}
 	}
 	if v := sections["version"]; !isNull(v) {
-		if err := json.Unmarshal(v, &a.version); err != nil {
-			return nil, answerErrorf("version: %v", err)
+		if json.Unmarshal(v, &a.version) != nil || len(a.version) > maxBaseVersion {
+			return nil, answerErrorf("version must be a string of at most %d bytes", maxBaseVersion)
 		}
 	}
-	if r := sections["routing"]; !isNull(r) {
-		var parts map[string]json.RawMessage
-		if err := json.Unmarshal(r, &parts); err != nil {
-			return nil, answerErrorf("routing: %v", err)
-		}
-		for _, key := range slices.Sorted(maps.Keys(parts)) {
-			if key != "rules" && key != "balancers" && key != "domainStrategy" {
-				return nil, answerErrorf("routing: unknown key %q", cut(key))
-			}
-		}
-		if ds := parts["domainStrategy"]; !isNull(ds) {
-			// The config loader takes a strategy it does not know for AsIs.
-			var name string
-			if json.Unmarshal(ds, &name) != nil || !slices.ContainsFunc(domainStrategies, func(s string) bool {
-				return strings.EqualFold(s, name)
-			}) {
-				return nil, answerErrorf("routing: unknown domainStrategy %s", cut(string(ds)))
-			}
-			a.withStrategy = true
-		}
-		a.routing = r
-	}
+
 	if a.version == "" {
 		a.version = setHash(sections)
 	}
@@ -390,7 +369,7 @@ func loadOutbounds(raw json.RawMessage) ([]*core.OutboundHandlerConfig, error) {
 	}
 	for _, entry := range entries {
 		for key := range entry {
-			if strings.EqualFold(key, "path") {
+			if strings.EqualFold(key, "selection") {
 				delete(entry, key)
 			}
 		}
@@ -608,18 +587,24 @@ func (o *Observer) emit(typ string, fields map[string]any) {
 func (o *Observer) runRefresh(j *refreshJob) {
 	rt := o.runtimeFor(j.p)
 	var r refreshOutcome
-	if res, err := o.fetchSet(rt, j, o.requestBody(rt, j)); err != nil {
+	body, bodyErr := o.requestBody(rt, j)
+	if bodyErr != nil {
+		r.err = "provider request exceeds 256 KiB"
+		r.class = "request_too_large"
+		r.code = "request_too_large"
+		o.emit("provider_fetch", map[string]any{"provider": rt.cfg.tag, "trigger": j.trigger.String(), "is_ok": false, "code": r.code})
+	} else if res, err := o.fetchSet(rt, j, body); err != nil {
 		r.err = err.Error()
 		r.retryAfter = res.retryAfter
 		r.status = res.status
 		r.code = res.code
 		r.via = res.via
 		// A refused answer is told by its reason, a failed request by class.
-		r.class = cmp.Or(res.class, r.err)
+		r.class = cmp.Or(res.class, "invalid_answer")
 	} else if changed, err := o.applySet(rt, res.answer, j); err != nil {
 		r.err = err.Error()
 		r.status = res.status
-		r.class = r.err
+		r.class = "invalid_set"
 	} else {
 		r.ok = true
 		r.changed = changed
@@ -1190,6 +1175,18 @@ func (o *Observer) applySet(rt *providerRuntime, a *providerAnswer, j *refreshJo
 	}
 	// Before the balancers see the set: an outbound whose lease ended on
 	// arrival is never taken as new.
+	for _, tag := range rt.p.tags {
+		l := rt.p.leases[tag]
+		if !inSet[tag] && (o.e.expired[tag] || (l != nil && l.left(now) <= 0)) {
+			if rt.p.retiredExpired == nil {
+				rt.p.retiredExpired = map[string]bool{}
+			}
+			rt.p.retiredExpired[tag] = true
+		}
+	}
+	for _, tag := range tags {
+		delete(rt.p.retiredExpired, tag)
+	}
 	leases, _ := o.e.acceptLeases(rt.p, tags, leasesOf(a, rt.cfg.prefix), now)
 	o.e.applyProviderSet(rt.p, providerChange{
 		tags: tags, paths: a.paths, groups: a.groups, added: addedTags, retire: removed, revive: revive, reset: reset,
@@ -1271,6 +1268,9 @@ func checkHeads(cfg *providerSettings, a *providerAnswer) ([]string, error) {
 		if head.Tag == "" {
 			return nil, fmt.Errorf("outbound %d has no tag", i+1)
 		}
+		if len(head.Tag) > 128 || len(cfg.prefix+head.Tag) > 128 {
+			return nil, fmt.Errorf("outbound %d needs a tag of at most 128 bytes including its prefix", i+1)
+		}
 		if !slices.Contains(cfg.protocols, strings.ToLower(head.Protocol)) {
 			return nil, fmt.Errorf("outbound %s: protocol %q is not allowed", head.Tag, head.Protocol)
 		}
@@ -1284,6 +1284,27 @@ func checkHeads(cfg *providerSettings, a *providerAnswer) ([]string, error) {
 }
 
 func (o *Observer) checkGroupOwnership(rt *providerRuntime, a *providerAnswer) error {
+	target := o.e.selectors[rt.cfg.balancer]
+	if target == nil {
+		return fmt.Errorf("unknown provider balancer")
+	}
+	flags := target.cfg.raw.GetFeatures()
+	if flags == nil {
+		flags = &SelectorFeatureConfig{}
+	}
+	if len(a.groups) > 0 && !featureValue(flags.Groups, false) {
+		return fmt.Errorf("provider groups require groups.isEnabled")
+	}
+	for _, path := range a.paths {
+		if path.ReturnIsEnabled != nil && *path.ReturnIsEnabled && !featureValue(flags.ReturnToCheaper, false) {
+			return fmt.Errorf("selection returnToCheaper requires balancer returnToCheaper.isEnabled")
+		}
+	}
+	for _, group := range a.groups {
+		if group.ReturnIsEnabled != nil && *group.ReturnIsEnabled && !featureValue(flags.ReturnToCheaper, false) {
+			return fmt.Errorf("group returnToCheaper requires balancer returnToCheaper.isEnabled")
+		}
+	}
 	for _, g := range a.groups {
 		if s := o.e.selectors[rt.cfg.balancer]; s != nil && s.baseRaw != nil {
 			for _, base := range s.baseRaw.Groups {
@@ -1504,6 +1525,13 @@ func (o *Observer) oldestConnections() map[string]int64 {
 			m[t.tag] = t.started
 		}
 	}
+	for t := range o.closures {
+		if t.state.Load() != trackerFinished {
+			if at, ok := m[t.tag]; !ok || t.started < at {
+				m[t.tag] = t.started
+			}
+		}
+	}
 	return m
 }
 
@@ -1628,10 +1656,10 @@ func (o *Observer) closeProviders() {
 	}
 }
 
-// RequestRefresh asks the provider with the tag, or every provider when the
+// RequestProviderRefresh asks the provider with the tag, or every provider when the
 // tag is empty, to fetch its set as soon as its limits allow. It returns
 // false when there is no such provider.
-func (o *Observer) RequestRefresh(provider string) bool {
+func (o *Observer) RequestProviderRefresh(provider string) bool {
 	o.mu.Lock()
 	ok := o.e.requestRefresh(provider)
 	o.mu.Unlock()

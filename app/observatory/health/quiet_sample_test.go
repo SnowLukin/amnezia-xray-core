@@ -14,7 +14,7 @@ import (
 func TestQuietShareRejectsInvalidDirectConfig(t *testing.T) {
 	for _, share := range []float64{-0.1, 1.1, math.NaN(), math.Inf(1), math.Inf(-1)} {
 		ctx := context.WithValue(context.Background(), core.XrayKey(1), new(core.Instance))
-		_, err := New(ctx, &Config{Report: &ReportConfig{QuietShare: share}})
+		_, err := New(ctx, &Config{Features: &FeatureConfig{Report: v2Bool(true)}, Report: &ReportConfig{QuietShare: share}})
 		if err == nil || !strings.Contains(err.Error(), "report.quietShare") {
 			t.Fatalf("quietShare %v: error %v", share, err)
 		}
@@ -39,7 +39,7 @@ func TestQuietShareDefaultsPreserveReportsAndRandomSequence(t *testing.T) {
 func TestQuietShareSampleIsChosenOncePerRun(t *testing.T) {
 	seen := map[bool]bool{}
 	for seed := int64(1); seed <= 32; seed++ {
-		cfg := &Config{Report: &ReportConfig{QuietShare: 0.5, Interval: int64(time.Second)}}
+		cfg := &Config{Features: &FeatureConfig{Report: v2Bool(true)}, Report: &ReportConfig{QuietShare: 0.5, Interval: int64(time.Second)}}
 		e := newEngine(newSettings(cfg), seed)
 		e.report.begin(t0)
 		control := rand.New(rand.NewSource(seed))
@@ -76,13 +76,13 @@ func TestQuietShareSampleIsChosenOncePerRun(t *testing.T) {
 }
 
 func TestQuietShareOneReportsQuietRunAtStop(t *testing.T) {
-	o := newObserver(context.Background(), &Config{Report: &ReportConfig{QuietShare: 1}})
+	o := newObserver(context.Background(), &Config{Features: &FeatureConfig{Report: v2Bool(true)}, Report: &ReportConfig{QuietShare: 1}})
 	defer o.Close()
-	if o.Report() == nil || o.TakeReport(false) != nil {
+	if o.PeekReport() == nil || o.TakeReport(false) != nil {
 		t.Fatal("quiet snapshot or interval eligibility differs from the contract")
 	}
 	v := udpReport(t, o.TakeReport(true))
-	if !v.IsQuietSample || v.Reason != reportStop || o.TakeReport(true) != nil || o.Report() != nil {
+	if !v.IsQuietSample || v.Reason != reportStop || o.TakeReport(true) != nil || o.PeekReport() != nil {
 		t.Fatalf("quiet stop report %+v", v)
 	}
 }

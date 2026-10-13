@@ -27,7 +27,7 @@ func requestOf(t *testing.T, te *testEngine, now time.Time) (map[string]any, []b
 		t.Fatalf("at %v: refreshes %v, want one with a body", now.Sub(t0), triggers(jobs))
 	}
 	o := &Observer{run: "4f1c0de2a9b87765"}
-	body := o.requestBody(&providerRuntime{cfg: te.prov().cfg}, jobs[0])
+	body := mustRequestBody(t, o, &providerRuntime{cfg: te.prov().cfg}, jobs[0])
 	var m map[string]any
 	if err := json.Unmarshal(body, &m); err != nil {
 		t.Fatal(err)
@@ -193,21 +193,21 @@ func TestLastFailureCarriesTheRejection(t *testing.T) {
 	te := setEngine(t)
 	_, _, j := requestOf(t, te, t0)
 	reason := `invalid answer: unknown key "dns"`
-	te.onRefreshDone(j, refreshOutcome{err: reason, status: 200, class: reason}, at(time.Second))
+	te.onRefreshDone(j, refreshOutcome{err: reason, status: 200, class: "invalid_answer"}, at(time.Second))
 	m, _, j := requestOf(t, te, at(time.Minute))
-	if lf := m["lastFailure"].(map[string]any); lf["status"] != 200.0 || lf["error"] != reason || lf["agoMs"] != 59000.0 ||
+	if lf := m["lastFailure"].(map[string]any); lf["status"] != 200.0 || lf["code"] != "invalid_answer" || lf["agoMs"] != 59000.0 ||
 		m["retryLevel"] != 1.0 || m["refreshNumber"] != 2.0 {
 		t.Fatalf("after a refused answer: %v", m)
 	}
 	long := "outbound x1: " + strings.Repeat("é", 200)
 	te.onRefreshDone(j, refreshOutcome{err: long, status: 200, class: long}, at(time.Minute))
 	m, _, j = requestOf(t, te, at(2*time.Hour))
-	if e := m["lastFailure"].(map[string]any)["error"].(string); len(e) > 200 || !strings.HasPrefix(long, e) {
-		t.Fatalf("a long reason goes out as %d bytes: %q", len(e), e)
+	if code := m["lastFailure"].(map[string]any)["code"]; code != "unknown" {
+		t.Fatalf("unclassified refusal leaked text: %v", code)
 	}
 	te.onRefreshDone(j, refreshOutcome{err: "timeout", class: "timeout"}, at(2*time.Hour))
 	m, _, j = requestOf(t, te, at(4*time.Hour))
-	if lf := m["lastFailure"].(map[string]any); lf["status"] != 0.0 || lf["error"] != "timeout" {
+	if lf := m["lastFailure"].(map[string]any); lf["status"] != 0.0 || lf["code"] != "timeout" {
 		t.Fatalf("after a timeout: %v", lf)
 	}
 	te.onRefreshDone(j, refreshOutcome{ok: true}, at(4*time.Hour))
@@ -295,3 +295,12 @@ type timeoutError struct{}
 func (timeoutError) Error() string   { return "i/o timeout" }
 func (timeoutError) Timeout() bool   { return true }
 func (timeoutError) Temporary() bool { return true }
+
+func mustRequestBody(t *testing.T, o *Observer, rt *providerRuntime, j *refreshJob) []byte {
+	t.Helper()
+	body, err := o.requestBody(rt, j)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return body
+}

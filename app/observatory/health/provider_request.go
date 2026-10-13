@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"math"
 	"strings"
 	"time"
@@ -17,7 +18,12 @@ import (
 // outside the lock, and every via sends the same bytes. Keys are camelCase
 // like the config and the answer. Destinations of connections, server
 // addresses and header values never go in.
+const maxProviderRequestBytes = 256 * 1024
+
+var errProviderRequestTooLarge = errors.New("request_too_large")
+
 type providerRequest struct {
+	IsTruncated           bool              `json:"isTruncated,omitempty"`
 	WitnessQuality        *requestQuality   `json:"witnessQuality,omitempty"`
 	QualitySamplesDropped uint64            `json:"qualitySamplesDropped,omitempty"`
 	Protocol              int               `json:"protocol"`
@@ -54,7 +60,7 @@ type requestGroup struct {
 
 type requestFailure struct {
 	Status int    `json:"status"`
-	Error  string `json:"error,omitempty"`
+	Code   string `json:"code,omitempty"`
 	AgoMs  int64  `json:"agoMs"`
 }
 
@@ -138,7 +144,7 @@ func (e *engine) providerRequest(p *provider, j *refreshJob, now time.Time) *pro
 		r.WitnessQuality = requestQualityOf(*quality.Witness)
 	}
 	if !p.lastFailedAt.IsZero() {
-		r.LastFailure = &requestFailure{Status: p.lastStatus, Error: cutText(p.lastClass, maxFailureText),
+		r.LastFailure = &requestFailure{Status: p.lastStatus, Code: providerFailureCode(p.lastClass),
 			AgoMs: now.Sub(p.lastFailedAt).Milliseconds()}
 	}
 	active := map[string]time.Duration{}
@@ -280,17 +286,56 @@ func describeOutbound(p *path, tag string, active time.Duration, now time.Time) 
 
 // requestBody marshals the request of a refresh, nil for a GET. The run of
 // the core and the network go out hashed per provider.
-func (o *Observer) requestBody(rt *providerRuntime, j *refreshJob) []byte {
+func (o *Observer) requestBody(rt *providerRuntime, j *refreshJob) ([]byte, error) {
 	r := j.request
 	if r == nil {
-		return nil
+		return nil, nil
 	}
 	r.Run = providerHash(rt.cfg.url, o.run)
 	if r.networkID != "" {
 		r.Network.ID = providerHash(rt.cfg.url, r.networkID)
 	}
-	body, _ := json.Marshal(r)
-	return body
+	body, err := json.Marshal(r)
+	if err != nil {
+		return nil, err
+	}
+	if len(body) <= maxProviderRequestBytes {
+		return body, nil
+	}
+	// Work on a copy: diagnostics and all essential identity/state/leases stay intact.
+	bounded := *r
+	bounded.IsTruncated = true
+	bounded.WitnessQuality = nil
+	bounded.QualitySamplesDropped = 0
+	bounded.Outbounds = append([]requestOutbound(nil), r.Outbounds...)
+	for i := range bounded.Outbounds {
+		bounded.Outbounds[i].Quality = nil
+		bounded.Outbounds[i].TTFBP50Ms = 0
+	}
+	body, err = json.Marshal(&bounded)
+	if err != nil {
+		return nil, err
+	}
+	if len(body) > maxProviderRequestBytes {
+		// Probe profile/step measurements are optional details, independent of the
+		// essential outbound health verdict and lease. Never change the kept view.
+		for i := range bounded.Outbounds {
+			if probe := bounded.Outbounds[i].Probe; probe != nil {
+				copy := *probe
+				copy.Profile = nil
+				copy.Steps = nil
+				bounded.Outbounds[i].Probe = &copy
+			}
+		}
+		body, err = json.Marshal(&bounded)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if len(body) > maxProviderRequestBytes {
+		return nil, errProviderRequestTooLarge
+	}
+	return body, nil
 }
 
 // providerHash names a value for one provider: stable across runs for that
@@ -311,4 +356,12 @@ func cutText(s string, n int) string {
 		n--
 	}
 	return s[:n]
+}
+
+func providerFailureCode(code string) string {
+	switch code {
+	case "network", "timeout", "status", "too_large", "broken_json", "invalid_answer", "invalid_set", "request_too_large":
+		return code
+	}
+	return "unknown"
 }

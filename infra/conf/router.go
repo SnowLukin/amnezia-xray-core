@@ -23,6 +23,7 @@ type BalancingRule struct {
 	Selectors   StringList     `json:"selector"`
 	Strategy    StrategyConfig `json:"strategy"`
 	FallbackTag string         `json:"fallbackTag"`
+	leastCost   *strategyLeastCostConfig
 }
 
 // Build builds the balancing rule
@@ -47,7 +48,13 @@ func (r *BalancingRule) Build() (*router.BalancingRule, error) {
 	if r.Strategy.Settings != nil {
 		settings = ([]byte)(*r.Strategy.Settings)
 	}
-	rawConfig, err := strategyConfigLoader.LoadWithID(settings, r.Strategy.Type)
+	var rawConfig interface{}
+	var err error
+	if r.Strategy.Type == strategyLeastCost && r.leastCost != nil {
+		rawConfig = r.leastCost
+	} else {
+		rawConfig, err = strategyConfigLoader.LoadWithID(settings, r.Strategy.Type)
+	}
 	if err != nil {
 		return nil, errors.New("failed to parse to strategy config.").Base(err)
 	}

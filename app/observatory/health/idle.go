@@ -95,7 +95,7 @@ func (e *engine) idleCheckDue(p *path, now time.Time) (due, closeFrom time.Time,
 	}
 	closeFrom = settled.Add(n)
 	if !p.idleClosed {
-		closeFrom = maxTime(closeFrom, p.usedAt.Add(e.s.sleepAfter))
+		closeFrom = maxTime(closeFrom, p.usedAt.Add(n))
 	}
 	switch {
 	case p.idleUses != p.uses:
@@ -189,6 +189,24 @@ func (o *Observer) closeIdle(batch []sleepJob) {
 			if due := o.base.Add(time.Duration(since + n)); j.next.IsZero() || due.Before(j.next) {
 				j.next = due
 			}
+		}
+	}
+	for t := range o.closures {
+		j := checks[t.tag]
+		if j == nil || t.abort == nil || t.state.Load() == trackerFinished || t.aborted.Load() {
+			continue
+		}
+		since, ok := t.idleSince(at)
+		if !ok {
+			continue
+		}
+		if at-since >= n && !now.Before(j.closeFrom) {
+			if t.aborted.CompareAndSwap(false, true) {
+				aborts = append(aborts, t.abort)
+				j.closed++
+			}
+		} else if due := o.base.Add(time.Duration(since + n)); j.next.IsZero() || due.Before(j.next) {
+			j.next = due
 		}
 	}
 	o.trackMu.Unlock()

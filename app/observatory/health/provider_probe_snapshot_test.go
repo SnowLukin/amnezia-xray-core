@@ -225,10 +225,13 @@ func TestProviderProbeRichBodyBudget(t *testing.T) {
 			if len(decoded.Outbounds) != len(tags) {
 				t.Fatalf("body has %d outbounds, want %d", len(decoded.Outbounds), len(tags))
 			}
+			if len(body) > maxProviderRequestBytes {
+				t.Fatal("POST exceeds byte ceiling")
+			}
 			for _, outbound := range decoded.Outbounds {
 				p := outbound.Probe
-				if p == nil || p.Profile == nil || *p.Profile != profile || p.Reason != reasonNetwork.String() || p.State != "degraded" || !p.IsPassed || p.Error != "" || p.RTTMs != 180 || p.AgoMs != 60000 ||
-					p.Steps == nil || !reflect.DeepEqual(*p.Steps, wantSteps) {
+				if p == nil || (!decoded.IsTruncated && (p.Profile == nil || *p.Profile != profile)) || p.Reason != reasonNetwork.String() || p.State != "degraded" || !p.IsPassed || p.Error != "" || p.RTTMs != 180 || p.AgoMs != 60000 ||
+					(!decoded.IsTruncated && (p.Steps == nil || !reflect.DeepEqual(*p.Steps, wantSteps))) {
 					t.Fatalf("outbound %q lost raw snapshot: %+v", outbound.Tag, p)
 				}
 			}

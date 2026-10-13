@@ -162,7 +162,27 @@ func TestQualityProviderRichCombinedBodyBudget(t *testing.T) {
 			te.path("QUALITY_FOREIGN_PROVIDER_PATH")
 			te.prov().lastFailedAt, te.prov().lastClass = t0, strings.Repeat("r", 1<<20)
 			te.prov().version = tc.snapshotText + "version"
-			_, body, _ := requestOf(t, te, at(time.Minute))
+			var body []byte
+			if tc.name == "escaped" {
+				te.requestRefresh("fresh")
+				jobs, _ := te.refreshAt(at(time.Minute))
+				if len(jobs) != 1 || jobs[0].request == nil {
+					t.Fatal("escaped fixture did not create its refresh snapshot")
+				}
+				observer := &Observer{run: "4f1c0de2a9b87765"}
+				sent, err := observer.requestBody(&providerRuntime{cfg: te.prov().cfg}, jobs[0])
+				if err != errProviderRequestTooLarge || sent != nil {
+					t.Fatalf("escaped essential body: bytes %d error %v, want bounded refusal", len(sent), err)
+				}
+				// Preserve the full raw formatter oracle offline. The actual
+				// transport refused this oversized caller metadata above.
+				body, err = json.Marshal(jobs[0].request)
+				if err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				_, body, _ = requestOf(t, te, at(time.Minute))
+			}
 			var decoded providerRequest
 			if err := json.Unmarshal(body, &decoded); err != nil {
 				t.Fatal(err)

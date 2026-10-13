@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"google.golang.org/protobuf/proto"
 	"reflect"
 	"syscall"
 	"testing"
@@ -25,7 +26,7 @@ type qualityDecisionTrace struct {
 // must not become controller evidence. A later real dial failure still does.
 func qualityDecisionRun(t *testing.T, skip, skipProbe bool) qualityDecisionTrace {
 	t.Helper()
-	cfg := &Config{
+	cfg := &Config{Features: &FeatureConfig{Quality: proto.Bool(!skip), Report: proto.Bool(true), Events: proto.Bool(true)},
 		Passive:      &PassiveConfig{ShouldSkipQuality: skip},
 		Schedule:     &ScheduleConfig{IdleAfter: int64(time.Hour)},
 		Connectivity: &ConnectivityConfig{Outbound: "net", Destination: "https://x.test/204", Witnesses: []string{"direct"}},

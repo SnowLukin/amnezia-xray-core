@@ -34,6 +34,7 @@ func BenchmarkObservedUDPLinkRealHealthUplink(b *testing.B) {
 	object, err := core.CreateObject(instance, &health.Config{
 		Paths: []*health.PathDefinition{{Tag: "bench", Balancer: "auto", Cost: 1}},
 		Report: &health.ReportConfig{QuietShare: 1},
+        Features: &health.FeatureConfig{Report: benchmarkBool(true), UdpReplies: benchmarkBool(true)},
 	})
 	if err != nil {
 		b.Fatal(err)
@@ -120,3 +121,5 @@ func BenchmarkUnobservedUDPLinkUplinkReference(b *testing.B) {
 	}
 	b.StopTimer()
 }
+
+func benchmarkBool(v bool) *bool { return &v }

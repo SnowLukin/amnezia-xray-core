@@ -24,6 +24,12 @@ const (
 	reportSwitches = 10
 )
 
+type ReportSwitch struct {
+	From   string `json:"from"`
+	To     string `json:"to"`
+	Reason string `json:"reason"`
+}
+
 // reportCounts is what the events of a report window add up to.
 type reportCounts struct {
 	UDPProbeCount                  int64            `json:"udp_probe_count"`
@@ -37,7 +43,7 @@ type reportCounts struct {
 	EventsDropped                  uint64           `json:"events_dropped"`
 	Switches                       int64            `json:"switches"`
 	SwitchReasons                  map[string]int64 `json:"switch_reasons"`
-	SwitchPath                     []string         `json:"switch_path"`
+	SwitchHistory                  []ReportSwitch   `json:"switch_history"`
 	Exhausted                      int64            `json:"exhausted_count"`
 	GroupDown                      int64            `json:"group_down_count"`
 	PathDown                       int64            `json:"path_down_count"`
@@ -75,7 +81,6 @@ type reportCounts struct {
 	ProviderRetryAfter             int64            `json:"provider_retry_after"`
 	ProviderApplied                int64            `json:"provider_applied"`
 	ProviderRejected               int64            `json:"provider_rejected"`
-	ProviderRestartNeeded          int64            `json:"provider_restart_needed"`
 	ProviderExpired                int64            `json:"provider_expired"`
 	ProviderRenewals               int64            `json:"provider_renewals"`
 	ProviderAuthFailed             int64            `json:"provider_auth_failed"`
@@ -212,10 +217,10 @@ func (r *report) count(typ string, f map[string]any) {
 			c.SwitchReasons = map[string]int64{}
 		}
 		c.SwitchReasons[reason]++
-		if len(c.SwitchPath) == reportSwitches {
-			c.SwitchPath = append(c.SwitchPath[:0], c.SwitchPath[1:]...)
+		if len(c.SwitchHistory) == reportSwitches {
+			c.SwitchHistory = append(c.SwitchHistory[:0], c.SwitchHistory[1:]...)
 		}
-		c.SwitchPath = append(c.SwitchPath, from+">"+to+":"+reason)
+		c.SwitchHistory = append(c.SwitchHistory, ReportSwitch{From: from, To: to, Reason: reason})
 		if !slices.Contains(startReasons, reason) {
 			r.decide()
 		}
@@ -354,9 +359,6 @@ func (r *report) count(typ string, f map[string]any) {
 		if f["is_ok"] == true && number(f["renewed"]) > 0 && f["trigger"] != "initial" {
 			c.ProviderRenewals++
 		}
-	case "provider_restart_needed":
-		c.ProviderRestartNeeded++
-		r.decide()
 	case "provider_expired":
 		// The balancer leaves the outbound or keeps it as the last resort.
 		// A lease that ended in a saved set is the usual morning after a
@@ -464,6 +466,9 @@ func wholeMilliseconds(d time.Duration) int64 {
 // nil. A final report is due when the run had a decision or was sampled;
 // nothing is due after it.
 func (e *engine) takeReport(final bool, now time.Time) *reportView {
+	if !e.s.features.Report {
+		return nil
+	}
 	r := &e.report
 	if r.final {
 		return nil
@@ -487,13 +492,16 @@ func (e *engine) takeReport(final bool, now time.Time) *reportView {
 	r.stepCounts = nil
 	r.decisions = 0
 	r.windowStart = now.Round(0)
-	r.droppedBefore = e.events.droppedTotal
+	r.droppedBefore = e.events.droppedCount()
 	return v
 }
 
 // snapshotReport returns what a final report would be now without closing
 // the window, or nil when it would be nil.
 func (e *engine) snapshotReport(now time.Time) *reportView {
+	if !e.s.features.Report {
+		return nil
+	}
 	if e.report.final || (!e.report.decided && !e.report.quietSample) {
 		return nil
 	}
@@ -518,20 +526,20 @@ func (e *engine) reportView(reason string, now time.Time, take bool) *reportView
 		Connectivity:  e.connectivityState(),
 		Paths:         map[string]reportPath{},
 	}
-	v.EventsDropped = e.events.droppedTotal - r.droppedBefore
+	v.EventsDropped = e.events.droppedCount() - r.droppedBefore
 	// This builder is reached only when the outer report actually exists.
 	// Snapshot preserves the window; successful take resets only its quality.
 	v.Quality, v.QualitySegmentsDropped = e.quality.report(now, take)
 	if !take {
 		v.SwitchReasons = maps.Clone(v.SwitchReasons)
-		v.SwitchPath = slices.Clone(v.SwitchPath)
+		v.SwitchHistory = slices.Clone(v.SwitchHistory)
 		v.ProviderTriggers = maps.Clone(v.ProviderTriggers)
 	}
 	if v.SwitchReasons == nil {
 		v.SwitchReasons = map[string]int64{}
 	}
-	if v.SwitchPath == nil {
-		v.SwitchPath = []string{}
+	if v.SwitchHistory == nil {
+		v.SwitchHistory = []ReportSwitch{}
 	}
 	if v.ProviderTriggers == nil {
 		v.ProviderTriggers = map[string]int64{}

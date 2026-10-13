@@ -14,19 +14,19 @@ func TestHealthQuietShareJSON(t *testing.T) {
 		want float64
 	}{
 		{`{}`, 0},
-		{`{"report":{}}`, 0},
-		{`{"report":{"quietShare":0}}`, 0},
-		{`{"report":{"quietShare":0.05}}`, 0.05},
-		{`{"report":{"quietShare":1}}`, 1},
+		{`{"telemetry":{"report":{}}}`, 0},
+		{`{"telemetry":{"report":{"quietSampleFraction":0}}}`, 0},
+		{`{"telemetry":{"report":{"isEnabled":true,"quietSampleFraction":0.05}}}`, 0.05},
+		{`{"telemetry":{"report":{"isEnabled":true,"quietSampleFraction":1}}}`, 1},
 	} {
 		cfg, err := buildHealth(t, tc.raw)
 		if err != nil || cfg.GetReport().GetQuietShare() != tc.want {
 			t.Fatalf("%s: cfg %+v error %v", tc.raw, cfg, err)
 		}
 	}
-	for _, raw := range []string{`{"report":{"quietShare":-0.1}}`, `{"report":{"quietShare":1.1}}`} {
+	for _, raw := range []string{`{"telemetry":{"report":{"quietSampleFraction":-0.1}}}`, `{"telemetry":{"report":{"quietSampleFraction":1.1}}}`} {
 		_, err := buildHealth(t, raw)
-		if err == nil || !strings.Contains(err.Error(), "report.quietShare") {
+		if err == nil || !strings.Contains(err.Error(), "report.quietSampleFraction") {
 			t.Fatalf("%s: error %v", raw, err)
 		}
 	}
@@ -34,8 +34,8 @@ func TestHealthQuietShareJSON(t *testing.T) {
 
 func TestHealthQuietShareBuildRejectsNonFinite(t *testing.T) {
 	for _, share := range []float64{math.NaN(), math.Inf(1), math.Inf(-1)} {
-		cfg := HealthObservatoryConfig{Report: &HealthReportConfig{QuietShare: share}}
-		if _, err := cfg.Build(); err == nil || !strings.Contains(err.Error(), "report.quietShare") {
+		cfg := HealthObservatoryConfig{Telemetry: HealthTelemetryConfig{Report: HealthReportConfig{QuietSampleFraction: share}}}
+		if _, err := cfg.Build(); err == nil || !strings.Contains(err.Error(), "report.quietSampleFraction") {
 			t.Fatalf("quietShare %v: error %v", share, err)
 		}
 	}

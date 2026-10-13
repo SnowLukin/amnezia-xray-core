@@ -1,0 +1,54 @@
+package health
+
+import (
+	"fmt"
+	"math"
+)
+
+// Direct protobuf entry points must not revive negative sentinel switches that
+// the v2 JSON schema no longer accepts. Zero scalars retain their documented
+// defaults; none of these values may remove an admission guard.
+func validateProviderConfigurations(c *Config) error {
+	for _, p := range c.GetProviders() {
+		if p == nil || !featureValue(p.IsEnabled, false) {
+			continue
+		}
+		where := fmt.Sprintf("healthObservatory.providers[%s]", p.GetTag())
+		l, a, t := p.GetLimits(), p.GetApply(), p.GetTriggers()
+		for name, value := range map[string]int64{"timeout": p.GetTimeout(), "limits.minInterval": l.GetMinInterval(), "limits.urgentMinInterval": l.GetExhaustedMinInterval(), "limits.maxRefreshesPerHour": int64(l.GetMaxRefreshesPerHour()), "apply.drainTimeout": a.GetDrainTimeout(), "apply.maxOutbounds": int64(a.GetMaxOutbounds())} {
+			if value < 0 {
+				return fmt.Errorf("%s.%s must be positive or omitted", where, name)
+			}
+		}
+		f := p.GetFeatures()
+		if f == nil {
+			f = &ProviderFeatureConfig{}
+		}
+		if featureValue(f.Periodic, false) && t.GetInterval() < 0 {
+			return fmt.Errorf("%s.triggers.periodic.interval must be positive or omitted", where)
+		}
+		if featureValue(f.MinHealthy, false) && t.GetMinHealthyOutbounds() < 0 {
+			return fmt.Errorf("%s.triggers.minHealthy.outbounds must be positive or omitted", where)
+		}
+		if featureValue(f.MaxAge, false) && t.GetMaxAge() < 0 {
+			return fmt.Errorf("%s.triggers.maxAge.age must be positive or omitted", where)
+		}
+		if featureValue(f.CostAbove, false) {
+			cost := t.GetWhenCostAbove().GetCost()
+			if cost <= 0 || math.IsNaN(float64(cost)) || math.IsInf(float64(cost), 0) || t.GetWhenCostAbove().GetAfter() < 0 {
+				return fmt.Errorf("%s.triggers.whenCostAbove requires positive cost and nonnegative after", where)
+			}
+		}
+		if featureValue(f.NetworkChange, false) && (t.GetNetworkSettleDelay() < 0 || t.GetNetworkChangeMode() > RefreshOnNetwork_REFRESH_NEVER || t.GetNetworkChangeMode() < 0) {
+			return fmt.Errorf("%s.triggers.networkChange requires a valid mode and nonnegative settleDelay", where)
+		}
+		if featureValue(f.LeaseRenewal, true) {
+			ex := t.GetExpiry()
+			renew, urgent := ex.GetRenewAtFraction(), ex.GetUrgentAtFraction()
+			if renew < 0 || urgent < 0 || renew > maxRenewAt || urgent > maxRenewAt || math.IsNaN(renew) || math.IsNaN(urgent) {
+				return fmt.Errorf("%s.triggers.leaseRenewal requires fractions between zero and 0.95", where)
+			}
+		}
+	}
+	return nil
+}

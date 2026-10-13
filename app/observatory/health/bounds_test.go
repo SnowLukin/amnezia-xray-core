@@ -120,6 +120,7 @@ func TestGCForgetsEverythingAboutAnOutbound(t *testing.T) {
 // Outbounds a provider adds later are hooked like the configured ones.
 func TestObservesJudgedOutboundsAndTheNetworkCheck(t *testing.T) {
 	o := newObserver(context.Background(), &Config{
+		Features:     &FeatureConfig{Connectivity: v2Bool(true), Witnesses: v2Bool(true)},
 		Paths:        observed("a1", "a2"),
 		Connectivity: &ConnectivityConfig{Outbound: "check", Destination: "https://check.test/", Witnesses: []string{"direct"}},
 		Providers:    []*ProviderConfig{quietProvider(nil)},
@@ -135,6 +136,7 @@ func TestObservesJudgedOutboundsAndTheNetworkCheck(t *testing.T) {
 func TestConfigValuesHaveCeilings(t *testing.T) {
 	huge := int64(24 * time.Hour)
 	s := newSettings(&Config{
+		Features:     &FeatureConfig{Connectivity: v2Bool(true), Events: v2Bool(true)},
 		Probes:       []*ProbeProfile{{Timeout: huge, ProgressTimeout: huge}},
 		Connectivity: &ConnectivityConfig{Outbound: "direct", Destination: "https://check.test/", Timeout: huge},
 		Schedule: &ScheduleConfig{MaxConcurrentProbes: 1 << 20, HostProbes: &HostProbesConfig{
@@ -158,12 +160,12 @@ func TestConfigValuesHaveCeilings(t *testing.T) {
 		"events":               {int64(s.maxEvents), maxEvents},
 		"event bytes":          {int64(s.maxBytes), maxEventBytes},
 		"networks":             {int64(s.maxNetworks), maxNetworks},
-		"answer bytes":         {p.maxBytes, maxAnswerBytes},
+		"answer bytes":         {p.maxBytes, min(maxProviderOutbounds*answerBytesPerOutbound, maxAnswerBytes)},
 		"outbounds":            {int64(p.maxOutbounds), maxProviderOutbounds},
 		"drainTimeout":         {int64(p.drain), int64(maxDrain)},
 		"base version":         {int64(len(p.baseVersion)), maxBaseVersion},
 		"host probes a minute": {int64(s.schedule.hostProbes.perMinute), defaultPerMinute / 2},
-		"host reuse":           {int64(s.schedule.hostProbes.reuse), int64(maxHostReuse)},
+		"host reuse":           {int64(s.schedule.hostProbes.reuse), int64(defaultHostReuse)},
 		"host outbounds":       {int64(s.schedule.hostProbes.maxOutbounds), maxHostOutbounds},
 		"host timeout":         {int64(s.schedule.hostProbes.timeout), int64(maxHostTimeout)},
 	} {

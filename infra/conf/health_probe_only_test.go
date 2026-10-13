@@ -21,7 +21,7 @@ func TestProbeOnlyScheduleJSON(t *testing.T) {
 		{`{"keepVerified":4,"recheckInterval":"1.000000001s"}`, 4, int64(time.Second) + 1},
 	} {
 		var cfg HealthObservatoryConfig
-		if err := json.Unmarshal([]byte(`{"schedule":{"probeOnly":`+tc.raw+`}}`), &cfg); err != nil {
+		if err := json.Unmarshal([]byte(`{"probes":{"candidates":`+tc.raw+`}}`), &cfg); err != nil {
 			t.Fatal(err)
 		}
 		built, err := cfg.Build()
@@ -48,7 +48,7 @@ func TestProbeOnlyScheduleJSONRejects(t *testing.T) {
 		{`{"unknown":true}`, "unknown"},
 	} {
 		var cfg HealthObservatoryConfig
-		err := json.Unmarshal([]byte(`{"schedule":{"probeOnly":`+tc.raw+`}}`), &cfg)
+		err := json.Unmarshal([]byte(`{"probes":{"candidates":`+tc.raw+`}}`), &cfg)
 		if err == nil {
 			_, err = cfg.Build()
 		}
@@ -60,15 +60,15 @@ func TestProbeOnlyScheduleJSONRejects(t *testing.T) {
 
 func TestProbeOnlyPathJSONAndStartValidation(t *testing.T) {
 	for _, group := range []bool{false, true} {
-		path := `,"path":{"balancer":"auto","cost":1,"isProbeOnly":true}`
+		path := `,"selection":{"balancer":"auto","cost":1,"isProbeOnly":true}`
 		settings := `{}`
 		if group {
-			path = `,"path":{"balancer":"auto","group":"relay","isProbeOnly":true}`
-			settings = `{"groups":[{"name":"relay","cost":1}]}`
+			path = `,"selection":{"balancer":"auto","group":"relay","isProbeOnly":true}`
+			settings = `{"groups":{"isEnabled":true,"items":[{"name":"relay","cost":1}]}}`
 		}
 		t.Run(fmt.Sprintf("group=%v", group), func(t *testing.T) {
 			var cfg Config
-			if err := json.Unmarshal([]byte(pathConfig(path, settings, `{}`)), &cfg); err != nil {
+			if err := json.Unmarshal([]byte(pathConfig(path, settings, `{"probes":{"candidates":{"isEnabled":true}}}`)), &cfg); err != nil {
 				t.Fatal(err)
 			}
 			built, err := cfg.Build()
@@ -81,17 +81,21 @@ func TestProbeOnlyPathJSONAndStartValidation(t *testing.T) {
 			if len(cfg.HealthObservatory.Paths) != 1 || !cfg.HealthObservatory.Paths[0].IsProbeOnly {
 				t.Fatalf("probe-only paths %+v", cfg.HealthObservatory.Paths)
 			}
-			for _, field := range []string{"startOutbound", "startPinnedOutbound"} {
-				start := `"` + field + `":"a"`
-				startSettings := `{` + start + `}`
-				if group {
-					startSettings = `{"groups":[{"name":"relay","cost":1}],` + start + `}`
+			for _, field := range []string{"outbound", "pin"} {
+				startup := `"startup":{"outbound":"a"}`
+				if field == "pin" {
+					startup = `"startup":{"pin":{"isEnabled":true,"outbound":"a","timeout":"0s"}}`
 				}
-				if err := pathConfigError(pathConfig(path, startSettings, `{}`)); err == nil || !strings.Contains(err.Error(), field) {
-					t.Fatalf("%s error %v", field, err)
+				startSettings := `{` + startup + `}`
+				if group {
+					startSettings = `{"groups":{"isEnabled":true,"items":[{"name":"relay","cost":1}]},` + startup + `}`
+				}
+				observer := `{"probes":{"candidates":{"isEnabled":true}},"host":{"pinning":{"isEnabled":true}}}`
+				if err := pathConfigError(pathConfig(path, startSettings, observer)); err == nil || !strings.Contains(err.Error(), "probe-only") {
+					t.Fatalf("%s: %v", field, err)
 				}
 				ordinary := strings.Replace(path, `"isProbeOnly":true`, `"isProbeOnly":false`, 1)
-				if err := pathConfigError(pathConfig(ordinary, startSettings, `{}`)); err != nil {
+				if err := pathConfigError(pathConfig(ordinary, startSettings, observer)); err != nil {
 					t.Fatalf("ordinary %s: %v", field, err)
 				}
 			}
@@ -101,7 +105,7 @@ func TestProbeOnlyPathJSONAndStartValidation(t *testing.T) {
 
 func TestProbeOnlyPathJSONRequiresBoolean(t *testing.T) {
 	for _, value := range []string{`null`, `1`, `"true"`, `{}`, `[]`} {
-		raw := pathConfig(`,"path":{"balancer":"auto","cost":1,"isProbeOnly":`+value+`}`, `{}`, `{}`)
+		raw := pathConfig(`,"selection":{"balancer":"auto","cost":1,"isProbeOnly":`+value+`}`, `{}`, `{}`)
 		if err := pathConfigError(raw); err == nil || !strings.Contains(err.Error(), "isProbeOnly") {
 			t.Errorf("%s: error %v must name isProbeOnly", value, err)
 		}

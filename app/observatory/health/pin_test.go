@@ -100,7 +100,7 @@ func TestReleaseWithoutNetworkChangeUnderPinProbesNothing(t *testing.T) {
 // rechecks nothing else.
 func TestPinHoldsTheRecheckOfItsBalancerOnly(t *testing.T) {
 	te := newTestEngine(t, nil, &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3)}, "a1", "b1")
-	other := te.addSelector("other", newSelectorSettings(&SelectorConfig{Paths: pathSpecs("c1", 1, "d1", 3)}))
+	other := te.addSelector("other", legacyScenarioSelector(&SelectorConfig{Paths: pathSpecs("c1", 1, "d1", 3)}, nil))
 	te.updateCandidates(other, []string{"c1", "d1"}, t0)
 	te.pin("other", "c1", at(time.Second))
 	te.onNetworkChange("cafe", at(10*time.Second))
@@ -171,7 +171,7 @@ func TestPinnedOutboundIsNotRememberedForTheNetwork(t *testing.T) {
 // A release after a change to a network the core does not know starts a
 // return to a cheaper outbound as soon as the change would have.
 func TestReleaseInUnknownNetworkReturnsSoon(t *testing.T) {
-	sc := &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3), StartPinnedOutbound: "b1", MinHoldTime: int64(time.Second),
+	sc := &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3), StartPinnedOutbound: "b1", MinHoldTime: v2Int64(int64(time.Second)),
 		ReturnToCheaper: &ReturnToCheaperConfig{ProbesToReturn: 1, SkipRandomPhase: true}}
 	for _, tc := range []struct {
 		name     string

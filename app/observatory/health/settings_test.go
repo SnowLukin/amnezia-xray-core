@@ -28,6 +28,7 @@ func TestProbeOnlyScheduleSettings(t *testing.T) {
 
 func TestProbeOnlyModeIsPerGroupMember(t *testing.T) {
 	s := newSelectorSettings(&SelectorConfig{
+		Features: &SelectorFeatureConfig{Groups: v2Bool(true), ReturnToCheaper: v2Bool(true)},
 		Paths: []*PathDefinition{
 			{Tag: "real", Group: "relay"},
 			{Tag: "candidate", Group: "relay", IsProbeOnly: true},

@@ -54,18 +54,18 @@ func TestProviderFailuresKeepBaseUserRoute(t *testing.T) {
 			_ = listener.Close()
 			providers := "[]"
 			if mode != "absent" {
-				providers = fmt.Sprintf(`[{"tag":"fresh","url":%q,"isPlainHttpAllowed":true,"via":["direct"],"timeout":"100ms","maxBytes":1024,
-				  "triggers":{"interval":"0s","minHealthyOutbounds":0,"shouldRefreshWhenExhausted":false,"maxAge":"0s","networkChangeMode":"never"},
-				  "limits":{"minInterval":"0s","exhaustedMinInterval":"10ms","maxRefreshesPerHour":2,"backoff":{"initialDelay":"1h","maxDelay":"1h","jitterFraction":0}},
-				  "apply":{"balancer":"auto","tagPrefix":"p-","allowedProtocols":["freedom"]}}]`, url)
+				providers = fmt.Sprintf(`[{"isEnabled":true,"tag":"fresh","url":%q,"isPlainHttpAllowed":true,"via":["direct"],"timeout":"100ms",
+				  "triggers":{"exhausted":{"isEnabled":false},"leaseRenewal":{"isEnabled":true},"backendSchedule":{"isEnabled":false}},
+				  "limits":{"minInterval":"10ms","urgentMinInterval":"10ms","maxRefreshesPerHour":2},
+				  "apply":{"balancer":"auto","tagPrefix":"p-","allowedProtocols":["freedom"],"maxOutbounds":1}}]`, url)
 			}
 			document := fmt.Sprintf(`{
 			  "log":{"loglevel":"none"},
 			  "inbounds":[{"listen":"127.0.0.1","port":%d,"protocol":"socks"}],
 			  "outbounds":[{"tag":"direct","protocol":"freedom","settings":{"finalRules":[{"action":"allow"}]}},
-			    {"tag":"p-base","protocol":"freedom","settings":{"finalRules":[{"action":"allow"}]},"path":{"balancer":"auto","cost":1}}],
-			  "routing":{"balancers":[{"tag":"auto","strategy":{"type":"leastCost","settings":{}}}],"rules":[{"type":"field","network":"tcp","balancerTag":"auto"}]},
-			  "healthObservatory":{"providers":%s}
+			    {"tag":"p-base","protocol":"freedom","settings":{"finalRules":[{"action":"allow"}]},"selection":{"balancer":"auto","cost":1}}],
+			  "routing":{"balancers":[{"tag":"auto","strategy":{"type":"leastCost","settings":{}},"fallbackTag":"direct"}],"rules":[{"type":"field","network":"tcp","balancerTag":"auto"}]},
+			  "healthObservatory":{"telemetry":{"events":{"isEnabled":true}},"providers":%s}
 			}`, socksPort, providers)
 			cfg, err := core.LoadConfig("json", strings.NewReader(document))
 			if err != nil {
@@ -108,7 +108,7 @@ func TestProviderFailuresKeepBaseUserRoute(t *testing.T) {
 				}
 			}
 			assertUserRoute()
-			accepted := observer.RequestRefresh("fresh")
+			accepted := observer.RequestProviderRefresh("fresh")
 			if accepted != (mode != "absent") {
 				t.Fatalf("refresh accepted = %v in %s mode", accepted, mode)
 			}
@@ -116,7 +116,7 @@ func TestProviderFailuresKeepBaseUserRoute(t *testing.T) {
 			if mode != "absent" {
 				waitRefreshed(t, observer)
 				for range 50 {
-					observer.RequestRefresh("fresh")
+					observer.RequestProviderRefresh("fresh")
 				}
 			}
 			assertUserRoute()

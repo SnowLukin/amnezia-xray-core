@@ -9,6 +9,7 @@ package health
 import (
 	"bytes"
 	"context"
+	"google.golang.org/protobuf/proto"
 	"reflect"
 	"syscall"
 	"testing"
@@ -47,7 +48,7 @@ func qualityStage1ExportControllerFixture(t *testing.T, skip bool, concurrent in
 		paths = pathSpecs("a", 1, "b", 3, "c", 5)
 		candidates = append(candidates, "c1")
 	}
-	cfg := &Config{Passive: &PassiveConfig{ShouldSkipQuality: skip}, Schedule: &ScheduleConfig{
+	cfg := &Config{Features: &FeatureConfig{Quality: proto.Bool(!skip), Report: proto.Bool(true), Events: proto.Bool(true)}, Passive: &PassiveConfig{ShouldSkipQuality: skip}, Schedule: &ScheduleConfig{
 		MaxConcurrentProbes: int32(concurrent), Quarantine: &Backoff{InitialDelay: int64(time.Minute)}, IdleAfter: int64(time.Hour),
 	}}
 	sc := &SelectorConfig{Paths: paths, SkipProbeBeforeSwitch: switchWithoutProbe,

@@ -2,14 +2,13 @@ package command
 
 import (
 	"context"
-	"time"
-
+	"encoding/json"
 	"github.com/xtls/xray-core/app/observatory/health"
 	"github.com/xtls/xray-core/common"
-	"github.com/xtls/xray-core/common/errors"
 	"github.com/xtls/xray-core/core"
 	"github.com/xtls/xray-core/features/extension"
 	"google.golang.org/grpc"
+	"time"
 )
 
 type service struct {
@@ -17,103 +16,152 @@ type service struct {
 	observer *health.Observer
 }
 
-func (s *service) ready() error {
+func result(o *health.Observer, data any, err error) *Result {
+	r := health.NewResult(o, data, err)
+	out := &Result{Success: r.Success, Run: r.Run}
+	if r.Error != nil {
+		out.Error = &CommandError{Code: r.Error.Code, Message: r.Error.Message}
+	}
+	if r.Success && data != nil {
+		raw, _ := json.Marshal(data)
+		if string(raw) != "null" {
+			out.Data = string(raw)
+		}
+	}
+	return out
+}
+func (s *service) Status(context.Context, *StatusRequest) (*Result, error) {
 	if s.observer == nil {
-		return errors.New("healthObservatory is not configured")
+		return result(nil, nil, nil), nil
 	}
-	return nil
+	return result(s.observer, json.RawMessage(s.observer.Status()), nil), nil
 }
-
-func (s *service) GetStatus(context.Context, *GetStatusRequest) (*GetStatusResponse, error) {
-	if err := s.ready(); err != nil {
-		return nil, err
+func (s *service) DrainEvents(context.Context, *DrainEventsRequest) (*Result, error) {
+	o := s.observer
+	if err := o.FeatureError("events"); err != nil {
+		return result(o, nil, err), nil
 	}
-	return &GetStatusResponse{Json: string(s.observer.Status())}, nil
+	ev, dropped := o.DrainEvents()
+	return result(o, health.EventBatch{Events: ev, Dropped: dropped}, nil), nil
 }
-
-func (s *service) DrainEvents(context.Context, *DrainEventsRequest) (*DrainEventsResponse, error) {
-	if err := s.ready(); err != nil {
-		return nil, err
+func (s *service) NetworkChanged(_ context.Context, r *NetworkChangedRequest) (*Result, error) {
+	o := s.observer
+	if o == nil {
+		return result(nil, nil, nil), nil
 	}
-	events, dropped := s.observer.DrainEvents()
-	return &DrainEventsResponse{Json: string(events), Dropped: dropped}, nil
+	o.NetworkChanged(r.Network)
+	return result(o, nil, nil), nil
 }
-
-func (s *service) NetworkChanged(_ context.Context, r *NetworkChangedRequest) (*NetworkChangedResponse, error) {
-	if err := s.ready(); err != nil {
-		return nil, err
+func (s *service) NetworkChangedWithLabels(_ context.Context, r *NetworkChangedWithLabelsRequest) (*Result, error) {
+	o := s.observer
+	if err := o.FeatureError("host_labels"); err != nil {
+		return result(o, nil, err), nil
 	}
-	if r.Lost {
-		s.observer.NetworkLost()
-	} else {
-		s.observer.NetworkChanged(r.Network)
-	}
-	return &NetworkChangedResponse{}, nil
+	// The measurement-context implementation provides the atomic labels call.
+	return result(o, nil, health.NewCommandError("feature_disabled", "network labels are unavailable")), nil
 }
-
-func (s *service) UserPresent(context.Context, *UserPresentRequest) (*UserPresentResponse, error) {
-	if err := s.ready(); err != nil {
-		return nil, err
+func (s *service) NetworkLost(context.Context, *NetworkLostRequest) (*Result, error) {
+	o := s.observer
+	if o == nil {
+		return result(nil, nil, nil), nil
 	}
-	s.observer.UserPresent()
-	return &UserPresentResponse{}, nil
+	o.NetworkLost()
+	return result(o, nil, nil), nil
 }
-
-func (s *service) Pin(_ context.Context, r *PinRequest) (*PinResponse, error) {
-	if err := s.ready(); err != nil {
-		return nil, err
+func (s *service) UserPresent(context.Context, *UserPresentRequest) (*Result, error) {
+	o := s.observer
+	if err := o.FeatureError("user_present"); err != nil {
+		return result(o, nil, err), nil
+	}
+	o.UserPresent()
+	return result(o, nil, nil), nil
+}
+func (s *service) SetMemoryLow(_ context.Context, r *SetMemoryLowRequest) (*Result, error) {
+	o := s.observer
+	if err := o.FeatureError("memory_pressure"); err != nil {
+		return result(o, nil, err), nil
+	}
+	o.SetMemoryLow(r.IsLow)
+	return result(o, nil, nil), nil
+}
+func (s *service) Pin(_ context.Context, r *PinRequest) (*Result, error) {
+	o := s.observer
+	if err := o.FeatureError("pinning"); err != nil {
+		return result(o, nil, err), nil
 	}
 	if r.Outbound == "" {
-		return &PinResponse{Ok: s.observer.Release(r.Balancer, r.Run)}, nil
+		return result(o, nil, health.NewCommandError("invalid_argument", "pin requires an outbound")), nil
 	}
-	return &PinResponse{Ok: s.observer.Pin(r.Balancer, r.Outbound, r.Run)}, nil
+	if !o.Pin(r.Balancer, r.Outbound, r.Run) {
+		return result(o, nil, health.NewCommandError("invalid_argument", "pin was not accepted")), nil
+	}
+	return result(o, nil, nil), nil
+}
+func (s *service) Release(_ context.Context, r *ReleaseRequest) (*Result, error) {
+	o := s.observer
+	if err := o.FeatureError("pinning"); err != nil {
+		return result(o, nil, err), nil
+	}
+	if !o.Release(r.Balancer, r.Run) {
+		return result(o, nil, health.NewCommandError("invalid_argument", "release was not accepted")), nil
+	}
+	return result(o, nil, nil), nil
+}
+func (s *service) RequestProviderRefresh(_ context.Context, r *RequestProviderRefreshRequest) (*Result, error) {
+	o := s.observer
+	if o == nil {
+		return result(nil, nil, nil), nil
+	}
+	data, err := o.ProviderRefreshInfo(r.Provider)
+	return result(o, data, err), nil
+}
+func (s *service) PeekReport(context.Context, *PeekReportRequest) (*Result, error) {
+	o := s.observer
+	if err := o.FeatureError("report"); err != nil {
+		return result(o, nil, err), nil
+	}
+	return result(o, json.RawMessage(o.PeekReport()), nil), nil
+}
+func (s *service) TakeReport(_ context.Context, r *TakeReportRequest) (*Result, error) {
+	o := s.observer
+	if err := o.FeatureError("report"); err != nil {
+		return result(o, nil, err), nil
+	}
+	return result(o, json.RawMessage(o.TakeReport(r.IsFinal)), nil), nil
 }
 
-func (s *service) Refresh(_ context.Context, r *RefreshRequest) (*RefreshResponse, error) {
-	if err := s.ready(); err != nil {
-		return nil, err
-	}
-	return &RefreshResponse{Ok: s.observer.RequestRefresh(r.Provider)}, nil
-}
-
-func (s *service) GetReport(_ context.Context, r *GetReportRequest) (*GetReportResponse, error) {
-	if err := s.ready(); err != nil {
-		return nil, err
-	}
-	var report []byte
-	if r.Take || r.Final {
-		report = s.observer.TakeReport(r.Final)
-	} else {
-		report = s.observer.Report()
-	}
-	return &GetReportResponse{Json: string(report)}, nil
-}
-
-// Probe polls the result instead of waiting on the observer, which keeps no
-// channels for waiting callers. It answers this much before the deadline of
-// the call with what is known by then.
 const (
 	probePoll   = 250 * time.Millisecond
 	probeMargin = 300 * time.Millisecond
 )
 
-func (s *service) Probe(ctx context.Context, r *ProbeRequest) (*ProbeResponse, error) {
-	if err := s.ready(); err != nil {
-		return nil, err
+func (s *service) RequestProbe(ctx context.Context, r *RequestProbeRequest) (*Result, error) {
+	o := s.observer
+	if o == nil {
+		return result(nil, nil, nil), nil
 	}
-	ticket, err := s.observer.RequestProbe(health.ProbeRequest{Balancer: r.Balancer, Outbounds: r.Outbounds, IsUDP: r.IsUdp})
+	ticket, err := o.RequestProbe(health.ProbeRequest{Balancer: r.Balancer, Outbounds: r.Outbounds, IsUDP: r.IsUdp})
 	if err != nil {
-		return nil, err
+		return result(o, nil, err), nil
+	}
+	if r.WaitMs <= 0 {
+		return result(o, ticket, nil), nil
 	}
 	until := time.Now().Add(time.Duration(r.WaitMs) * time.Millisecond)
 	if deadline, ok := ctx.Deadline(); ok && deadline.Add(-probeMargin).Before(until) {
 		until = deadline.Add(-probeMargin)
 	}
 	for {
-		result, done := s.observer.ProbeResult(ticket.ID)
+		raw, done, err := o.ProbeResult(ticket.Run, ticket.ID)
+		if err != nil {
+			return result(o, nil, err), nil
+		}
 		wait := time.Until(until)
-		if done || result == nil || wait <= 0 {
-			return &ProbeResponse{Id: ticket.ID, Run: ticket.Run, Json: string(result)}, nil
+		if done || wait <= 0 {
+			return result(o, struct {
+				health.ProbeTicket
+				Result json.RawMessage `json:"result,omitempty"`
+			}{ticket, raw}, nil), nil
 		}
 		select {
 		case <-ctx.Done():
@@ -122,44 +170,38 @@ func (s *service) Probe(ctx context.Context, r *ProbeRequest) (*ProbeResponse, e
 		}
 	}
 }
-
-// SetProviderHeaders fails like the observer does: the error names the
-// header, never its value.
-func (s *service) SetProviderHeaders(_ context.Context, r *SetProviderHeadersRequest) (*SetProviderHeadersResponse, error) {
-	if err := s.ready(); err != nil {
-		return nil, err
+func (s *service) ProbeResult(_ context.Context, r *ProbeResultRequest) (*Result, error) {
+	o := s.observer
+	if o == nil {
+		return result(nil, nil, nil), nil
 	}
-	if err := s.observer.SetProviderHeaders(r.Provider, r.Headers); err != nil {
-		return nil, err
-	}
-	return &SetProviderHeadersResponse{}, nil
+	raw, _, err := o.ProbeResult(r.Run, r.Id)
+	return result(o, json.RawMessage(raw), err), nil
 }
-
-// GetProviderSet hands over the token and the keys of the outbounds of the
-// provider, as HandlerService hands over outbounds: the API listens where
-// only the host reaches it.
-func (s *service) GetProviderSet(_ context.Context, r *GetProviderSetRequest) (*GetProviderSetResponse, error) {
-	if err := s.ready(); err != nil {
-		return nil, err
+func (s *service) SetProviderHeaders(_ context.Context, r *SetProviderHeadersRequest) (*Result, error) {
+	o := s.observer
+	if o == nil {
+		return result(nil, nil, nil), nil
 	}
-	set, seq, err := s.observer.ProviderSet(r.Provider, r.After)
-	if err != nil {
-		return nil, err
+	return result(o, nil, o.SetProviderHeaders(r.Provider, r.Headers)), nil
+}
+func (s *service) ExportProviderSet(_ context.Context, r *ExportProviderSetRequest) (*Result, error) {
+	o := s.observer
+	if o == nil {
+		return result(nil, nil, nil), nil
 	}
-	return &GetProviderSetResponse{Json: string(set), Seq: seq}, nil
+	raw, seq, err := o.ExportProviderSet(r.Provider, r.After)
+	if err != nil || raw == nil {
+		return result(o, nil, err), nil
+	}
+	return result(o, health.ProviderSetData{Seq: seq, Set: raw}, nil), nil
 }
-
-func (s *service) Register(server *grpc.Server) {
-	RegisterHealthServiceServer(server, s)
-}
-
+func (s *service) Register(server *grpc.Server) { RegisterHealthServiceServer(server, s) }
 func init() {
 	common.Must(common.RegisterConfig((*Config)(nil), func(ctx context.Context, cfg interface{}) (interface{}, error) {
 		v := core.MustFromContext(ctx)
 		sv := &service{}
-		err := v.RequireFeatures(func(o extension.Observatory) {
-			sv.observer, _ = o.(*health.Observer)
-		}, true)
+		err := v.RequireFeatures(func(o extension.Observatory) { sv.observer, _ = o.(*health.Observer) }, true)
 		if err != nil {
 			return nil, err
 		}

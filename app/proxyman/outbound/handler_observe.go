@@ -36,6 +36,9 @@ func (h *Handler) process(ctx context.Context, link *transport.Link) error {
 	if h.observer == nil {
 		return h.proxy.Process(ctx, link, h)
 	}
+	if o, ok := h.observer.(outbound.ContextConnectionObserver); ok && !o.NeedsObservation(ctx, h.tag) {
+		return h.proxy.Process(ctx, link, h)
+	}
 	if po := h.processObserver(); po != nil {
 		po.ProcessStarted(h.tag)
 		defer po.ProcessEnded(h.tag)

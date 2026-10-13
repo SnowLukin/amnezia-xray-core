@@ -229,9 +229,7 @@ func startWireGuardWith(t *testing.T, ts *httptest.Server, passive, probe, more 
 // leastCost strategy, such as "minHoldTime", as JSON members.
 func startWireGuardStrategy(t *testing.T, ts *httptest.Server, passive, probe, more, strategy string) *wireGuardFailover {
 	t.Helper()
-	if more != "" {
-		more = ", " + more
-	}
+	observerV2, strategyV2 := wireGuardScenarioV2(t, passive, probe, more, strategy)
 	serverPriv, serverPub := wireGuardKeys(t)
 	priv1, pub1 := wireGuardKeys(t)
 	priv2, pub2 := wireGuardKeys(t)
@@ -243,7 +241,7 @@ func startWireGuardStrategy(t *testing.T, ts *httptest.Server, passive, probe, m
 		if tag == "w2" {
 			cost = "2"
 		}
-		return `{"tag": "` + tag + `", "protocol": "wireguard", "path": {"balancer": "auto", "cost": ` + cost + `, "probe": "wg"}, "settings": {"secretKey": "` + priv + `",
+		return `{"tag": "` + tag + `", "protocol": "wireguard", "selection": {"balancer": "auto", "cost": ` + cost + `, "probe": "wg"}, "settings": {"secretKey": "` + priv + `",
 		  "address": ["` + addr + `/32"], "noKernelTun": true,
 		  "peers": [{"publicKey": "` + serverPub + `", "endpoint": "` + endpoint + `", "allowedIPs": ["0.0.0.0/0"]}]}}`
 	}
@@ -263,18 +261,18 @@ func startWireGuardStrategy(t *testing.T, ts *httptest.Server, passive, probe, m
 	  "routing": {"rules": [{"inboundTag": ["server"], "outboundTag": "behind"},
 	                        {"ip": ["10.10.0.0/24"], "balancerTag": "auto"}],
 	    "balancers": [{"tag": "auto", "fallbackTag": "block",
-	      "strategy": {"type": "leastCost", "settings": {`+strategy+`}}}]},
-	  "healthObservatory": {
-	    "passive": `+passive+`,
-	    "probes": [`+strings.Replace(probe, `{`, `{"name":"wg",`, 1)+`],
-	    "schedule": {"minProbeInterval": "10ms", "suspectCooldown": "1s", "hostProbes": {"reuseWindow": "1ms"}}`+more+`
-	  }
+	      "strategy": {"type": "leastCost", "settings": `+strategyV2+`}}]},
+	  "healthObservatory": `+observerV2+`
 	}`))
 	if err != nil {
 		t.Fatal(err)
 	}
+	tuneWireGuardScenario(t, cfg, passive, strategy)
 	f.inst, err = core.New(cfg)
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err := health.TuneInstanceScenario(f.inst, cfg); err != nil {
 		t.Fatal(err)
 	}
 	if err := f.inst.Start(); err != nil {

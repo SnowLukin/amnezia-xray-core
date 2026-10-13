@@ -82,10 +82,10 @@ func TestUDPHostOnlyReusesUDPResult(t *testing.T) {
 
 func TestUDPConfigDefaultsAndDisabledEvidence(t *testing.T) {
 	s := newSettings(&Config{})
-	if s.udpProbe != nil || s.passive.udpReplyTimeout != 5*time.Second {
+	if s.udpProbe != nil || s.passive.udpReplyTimeout != 0 {
 		t.Fatalf("%+v", s)
 	}
-	c := &Config{UdpProbe: &UDPProbeConfig{Destinations: []string{"stun.test:3478"}}, Passive: &PassiveConfig{UdpReplyTimeout: -1}}
+	c := &Config{Features: &FeatureConfig{UdpProbes: v2Bool(true), UdpReplies: v2Bool(false)}, UdpProbe: &UDPProbeConfig{Destinations: []string{"stun.test:3478"}}, Passive: &PassiveConfig{UdpReplyTimeout: -1}}
 	if err := c.ValidateUDP(); err != nil {
 		t.Fatal(err)
 	}

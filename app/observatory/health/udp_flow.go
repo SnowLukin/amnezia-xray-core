@@ -110,7 +110,7 @@ var _ outbound.UDPFlowObserver = (*Observer)(nil)
 var _ outbound.UDPFlowTracker = (*udpFlow)(nil)
 
 func (o *Observer) StartUDPFlow(ctx context.Context, tag string, firstPort net.Port) outbound.UDPFlowTracker {
-	if probeStateFrom(ctx) != nil || !o.s.observes(tag) {
+	if (!o.s.features.Report && !o.s.features.UdpReplies) || probeStateFrom(ctx) != nil || !o.s.observes(tag) {
 		return nil
 	}
 	o.mu.Lock()

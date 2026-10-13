@@ -375,17 +375,18 @@ func (c *qualityCollection) view(now time.Time, limit int) qualitySegmentView {
 // Only the open segment and current network keep histograms; closed segments
 // retain bounded scalar top-four views. The two mutable scopes are independent.
 type qualitySummary struct {
-	epoch   uint64
-	current qualityCollection
-	open    qualityCollection
-	closed  []qualitySegmentView
-	dropped uint64
+	reporting bool
+	epoch     uint64
+	current   qualityCollection
+	open      qualityCollection
+	closed    []qualitySegmentView
+	dropped   uint64
 }
 
 func newQualitySummary(now time.Time) *qualitySummary {
 	metadata := qualityNetworkMetadata{}
 	c := qualityCollection{started: now.Round(0), network: metadata}
-	return &qualitySummary{current: c, open: c}
+	return &qualitySummary{current: c, open: c, reporting: true}
 }
 
 func (q *qualitySummary) addInitial(epoch uint64, tag string, witness bool, sample qualityInitialSample) {
@@ -393,8 +394,10 @@ func (q *qualitySummary) addInitial(epoch uint64, tag string, witness bool, samp
 		return
 	}
 	q.current.addInitial(tag, witness, sample)
-	q.open.addInitial(tag, witness, sample)
-	q.trimSegments()
+	if q.reporting {
+		q.open.addInitial(tag, witness, sample)
+		q.trimSegments()
+	}
 }
 
 func (q *qualitySummary) addEnd(epoch uint64, tag string, witness bool, sample qualityEndSample) {
@@ -402,8 +405,10 @@ func (q *qualitySummary) addEnd(epoch uint64, tag string, witness bool, sample q
 		return
 	}
 	q.current.addEnd(tag, witness, sample)
-	q.open.addEnd(tag, witness, sample)
-	q.trimSegments()
+	if q.reporting {
+		q.open.addEnd(tag, witness, sample)
+		q.trimSegments()
+	}
 }
 
 // There may be four closed segments while the open one is empty. Its first
@@ -426,13 +431,16 @@ func (q *qualitySummary) networkChanged(_ string, known bool, now time.Time) uin
 	if q == nil {
 		return 0
 	}
-	if q.open.nonempty() {
+	if q.reporting && q.open.nonempty() {
 		q.closed = append(q.closed, q.open.view(now, qualitySegmentPaths))
 	}
 	q.epoch++
 	c := qualityCollection{started: now.Round(0), network: qualityNetworkMetadata{known: known}}
-	q.current, q.open = c, c
-	q.trimSegments()
+	q.current = c
+	if q.reporting {
+		q.open = c
+		q.trimSegments()
+	}
 	return q.epoch
 }
 
@@ -440,7 +448,7 @@ func (q *qualitySummary) networkChanged(_ string, known bool, now time.Time) uin
 // window in this same network without changing epoch/current-network history.
 // The caller performs it only when the enclosing report is actually taken.
 func (q *qualitySummary) report(now time.Time, take bool) ([]qualitySegmentView, uint64) {
-	if q == nil {
+	if q == nil || !q.reporting {
 		return nil, 0
 	}
 	var views []qualitySegmentView

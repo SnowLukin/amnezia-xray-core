@@ -157,7 +157,13 @@ func TestMemoryLowSkipsTimedRefreshes(t *testing.T) {
 		t.Fatalf("skips %v, want one for memory", skips)
 	}
 	te.requestRefresh("")
+	expectNoRefresh(t, te, at(2*time.Hour+time.Second))
+	if !te.prov().host {
+		t.Fatal("memory pressure lost deferred manual refresh")
+	}
+	te.setMemoryLow(false, at(2*time.Hour+time.Second))
 	j := expectRefresh(t, te, at(2*time.Hour+time.Second), "host")
+	te.setMemoryLow(true, at(2*time.Hour+time.Second))
 	te.onRefreshDone(j, refreshOutcome{ok: true}, at(2*time.Hour+time.Second))
 	te.exhaust(te.sel, at(2*time.Hour+time.Minute))
 	j = expectRefresh(t, te, at(2*time.Hour+2*time.Minute), "exhausted")
@@ -212,7 +218,7 @@ func TestMemoryLowCollectsAtOnce(t *testing.T) {
 }
 
 func TestSetMemoryLow(t *testing.T) {
-	o := newObserver(context.Background(), &Config{Paths: observed("a")})
+	o := newObserver(context.Background(), &Config{Features: &FeatureConfig{MemoryPressure: v2Bool(true), Events: v2Bool(true)}, Paths: observed("a")})
 	defer o.Close()
 	o.SetMemoryLow(true)
 	o.SetMemoryLow(true)
@@ -243,6 +249,7 @@ func TestSetMemoryLow(t *testing.T) {
 // since they left the set.
 func TestMemoryLowEndsIdleDrains(t *testing.T) {
 	f := newApplyFixture(t, time.Hour)
+	f.o.s.features.MemoryPressure = true // This scenario explicitly enables the host signal before any traffic.
 	if _, err := f.apply(t, answer(t, fakeOutbound{Tag: "x1", V: 1}, fakeOutbound{Tag: "x2", V: 1})); err != nil {
 		t.Fatal(err)
 	}
