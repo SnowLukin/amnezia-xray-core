@@ -2052,12 +2052,25 @@ def provider_first_via_dead(stand, xray, work, name):
     ]
 
 
-@scenario()
+@scenario(slow=True)
 def provider_invalid_answer(stand, xray, work, name):
-    """A broken answer and a set that does not build change nothing; failures back off."""
+    """A broken answer and a set that does not build change nothing; failures back off.
+
+    This needs about ten minutes with the v2 retry constants (30, 60, 120,
+    then 240 seconds, each +-30%). It is a full acceptance scenario; short
+    smoke runs use provider_strict_answer instead.
+    """
     stand.answer(FRESH, {"x1": 1, "x2": 1})
-    limits = {"exhaustedMinInterval": "1s", "maxRefreshesPerHour": 0,
-              "backoff": {"initialDelay": "2s", "multiplier": 2, "maxDelay": "8s", "jitterFraction": 0.3}}
+    # The public positive interval isolates retry backoff from the five-minute
+    # host refresh interval. Retry constants are owned by the core.
+    limits = {"minInterval": "1s", "maxRefreshesPerHour": 60}
+    base = [30, 60, 120]
+    garbage_at = 6
+    # Four broken fetches fit before this mark even at maximum positive jitter;
+    # the fifth fetch is still later at maximum negative jitter.
+    unbuildable_at = garbage_at + 1.3 * sum(base) + 10
+    # The unbuildable fifth fetch arrives by 591 s at maximum positive jitter.
+    duration = 620
     prov = bench.provider_config(["direct"], limits=limits)
     cfg = bench.client_config(BANNED[:1], {"a1": 1}, providers=[prov])
     m = Marks()
@@ -2069,13 +2082,13 @@ def provider_invalid_answer(stand, xray, work, name):
     def unbuildable():
         answer_body(stand, {"outbounds": [bench.path_members([("x1", "reality", 2)], {"x1": 1})[0],
                                           {"tag": "x3", "protocol": "vless", "settings": {"vnext": []},
-                                           "path": {"balancer": "auto", "cost": 1, "probe": "default"}}]})
+                                           "selection": {"balancer": "auto", "cost": 1, "probe": "default"}}]})
         bench.provider_mode("ok")
 
     with bench.Client(xray, cfg, work, name) as c:
         tr = bench.Traffic(rate=2, big=0.5)
-        run_timeline(tr, [(2, m.at("good", lambda: refresh(c))), (6, m.at("garbage", garbage)),
-                          (26, m.at("unbuildable", unbuildable))], 50)
+        run_timeline(tr, [(2, m.at("good", lambda: refresh(c))), (garbage_at, m.at("garbage", garbage)),
+                          (unbuildable_at, m.at("unbuildable", unbuildable))], duration)
         members = c.status()["providers"][0]["members"]
     applies = bench.events_of(c.events, "provider_apply", m["garbage"])
     fetches = bench.events_of(c.events, "provider_fetch", m["garbage"])
@@ -2085,7 +2098,6 @@ def provider_invalid_answer(stand, xray, work, name):
     changed = [e for e in applies if e["fields"].get("is_changed")]
     tries = [t for t, _, _ in stand.provider_requests(m["garbage"]) if t < m["unbuildable"]]
     g = gaps(tries)[:3]
-    base = [2, 4, 8]
     within = len(g) == 3 and all(0.7 * b - 0.3 <= x <= 1.3 * b + 0.3 for x, b in zip(g, base))
     spread = [round(x / b, 2) for x, b in zip(g, base)]
     failed = sum(1 for r in tr.records if not r[1])
@@ -2094,7 +2106,7 @@ def provider_invalid_answer(stand, xray, work, name):
         check("set that does not build rejected", len(not_built), len(not_built) >= 1, ">= 1"),
         check("set changes after the first one", len(changed), not changed, "== 0"),
         check("members kept", members, members == len(FRESH), f"== {len(FRESH)}"),
-        check("pauses after failures, s", g, within and g == sorted(g), "2, 4, 8 +-30% growing"),
+        check("pauses after failures, s", g, within and g == sorted(g), "30, 60, 120 +-30% growing"),
         check("pauses vary (pause / backoff)", spread, any(abs(x - 1) > 0.05 for x in spread), "not all 1"),
         check("user requests failed", failed, failed == 0, "== 0"),
     ]
