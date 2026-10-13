@@ -60,6 +60,8 @@ func (*GetStatusRequest) Descriptor() ([]byte, []int) {
 type GetStatusResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Current state of outbounds and balancers as JSON.
+	// Local diagnostics only: includes network identity, server_name and last_error.
+	// Never send this JSON to analytics; use GetReport for the privacy-safe summary.
 	Json          string `protobuf:"bytes,1,opt,name=json,proto3" json:"json,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -933,7 +935,7 @@ func (x *GetProviderSetRequest) GetAfter() uint64 {
 
 type GetProviderSetResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// The last set the provider applied as JSON, valid as providers[].initial;
+	// The last set the provider applied as JSON, valid as providers[].initialAnswer;
 	// empty when none is newer than after. It holds the token of the
 	// provider and the keys of its outbounds.
 	Json          string `protobuf:"bytes,1,opt,name=json,proto3" json:"json,omitempty"`

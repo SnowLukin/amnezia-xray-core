@@ -10,6 +10,8 @@ message GetStatusRequest {}
 
 message GetStatusResponse {
   // Current state of outbounds and balancers as JSON.
+  // Local diagnostics only: includes network identity, server_name and last_error.
+  // Never send this JSON to analytics; use GetReport for the privacy-safe summary.
   string json = 1;
 }
 
@@ -109,7 +111,7 @@ message GetProviderSetRequest {
 }
 
 message GetProviderSetResponse {
-  // The last set the provider applied as JSON, valid as providers[].initial;
+  // The last set the provider applied as JSON, valid as providers[].initialAnswer;
   // empty when none is newer than after. It holds the token of the
   // provider and the keys of its outbounds.
   string json = 1;

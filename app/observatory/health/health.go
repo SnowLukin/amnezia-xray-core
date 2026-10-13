@@ -884,6 +884,8 @@ func (o *Observer) DrainEvents() ([]byte, uint64) {
 }
 
 // Status returns the current state of outbounds and balancers as JSON.
+// It is local diagnostics: network identity, server_name and last_error may
+// contain private addresses. Send Report or TakeReport to analytics instead.
 func (o *Observer) Status() []byte {
 	o.mu.Lock()
 	view := o.e.status(o.now())

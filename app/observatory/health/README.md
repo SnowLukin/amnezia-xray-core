@@ -1143,8 +1143,8 @@ changed its settings), `probe_changed` (a provider changed the profile of an unc
 | `pin`, `release` | `balancer`, `outbound`; for `release` also `by`: `host` or `timer` | The host pinned or released a balancer, or the start pin ran out. |
 | `stale_request` | `request`, `balancer`, `run` | A pin or release meant for another run of the core was ignored. |
 | `pinned_down` | `balancer`, `outbound`, `is_start_pinned` | The pinned outbound failed; the balancer stays on it. `is_start_pinned` is `true` when the pin is `startPinnedOutbound` rather than one of the host. |
-| `connectivity` | `is_ok`, `rtt_ms`, `error` | Result of a network check. |
-| `network_down` | `error` | The network check failed; decisions paused. `error` is `host` when the host reported the loss. |
+| `connectivity` | `is_ok`, `rtt_ms`, `error` | Result of a network check; `error` is a failure class, never the error text. |
+| `network_down` | `error` | The network check failed; decisions paused. `error` is a failure class, or `host` when the host reported the loss. |
 | `network_up` | `by` | Decisions resumed: `connectivity` (a check passed), `traffic` or `probe` (an outbound worked). |
 | `connectivity_doubt` | `failed_checks`, `paused_ms` | The check kept failing for `maxPause`; decisions resumed provisionally. |
 | `connectivity_ignored` | `failed_checks` | The check failed while an outbound worked; it is not used until the next network change. |
@@ -1277,6 +1277,10 @@ Per-outbound fields `audits`, `audits_passed`, `lone_probes`, `lone_probes_faile
 The UDP fields ending in `_count` are global report counters.
 
 ## Status
+
+Status is local diagnostics only. It includes the host-provided network identity,
+`server_name` and `last_error`, which can contain server addresses and probe URLs.
+Never send Status to analytics; use the report for the privacy-safe summary.
 
 Each path includes `udp`, independent of its health state:
 `state` (`unknown` before the first current probe, otherwise `ok`, `lossy`,
