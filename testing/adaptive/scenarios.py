@@ -1919,7 +1919,7 @@ def gaps(times):
 
 def answer_body(stand, body):
     with open(stand.provider_answer, "w") as f:
-        json.dump(body, f)
+        json.dump(bench.api_answer(body), f)
 
 
 @scenario()

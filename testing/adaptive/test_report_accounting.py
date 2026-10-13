@@ -16,7 +16,7 @@ def report(index, events, **counters):
         "host_probe_requests", "host_probes", "return_attempts", "return_failures",
         "pinned_down_count", "network_changes", "network_known", "network_down_count",
         "provider_fetches", "provider_fetch_failures", "provider_retry_after",
-        "provider_applied", "provider_rejected", "provider_restart_needed",
+        "provider_applied", "provider_rejected",
         "provider_expired", "provider_renewals", "provider_auth_failed",
         "provider_base_changed", "pins", "releases", "memory_low_count", "outbound_sleeps",
         "candidate_probes", "candidate_probes_failed", "probe_only_promoted_count", "fresh_path_down_count",
@@ -24,7 +24,7 @@ def report(index, events, **counters):
         "udp_probe_second_destination_count", "udp_suspect_count", "udp_suspect_confirmed_count",
     ), 0)
     result.update(events=events, report_index=index, report_reason="final",
-                  switch_reasons={}, switch_path=[], provider_triggers={})
+                  switch_reasons={}, switch_history=[], provider_triggers={})
     result.update(counters)
     return result
 
@@ -33,6 +33,7 @@ class ReportAccountingTest(unittest.TestCase):
     def check_reports(self, missing=False, dropped=0, empty=False):
         client = object.__new__(bench.Client)
         client.process = SimpleNamespace(clock_offset=0)
+        client.has_events = client.has_report = True
         client.dropped = 0
         client.events = [] if empty else [{"seq": 1, "ts": 1000, "type": "pin"}]
         client.reports = [] if empty else [report(1, 1, pins=1)]
@@ -262,7 +263,7 @@ class ReturnSpacingFixtureTest(unittest.TestCase):
         engine = (root / "app/observatory/health/engine.go").read_text()
         self.assertRegex(settings, r"func fnum\(v float64, def float64\) float64 \{\s*if v <= 0 \{\s*return def\s*\}\s*return v\s*\}")
         self.assertRegex(settings, r"func jitter\(v float64, def float64\) float64 \{\s*v = fnum\(v, def\)")
-        self.assertRegex(settings, r"spacingJitter:\s*jitter\(sc.GetProbeJitterFraction\(\), defaultSpacingJitter\)")
+        self.assertRegex(settings, r"spacingJitter:\s*defaultSpacingJitter")
         self.assertIn("float64(d) * (1 + j*(2*e.rnd.Float64()-1))", engine)
         default = float(re.search(r"defaultSpacingJitter\s*=\s*([0-9.]+)", settings).group(1))
         maximum = float(re.search(r"maxJitter\s*=\s*([0-9.]+)", settings).group(1))

@@ -39,6 +39,8 @@ import threading
 import time
 import urllib.request
 
+from api_v2_recipe import config as api_config, provider_answer as api_answer, result_payload
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 CHAOS_SCRIPT = os.environ.get("BENCH_CHAOS_SCRIPT", os.path.join(HERE, "chaos.py"))
 CERT_DIR = os.path.join(HERE, "certs")
@@ -383,6 +385,7 @@ def client_config(members, costs, health=None, strategy=None, burst=None, loglev
     for outbound in outbounds:
         if "path" in outbound:
             outbound["path"].setdefault("probe", "default")
+    h["_standRecipeV1"] = True
     cfg["healthObservatory"] = h
     return cfg
 
@@ -494,7 +497,7 @@ class Stand:
         if base_version:
             body["baseVersion"] = base_version
         with open(self.provider_answer, "w") as f:
-            json.dump(body, f)
+            json.dump(api_answer(body), f)
 
     def provider_requests(self, since=0):
         """(time, authorization, path) of every request the provider got."""
@@ -709,6 +712,7 @@ class Client:
     def __init__(self, xray, config, workdir, name, profile=False):
         # profile records every allocation, so small heaps of the mechanism
         # show up in heap profiles (the default records one per 512 KB).
+        config = api_config(config)
         self.env = {"GODEBUG": "memprofilerate=1"} if profile else {}
         self.xray = xray
         self.process = client_process(xray)
@@ -725,6 +729,9 @@ class Client:
         self.mem = []
         self._stop = threading.Event()
         self.has_health = "healthObservatory" in config
+        telemetry = config.get("healthObservatory", {}).get("telemetry", {})
+        self.has_events = self.has_health and telemetry.get("events", {}).get("isEnabled", False)
+        self.has_report = self.has_health and telemetry.get("report", {}).get("isEnabled", False)
         # Bytes (up, down) that went through outbound direct by the time the
         # client stopped; None if the counters could not be read.
         self.direct_bytes = None
@@ -757,10 +764,11 @@ class Client:
                 self.direct_bytes = self.outbound_bytes("direct")
             except Exception:
                 pass
-            if self.has_health:
+            if self.has_events:
                 self.drain()
                 try:
-                    REPORT_CHECKS.append(self._check_reports())
+                    if self.has_report:
+                        REPORT_CHECKS.append(self._check_reports())
                 except Exception as e:
                     REPORT_CHECKS.append({"check": "reports add up the events", "value": repr(e), "limit": "== events",
                                           "ok": False})
@@ -794,12 +802,14 @@ class Client:
                              capture_output=True, text=True, timeout=timeout, input=stdin)
         if out.returncode != 0:
             raise RuntimeError(f"api health {args}: {out.stderr.strip()}")
-        return json.loads(out.stdout)
+        return result_payload(json.loads(out.stdout))
 
     def network(self, network_id=""):
         return self.api("network", network_id) if network_id else self.api("network")
 
     def drain(self):
+        if not self.has_events:
+            return
         r = self.api("events")
         # Event times come from the client's clock; scenarios compare them with ours.
         shift = round(self.process.clock_offset * 1000)
@@ -812,6 +822,8 @@ class Client:
         return self.api("status")
 
     def take_report(self):
+        if not self.has_report:
+            return None
         r = self.api("report", "take")
         if r:
             self.reports.append(r)
@@ -1220,14 +1232,14 @@ def fold_report(events):
             "return_attempts",
             "return_failures", "pinned_down_count",
             "network_changes", "network_known", "network_down_count", "provider_fetches", "provider_fetch_failures",
-            "provider_retry_after", "provider_applied", "provider_rejected", "provider_restart_needed",
+            "provider_retry_after", "provider_applied", "provider_rejected",
             "provider_expired", "provider_renewals", "provider_auth_failed", "provider_base_changed", "pins",
             "releases", "memory_low_count", "outbound_sleeps", "candidate_probes", "candidate_probes_failed",
             "probe_only_promoted_count", "fresh_path_down_count", "udp_probe_count", "udp_probe_ok_count",
             "udp_probe_lossy_count", "udp_probe_dead_count", "udp_probe_second_destination_count",
             "udp_suspect_count", "udp_suspect_confirmed_count"]
     c = dict.fromkeys(keys, 0)
-    c.update(switch_reasons={}, switch_path=[], provider_triggers={})
+    c.update(switch_reasons={}, switch_history=[], provider_triggers={})
     decided = False
     for e in events:
         t, f = e["type"], e.get("fields", {})
@@ -1236,7 +1248,7 @@ def fold_report(events):
             reason = f.get("reason", "")
             c["switches"] += 1
             c["switch_reasons"][reason] = c["switch_reasons"].get(reason, 0) + 1
-            c["switch_path"] = (c["switch_path"] + [f"{f.get('from', '')}>{f.get('to', '')}:{reason}"])[-10:]
+            c["switch_history"] = (c["switch_history"] + [{"from": f.get("from", ""), "to": f.get("to", ""), "reason": reason}])[-10:]
             decided = decided or reason not in START_REASONS
         elif t in ("exhausted", "pinned_down"):
             c[t + "_count"] += 1
@@ -1288,8 +1300,6 @@ def fold_report(events):
                 decided = True
             if f.get("is_ok") is True and f.get("renewed", 0) > 0 and f.get("trigger") != "initial":
                 c["provider_renewals"] += 1
-        elif t == "provider_restart_needed":
-            c["provider_restart_needed"] += 1
             decided = True
         elif t in ("provider_expired", "provider_auth_failed", "provider_base_changed"):
             c[t] += 1

@@ -57,7 +57,7 @@ class ClientLifecycleTest(unittest.TestCase):
     def client(self, health=False):
         config = {"log": {"loglevel": "warning"}}
         if health:
-            config["healthObservatory"] = {}
+            config["healthObservatory"] = {"telemetry": {"events": {"isEnabled": True}, "report": {"isEnabled": True}}}
         return bench.Client("unused-xray", config, self.work.name, "lifecycle")
 
     def test_readiness_failure_stops_client_before_reraising_original(self):

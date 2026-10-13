@@ -125,7 +125,7 @@ class PathConfigTest(unittest.TestCase):
             stand.answer([("n1", "reality", 2)], {"n1": 1})
             body = json.loads(Path(stand.provider_answer).read_text())
         self.assertEqual([item["tag"] for item in body["outbounds"]], ["n1"])
-        self.assertEqual(body["outbounds"][0]["path"],
+        self.assertEqual(body["outbounds"][0]["selection"],
                          {"balancer": "auto", "cost": 1, "probe": "default"})
 
     def test_provider_only_config_has_no_base_candidate(self):
