@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"testing"
 	"time"
+
+	"github.com/xtls/xray-core/common/net"
+	"github.com/xtls/xray-core/features/stats"
 )
 
 func TestMeasurementV2MetadataCombinationsWithoutUserQuality(t *testing.T) {
@@ -101,5 +104,54 @@ func TestMeasurementV2ProbeOnlyWithoutReport(t *testing.T) {
 	}
 	if o.PeekReport() != nil {
 		t.Fatal("report-off emitted report")
+	}
+}
+
+// IGNORE preserves routing evidence while metadata belongs to a new network.
+// An old reply must neither prove that network nor erase a newer valid proof.
+func TestMeasurementV2ProofEpochWithoutUserQuality(t *testing.T) {
+	for _, report := range []bool{false, true} {
+		for _, tag := range []string{"a1", "direct"} {
+			t.Run(fmt.Sprintf("report=%v/tag=%s", report, tag), func(t *testing.T) {
+				f := v2NoEvidence()
+				f.LabelRequest, f.Witnesses, f.Report = qualityScalar(true), qualityScalar(true), qualityScalar(report)
+				cfg := &Config{Features: f, Paths: []*PathDefinition{{Tag: "a1", Balancer: "auto", Cost: 1}},
+					Connectivity: &ConnectivityConfig{Witnesses: []string{"direct"}}, LabelRequest: measurementConfig().LabelRequest}
+				o := newObserver(context.Background(), cfg)
+				defer o.Close()
+				o.e.addSelector("auto", newSelectorSettings(&SelectorConfig{Paths: cfg.Paths, Features: v2NoClosures()}))
+				o.NetworkChanged("old")
+				var old []stats.Counter
+				for range 2 {
+					tr := o.StartDial(context.Background(), tag, net.Destination{}, nil)
+					if tr == nil {
+						t.Fatal("label request lacks observation hook")
+					}
+					read, _ := tr.Dialed(nil, nil, nil, nil)
+					old = append(old, read)
+					defer tr.Finished(nil)
+				}
+				o.NetworkChanged("new")
+				old[0].Add(o.s.passive.successBytes)
+				if o.e.labelProof {
+					t.Fatal("old connection proved new network")
+				}
+				tr := o.StartDial(context.Background(), tag, net.Destination{}, nil)
+				read, _ := tr.Dialed(nil, nil, nil, nil)
+				read.Add(o.s.passive.successBytes)
+				if !o.e.labelProof {
+					t.Fatal("fresh connection did not prove network")
+				}
+				old[1].Add(o.s.passive.successBytes)
+				if !o.e.labelProof {
+					t.Fatal("old connection erased current proof")
+				}
+				o.e.noteDemand(o.now())
+				if j, _ := o.e.nextLabelRequest(o.runCtx, o.now()); j == nil {
+					t.Fatal("fresh proof did not allow request")
+				}
+				tr.Finished(nil)
+			})
+		}
 	}
 }
