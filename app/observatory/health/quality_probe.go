@@ -7,7 +7,11 @@ func (q *qualitySummary) addProbe(epoch uint64, tag, reason string, result probe
 	if q == nil || epoch != q.epoch || result.canceled {
 		return
 	}
-	for _, c := range []*qualityCollection{&q.current, &q.open} {
+	collections := []*qualityCollection{&q.current}
+	if q.reporting {
+		collections = append(collections, &q.open)
+	}
+	for _, c := range collections {
 		a := c.accumulator(tag, false)
 		if a == nil {
 			continue

@@ -11,10 +11,12 @@ import (
 	"time"
 )
 
-func measurementConfig() *Config {
-	return &Config{Network: &NetworkConfig{HostLabels: &LabelCollectionConfig{IsEnabled: true}, MaxNetworks: 2, LabelRequest: &NetworkLabelRequest{IsEnabled: true, Outbound: "direct", Destination: "http://127.0.0.1/whoami", Labels: map[string]string{"asn": "X-Network-Asn"}, RequestsPerHour: 6}}, Schedule: &ScheduleConfig{IdleAfter: int64(time.Hour)}}
+func measurementFeatures() *FeatureConfig {
+	return &FeatureConfig{HostLabels: qualityScalar(true), LabelRequest: qualityScalar(true), PathLabels: qualityScalar(true), SessionLabels: qualityScalar(true), ProbeMeasurements: qualityScalar(true), Quality: qualityScalar(true), Events: qualityScalar(true), Report: qualityScalar(true), NetworkMemory: qualityScalar(true), MemoryPressure: qualityScalar(true), ProbeRequests: qualityScalar(true)}
 }
-
+func measurementConfig() *Config {
+	return &Config{Features: measurementFeatures(), Network: &NetworkConfig{MaxNetworks: 2}, LabelRequest: &LabelRequestConfig{Outbound: "direct", Destination: "http://127.0.0.1/whoami", Labels: map[string]string{"asn": "X-Network-Asn"}, RequestsPerHour: 6}, Schedule: &ScheduleConfig{IdleAfter: int64(time.Hour)}}
+}
 func measurementEngine(t *testing.T) *testEngine {
 	e := newTestEngine(t, measurementConfig(), &SelectorConfig{NetworkChangeAction: NetworkChangeMode_IGNORE}, "a1", "b1")
 	e.quality = newQualitySummary(t0)
@@ -61,7 +63,7 @@ func TestMeasurementLabelFormat(t *testing.T) {
 }
 
 func TestMeasurementHostAPIAndClosedSegments(t *testing.T) {
-	o := newObserver(context.Background(), &Config{Network: &NetworkConfig{HostLabels: &LabelCollectionConfig{IsEnabled: true}}})
+	o := newObserver(context.Background(), &Config{Features: measurementFeatures()})
 	defer o.Close()
 	if err := o.NetworkChangedWithLabels("opaque", `{"type":"wifi","bad-key":"discard","operator":"25001"}`); err != nil {
 		t.Fatal(err)
@@ -194,7 +196,7 @@ func TestMeasurementStaleResultAndNoKey(t *testing.T) {
 }
 
 func TestMeasurementPathsReportsProbeSegments(t *testing.T) {
-	cfg := &Config{Network: &NetworkConfig{HostLabels: &LabelCollectionConfig{IsEnabled: true}}, PathLabels: &LabelCollectionConfig{IsEnabled: true}, Report: &ReportConfig{LabelContext: &LabelCollectionConfig{IsEnabled: true}, Labels: map[string]string{"cohort": "a"}, QuietShare: 1}}
+	cfg := &Config{Features: measurementFeatures(), SessionLabels: map[string]string{"cohort": "a"}, Report: &ReportConfig{QuietShare: 1}}
 	sc := &SelectorConfig{Paths: []*PathDefinition{{Tag: "a1", Group: "g", Labels: map[string]string{"node": "n1", "entry": "own"}}, {Tag: "b1", Cost: 2}}, Groups: []*PathGroup{{Name: "g", Cost: 1, Labels: map[string]string{"location": "NL", "entry": "group"}}}, NetworkChangeAction: NetworkChangeMode_IGNORE}
 	e := newTestEngine(t, cfg, sc, "a1", "b1")
 	e.report.begin(t0)
@@ -242,15 +244,15 @@ func TestMeasurementPathsReportsProbeSegments(t *testing.T) {
 }
 
 func TestMeasurementProviderLabelsAndIsolation(t *testing.T) {
-	cfg := &providerSettings{prefix: "p-", balancer: "auto"}
-	a := &providerAnswer{groupsRaw: json.RawMessage(`[{"name":"g","cost":1,"labels":{"location":"NL","entry":"group"}}]`), heads: []outboundHead{{Tag: "n1", Path: json.RawMessage(`{"balancer":"auto","group":"g","labels":{"node":"n1","entry":"own"}}`)}}}
+	cfg := &providerSettings{prefix: "p-", balancer: "auto", maxOutbounds: 8}
+	a := &providerAnswer{groupsRaw: json.RawMessage(`[{"name":"g","cost":1,"labels":{"location":"NL","entry":"group"}}]`), heads: []outboundHead{{Tag: "n1", Selection: json.RawMessage(`{"balancer":"auto","group":"g","labels":{"node":"n1","entry":"own"}}`)}}}
 	if err := validateAnswerPaths(cfg, a); err != nil {
 		t.Fatal(err)
 	}
 	if !reflect.DeepEqual(mergeLabels(a.groups[0].Labels, a.paths[0].Labels), map[string]string{"location": "NL", "entry": "own", "node": "n1"}) {
 		t.Fatal("provider merge")
 	}
-	a.heads[0].Path = json.RawMessage(`{"balancer":"auto","cost":1,"labels":{"node":"bad space"}}`)
+	a.heads[0].Selection = json.RawMessage(`{"balancer":"auto","cost":1,"labels":{"node":"bad space"}}`)
 	if validateAnswerPaths(cfg, a) == nil {
 		t.Fatal("invalid provider labels")
 	}
@@ -277,7 +279,8 @@ func TestMeasurementBlockedRequestDoesNotDelayFailover(t *testing.T) {
 	for _, enabled := range []bool{false, true} {
 		cfg := &Config{Schedule: quarantine(time.Minute)}
 		if enabled {
-			cfg.Network = measurementConfig().Network
+			cfg.Features = measurementFeatures()
+			cfg.LabelRequest = measurementConfig().LabelRequest
 		}
 		e := newTestEngine(t, cfg, &SelectorConfig{Paths: pathSpecs("a1", 1, "b1", 2), SkipProbeBeforeSwitch: true, NetworkChangeAction: NetworkChangeMode_IGNORE}, "a1", "b1")
 		e.onNetworkChange("home", t0)
@@ -315,10 +318,12 @@ func TestMeasurementBlockedRequestDoesNotDelayFailover(t *testing.T) {
 
 func TestMeasurementDisabledFlags(t *testing.T) {
 	cfg := measurementConfig()
-	cfg.Network.LabelRequest.IsEnabled = false
-	cfg.Network.HostLabels.IsEnabled = false
+	cfg.Features.LabelRequest = qualityScalar(false)
+	cfg.Features.PathLabels = qualityScalar(false)
+	cfg.Features.SessionLabels = qualityScalar(false)
+	cfg.Features.HostLabels = qualityScalar(false)
 	cfg.Paths = []*PathDefinition{{Tag: "a1", Labels: map[string]string{"node": "n1"}}}
-	cfg.Report = &ReportConfig{Labels: map[string]string{"cohort": "a"}}
+	cfg.SessionLabels = map[string]string{"cohort": "a"}
 	o := newObserver(context.Background(), cfg)
 	defer o.Close()
 	if err := o.NetworkChangedWithLabels("home", `{"type":"wifi"}`); err != nil {
@@ -351,7 +356,7 @@ func TestMeasurementProbeNotProofAndCanceledRetry(t *testing.T) {
 
 func TestMeasurementRetiredQualityLabels(t *testing.T) {
 	o, clk := qualityIntegrationObserver(false)
-	o.s.pathLabelsEnabled = true
+	o.s.features.PathLabels = true
 	o.s.paths.Store("a1", pathSettings{labels: map[string]string{"node": "retired"}})
 	o.e.quality.addInitial(o.e.qualityEpoch, "a1", false, qualityInitialSample{hasDial: true, dial: time.Millisecond})
 	o.e.labelQualityPath("a1", o.e.qualityEpoch)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	gonet "net"
 	"net/http"
 	"net/http/httptest"
@@ -20,7 +21,7 @@ import (
 
 func measurementInstance(t *testing.T, destination string) (*health.Observer, *core.Instance) {
 	t.Helper()
-	raw := fmt.Sprintf(`{"log":{"loglevel":"none"},"outbounds":[{"tag":"a1","protocol":"freedom","settings":{"finalRules":[{"action":"allow"}]},"path":{"balancer":"auto","cost":1,"labels":{"node":"n1"}}},{"tag":"direct","protocol":"freedom","settings":{"finalRules":[{"action":"allow"}]}}],"routing":{"rules":[{"type":"field","network":"tcp","balancerTag":"auto"}],"balancers":[{"tag":"auto","strategy":{"type":"leastCost","settings":{"networkChangeAction":"forget"}}}]},"healthObservatory":{"pathLabels":{"isEnabled":true},"passive":{"successBytes":1},"report":{"labelContext":{"isEnabled":true},"quietShare":1,"labels":{"cohort":"test"}},"network":{"hostLabels":{"isEnabled":true},"labelRequest":{"isEnabled":true,"outbound":"direct","destination":%q,"timeout":"1s","labels":{"asn":"X-Network-Asn","country":"X-Network-Country","region":"X-Network-Region"}}}}}`, destination)
+	raw := fmt.Sprintf(`{"log":{"loglevel":"none"},"outbounds":[{"tag":"a1","protocol":"freedom","settings":{"finalRules":[{"action":"allow"}]},"selection":{"balancer":"auto","cost":1,"labels":{"node":"n1"}}},{"tag":"direct","protocol":"freedom","settings":{"finalRules":[{"action":"allow"}]}},{"tag":"block","protocol":"blackhole"}],"routing":{"rules":[{"type":"field","network":"tcp","balancerTag":"auto"}],"balancers":[{"tag":"auto","fallbackTag":"block","strategy":{"type":"leastCost","settings":{"networkChanges":{"isEnabled":true,"action":"forget"}}}}]},"healthObservatory":{"telemetry":{"events":{"isEnabled":true},"quality":{"isEnabled":true},"pathLabels":{"isEnabled":true},"report":{"isEnabled":true,"quietSampleFraction":1,"sessionLabels":{"isEnabled":true,"labels":{"cohort":"test"}}}},"network":{"hostLabels":{"isEnabled":true},"labelRequest":{"isEnabled":true,"outbound":"direct","destination":%q,"timeout":"1s","labels":{"asn":"X-Network-Asn","country":"X-Network-Country","region":"X-Network-Region"}}}}}`, destination)
 	cfg, err := serial.LoadJSONConfig(strings.NewReader(raw))
 	if err != nil {
 		t.Fatal(err)
@@ -52,6 +53,7 @@ func measurementTraffic(t *testing.T, inst *core.Instance, endpoint string) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
 }
 
@@ -77,7 +79,7 @@ func TestMeasurementHTTPDirectAndCache(t *testing.T) {
 		w.WriteHeader(204)
 	}))
 	defer srv.Close()
-	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Write([]byte("working")) }))
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Write([]byte(strings.Repeat("working", 8192))) }))
 	defer target.Close()
 	o, inst := measurementInstance(t, srv.URL)
 	o.NetworkChangedWithLabels("home", `{"type":"wifi"}`)
@@ -100,7 +102,7 @@ func TestMeasurementHTTPDirectAndCache(t *testing.T) {
 	if strings.Contains(status, "203.0.113.42") {
 		t.Fatal("unlisted header retained")
 	}
-	report := o.Report()
+	report := o.PeekReport()
 	if !strings.Contains(string(report), `"network":{"host":{"type":"wifi"},"ip":{"asn":"8359"`) {
 		t.Fatal("report network missing", string(report))
 	}
@@ -135,7 +137,7 @@ func TestMeasurementHTTPFailureClasses(t *testing.T) {
 				}
 			}))
 			defer srv.Close()
-			target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Write([]byte("working")) }))
+			target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Write([]byte(strings.Repeat("working", 8192))) }))
 			defer target.Close()
 			o, inst := measurementInstance(t, srv.URL)
 			o.NetworkChanged("home")

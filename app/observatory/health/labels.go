@@ -100,7 +100,9 @@ func (e *engine) updateQualityLabels() {
 	}
 	v := e.networkLabels()
 	e.quality.current.network.labels = v
-	e.quality.open.network.labels = v
+	if e.quality.reporting {
+		e.quality.open.network.labels = v
+	}
 }
 
 func (e *engine) labelQualityPath(tag string, epoch uint64) {

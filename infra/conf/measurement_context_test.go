@@ -11,7 +11,7 @@ import (
 )
 
 func TestMeasurementConfigLabels(t *testing.T) {
-	raw := `{"log":{"loglevel":"none"},"outbounds":[{"tag":"a1","protocol":"freedom","path":{"balancer":"auto","group":"g","labels":{"node":"n1","entry":"own"}}}],"routing":{"balancers":[{"tag":"auto","strategy":{"type":"leastCost","settings":{"groups":[{"name":"g","cost":1,"labels":{"location":"NL","entry":"shared"}}]}}}]},"healthObservatory":{"pathLabels":{"isEnabled":true},"network":{"labelRequest":{"isEnabled":true,"outbound":"a1","destination":"http://127.0.0.1/whoami","labels":{"asn":"X-Network-Asn"}}},"report":{"labelContext":{"isEnabled":true},"labels":{"cohort":"a"}}}}`
+	raw := `{"log":{"loglevel":"none"},"outbounds":[{"tag":"a1","protocol":"freedom","selection":{"balancer":"auto","group":"g","labels":{"node":"n1","entry":"own"}}},{"tag":"block","protocol":"blackhole"}],"routing":{"balancers":[{"tag":"auto","fallbackTag":"block","strategy":{"type":"leastCost","settings":{"groups":{"isEnabled":true,"items":[{"name":"g","cost":1,"labels":{"location":"NL","entry":"shared"}}]}}}}]},"healthObservatory":{"telemetry":{"pathLabels":{"isEnabled":true},"report":{"isEnabled":true,"sessionLabels":{"isEnabled":true,"labels":{"cohort":"a"}}}},"network":{"labelRequest":{"isEnabled":true,"outbound":"a1","destination":"http://127.0.0.1/whoami","labels":{"asn":"X-Network-Asn"}}}}}`
 	var cfg Config
 	if err := json.Unmarshal([]byte(raw), &cfg); err != nil {
 		t.Fatal(err)
@@ -29,7 +29,7 @@ func TestMeasurementConfigLabels(t *testing.T) {
 			}
 		}
 	}
-	if h == nil || h.Paths[0].Labels["location"] != "NL" || h.Paths[0].Labels["entry"] != "own" || h.Report.Labels["cohort"] != "a" || h.Network.LabelRequest.Labels["asn"] != "X-Network-Asn" {
+	if h == nil || h.Paths[0].Labels["location"] != "NL" || h.Paths[0].Labels["entry"] != "own" || h.SessionLabels["cohort"] != "a" || h.LabelRequest.Labels["asn"] != "X-Network-Asn" {
 		t.Fatalf("lost labels: %+v", h)
 	}
 	for _, tc := range []struct{ old, new string }{

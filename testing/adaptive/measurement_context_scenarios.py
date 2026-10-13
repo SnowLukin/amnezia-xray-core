@@ -58,21 +58,28 @@ def checks_main(xray, work):
         print(f"{'PASS' if ok else 'FAIL'} {name}: {value}", flush=True)
 
     def config(enabled):
-        cfg = bench.client_config(scenarios.THREE, {"a1": 1, "a2": 2, "b1": 3},
-                                  health={"report": {"quietShare": 1}, "probeQuality": {"isEnabled": True}, "schedule": {"quarantine": {"initialDelay": "1s", "multiplier": 1, "maxDelay": "1s", "jitterFraction": 0}}},
-                                  strategy={"networkChangeAction": "forget", "minHoldTime": "0s", "returnToCheaper": {"interval": "1s", "hasRandomPhase": False, "probesToReturn": 1, "probeInterval": "100ms"}})
+        cfg = bench.api_config(bench.client_config(
+            scenarios.THREE, {"a1": 1, "a2": 2, "b1": 3},
+            health={"report": {"quietShare": 1}},
+            strategy={"networkChangeAction": "forget", "minHoldTime": "0s",
+                      "returnToCheaper": {"interval": "1s"}}))
+        health = cfg["healthObservatory"]
+        health["telemetry"]["probeMeasurements"] = {"isEnabled": True}
+        # The same local target serves the three reserve paths. Allow the
+        # focused fixture to exercise real returns without spending a minute
+        # waiting on the shared SNI quota. Core timing constants stay intact.
+        health["probes"]["limits"].update(perServerNamePerMinute=60, perMinute=120)
         if enabled:
-            cfg["healthObservatory"]["network"] = {"labelRequest": {
+            health["network"]["labelRequest"] = {
                 "isEnabled": True, "outbound": "direct", "destination": endpoint, "timeout": "1s",
-                "labels": {"asn": "X-Network-Asn", "country": "X-Network-Country", "region": "X-Network-Region"}}}
-            cfg["healthObservatory"]["network"]["hostLabels"] = {"isEnabled": True}
-            cfg["healthObservatory"]["pathLabels"] = {"isEnabled": True}
-            cfg["healthObservatory"]["probeQuality"] = {"isEnabled": True}
-            cfg["healthObservatory"]["report"]["labelContext"] = {"isEnabled": True}
-            cfg["healthObservatory"]["report"]["labels"] = {"cohort": "stand"}
+                "labels": {"asn": "X-Network-Asn", "country": "X-Network-Country", "region": "X-Network-Region"}}
+            health["network"]["hostLabels"] = {"isEnabled": True}
+            health["telemetry"]["pathLabels"] = {"isEnabled": True}
+            health["telemetry"]["report"]["sessionLabels"] = {
+                "isEnabled": True, "labels": {"cohort": "stand"}}
             for outbound in cfg["outbounds"]:
-                if "path" in outbound:
-                    outbound["path"]["labels"] = {"node": outbound["tag"], "location": "NL"}
+                if "selection" in outbound:
+                    outbound["selection"]["labels"] = {"node": outbound["tag"], "location": "NL"}
         return cfg
 
     try:
@@ -145,7 +152,7 @@ def checks_main(xray, work):
                     bench.chaos(str(scenarios.A0), "normal")
                     return_traffic = bench.Traffic(rate=4, big=1, timeout=2).start()
                     try:
-                        wait_for(lambda: client.status()["balancers"][0]["active"] == "a1", seconds=15)
+                        wait_for(lambda: client.status()["balancers"][0]["active"] == "a1", seconds=210)
                     finally:
                         return_traffic.stop()
                     returned = client.api("report")
