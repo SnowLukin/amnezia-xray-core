@@ -307,7 +307,8 @@ type qualityCollection struct {
 }
 
 func (c *qualityCollection) nonempty() bool {
-	return len(c.paths) > 0 || c.witness != nil || c.samplesDropped > 0
+	return len(c.paths) > 0 || c.witness != nil || c.samplesDropped > 0 ||
+		(c.network.labels != nil && (len(c.network.labels.Host) > 0 || len(c.network.labels.IP) > 0))
 }
 
 // Admission is measurement-only. Keep the complete history of the first 64

@@ -28,6 +28,7 @@ func labelStart(t *testing.T, e *engine, now time.Time) *labelJob {
 	t.Helper()
 	e.noteDemand(now)
 	e.sawSuccess("witness", now)
+	e.noteLabelSuccess(e.qualityEpoch)
 	job, _ := e.nextLabelRequest(context.Background(), now)
 	if job == nil {
 		t.Fatal("eligible network did not request labels")
@@ -145,6 +146,7 @@ func TestMeasurementEligibilityCacheRetryAndBudget(t *testing.T) {
 	e.onNetworkChange("home", t0.Add(22*time.Minute))
 	e.noteDemand(t0.Add(22 * time.Minute))
 	e.sawSuccess("traffic", t0.Add(22*time.Minute))
+	e.noteLabelSuccess(e.qualityEpoch)
 	if j, _ := e.nextLabelRequest(context.Background(), t0.Add(22*time.Minute)); j != nil {
 		t.Fatal("failed cached network requested again")
 	}
@@ -162,6 +164,7 @@ func TestMeasurementEligibilityCacheRetryAndBudget(t *testing.T) {
 	e.s.labelRequest.requestsPerHour = 3
 	e.noteDemand(t0.Add(24 * time.Minute))
 	e.sawSuccess("traffic", t0.Add(24*time.Minute))
+	e.noteLabelSuccess(e.qualityEpoch)
 	if j, w := e.nextLabelRequest(context.Background(), t0.Add(24*time.Minute)); j != nil || !w.Equal(t0.Add(time.Hour)) {
 		t.Fatal("hourly budget")
 	}
@@ -190,6 +193,7 @@ func TestMeasurementStaleResultAndNoKey(t *testing.T) {
 	e.s.labelRequest = nil
 	e.onNetworkChange("off", t0.Add(2*time.Second))
 	e.sawSuccess("traffic", t0.Add(2*time.Second))
+	e.noteLabelSuccess(e.qualityEpoch)
 	if j, _ := e.nextLabelRequest(context.Background(), t0.Add(2*time.Second)); j != nil {
 		t.Fatal("no key requested labels")
 	}

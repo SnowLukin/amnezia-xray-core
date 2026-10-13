@@ -46,16 +46,16 @@ func (c *Config) ValidateMeasurementContext() error {
 			return fmt.Errorf("path.labels: %w", err)
 		}
 	}
-	if c.GetFeatures().GetLabelRequest() {
+	if c.GetLabelRequest() != nil || c.GetFeatures().GetLabelRequest() {
 		lr := c.GetLabelRequest()
 		if lr == nil {
 			return fmt.Errorf("network.labelRequest requires settings")
 		}
 		u, err := url.Parse(lr.Destination)
-		if err != nil || u.Hostname() == "" || (u.Scheme != "https" && u.Scheme != "http") || u.User != nil || u.Fragment != "" {
+		if lr.Destination != "" && (err != nil || u.Hostname() == "" || (u.Scheme != "https" && u.Scheme != "http") || u.User != nil || u.Fragment != "") {
 			return fmt.Errorf("network.labelRequest.destination must be an HTTP(S) URL without credentials or fragment")
 		}
-		if lr.Outbound == "" || len(lr.Labels) == 0 || len(lr.Labels) > 6 {
+		if (c.GetFeatures().GetLabelRequest() && (lr.Outbound == "" || lr.Destination == "" || len(lr.Labels) == 0)) || len(lr.Labels) > 6 {
 			return fmt.Errorf("network.labelRequest needs outbound and 1 to 6 labels")
 		}
 		if lr.Timeout < 0 || lr.Timeout > int64(30*time.Second) || lr.RequestsPerHour < 0 || lr.RequestsPerHour > 60 {
@@ -94,6 +94,13 @@ func (e *engine) changeLabelNetwork(id string, now time.Time) {
 		return
 	}
 	if n := e.labelCache[id]; n != nil {
+		for i, key := range e.labelOrder {
+			if key == id {
+				e.labelOrder = append(e.labelOrder[:i], e.labelOrder[i+1:]...)
+				break
+			}
+		}
+		e.labelOrder = append(e.labelOrder, id)
 		e.labelNetwork = n
 		return
 	}
@@ -202,4 +209,26 @@ func (o *Observer) fetchNetworkLabels(parent context.Context) (map[string]string
 		return nil, "no_labels"
 	}
 	return labels, ""
+}
+
+// noteLabelSuccess is independent of controller proof. A late reply from a
+// previous network must not authorize a request, even under routing IGNORE.
+func (e *engine) noteLabelSuccess(epoch uint64) bool {
+	if e.s.labelRequest == nil || epoch != e.qualityEpoch || e.labelProof {
+		return false
+	}
+	e.labelProof = true
+	return true
+}
+
+func (o *Observer) labelSucceeded(epoch uint64) {
+	if o.s.labelRequest == nil {
+		return
+	}
+	o.mu.Lock()
+	fresh := o.e.noteLabelSuccess(epoch)
+	o.mu.Unlock()
+	if fresh {
+		o.wake()
+	}
 }

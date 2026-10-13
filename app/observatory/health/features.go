@@ -181,6 +181,29 @@ func (c *Config) ValidateFeatures() error {
 }
 
 func validateSelectorFeatures(c *SelectorConfig, f featureSettings) error {
+	groups := make(map[string]map[string]string)
+	for i, g := range c.GetGroups() {
+		if err := ValidateLabels(g.GetLabels(), 6); err != nil {
+			return fmt.Errorf("leastCost.settings.groups.items[%d].labels: %w", i, err)
+		}
+		groups[g.Name] = g.GetLabels()
+	}
+	for i, p := range c.GetPaths() {
+		if err := ValidateLabels(p.GetLabels(), 6); err != nil {
+			return fmt.Errorf("leastCost.settings.paths[%d].labels: %w", i, err)
+		}
+		merged := make(map[string]string)
+		for k, v := range groups[p.GetGroup()] {
+			merged[k] = v
+		}
+		for k, v := range p.GetLabels() {
+			merged[k] = v
+		}
+		if err := ValidateLabels(merged, 6); err != nil {
+			return fmt.Errorf("leastCost.settings.paths[%d].effectiveLabels: %w", i, err)
+		}
+	}
+
 	sf := c.GetFeatures()
 	if sf == nil {
 		sf = &SelectorFeatureConfig{}

@@ -151,7 +151,7 @@ func newObserver(ctx context.Context, config *Config) *Observer {
 	if s.features.Report {
 		o.e.report.begin(collectorStart)
 	}
-	if !s.passive.skipQuality || s.features.ProbeMeasurements {
+	if !s.passive.skipQuality || s.features.ProbeMeasurements || (s.features.Report && (s.features.HostLabels || s.features.LabelRequest)) {
 		o.e.quality = newQualitySummary(collectorStart)
 		o.e.quality.reporting = s.features.Report
 		if !s.features.Report {
@@ -426,9 +426,11 @@ func (o *Observer) StartDial(ctx context.Context, tag string, server net.Destina
 	if state := probeStateFrom(ctx); state != nil {
 		return &probeTracker{state: state}
 	}
+	// Metadata uses its own epoch even when routing ignores network changes.
+	labelEpoch := o.qualityEpoch.Load()
 	if !o.s.observes(tag) {
 		if o.s.witness(tag) {
-			w := &witnessTracker{o: o}
+			w := &witnessTracker{o: o, labelEpoch: labelEpoch}
 			if !o.s.passive.skipQuality {
 				_, udp := targetFrom(ctx)
 				if !udp {
@@ -456,25 +458,27 @@ func (o *Observer) StartDial(ctx context.Context, tag string, server net.Destina
 	if !o.s.features.passiveTCP() && !o.s.features.Quality && !o.s.features.Report && !o.s.features.Metrics {
 		proof := !udp && o.s.features.UdpReplies
 		proofSignal = proofSignal && !udp
-		if registry || proof || activity || proofSignal {
-			return o.newClosureTracker(tag, abort, proof, registry, activity, proofSignal, connectionPath, connectionEpoch, udpEpoch, udpIncarnation)
+		metadata := !udp && o.s.features.LabelRequest
+		if registry || proof || activity || proofSignal || metadata {
+			return o.newClosureTracker(tag, abort, proof, registry, activity, proofSignal, connectionPath, connectionEpoch, udpEpoch, udpIncarnation, labelEpoch, metadata)
 		}
 		return nil
 	}
 	// Capture the measurement epoch before the start timestamp. A network
 	// change during construction must not label an older dial as new traffic.
 	t := &connTracker{
-		o:        o,
-		tag:      tag,
-		target:   target,
-		server:   destString(server),
-		conn:     connFrom(ctx),
-		udp:      udp,
-		activity: activity,
-		proof:    proofSignal,
-		abort:    abort,
-		started:  o.nowNano(),
-		network:  connectionEpoch,
+		o:          o,
+		tag:        tag,
+		target:     target,
+		server:     destString(server),
+		conn:       connFrom(ctx),
+		udp:        udp,
+		activity:   activity,
+		proof:      proofSignal,
+		abort:      abort,
+		started:    o.nowNano(),
+		network:    connectionEpoch,
+		labelEpoch: labelEpoch,
 	}
 	if quality != nil {
 		quality.started = t.started
@@ -695,6 +699,9 @@ func (o *Observer) answered(t *connTracker) {
 }
 
 func (o *Observer) success(t *connTracker) {
+	if !t.udp {
+		o.labelSucceeded(t.labelEpoch)
+	}
 	o.connectionSuccess(t.tag, t.started, t.network, t.udpPath, t.udpEpoch, t.udpIncarnation,
 		!t.udp && o.s.features.UdpReplies, t.proof || o.s.features.passiveTCP())
 }
@@ -733,8 +740,9 @@ func (o *Observer) connectionSuccess(tag string, started int64, epoch uint64, sn
 	}
 }
 
-func (o *Observer) witnessed() {
+func (o *Observer) witnessed(labelEpoch uint64) {
 	o.mu.Lock()
+	o.e.noteLabelSuccess(labelEpoch)
 	queued := len(o.e.queue)
 	o.e.sawSuccess("witness", o.now())
 	more := len(o.e.queue) > queued
@@ -1056,7 +1064,7 @@ func (o *Observer) NeedsObservation(ctx context.Context, tag string) bool {
 		return false
 	}
 	f := o.s.features
-	if f.passiveTCP() || f.Quality || f.Report || f.Metrics || f.UdpReplies {
+	if f.passiveTCP() || f.Quality || f.Report || f.Metrics || f.UdpReplies || f.LabelRequest {
 		return true
 	}
 	activity, proof := o.connectionSignals(tag)

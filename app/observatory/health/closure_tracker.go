@@ -16,6 +16,8 @@ type closureTracker struct {
 	tag              string
 	started          int64
 	network          uint64
+	labelEpoch       uint64
+	labels           bool
 	activity         bool
 	proof            bool
 	progress         bool
@@ -55,8 +57,8 @@ func (o *Observer) connectionRegistry(tag string) bool {
 	return false
 }
 
-func (o *Observer) newClosureTracker(tag string, abort func(), tcpProof, register, activity, proof bool, snapshot *path, epoch, udpEpoch, incarnation uint64) *closureTracker {
-	t := &closureTracker{o: o, tag: tag, abort: abort, started: o.nowNano(), network: epoch, tcpProof: tcpProof, activity: activity, proof: proof, progress: register}
+func (o *Observer) newClosureTracker(tag string, abort func(), tcpProof, register, activity, proof bool, snapshot *path, epoch, udpEpoch, incarnation, labelEpoch uint64, labels bool) *closureTracker {
+	t := &closureTracker{o: o, tag: tag, abort: abort, started: o.nowNano(), network: epoch, labelEpoch: labelEpoch, labels: labels, tcpProof: tcpProof, activity: activity, proof: proof, progress: register}
 	t.read.t = t
 	t.proofPath = snapshot
 	t.proofEpoch = udpEpoch
@@ -159,7 +161,7 @@ func (c *closureReadCounter) Set(n int64) int64 {
 func (c *closureReadCounter) Add(n int64) int64 {
 	if n > 0 {
 		total := int64(0)
-		if c.t.progress || c.t.proof || c.t.tcpProof {
+		if c.t.progress || c.t.proof || c.t.tcpProof || c.t.labels {
 			total = c.t.bytesRead.Add(n)
 		}
 		if c.t.progress {
@@ -173,7 +175,10 @@ func (c *closureReadCounter) Add(n int64) int64 {
 			c.t.o.noteControllerReplyLocked(c.t.tag, c.t.started, c.t.network, c.t.proofPath)
 			c.t.o.mu.Unlock()
 		}
-		if (c.t.tcpProof || c.t.proof) && total >= c.t.o.s.passive.successBytes && c.t.proved.CompareAndSwap(false, true) {
+		if (c.t.tcpProof || c.t.proof || c.t.labels) && total >= c.t.o.s.passive.successBytes && c.t.proved.CompareAndSwap(false, true) {
+			if c.t.labels {
+				c.t.o.labelSucceeded(c.t.labelEpoch)
+			}
 			c.t.o.connectionSuccess(c.t.tag, c.t.started, c.t.network, c.t.proofPath, c.t.proofEpoch, c.t.proofIncarnation, c.t.tcpProof, c.t.proof)
 		}
 	}
@@ -192,7 +197,7 @@ var _ outbound.DialTracker = (*closureTracker)(nil)
 // enabling passive detectors or telemetry collection.
 func (o *Observer) connectionSignals(tag string) (activity, proof bool) {
 	f := o.s.features
-	proof = f.passiveTCP() || f.NetworkMemory || f.LabelRequest || f.UserPresent || f.Connectivity
+	proof = f.passiveTCP() || f.NetworkMemory || f.UserPresent || f.Connectivity
 	activity = len(o.providers) > 0
 	o.mu.Lock()
 	for _, s := range o.e.selectors {

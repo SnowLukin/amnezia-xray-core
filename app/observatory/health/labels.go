@@ -102,6 +102,7 @@ func (e *engine) updateQualityLabels() {
 	e.quality.current.network.labels = v
 	if e.quality.reporting {
 		e.quality.open.network.labels = v
+		e.quality.trimSegments()
 	}
 }
 

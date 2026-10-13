@@ -2,11 +2,13 @@ package health
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"testing"
 	"time"
 
 	"github.com/xtls/xray-core/common/net"
+	"github.com/xtls/xray-core/common/serial"
 	"github.com/xtls/xray-core/features/stats"
 )
 
@@ -29,6 +31,7 @@ func TestMeasurementV2MetadataCombinationsWithoutUserQuality(t *testing.T) {
 			now := o.now()
 			o.e.noteDemand(now)
 			o.e.sawSuccess("traffic", now)
+			o.e.noteLabelSuccess(o.e.qualityEpoch)
 			job, _ := o.e.nextLabelRequest(o.runCtx, now)
 			if (job != nil) != (mask&2 != 0) {
 				t.Fatal("labelRequest gate")
@@ -53,10 +56,10 @@ func TestMeasurementV2MetadataCombinationsWithoutUserQuality(t *testing.T) {
 			if (len(o.s.reportLabels) > 0) != (mask&8 != 0) {
 				t.Fatal("sessionLabels gate")
 			}
-			if (o.e.quality != nil) != (mask&16 != 0) {
+			if (o.e.quality != nil) != (mask&19 != 0) {
 				t.Fatal("probe-only collector gate")
 			}
-			if o.e.quality != nil {
+			if mask&16 != 0 {
 				q := o.e.quality.currentView(now).Paths["a1"]
 				if q.ProbeCount != 1 || q.DialCount != 0 || q.TTFBCount != 0 || q.TCPCount != 0 || *q.ProbeConnectP50Ms != 300 {
 					t.Fatalf("probe-only measurements: %+v", q)
@@ -142,6 +145,9 @@ func TestMeasurementV2ProofEpochWithoutUserQuality(t *testing.T) {
 				if !o.e.labelProof {
 					t.Fatal("fresh connection did not prove network")
 				}
+				if tag == "a1" && o.e.path("a1").status != statusUnknown {
+					t.Fatal("metadata created controller evidence")
+				}
 				old[1].Add(o.s.passive.successBytes)
 				if !o.e.labelProof {
 					t.Fatal("old connection erased current proof")
@@ -153,5 +159,95 @@ func TestMeasurementV2ProofEpochWithoutUserQuality(t *testing.T) {
 				tr.Finished(nil)
 			})
 		}
+	}
+}
+
+func TestMeasurementV2NetworkMetadataOnlySegments(t *testing.T) {
+	f := v2NoEvidence()
+	f.Report = qualityScalar(true)
+	f.HostLabels = qualityScalar(true)
+	o := newObserver(context.Background(), &Config{Features: f, Report: &ReportConfig{QuietShare: 1}})
+	defer o.Close()
+	o.NetworkChangedWithLabels("A", `{"type":"wifi"}`)
+	o.NetworkChangedWithLabels("B", `{"type":"cellular"}`)
+	var report struct {
+		Quality []struct {
+			Network *networkLabelsView         `json:"network"`
+			Paths   map[string]json.RawMessage `json:"paths"`
+		} `json:"quality"`
+	}
+	if err := json.Unmarshal(o.PeekReport(), &report); err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Quality) != 2 || report.Quality[0].Network.Host["type"] != "wifi" || report.Quality[1].Network.Host["type"] != "cellular" {
+		t.Fatalf("metadata-only segments: %+v", report)
+	}
+	for _, segment := range report.Quality {
+		if len(segment.Paths) != 0 {
+			t.Fatal("metadata collected user quality")
+		}
+	}
+}
+
+func TestMeasurementV2LabelCacheLRU(t *testing.T) {
+	e := measurementEngine(t)
+	for i, id := range []string{"A", "B", "A", "C", "A"} {
+		now := t0.Add(time.Duration(i) * time.Second)
+		e.onNetworkChange(id, now)
+		e.noteDemand(now)
+		e.noteLabelSuccess(e.qualityEpoch)
+		j, _ := e.nextLabelRequest(context.Background(), now)
+		expected := i == 0 || i == 1 || i == 3
+		if (j != nil) != expected {
+			t.Fatalf("step%d/%s cache miss=%v want%v", i, id, j != nil, expected)
+		}
+		if j != nil {
+			e.labelResult(j, map[string]string{"asn": "8359"}, "", now)
+		}
+	}
+	if len(e.labelCache) != 2 || e.labelCache["A"] == nil || e.labelCache["C"] == nil || e.labelCache["B"] != nil {
+		t.Fatal("did not evict least recently used network")
+	}
+}
+
+func TestMeasurementV2PreparedProtoValidation(t *testing.T) {
+	for _, lr := range []*LabelRequestConfig{
+		{Destination: "ftp://host/a"},
+		{Labels: map[string]string{"BAD": "X-Network-Asn"}},
+		{Labels: map[string]string{"asn": "bad header"}},
+		{RequestsPerHour: 61},
+	} {
+		if (&Config{Features: v2NoEvidence(), LabelRequest: lr}).ValidateMeasurementContext() == nil {
+			t.Fatal("invalid prepared label request accepted", lr)
+		}
+	}
+	if err := (&Config{Features: v2NoEvidence(), LabelRequest: &LabelRequestConfig{}}).ValidateMeasurementContext(); err != nil {
+		t.Fatal("empty disabled preparation rejected", err)
+	}
+	o := newObserver(context.Background(), &Config{Features: v2NoEvidence()})
+	defer o.Close()
+	for _, cfg := range []*SelectorConfig{
+		{Paths: []*PathDefinition{{Tag: "a1", Labels: map[string]string{"node": "bad value"}}}},
+		{Groups: []*PathGroup{{Name: "g", Labels: map[string]string{"BAD": "v"}}}},
+		{Features: &SelectorFeatureConfig{Groups: qualityScalar(true)}, Groups: []*PathGroup{{Name: "g", Labels: map[string]string{"k1": "v", "k2": "v", "k3": "v", "k4": "v", "k5": "v", "k6": "v"}}}, Paths: []*PathDefinition{{Tag: "a1", Group: "g", Labels: map[string]string{"k7": "v"}}}},
+	} {
+		if _, err := o.OutboundSelector("auto", serial.ToTypedMessage(cfg)); err == nil {
+			t.Fatal("invalid selector labels accepted", cfg)
+		}
+	}
+}
+
+func TestMeasurementV2NetworkMetadataSegmentBound(t *testing.T) {
+	f := v2NoEvidence()
+	f.Report = qualityScalar(true)
+	f.HostLabels = qualityScalar(true)
+	o := newObserver(context.Background(), &Config{Features: f})
+	defer o.Close()
+	for i := range 5 {
+		o.NetworkChangedWithLabels(fmt.Sprint(i), fmt.Sprintf(`{"type":"net%d"}`, i))
+	}
+	segments, dropped := o.e.quality.report(o.now(), false)
+	if len(segments) != 4 || dropped != 1 || segments[0].Network.Host["type"] != "net1" || segments[3].Network.Host["type"] != "net4" {
+		t.Fatalf("segment bound: %+v dropped=%d", segments, dropped)
 	}
 }

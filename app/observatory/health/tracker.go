@@ -47,6 +47,7 @@ type connTracker struct {
 	conn   uint32
 	// Network generation the connection started in.
 	network        uint64
+	labelEpoch     uint64
 	udpPath        *path
 	udpEpoch       uint64
 	udpIncarnation uint64
@@ -526,6 +527,7 @@ func (c *probeCounter) Add(n int64) int64 {
 // whether the network works. It reports once, when the connection has
 // received enough to count as working.
 type witnessTracker struct {
+	labelEpoch  uint64
 	o           *Observer
 	bytes       atomic.Int64
 	done        atomic.Bool
@@ -597,7 +599,7 @@ func (c *witnessCounter) Add(n int64) int64 {
 		}
 	}
 	if !c.t.done.Load() && c.t.bytes.Add(n) >= c.t.o.s.passive.successBytes && c.t.done.CompareAndSwap(false, true) {
-		c.t.o.witnessed()
+		c.t.o.witnessed(c.t.labelEpoch)
 	}
 	if c.inner != nil {
 		return c.inner.Add(n)

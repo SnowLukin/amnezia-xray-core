@@ -2324,9 +2324,6 @@ func (e *engine) onConnectivity(r probeResult, now time.Time) {
 
 // sawSuccess handles proof that some outbound works.
 func (e *engine) sawSuccess(how string, now time.Time) {
-	if how == "traffic" || how == "witness" {
-		e.labelProof = true
-	}
 	e.lastSuccess = now
 	if e.endPause(now) {
 		e.emit(now, "network_up", map[string]any{"by": how})
