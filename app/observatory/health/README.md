@@ -220,6 +220,23 @@ Status доступен по запросу без отдельного collecto
 
 В gRPC отдельные `NetworkLost` и `Release`, а не перегрузка `NetworkChanged.lost` и `Pin.outbound=""`. Отдельные PeekReport и TakeReport вместо комбинаций двух bool `take/final`. `NetworkChangedWithLabels` остаётся отдельной операцией ради существующего вызова без меток; это принятая совместимость входа из measurement-context, не алиас запрещённого config-имени.
 
+`NetworkChangedWithLabels` всегда передаёт базовый сигнал смены сети. При
+`network.hostLabels.isEnabled: false` аргумент меток игнорируется целиком; при
+включённом флаге ошибочный JSON возвращает ошибку без смены сети. Валидный объект
+содержит строковые значения: не более восьми допустимых меток, имя 1–24 символа
+`a-z0-9_`, значение 1–32 символа `A-Za-z0-9._:-`; неверные записи отбрасываются.
+
+Запрос `network.labelRequest` запускается асинхронно после успеха пользовательского
+трафика или witness **текущей** сети. Probe и connectivity check не дают такого
+разрешения. Он не создаёт controller evidence и не попадает в пользовательскую
+телеметрию. Кеш по ID ограничен `network.memory.maxNetworks` даже при выключенной
+памяти решений; пустой ID получает новую запись при каждой смене. После отказа
+допускается один повтор через 10 минут, с прежними ограничениями idle/lost/memory
+и requestsPerHour. Пробы резервов собираются при `telemetry.probeMeasurements`
+независимо от `telemetry.quality`; берётся первая фаза соединения логической пробы,
+UDP-пробы и отменённые результаты исключаются.
+
+
 API использует единый Result для операций, уже отдающих JSON: Go возвращает типизированные data/error, gRPC передаёт ту же DTO и транспортный error отдельно, libXray сохраняет внешний base64 контейнер, C — JSON-строку, Swift декодирует DTO. CLI показывает decoded JSON. У существующих signal-функций сохраняется ABI bool/void (в частности NetworkChanged без меток); false означает, что сигнал не принят. Подробное effective состояние читается через Status. Это осознанное исключение к унификации ради старого хоста, а не два алиаса операции. Функции запуска/остановки libXray и кита не меняются.
 
 ```jsonc
@@ -351,7 +368,7 @@ Status — **только локальная диагностика**, не ра
 | Метрики | `telemetry.metrics.isEnabled` | false | Экспорт; требует штатный metrics exporter |
 | Status | Вызов `Status()` | Доступен | Read-on-demand, дополнительной фоновой фичи нет |
 | Метки сети хоста | `network.hostLabels.isEnabled` | false | Независимы от качества и сети решений |
-| Метки сети по IP | `network.labelRequest.isEnabled` | false | Собственный LRU; IP не хранится; hostLabels-off host не мешает |
+| Метки сети по IP | `network.labelRequest.isEnabled` | false | Собственный ограниченный кеш; IP не хранится; hostLabels-off host не мешает |
 | Метки путей | `telemetry.pathLabels.isEnabled` | false | selection/group.labels валидируются, когда заданы; не меняют выбор |
 | Метки сессии | `telemetry.report.sessionLabels.isEnabled` | false | Требует report |
 | Замеры проб резервов | `telemetry.probeMeasurements.isEnabled` | false | Использует выполненные пробы, не добавляет сетевых запросов |
