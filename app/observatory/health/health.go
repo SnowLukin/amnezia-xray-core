@@ -115,10 +115,8 @@ func New(ctx context.Context, config *Config) (*Observer, error) {
 	if err != nil {
 		return nil, err
 	}
-	if o.s.features.Metrics {
-		if err := core.RequireFeatures(ctx, func(*metrics.MetricsHandler) {}); err != nil {
-			return nil, errors.New("healthObservatory.telemetry.metrics.isEnabled requires metrics exporter: ", err)
-		}
+	if o.s.features.Metrics && core.MustFromContext(ctx).GetFeature((*metrics.MetricsHandler)(nil)) == nil {
+		return nil, errors.New("healthObservatory.telemetry.metrics.isEnabled requires metrics exporter registered before healthObservatory")
 	}
 	return o, nil
 }
