@@ -235,6 +235,7 @@ type WireGuardConfig struct {
 	Reserved       []byte                 `json:"reserved"`
 	DomainStrategy string                 `json:"domainStrategy"`
 	Parameters     *AmneziaParameters     `json:"awg"`
+	DNS            []string               `json:"remoteDNS"`
 }
 
 func (c *WireGuardConfig) Build() (proto.Message, error) {
@@ -313,6 +314,7 @@ func (c *WireGuardConfig) Build() (proto.Message, error) {
 	if config.Parameters, err = c.Parameters.Build(); err != nil {
 		return nil, err
 	}
+	config.DNS = c.DNS
 
 	return config, nil
 }

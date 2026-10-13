@@ -5,9 +5,10 @@ import (
 	"fmt"
 	gonet "net"
 	"net/netip"
-	reflect "reflect"
+	"reflect"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/amnezia-vpn/amneziawg-go/v3/tun"
 
@@ -100,6 +101,19 @@ func NewClient(ctx context.Context, conf *DeviceConfig) (proxy.Outbound, error) 
 		return nil, err
 	}
 
+	dns := conf.DNS
+	if len(dns) == 0 {
+		dns = []string{"1.1.1.1", "1.0.0.1", "2606:4700:4700::1111", "2606:4700:4700::1001"}
+	}
+	dnses := make([]netip.Addr, 0, len(dns))
+	for _, dns := range dns {
+		addr, err := netip.ParseAddr(dns)
+		if err != nil {
+			return nil, errors.New("invalid remoteDNS address: ", dns).Base(err)
+		}
+		dnses = append(dnses, addr)
+	}
+
 	kernelTunSupported, err := KernelTunSupported()
 	if err != nil {
 		errors.LogWarningInner(context.Background(), err, "Failed to check kernel TUN support")
@@ -108,10 +122,10 @@ func NewClient(ctx context.Context, conf *DeviceConfig) (proxy.Outbound, error) 
 	var tnet *Net
 	if !conf.NoKernelTun && kernelTunSupported {
 		errors.LogWarning(context.Background(), "Using kernel TUN")
-		tun, tnet, err = createKernelTun(localAddresses, []netip.Addr{netip.MustParseAddr("1.1.1.1"), netip.MustParseAddr("1.0.0.1"), netip.MustParseAddr("2606:4700:4700::1111"), netip.MustParseAddr("2606:4700:4700::1001")}, int(conf.Mtu))
+		tun, tnet, err = createKernelTun(localAddresses, dnses, int(conf.Mtu))
 	} else {
 		errors.LogWarning(context.Background(), "Using gVisor TUN")
-		tun, tnet, _, err = deferNetTUN(localAddresses, []netip.Addr{netip.MustParseAddr("1.1.1.1"), netip.MustParseAddr("1.0.0.1"), netip.MustParseAddr("2606:4700:4700::1111"), netip.MustParseAddr("2606:4700:4700::1001")}, int(conf.Mtu), true)
+		tun, tnet, _, err = deferNetTUN(localAddresses, dnses, int(conf.Mtu), true)
 	}
 	if err != nil {
 		return nil, err
@@ -142,6 +156,9 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
 	ob.CanSpliceCopy = 3
 	td := h.startTunnelDial(ctx, dialer)
 	defer func() { td.end(err) }()
+	if dialer != nil {
+		dialer.SetOutboundGateway(ctx, ob)
+	}
 
 	if err := h.init(ctx); err != nil {
 		return err
@@ -193,10 +210,10 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
 		var err error
 		if sessionPolicy.Timeouts.Handshake != 0 {
 			timeoutCtx, timeoutCancel := context.WithTimeout(ctx, sessionPolicy.Timeouts.Handshake)
-			conn, err = h.tnet.DialContextTCPAddrPort(timeoutCtx, addrPort)
+			conn, err = h.tnet.DialContext(timeoutCtx, "tcp", gonet.UDPAddrFromAddrPort(addrPort).String())
 			timeoutCancel()
 		} else {
-			conn, err = h.tnet.DialContextTCPAddrPort(ctx, addrPort)
+			conn, err = h.tnet.DialContext(ctx, "tcp", gonet.UDPAddrFromAddrPort(addrPort).String())
 		}
 		if err != nil {
 			td.failedInside()
@@ -207,17 +224,15 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
 		reader = buf.NewReader(conn)
 		writer = buf.NewWriter(conn)
 	case net.Network_UDP:
-		conn, err := h.tnet.DialUDPAddrPort(netip.AddrPort{}, addrPort)
+		conn, err := h.tnet.Dial("udp", gonet.UDPAddrFromAddrPort(addrPort).String())
 		if err != nil {
 			return errors.New("failed to create UDP connection").Base(err)
 		}
 		defer conn.Close()
 		c := &udpConnClient{
-			PacketConn: conn.(*internet.PacketConnWrapper).PacketConn,
-			resolveFunc: func(host string) (net.IP, error) {
-				return h.resolveRemote(ctx, host)
-			},
-			dest: gonet.UDPAddrFromAddrPort(addrPort),
+			PacketConn:  conn.(*net.PacketConnWrapper).PacketConn,
+			resolveFunc: func(host string) (net.IP, error) { return h.resolveRemote(ctx, host) },
+			dest:        gonet.UDPAddrFromAddrPort(addrPort),
 		}
 		c.PacketConn = td.openedPacket(c.PacketConn)
 		reader = c
@@ -275,26 +290,26 @@ func (h *Handler) init(ctx context.Context) error {
 		if err != nil {
 			return nil, err
 		}
-		conn, err := internet.DialSystem(ctx, dest, h.streamSettings.SocketSettings)
-		if err != nil {
-			return nil, err
-		}
 		var pktConn net.PacketConn
-		switch c := conn.(type) {
-		case *internet.PacketConnWrapper:
-			pktConn = c.PacketConn
-		case *cnc.Connection:
-			pktConn = &internet.FakePacketConn{Conn: c}
-		default:
-			panic(reflect.TypeOf(c))
-		}
-		if h.streamSettings.UdpmaskManager != nil {
-			newConn, err := h.streamSettings.UdpmaskManager.WrapPacketConnClient(pktConn)
+		if h.streamSettings.FinalMask != nil {
+			conn, err := h.streamSettings.FinalMask.DialUDP(ctx, dest)
 			if err != nil {
-				pktConn.Close()
-				return nil, errors.New("mask err").Base(err)
+				return nil, errors.New("failed to dial to dest").Base(err)
 			}
-			pktConn = newConn
+			pktConn = conn.(*net.PacketConnWrapper).PacketConn
+		} else {
+			conn, err := internet.DialSystem(ctx, dest, h.streamSettings.SocketSettings)
+			if err != nil {
+				return nil, errors.New("failed to dial to dest").Base(err)
+			}
+			switch c := conn.(type) {
+			case *net.PacketConnWrapper:
+				pktConn = c.PacketConn
+			case *cnc.Connection:
+				pktConn = &internet.FakePacketConn{Conn: c}
+			default:
+				panic(reflect.TypeOf(c))
+			}
 		}
 		if h.uplinkCounter != nil || h.downlinkCounter != nil {
 			pktConn = &PacketCounterConnection{
@@ -306,10 +321,13 @@ func (h *Handler) init(ctx context.Context) error {
 		pktConn = h.recv.wrap(pktConn)
 		return pktConn, nil
 	}
-	// The device reads the TUN from NewDevice on and opens the bind at the
-	// first up event, which a gVisor TUN sends at once: the bind needs its
-	// functions before that.
-	bind := &bind{resolveFunc: resolveFunc, listenFunc: listenFunc, reserved: h.conf.Reserved}
+	// device.NewDevice may use the bind right away (Up -> BindUpdate -> Open),
+	// so everything it reads must be set before creating the device.
+	bind := &bind{
+		resolveFunc: resolveFunc,
+		listenFunc:  listenFunc,
+		reserved:    h.conf.Reserved,
+	}
 	logger := &device.Logger{
 		Verbosef: func(format string, args ...any) {
 			log.Record(&log.GeneralMessage{
@@ -325,7 +343,7 @@ func (h *Handler) init(ctx context.Context) error {
 		},
 	}
 	dev := device.NewDevice(h.tun, bind, logger)
-	bind.downFunc = dev.Down
+	bind.setDownFunc(dev.Down)
 	var cfg strings.Builder
 	cfg.WriteString("private_key=" + h.conf.SecretKey + "\n")
 	writeAmneziaParams(&cfg, h.conf.Parameters)
@@ -480,6 +498,52 @@ func (c *udpConnClient) WriteMultiBuffer(mb buf.MultiBuffer) error {
 	return nil
 }
 
+type UDPConnClient struct {
+	net.PacketConn
+	Dest *net.UDPAddr
+}
+
+func (c *UDPConnClient) ReadMultiBuffer() (buf.MultiBuffer, error) {
+	b := buf.New()
+	b.Resize(0, buf.Size)
+	n, addr, err := c.PacketConn.ReadFrom(b.Bytes())
+	if err != nil {
+		b.Release()
+		return nil, err
+	}
+	b.Resize(0, int32(n))
+
+	b.UDP = &net.Destination{
+		Address: net.IPAddress(addr.(*net.UDPAddr).IP),
+		Port:    net.Port(addr.(*net.UDPAddr).Port),
+		Network: net.Network_UDP,
+	}
+
+	return buf.MultiBuffer{b}, nil
+}
+
+func (c *UDPConnClient) WriteMultiBuffer(mb buf.MultiBuffer) error {
+	for i, b := range mb {
+		dst := c.Dest
+		if b.UDP != nil {
+			if b.UDP.Address.Family().IsDomain() {
+				if b.UDP.Port != net.Port(dst.Port) {
+					dst = &net.UDPAddr{IP: dst.IP, Port: int(b.UDP.Port)}
+				}
+			} else {
+				dst = b.UDP.RawNetAddr().(*net.UDPAddr)
+			}
+		}
+		_, err := c.PacketConn.WriteTo(b.Bytes(), dst)
+		if err != nil {
+			buf.ReleaseMulti(mb[i:])
+			return err
+		}
+		b.Release()
+	}
+	return nil
+}
+
 type PacketCounterConnection struct {
 	net.PacketConn
 	ReadCounter  stats.Counter
@@ -500,4 +564,50 @@ func (c *PacketCounterConnection) WriteTo(p []byte, addr net.Addr) (n int, err e
 		c.WriteCounter.Add(int64(n))
 	}
 	return
+}
+
+type entry struct {
+	saddr    []string
+	deadline time.Time
+}
+
+// Expiry is checked on access. A tunnel that sleeps must not leave a cache
+// janitor retaining its Net (and DNS answers) for another minute.
+type cache struct {
+	m         map[string]entry
+	lastSweep time.Time
+	mu        sync.Mutex
+}
+
+func (c *cache) LookupHost(host string) []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if entry, ok := c.m[host]; ok {
+		if time.Now().Before(entry.deadline) {
+			return entry.saddr
+		}
+		delete(c.m, host)
+	}
+	return nil
+}
+
+func (c *cache) Cache(host string, saddr []string, ttl uint32) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	now := time.Now()
+	if c.m == nil {
+		c.m = make(map[string]entry)
+	}
+	if now.Sub(c.lastSweep) >= time.Minute {
+		for key, entry := range c.m {
+			if !now.Before(entry.deadline) {
+				delete(c.m, key)
+			}
+		}
+		c.lastSweep = now
+	}
+	c.m[host] = entry{
+		saddr:    saddr,
+		deadline: time.Now().Add(time.Second * time.Duration(ttl)),
+	}
 }

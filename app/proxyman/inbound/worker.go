@@ -144,7 +144,7 @@ func (w *tcpWorker) Start() error {
 		go safe.Run(safe.Connection, "app/proxyman/inbound/worker.go:w.Start", safe.Closer(conn), func() func() { safeFn := w.callback; safeArg0 := conn; return func() { safeFn(safeArg0) } }())
 	})
 	if err != nil {
-		return errors.New("failed to listen TCP on ", w.port).AtWarning().Base(err)
+		return errors.New("failed to listen TCP on ", w.port).Base(err)
 	}
 	w.hub = hub
 	return nil
@@ -532,7 +532,7 @@ func (w *dsWorker) Start() error {
 		go safe.Run(safe.Connection, "app/proxyman/inbound/worker.go:w.Start", safe.Closer(conn), func() func() { safeFn := w.callback; safeArg0 := conn; return func() { safeFn(safeArg0) } }())
 	})
 	if err != nil {
-		return errors.New("failed to listen Unix Domain Socket on ", w.address).AtWarning().Base(err)
+		return errors.New("failed to listen Unix Domain Socket on ", w.address).Base(err)
 	}
 	w.hub = hub
 	return nil

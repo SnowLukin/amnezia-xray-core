@@ -1,6 +1,10 @@
 package outbound
 
 import (
+	"context"
+	"fmt"
+	"github.com/xtls/xray-core/common/serial"
+	"github.com/xtls/xray-core/transport/internet/finalmask/fragment"
 	"math"
 	"sync"
 	"testing"
@@ -107,3 +111,48 @@ func TestPerUserMarkBypassesSharedOutboundMux(t *testing.T) {
 		t.Fatal("unmarked flow should preserve configured mux behavior")
 	}
 }
+
+// Finalmask owns dialer closures: cloning only SocketSettings must not leave
+// those closures reading the original shared mark.
+func TestOutboundSocketMarkRebindsFinalMaskDialers(t *testing.T) {
+	base, err := internet.ToMemoryStreamConfig(&internet.StreamConfig{
+		SocketSettings: &internet.SocketConfig{Mark: 123},
+		Tcpmasks:       []*serial.TypedMessage{serial.ToTypedMessage(&fragment.Config{})},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := &markCaptureDialer{}
+	internet.UseAlternativeSystemDialer(d)
+	defer internet.UseAlternativeSystemDialer(&internet.DefaultSystemDialer{})
+	for _, network := range []net.Network{net.Network_TCP, net.Network_UDP} {
+		cloned, applied := streamSettingsWithOutboundSocketMark(base, math.MaxUint32, "linux", network)
+		if !applied {
+			t.Fatal("mark not applied")
+		}
+		dest := net.Destination{Network: network, Address: net.LocalHostIP, Port: 80}
+		if network == net.Network_TCP {
+			_, err = cloned.FinalMask.DialTCP(context.Background(), dest)
+		} else {
+			_, err = cloned.FinalMask.DialUDP(context.Background(), dest)
+		}
+		if err == nil || d.mark != -1 {
+			t.Fatalf("network %v mark=%d err=%v", network, d.mark, err)
+		}
+		if base.SocketSettings.Mark != 123 {
+			t.Fatal("base mark mutated")
+		}
+	}
+	_, err = base.FinalMask.DialTCP(context.Background(), net.TCPDestination(net.LocalHostIP, 80))
+	if err == nil || d.mark != 123 {
+		t.Fatalf("base dial mark=%d err=%v", d.mark, err)
+	}
+}
+
+type markCaptureDialer struct{ mark int32 }
+
+func (d *markCaptureDialer) Dial(_ context.Context, _ net.Address, _ net.Destination, s *internet.SocketConfig) (net.Conn, error) {
+	d.mark = s.Mark
+	return nil, fmt.Errorf("captured")
+}
+func (*markCaptureDialer) DestIpAddress() net.IP { return nil }

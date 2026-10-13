@@ -8,6 +8,7 @@ import (
 	"crypto/tls"
 	"math/big"
 	"slices"
+	"sync/atomic"
 	"time"
 
 	utls "github.com/refraction-networking/utls"
@@ -31,11 +32,19 @@ var (
 
 type Conn struct {
 	*tls.Conn
+	suppressCloseNotify atomic.Bool
 }
 
 const tlsCloseTimeout = 250 * time.Millisecond
 
+func (c *Conn) SuppressCloseNotify() {
+	c.suppressCloseNotify.Store(true)
+}
+
 func (c *Conn) Close() error {
+	if c.suppressCloseNotify.Load() {
+		return c.Conn.NetConn().Close()
+	}
 	timer := time.AfterFunc(tlsCloseTimeout, func() {
 		defer safe.Recover(safe.Connection, "transport/internet/tls/tls.go:c.Close", nil)
 
@@ -78,11 +87,19 @@ func Server(c net.Conn, config *tls.Config) net.Conn {
 
 type UConn struct {
 	*utls.UConn
+	suppressCloseNotify atomic.Bool
 }
 
 var _ Interface = (*UConn)(nil)
 
+func (c *UConn) SuppressCloseNotify() {
+	c.suppressCloseNotify.Store(true)
+}
+
 func (c *UConn) Close() error {
+	if c.suppressCloseNotify.Load() {
+		return c.Conn.NetConn().Close()
+	}
 	timer := time.AfterFunc(tlsCloseTimeout, func() {
 		defer safe.Recover(safe.Connection, "transport/internet/tls/tls.go:c.Close", nil)
 
@@ -162,6 +179,23 @@ func copyConfig(c *tls.Config) *utls.Config {
 		KeyLogWriter:                   c.KeyLogWriter,
 		EncryptedClientHelloConfigList: c.EncryptedClientHelloConfigList,
 		NextProtos:                     c.NextProtos,
+	}
+	if c.GetClientCertificate != nil {
+		config.GetClientCertificate = func(info *utls.CertificateRequestInfo) (*utls.Certificate, error) {
+			schemes := make([]tls.SignatureScheme, len(info.SignatureSchemes))
+			for i, s := range info.SignatureSchemes {
+				schemes[i] = tls.SignatureScheme(s)
+			}
+			cert, err := c.GetClientCertificate(&tls.CertificateRequestInfo{
+				AcceptableCAs:    info.AcceptableCAs,
+				SignatureSchemes: schemes,
+				Version:          info.Version,
+			})
+			if err != nil || cert == nil {
+				return &utls.Certificate{}, err
+			}
+			return &utls.Certificate{Certificate: cert.Certificate, PrivateKey: cert.PrivateKey, Leaf: cert.Leaf}, nil
+		}
 	}
 	return config
 }

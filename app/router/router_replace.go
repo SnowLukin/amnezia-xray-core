@@ -11,14 +11,16 @@ func (r *Router) ReplaceRules(config *Config, withStrategy bool) error {
 		ctx:        r.ctx,
 		ohm:        r.ohm,
 		dispatcher: r.dispatcher,
-		balancers:  make(map[string]*Balancer, len(config.BalancingRule)),
 	}
+	next.rules.Store(new([]*Rule))
+	next.balancers.Store(&map[string]*Balancer{})
 	if err := next.ReloadRules(config, true); err != nil {
 		return err
 	}
 	r.mu.Lock()
-	old := r.rules
-	r.rules, r.balancers = next.rules, next.balancers
+	old := *r.rules.Load()
+	r.rules.Store(next.rules.Load())
+	r.balancers.Store(next.balancers.Load())
 	if withStrategy {
 		r.domainStrategy = config.DomainStrategy
 	}

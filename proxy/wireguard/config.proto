@@ -95,4 +95,5 @@ message DeviceConfig {
   bool is_client = 8;
   bool no_kernel_tun = 9;
   AmneziaParameters parameters = 10;
+  repeated string DNS = 11;
 }

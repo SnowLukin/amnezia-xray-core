@@ -35,14 +35,16 @@ type STUNPacketEvent struct {
 }
 
 type realmConnServer struct {
-	cleaned chan struct{}
-	ctx     context.Context
-	cancel  context.CancelFunc
+	wg     sync.WaitGroup
+	ctx    context.Context
+	cancel context.CancelFunc
 	net.PacketConn
 
 	realmClient   *Client
 	realmID       string
 	stunServers   []string
+	family        Family
+	mapper        *PortMapper
 	stunTimeout   time.Duration
 	punchTimeout  time.Duration
 	punchInterval time.Duration
@@ -59,8 +61,29 @@ type realmConnServer struct {
 func NewConnServer(config *Config, raw net.PacketConn) (net.PacketConn, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 
+	family := Family_Dual
+	switch config.IPMode {
+	case "dual":
+	case "v4":
+		family = Family_V4
+	case "v6":
+		family = Family_V6
+	}
+
+	var mapper *PortMapper
+	if config.PortMapping != nil && config.PortMapping.Enabled {
+		var err error
+		start := time.Now()
+		mapper, err = NewPortMapper(context.Background(), raw.LocalAddr().(*net.UDPAddr).Port, PortMapConfig{Timeout: time.Duration(config.PortMapping.Timeout) * time.Second, Lifetime: time.Duration(config.PortMapping.Lifetime) * time.Second})
+		if err != nil {
+			errors.LogErrorInner(context.Background(), err, "[realm] [port mapping] [", raw.LocalAddr().(*net.UDPAddr).Port, "] init failed after ", time.Since(start))
+		} else {
+			errors.LogDebug(context.Background(), "[realm] [port mapping] [", mapper.InternalPort(), "] gateway ", mapper.GatewayType(), ", external ", mapper.ExternalAddr())
+			errors.LogDebug(context.Background(), "[realm] [port mapping] [", mapper.InternalPort(), "] init success with ", time.Since(start))
+		}
+	}
+
 	conn := &realmConnServer{
-		cleaned:    make(chan struct{}),
 		ctx:        ctx,
 		cancel:     cancel,
 		PacketConn: raw,
@@ -68,6 +91,8 @@ func NewConnServer(config *Config, raw net.PacketConn) (net.PacketConn, error) {
 		realmClient:   NewClient(config.Scheme, config.Host, config.Port, config.Token, config.TlsConfig),
 		realmID:       config.ID,
 		stunServers:   config.StunServers,
+		family:        family,
+		mapper:        mapper,
 		stunTimeout:   defaultSTUNTimeout,
 		punchTimeout:  defaultPunchTimeout,
 		punchInterval: defaultPunchInterval,
@@ -76,7 +101,13 @@ func NewConnServer(config *Config, raw net.PacketConn) (net.PacketConn, error) {
 		stun:   make(chan STUNPacketEvent, defaultEventBuffer),
 	}
 
-	go safe.Run(safe.Connection, "transport/internet/finalmask/realm/server.go:NewConnServer", safe.Closer(conn), func() func() { safeFn := conn.run; return func() { safeFn() } }())
+	if mapper != nil {
+		conn.wg.Add(1)
+		go safe.Run(safe.Connection, "transport/internet/finalmask/realm/server.go:portMapLoop", safe.Closer(conn), func() { portMapLoop(ctx, mapper, conn.wg.Done) })
+	}
+
+	conn.wg.Add(1)
+	go safe.Run(safe.Connection, "transport/internet/finalmask/realm/server.go:run", safe.Closer(conn), conn.run)
 
 	return conn, nil
 }
@@ -139,6 +170,8 @@ func (c *realmConnServer) discover(servers []*net.UDPAddr) []netip.AddrPort {
 	results := make([]netip.AddrPort, 0, len(servers))
 	for len(transactionIDs) > 0 {
 		select {
+		case <-c.ctx.Done():
+			goto end
 		case <-deadline.C:
 			goto end
 		case ev := <-c.stun:
@@ -150,6 +183,9 @@ func (c *realmConnServer) discover(servers []*net.UDPAddr) []netip.AddrPort {
 	}
 end:
 	deadline.Stop()
+	if c.mapper != nil {
+		results = insertAddr(results, c.mapper.ExternalAddr())
+	}
 	slices.SortFunc(results, func(a, b netip.AddrPort) int {
 		return strings.Compare(a.String(), b.String())
 	})
@@ -161,7 +197,7 @@ func (c *realmConnServer) getlocals(force bool) []netip.AddrPort {
 	c.localsMu.Lock()
 	if force || time.Since(c.localsLast) > defaultStunCacheTTL {
 		start := time.Now()
-		servers := resolveSTUNServers(c.PacketConn.LocalAddr().(*net.UDPAddr).IP, c.stunServers)
+		servers := resolveSTUNServers(c.PacketConn.LocalAddr().(*net.UDPAddr).IP, c.stunServers, c.family)
 		errors.LogDebug(context.Background(), "[realm] update stun servers ", servers, " with ", time.Since(start))
 		if len(servers) > 0 {
 			start = time.Now()
@@ -234,7 +270,7 @@ retry:
 	if err != nil {
 		errors.LogErrorInner(context.Background(), err, "[realm] ", c.realmID, " register session err retry in ", backoff)
 		if c.waitctx(c.ctx, backoff) {
-			close(c.cleaned)
+			c.wg.Done()
 			return
 		}
 		backoff *= 2
@@ -275,7 +311,7 @@ retry:
 	case <-c.ctx.Done():
 		_ = c.realmClient.Deregister(context.Background(), c.realmID, resp.SessionID)
 		errors.LogDebug(context.Background(), "[realm] ", c.realmID, " ", resp.SessionID, " deregistered")
-		close(c.cleaned)
+		c.wg.Done()
 		return
 	default:
 		goto retry
@@ -382,7 +418,7 @@ func (c *realmConnServer) punchEvent(ctx context.Context, sid string, ev *PunchE
 
 	peers, _ := parseAddrPorts(ev.Addresses)
 	errors.LogDebug(context.Background(), "[realm] ", ev.Nonce, " update peers ", peers)
-	filteredPeers, seen := candidatePunchAddrs(locals, peers)
+	filteredPeers, seen := candidatePunchAddrs(locals, peers, c.family)
 	errors.LogDebug(context.Background(), "[realm] ", ev.Nonce, " filtered peers ", filteredPeers)
 	expandedPeers := expandSymmetricNATCandidates(filteredPeers, seen)
 	errors.LogDebug(context.Background(), "[realm] ", ev.Nonce, " expanded peers ", expandedPeers)
@@ -420,6 +456,6 @@ func (c *realmConnServer) ReadFrom(p []byte) (int, net.Addr, error) {
 
 func (c *realmConnServer) Close() error {
 	c.cancel()
-	<-c.cleaned
+	c.wg.Wait()
 	return c.PacketConn.Close()
 }

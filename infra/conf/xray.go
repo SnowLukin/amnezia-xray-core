@@ -15,6 +15,8 @@ import (
 	"github.com/xtls/xray-core/common/net"
 	"github.com/xtls/xray-core/common/serial"
 	core "github.com/xtls/xray-core/core"
+	"github.com/xtls/xray-core/proxy/freedom"
+	"github.com/xtls/xray-core/proxy/masque"
 	"github.com/xtls/xray-core/transport/internet"
 )
 
@@ -31,6 +33,7 @@ var (
 		"trojan":        func() interface{} { return new(TrojanServerConfig) },
 		"wireguard":     func() interface{} { return &WireGuardConfig{IsClient: false} },
 		"hysteria":      func() interface{} { return new(HysteriaServerConfig) },
+		"masque":        func() interface{} { return new(MasqueServerConfig) },
 		"tun":           func() interface{} { return new(TunConfig) },
 	}, "protocol", "settings")
 
@@ -47,6 +50,7 @@ var (
 		"vmess":       func() interface{} { return new(VMessOutboundConfig) },
 		"trojan":      func() interface{} { return new(TrojanClientConfig) },
 		"hysteria":    func() interface{} { return new(HysteriaClientConfig) },
+		"masque":      func() interface{} { return new(MasqueClientConfig) },
 		"dns":         func() interface{} { return new(DNSOutboundConfig) },
 		"wireguard":   func() interface{} { return &WireGuardConfig{IsClient: true} },
 	}, "protocol", "settings")
@@ -140,7 +144,7 @@ func (c *InboundDetourConfig) Build() (*core.InboundHandlerConfig, error) {
 	// TUN inbound doesn't need port configuration as it uses network interface instead
 	if strings.ToLower(c.Protocol) == "tun" {
 		// Skip port validation for TUN
-	} else if c.ListenOn == nil {
+	} else if c.ListenOn == nil || len(c.ListenOn.String()) == 0 {
 		// Listen on anyip, must set PortList
 		if c.PortList == nil {
 			return nil, errors.New("Listen on AnyIP but no Port(s) set in InboundDetour.")
@@ -202,6 +206,9 @@ func (c *InboundDetourConfig) Build() (*core.InboundHandlerConfig, error) {
 	if err != nil {
 		return nil, errors.New("failed to build inbound handler for protocol ", c.Protocol).Base(err)
 	}
+	if _, ok := ts.(*masque.ServerConfig); !ok && receiverSettings.StreamSettings != nil && receiverSettings.StreamSettings.ProtocolName == "masque" {
+		return nil, errors.New("the masque transport can only be used by the masque inbound")
+	}
 
 	return &core.InboundHandlerConfig{
 		Tag:              c.Tag,
@@ -216,20 +223,10 @@ type OutboundDetourConfig struct {
 	Tag            string                   `json:"tag"`
 	Settings       *json.RawMessage         `json:"settings"`
 	StreamSetting  *StreamConfig            `json:"streamSettings"`
-	ProxySettings  *ProxyConfig             `json:"proxySettings"`
+	ProxySettings  *json.RawMessage         `json:"proxySettings"`
 	MuxSettings    *MuxConfig               `json:"mux"`
 	TargetStrategy string                   `json:"targetStrategy"`
 	Selection      *OutboundSelectionConfig `json:"selection"`
-}
-
-func (c *OutboundDetourConfig) checkChainProxyConfig() error {
-	if c.StreamSetting == nil || c.ProxySettings == nil || c.StreamSetting.SocketSettings == nil {
-		return nil
-	}
-	if len(c.ProxySettings.Tag) > 0 && len(c.StreamSetting.SocketSettings.DialerProxy) > 0 {
-		return errors.New("proxySettings.tag is conflicted with sockopt.dialerProxy").AtWarning()
-	}
-	return nil
 }
 
 func requiresTransportSecurity(address *Address) bool {
@@ -258,7 +255,7 @@ func validateOutboundTransportSecurity(rawConfig interface{}, senderSettings *pr
 	}
 
 	if tjCfg, ok := rawConfig.(*TrojanClientConfig); ok {
-		if requiresTransportSecurity(tjCfg.Address) {
+		if requiresTransportSecurity(tjCfg.Servers[0].Address) {
 			return errors.New("trojan without TLS is prohibited unless the server address is a private IP or domain")
 		}
 	}
@@ -268,6 +265,10 @@ func validateOutboundTransportSecurity(rawConfig interface{}, senderSettings *pr
 
 // Build implements Buildable.
 func (c *OutboundDetourConfig) Build() (*core.OutboundHandlerConfig, error) {
+	if c.ProxySettings != nil {
+		return nil, errors.PrintRemovedFeatureError(`outbound "proxySettings"`, `"streamSettings.sockopt.dialerProxy"`)
+	}
+
 	senderSettings := &proxyman.SenderConfig{}
 	switch strings.ToLower(c.TargetStrategy) {
 	case "asis", "":
@@ -295,9 +296,6 @@ func (c *OutboundDetourConfig) Build() (*core.OutboundHandlerConfig, error) {
 	default:
 		return nil, errors.New("unsupported target domain strategy: ", c.TargetStrategy)
 	}
-	if err := c.checkChainProxyConfig(); err != nil {
-		return nil, err
-	}
 
 	if c.SendThrough != nil {
 		address := ParseSendThough(c.SendThrough)
@@ -323,26 +321,6 @@ func (c *OutboundDetourConfig) Build() (*core.OutboundHandlerConfig, error) {
 		senderSettings.StreamSettings = ss
 	}
 
-	if c.ProxySettings != nil {
-		ps, err := c.ProxySettings.Build()
-		if err != nil {
-			return nil, errors.New("invalid outbound detour proxy settings").Base(err)
-		}
-		if ps.TransportLayerProxy {
-			if senderSettings.StreamSettings != nil {
-				if senderSettings.StreamSettings.SocketSettings != nil {
-					senderSettings.StreamSettings.SocketSettings.DialerProxy = ps.Tag
-				} else {
-					senderSettings.StreamSettings.SocketSettings = &internet.SocketConfig{DialerProxy: ps.Tag}
-				}
-			} else {
-				senderSettings.StreamSettings = &internet.StreamConfig{SocketSettings: &internet.SocketConfig{DialerProxy: ps.Tag}}
-			}
-			ps = nil
-		}
-		senderSettings.ProxySettings = ps
-	}
-
 	if c.MuxSettings != nil {
 		ms, err := c.MuxSettings.Build()
 		if err != nil {
@@ -359,12 +337,45 @@ func (c *OutboundDetourConfig) Build() (*core.OutboundHandlerConfig, error) {
 	if err != nil {
 		return nil, errors.New("failed to load outbound detour config for protocol ", c.Protocol).Base(err)
 	}
-	if err := validateOutboundTransportSecurity(rawConfig, senderSettings); err != nil {
-		return nil, err
-	}
 	ts, err := rawConfig.(Buildable).Build()
 	if err != nil {
 		return nil, errors.New("failed to build outbound handler for protocol ", c.Protocol).Base(err)
+	}
+	if err := validateOutboundTransportSecurity(rawConfig, senderSettings); err != nil {
+		return nil, err
+	}
+
+	if _, ok := ts.(*masque.ClientConfig); ok {
+		if ms := senderSettings.MultiplexSettings; ms != nil && ms.Enabled {
+			return nil, errors.New(`masque outbound does not support "mux"`)
+		}
+	} else if senderSettings.StreamSettings != nil && senderSettings.StreamSettings.ProtocolName == "masque" {
+		return nil, errors.New("the masque transport can only be used by the masque outbound")
+	}
+
+	if fc, ok := ts.(*freedom.Config); ok {
+		if senderSettings.StreamSettings != nil &&
+			senderSettings.StreamSettings.SocketSettings != nil &&
+			senderSettings.StreamSettings.SocketSettings.AddressPortStrategy != internet.AddressPortStrategy_None {
+			return nil, errors.New(`freedom outbound does not support "sockopt.addressPortStrategy"`)
+		}
+
+		var strategy internet.DomainStrategy
+		if strategy = senderSettings.TargetStrategy; strategy != internet.DomainStrategy_AS_IS {
+			errors.LogWarning(context.Background(), `The "outbound.targetStrategy" setting is not supported directly by freedom and has been automatically migrated to "sockopt.domainStrategy" with no behavior change.`)
+			senderSettings.TargetStrategy = internet.DomainStrategy_AS_IS
+		} else if strategy = fc.DomainStrategy; strategy != internet.DomainStrategy_AS_IS {
+			errors.LogWarning(context.Background(), `The "freedom.domainStrategy" setting is deprecated and will be removed. For compatibility, its value has been automatically migrated to "sockopt.domainStrategy". Please update your config before removal.`)
+		}
+		if strategy != internet.DomainStrategy_AS_IS {
+			if senderSettings.StreamSettings == nil {
+				senderSettings.StreamSettings = &internet.StreamConfig{}
+			}
+			if senderSettings.StreamSettings.SocketSettings == nil {
+				senderSettings.StreamSettings.SocketSettings = &internet.SocketConfig{}
+			}
+			senderSettings.StreamSettings.SocketSettings.DomainStrategy = strategy
+		}
 	}
 
 	return &core.OutboundHandlerConfig{

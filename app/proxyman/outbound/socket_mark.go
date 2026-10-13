@@ -26,7 +26,7 @@ func streamSettingsWithOutboundSocketMark(settings *internet.MemoryStreamConfig,
 	// SocketConfig.Mark is int32 for compatibility, while SO_MARK consumes the
 	// same low 32 bits. Preserve the full per-user uint32 value explicitly.
 	cloned.SocketSettings.Mark = int32(mark)
-	return &cloned, true
+	return cloned.WithSocketSettings(cloned.SocketSettings), true
 }
 
 func shouldDispatchViaMux(mark uint32) bool {

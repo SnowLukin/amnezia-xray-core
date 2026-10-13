@@ -50,18 +50,24 @@ func (d *DefaultSystemDialer) Dial(ctx context.Context, src net.Address, dest ne
 	errors.LogDebug(ctx, "dialing to "+dest.String())
 
 	if dest.Network == net.Network_UDP {
-		srcAddr := resolveSrcAddr(net.Network_UDP, src)
-		if srcAddr == nil {
-			srcAddr = &net.UDPAddr{
-				IP:   []byte{0, 0, 0, 0},
-				Port: 0,
-			}
-		}
-		var lc net.ListenConfig
 		destAddr, err := net.ResolveUDPAddr("udp", dest.NetAddr())
 		if err != nil {
 			return nil, err
 		}
+		srcAddr := resolveSrcAddr(net.Network_UDP, src)
+		if srcAddr == nil {
+			// some OS don't support mapped IPv4 dual stack
+			// and need to select 0.0.0.0 or [::] manually based on the destination
+			wildcard := net.AnyIP.IP()
+			if destAddr.IP.To4() == nil {
+				wildcard = net.AnyIPv6.IP()
+			}
+			srcAddr = &net.UDPAddr{
+				IP:   wildcard,
+				Port: 0,
+			}
+		}
+		var lc net.ListenConfig
 		lc.Control = func(network, address string, c syscall.RawConn) error {
 			for _, ctl := range Controllers {
 				if err := ctl(network, address, c); err != nil {
@@ -80,7 +86,7 @@ func (d *DefaultSystemDialer) Dial(ctx context.Context, src net.Address, dest ne
 		if err != nil {
 			return nil, err
 		}
-		return &PacketConnWrapper{
+		return &net.PacketConnWrapper{
 			PacketConn: packetConn,
 			Dest:       destAddr,
 		}, nil
@@ -140,24 +146,6 @@ func (d *DefaultSystemDialer) Dial(ctx context.Context, src net.Address, dest ne
 
 func (d *DefaultSystemDialer) DestIpAddress() net.IP {
 	return nil
-}
-
-type PacketConnWrapper struct {
-	net.PacketConn
-	Dest net.Addr
-}
-
-func (c *PacketConnWrapper) Read(p []byte) (int, error) {
-	n, _, err := c.PacketConn.ReadFrom(p)
-	return n, err
-}
-
-func (c *PacketConnWrapper) Write(p []byte) (int, error) {
-	return c.PacketConn.WriteTo(p, c.Dest)
-}
-
-func (c *PacketConnWrapper) RemoteAddr() net.Addr {
-	return c.Dest
 }
 
 type SystemDialerAdapter interface {
@@ -229,5 +217,5 @@ func (c *FakePacketConn) WriteTo(p []byte, _ net.Addr) (n int, err error) {
 }
 
 func (c *FakePacketConn) LocalAddr() net.Addr {
-	return &net.UDPAddr{IP: c.Conn.LocalAddr().(*net.TCPAddr).IP, Port: c.Conn.LocalAddr().(*net.TCPAddr).Port}
+	return &net.UDPAddr{IP: []byte{0, 0, 0, 0}}
 }

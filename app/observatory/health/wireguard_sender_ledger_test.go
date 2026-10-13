@@ -45,7 +45,7 @@ func TestWireGuardSenderBaselineRejectsWriteOverlappingClose(t *testing.T) {
 		<-release
 		return len(p), nil
 	}}
-	c := ledger.finishDial(ledger.begin("dial", 0, 0), &internet.PacketConnWrapper{PacketConn: packet}, nil).(*internet.PacketConnWrapper)
+	c := ledger.finishDial(ledger.begin("dial", 0, 0), &net.PacketConnWrapper{PacketConn: packet}, nil).(*net.PacketConnWrapper)
 	done := make(chan struct{})
 	go func() {
 		c.WriteTo([]byte{1}, nil)
@@ -86,7 +86,7 @@ func TestWireGuardSenderBaselineRejectsDialCreatingLateGeneration(t *testing.T) 
 	dialer := &wireGuardSenderDialer{registry: registry, SystemDialer: &wireGuardSenderFakeDialer{dial: func() (net.Conn, error) {
 		close(entered)
 		<-release
-		return &internet.PacketConnWrapper{PacketConn: &wireGuardSenderFakePacket{}}, nil
+		return &net.PacketConnWrapper{PacketConn: &wireGuardSenderFakePacket{}}, nil
 	}}}
 	done := make(chan net.Conn, 1)
 	go func() {
@@ -129,7 +129,7 @@ func TestWireGuardSenderEndpointRetainsOldLedgerAndFailedAttempts(t *testing.T) 
 	}
 	failedWrite := errors.New("write failed")
 	dialer := &wireGuardSenderDialer{registry: registry, SystemDialer: &wireGuardSenderFakeDialer{dial: func() (net.Conn, error) {
-		return &internet.PacketConnWrapper{PacketConn: &wireGuardSenderFakePacket{write: func([]byte, net.Addr) (int, error) {
+		return &net.PacketConnWrapper{PacketConn: &wireGuardSenderFakePacket{write: func([]byte, net.Addr) (int, error) {
 			return 0, failedWrite
 		}}}, nil
 	}}}
@@ -149,7 +149,7 @@ func TestWireGuardSenderEndpointRetainsOldLedgerAndFailedAttempts(t *testing.T) 
 	if !ok || other.epoch == old.epoch {
 		t.Fatal("distinct endpoint did not get its own epoch")
 	}
-	if _, err := first.(*internet.PacketConnWrapper).WriteTo([]byte{1}, nil); !errors.Is(err, failedWrite) {
+	if _, err := first.(*net.PacketConnWrapper).WriteTo([]byte{1}, nil); !errors.Is(err, failedWrite) {
 		t.Fatalf("write result changed: %v", err)
 	}
 	late, err := dialer.Dial(context.Background(), nil, destination, nil)

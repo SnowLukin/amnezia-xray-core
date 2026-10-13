@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/xtls/xray-core/common/errors"
@@ -42,6 +43,7 @@ type WebhookNotifier struct {
 	deduplication uint32
 	client        *http.Client
 	seen          sync.Map
+	lastSweep     atomic.Int64
 	done          chan struct{}
 	wg            sync.WaitGroup
 	closeOnce     sync.Once
@@ -77,18 +79,6 @@ func NewWebhookNotifier(cfg *WebhookConfig) (*WebhookNotifier, error) {
 		for k, v := range cfg.Headers {
 			h.headers[k] = v
 		}
-	}
-
-	if h.deduplication > 0 {
-		h.wg.Add(1)
-		go func() {
-			defer h.wg.Done()
-			defer safe.Recover(safe.Subsystem, "app/router/webhook.go:NewWebhookNotifier", nil)
-			if !safe.Allowed(safe.Subsystem, "app/router/webhook.go:NewWebhookNotifier", nil) {
-				return
-			}
-			h.cleanupLoop()
-		}()
 	}
 
 	return h, nil
@@ -215,6 +205,7 @@ func (h *WebhookNotifier) isDuplicate(email string) bool {
 	}
 	ttl := time.Duration(h.deduplication) * time.Second
 	now := time.Now()
+	h.maybeSweep(now, ttl)
 	if v, loaded := h.seen.LoadOrStore(email, now); loaded {
 		if now.Sub(v.(time.Time)) < ttl {
 			return true
@@ -224,26 +215,23 @@ func (h *WebhookNotifier) isDuplicate(email string) bool {
 	return false
 }
 
-func (h *WebhookNotifier) cleanupLoop() {
-	ttl := time.Duration(h.deduplication) * time.Second
-	ticker := time.NewTicker(ttl)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-h.done:
-			return
-		case <-ticker.C:
-			now := time.Now()
-			h.seen.Range(func(key, value any) bool {
-				if now.Sub(value.(time.Time)) >= ttl {
-					h.seen.Delete(key)
-				}
-				return true
-			})
-		}
+func (h *WebhookNotifier) maybeSweep(now time.Time, ttl time.Duration) {
+	last := h.lastSweep.Load()
+	if now.UnixNano()-last < int64(ttl) {
+		return
 	}
+	if !h.lastSweep.CompareAndSwap(last, now.UnixNano()) {
+		return // another goroutine did the sweep
+	}
+	h.seen.Range(func(key, value any) bool {
+		if now.Sub(value.(time.Time)) >= ttl {
+			h.seen.Delete(key)
+		}
+		return true
+	})
 }
 
+// Only need to call if the Notifier is really used, otherwise GC can clean it
 func (h *WebhookNotifier) Close() error {
 	h.closeOnce.Do(func() {
 		close(h.done)

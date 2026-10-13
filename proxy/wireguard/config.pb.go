@@ -439,6 +439,7 @@ type DeviceConfig struct {
 	IsClient       bool                        `protobuf:"varint,8,opt,name=is_client,json=isClient,proto3" json:"is_client,omitempty"`
 	NoKernelTun    bool                        `protobuf:"varint,9,opt,name=no_kernel_tun,json=noKernelTun,proto3" json:"no_kernel_tun,omitempty"`
 	Parameters     *AmneziaParameters          `protobuf:"bytes,10,opt,name=parameters,proto3" json:"parameters,omitempty"`
+	DNS            []string                    `protobuf:"bytes,11,rep,name=DNS,proto3" json:"DNS,omitempty"`
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }
@@ -543,6 +544,13 @@ func (x *DeviceConfig) GetParameters() *AmneziaParameters {
 	return nil
 }
 
+func (x *DeviceConfig) GetDNS() []string {
+	if x != nil {
+		return x.DNS
+	}
+	return nil
+}
+
 var File_proxy_wireguard_config_proto protoreflect.FileDescriptor
 
 const file_proxy_wireguard_config_proto_rawDesc = "" +
@@ -585,7 +593,7 @@ const file_proxy_wireguard_config_proto_rawDesc = "" +
 	"\rrekey_timeout\x18\x16 \x01(\tR\frekeyTimeout\x12*\n" +
 	"\x11reject_after_time\x18\x17 \x01(\tR\x0frejectAfterTime\x12+\n" +
 	"\x11keepalive_timeout\x18\x18 \x01(\tR\x10keepaliveTimeout\x124\n" +
-	"\x16max_handshake_attempts\x18\x19 \x01(\tR\x14maxHandshakeAttempts\"\xa5\x04\n" +
+	"\x16max_handshake_attempts\x18\x19 \x01(\tR\x14maxHandshakeAttempts\"\xb7\x04\n" +
 	"\fDeviceConfig\x12\x1d\n" +
 	"\n" +
 	"secret_key\x18\x01 \x01(\tR\tsecretKey\x12\x1a\n" +
@@ -600,7 +608,8 @@ const file_proxy_wireguard_config_proto_rawDesc = "" +
 	"\n" +
 	"parameters\x18\n" +
 	" \x01(\v2'.xray.proxy.wireguard.AmneziaParametersR\n" +
-	"parameters\"\\\n" +
+	"parameters\x12\x10\n" +
+	"\x03DNS\x18\v \x03(\tR\x03DNS\"\\\n" +
 	"\x0eDomainStrategy\x12\f\n" +
 	"\bFORCE_IP\x10\x00\x12\r\n" +
 	"\tFORCE_IP4\x10\x01\x12\r\n" +

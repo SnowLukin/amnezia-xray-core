@@ -1,7 +1,12 @@
 package internet
 
 import (
+	"context"
+	"reflect"
+
+	"github.com/xtls/xray-core/common"
 	"github.com/xtls/xray-core/common/net"
+	"github.com/xtls/xray-core/common/net/cnc"
 	"github.com/xtls/xray-core/transport/internet/finalmask"
 )
 
@@ -12,11 +17,38 @@ type MemoryStreamConfig struct {
 	ProtocolSettings interface{}
 	SecurityType     string
 	SecuritySettings interface{}
-	TcpmaskManager   *finalmask.TcpmaskManager
-	UdpmaskManager   *finalmask.UdpmaskManager
+	FinalMask        *finalmask.FinalMask
 	QuicParams       *QuicParams
 	SocketSettings   *SocketConfig
 	DownloadSettings *MemoryStreamConfig
+}
+
+// WithSocketSettings rebinds the finalmask dialers to a private stream copy.
+func (mss *MemoryStreamConfig) WithSocketSettings(sockopt *SocketConfig) *MemoryStreamConfig {
+	cloned := *mss
+	cloned.SocketSettings = sockopt
+	if mss.FinalMask != nil {
+		cloned.FinalMask = mss.FinalMask.WithDialers(
+			func(ctx context.Context, dest net.Destination) (net.Conn, error) {
+				return DialSystem(ctx, dest, sockopt)
+			},
+			func(ctx context.Context, dest net.Destination) (net.PacketConn, net.Addr, error) {
+				conn, err := DialSystem(ctx, dest, sockopt)
+				if err != nil {
+					return nil, nil, err
+				}
+				switch c := conn.(type) {
+				case *net.PacketConnWrapper:
+					return c.PacketConn, conn.RemoteAddr(), nil
+				case *cnc.Connection:
+					return &FakePacketConn{Conn: c}, &net.UDPAddr{IP: []byte{0, 0, 0, 0}}, nil
+				default:
+					panic(reflect.TypeOf(c))
+				}
+			},
+		)
+	}
+	return &cloned
 }
 
 // ToMemoryStreamConfig converts a StreamConfig to MemoryStreamConfig. It returns a default non-nil MemoryStreamConfig for nil input.
@@ -50,33 +82,52 @@ func ToMemoryStreamConfig(s *StreamConfig) (*MemoryStreamConfig, error) {
 		mss.SecurityType = s.SecurityType
 		mss.SecuritySettings = ess
 	}
+	if s != nil && (len(s.Tcpmasks) != 0 || len(s.Udpmasks) != 0) {
+		var tcpMasks []finalmask.TCPMask
+		var udpMasks []finalmask.UDPMask
 
-	if s != nil && len(s.Tcpmasks) > 0 {
-		var masks []finalmask.Tcpmask
-		for _, msg := range s.Tcpmasks {
-			instance, err := msg.GetInstance()
-			if err != nil {
-				return nil, err
-			}
-			masks = append(masks, instance.(finalmask.Tcpmask))
+		for i := range s.Tcpmasks {
+			instance := common.Must2(s.Tcpmasks[i].GetInstance())
+			tcpMasks = append(tcpMasks, instance.(finalmask.TCPMask))
 		}
-		mss.TcpmaskManager = finalmask.NewTcpmaskManager(masks)
+		for i := range s.Udpmasks {
+			instance := common.Must2(s.Udpmasks[i].GetInstance())
+			udpMasks = append(udpMasks, instance.(finalmask.UDPMask))
+		}
+
+		dialTCP := func(ctx context.Context, dest net.Destination) (net.Conn, error) {
+			return DialSystem(ctx, dest, mss.SocketSettings)
+		}
+		listen := func(ctx context.Context, addr net.Addr) (net.Listener, error) {
+			return ListenSystem(ctx, addr, mss.SocketSettings)
+		}
+		dialUDP := func(ctx context.Context, dest net.Destination) (net.PacketConn, net.Addr, error) {
+			conn, err := DialSystem(ctx, dest, mss.SocketSettings)
+			if err != nil {
+				return nil, nil, err
+			}
+			var newConn net.PacketConn
+			var udpAddr net.Addr
+			switch c := conn.(type) {
+			case *net.PacketConnWrapper:
+				newConn = c.PacketConn
+				udpAddr = conn.RemoteAddr()
+			case *cnc.Connection:
+				newConn = &FakePacketConn{Conn: c}
+				udpAddr = &net.UDPAddr{IP: []byte{0, 0, 0, 0}, Port: 0}
+			default:
+				panic(reflect.TypeOf(c))
+			}
+			return newConn, udpAddr, nil
+		}
+		listenPacket := func(ctx context.Context, addr net.Addr) (net.PacketConn, error) {
+			return ListenSystemPacket(ctx, addr, mss.SocketSettings)
+		}
+		mss.FinalMask = finalmask.NewFinalMask(tcpMasks, udpMasks, dialTCP, listen, dialUDP, listenPacket)
 	}
 
 	if s != nil && s.QuicParams != nil {
 		mss.QuicParams = s.QuicParams
-	}
-
-	if s != nil && len(s.Udpmasks) > 0 {
-		var masks []finalmask.Udpmask
-		for _, msg := range s.Udpmasks {
-			instance, err := msg.GetInstance()
-			if err != nil {
-				return nil, err
-			}
-			masks = append(masks, instance.(finalmask.Udpmask))
-		}
-		mss.UdpmaskManager = finalmask.NewUdpmaskManager(masks)
 	}
 
 	return mss, nil

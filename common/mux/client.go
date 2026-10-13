@@ -40,7 +40,7 @@ func (m *ClientManager) Dispatch(ctx context.Context, link *transport.Link) erro
 		}
 	}
 
-	return errors.New("unable to find an available mux client").AtWarning()
+	return errors.New("unable to find an available mux client")
 }
 
 func (m *ClientManager) DispatchIsolated(ctx context.Context, link *transport.Link) error {
@@ -362,12 +362,10 @@ func (m *ClientWorker) Dispatch(ctx context.Context, link *transport.Link) bool 
 	}
 
 	sm := m.sessionManager
-	s := sm.Allocate(&m.strategy)
+	s := sm.Allocate(&m.strategy, link.Reader, link.Writer)
 	if s == nil {
 		return false
 	}
-	s.input = link.Reader
-	s.output = link.Writer
 	go safe.Run(safe.Connection, "common/mux/client.go:m.Dispatch", func() { s.Close(false) }, func() func() {
 		safeFn := fetchInput
 		safeArg0 := ctx

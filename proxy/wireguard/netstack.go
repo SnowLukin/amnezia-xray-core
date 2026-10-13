@@ -17,12 +17,14 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"regexp"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
 	"github.com/amnezia-vpn/amneziawg-go/v3/tun"
-	"github.com/xtls/xray-core/transport/internet"
+	xnet "github.com/xtls/xray-core/common/net"
 
 	"golang.org/x/net/dns/dnsmessage"
 	"gvisor.dev/gvisor/pkg/buffer"
@@ -200,6 +202,7 @@ func (tun *netTun) Read(buf [][]byte, sizes []int, offset int) (int, error) {
 	}
 
 	n, err := view.Read(buf[0][offset:])
+	view.Release()
 	if err != nil {
 		return 0, err
 	}
@@ -281,7 +284,7 @@ func (tun *netTun) DialUDPAddrPort(laddr, raddr netip.AddrPort) (net.Conn, error
 	if err != nil {
 		return nil, err
 	}
-	return &internet.PacketConnWrapper{
+	return &xnet.PacketConnWrapper{
 		PacketConn: conn,
 		Dest:       net.UDPAddrFromAddrPort(raddr),
 	}, nil
@@ -292,6 +295,7 @@ type Net struct {
 	DialUDPAddrPort        func(laddr, raddr netip.AddrPort) (net.Conn, error)
 	dnsServers             []netip.Addr
 	hasV4, hasV6           bool
+	cache                  cache
 }
 
 func convertToFullAddr(endpoint netip.AddrPort) (tcpip.FullAddress, tcpip.NetworkProtocolNumber) {
@@ -319,6 +323,9 @@ var (
 	errServerTemporarilyMisbehaving = errors.New("server misbehaving")
 	errCanceled                     = errors.New("operation was canceled")
 	errTimeout                      = errors.New("i/o timeout")
+	errNumericPort                  = errors.New("port must be numeric")
+	errNoSuitableAddress            = errors.New("no suitable address found")
+	errMissingAddress               = errors.New("missing address")
 )
 
 func (net *Net) LookupHost(host string) (addrs []string, err error) {
@@ -653,6 +660,9 @@ func (tnet *Net) tryOneName(ctx context.Context, name string, qtype dnsmessage.T
 }
 
 func (tnet *Net) LookupContextHost(ctx context.Context, host string) ([]string, error) {
+	if saddr := tnet.cache.LookupHost(host); saddr != nil {
+		return saddr, nil
+	}
 	if host == "" || (!tnet.hasV6 && !tnet.hasV4) {
 		return nil, &net.DNSError{Err: errNoSuchHost.Error(), Name: host, IsNotFound: true}
 	}
@@ -700,6 +710,7 @@ func (tnet *Net) LookupContextHost(ctx context.Context, host string) ([]string, 
 			lane <- result{p, server, err}
 		}()
 	}
+	ttl := uint32(300)
 	for l := 0; l < lanes; l++ {
 		result := <-lane
 		if result.error != nil {
@@ -733,6 +744,7 @@ func (tnet *Net) LookupContextHost(ctx context.Context, host string) ([]string, 
 					}
 					break loop
 				}
+				ttl = min(ttl, h.TTL)
 				addrsV4 = append(addrsV4, netip.AddrFrom4(a.A))
 
 			case dnsmessage.TypeAAAA:
@@ -745,6 +757,7 @@ func (tnet *Net) LookupContextHost(ctx context.Context, host string) ([]string, 
 					}
 					break loop
 				}
+				ttl = min(ttl, h.TTL)
 				addrsV6 = append(addrsV6, netip.AddrFrom16(aaaa.AAAA))
 
 			default:
@@ -775,5 +788,131 @@ func (tnet *Net) LookupContextHost(ctx context.Context, host string) ([]string, 
 	for _, ip := range addrs {
 		saddrs = append(saddrs, ip.String())
 	}
+	tnet.cache.Cache(host, saddrs, ttl)
 	return saddrs, nil
+}
+
+func partialDeadline(now, deadline time.Time, addrsRemaining int) (time.Time, error) {
+	if deadline.IsZero() {
+		return deadline, nil
+	}
+	timeRemaining := deadline.Sub(now)
+	if timeRemaining <= 0 {
+		return time.Time{}, errTimeout
+	}
+	timeout := timeRemaining / time.Duration(addrsRemaining)
+	const saneMinimum = 2 * time.Second
+	if timeout < saneMinimum {
+		if timeRemaining < saneMinimum {
+			timeout = timeRemaining
+		} else {
+			timeout = saneMinimum
+		}
+	}
+	return now.Add(timeout), nil
+}
+
+var protoSplitter = regexp.MustCompile(`^(tcp|udp|ping)(4|6)?$`)
+
+func (tnet *Net) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
+	if ctx == nil {
+		panic("nil context")
+	}
+	var acceptV4, acceptV6 bool
+	matches := protoSplitter.FindStringSubmatch(network)
+	if matches == nil {
+		return nil, &net.OpError{Op: "dial", Err: net.UnknownNetworkError(network)}
+	} else if len(matches[2]) == 0 {
+		acceptV4 = true
+		acceptV6 = true
+	} else {
+		acceptV4 = matches[2][0] == '4'
+		acceptV6 = !acceptV4
+	}
+	var host string
+	var port int
+	if matches[1] == "ping" {
+		host = address
+	} else {
+		var sport string
+		var err error
+		host, sport, err = net.SplitHostPort(address)
+		if err != nil {
+			return nil, &net.OpError{Op: "dial", Err: err}
+		}
+		port, err = strconv.Atoi(sport)
+		if err != nil || port < 0 || port > 65535 {
+			return nil, &net.OpError{Op: "dial", Err: errNumericPort}
+		}
+	}
+	allAddr, err := tnet.LookupContextHost(ctx, host)
+	if err != nil {
+		return nil, &net.OpError{Op: "dial", Err: err}
+	}
+	var addrs []netip.AddrPort
+	for _, addr := range allAddr {
+		ip, err := netip.ParseAddr(addr)
+		if err == nil && ((ip.Is4() && acceptV4) || (ip.Is6() && acceptV6)) {
+			addrs = append(addrs, netip.AddrPortFrom(ip, uint16(port)))
+		}
+	}
+	if len(addrs) == 0 && len(allAddr) != 0 {
+		return nil, &net.OpError{Op: "dial", Err: errNoSuitableAddress}
+	}
+
+	var firstErr error
+	for i, addr := range addrs {
+		select {
+		case <-ctx.Done():
+			err := ctx.Err()
+			if err == context.Canceled {
+				err = errCanceled
+			} else if err == context.DeadlineExceeded {
+				err = errTimeout
+			}
+			return nil, &net.OpError{Op: "dial", Err: err}
+		default:
+		}
+
+		dialCtx := ctx
+		if deadline, hasDeadline := ctx.Deadline(); hasDeadline {
+			partialDeadline, err := partialDeadline(time.Now(), deadline, len(addrs)-i)
+			if err != nil {
+				if firstErr == nil {
+					firstErr = &net.OpError{Op: "dial", Err: err}
+				}
+				break
+			}
+			if partialDeadline.Before(deadline) {
+				var cancel context.CancelFunc
+				dialCtx, cancel = context.WithDeadline(ctx, partialDeadline)
+				defer cancel()
+			}
+		}
+
+		var c net.Conn
+		switch matches[1] {
+		case "tcp":
+			c, err = tnet.DialContextTCPAddrPort(dialCtx, addr)
+		case "udp":
+			c, err = tnet.DialUDPAddrPort(netip.AddrPort{}, addr)
+		case "ping":
+			err = errors.New("not support")
+			// c, err = tnet.DialPingAddr(netip.Addr{}, addr.Addr())
+		}
+		if err == nil {
+			return c, nil
+		}
+		if firstErr == nil {
+			firstErr = err
+		}
+	}
+	if firstErr == nil {
+		firstErr = &net.OpError{Op: "dial", Err: errMissingAddress}
+	}
+	return nil, firstErr
+}
+
+func (tnet *Net) Dial(network, address string) (net.Conn, error) {
+	return tnet.DialContext(context.Background(), network, address)
 }

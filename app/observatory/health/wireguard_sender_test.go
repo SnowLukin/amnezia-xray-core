@@ -126,7 +126,7 @@ func (l *wireGuardSenderLedger) finishDial(id int, c net.Conn, err error) net.Co
 	generation := len(l.generations) + 1
 	l.generations = append(l.generations, wireGuardSenderGeneration{})
 	l.calls[id].generation = generation
-	packet, ok := c.(*internet.PacketConnWrapper)
+	packet, ok := c.(*net.PacketConnWrapper)
 	if !ok || packet == nil || packet.PacketConn == nil {
 		l.problem = fmt.Sprintf("unobserved UDP connection type %T", c)
 		return c
