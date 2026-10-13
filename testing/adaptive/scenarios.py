@@ -208,6 +208,28 @@ def probe_conn_check(cs, events, ports, since=0):
                  conns == starts and starts > 0, "equal, not zero")
 
 
+
+def recovery_recheck(events, recovered, since):
+    """The successful nonstale probe immediately preceding the recovered switch."""
+    if recovered is None:
+        return None
+    target = recovered["fields"].get("to")
+    for result in reversed(events):
+        fields = result.get("fields", {})
+        if (result["type"] != "probe_result" or fields.get("reason") != "recheck"
+                or fields.get("outbound") != target or fields.get("is_ok") is not True
+                or fields.get("is_stale") is True or result["ts"] / 1000 < since
+                or not 0 <= recovered["ts"] - result["ts"] <= 1000):
+            continue
+        starts = [event for event in events if event["type"] == "probe_start"
+                  and event.get("fields", {}).get("reason") == "recheck"
+                  and event.get("fields", {}).get("outbound") == target
+                  and since <= event["ts"] / 1000 <= result["ts"] / 1000]
+        if starts and fields.get("bytes", 0) > 0:
+            return result
+    return None
+
+
 def connectivity_conn_check(cs, events, since=0):
     """Checks of the network are connections of the core too: the proxy sees them on its own port."""
     ts = sorted(e["ts"] / 1000 for e in events if e["type"] == "connectivity" and e["ts"] / 1000 >= since)
@@ -869,6 +891,16 @@ def exhausted(stand, xray, work, name):
     peak, gap, n = probe_checks(c.events, m["down"])
     ports = {"a1": A0, "a2": A1, "b1": B0}
     probe_events = [e for e in c.events if until is None or e["type"] != "probe_start" or e["ts"] / 1000 <= until]
+    recovery_result = recovery_recheck(c.events, recovered, m["up"])
+    conn_check = probe_conn_check(cs, probe_events, ports, t_ex_abs + 3)
+    conns, starts, detail = probe_conn_match(cs, probe_events, ports, t_ex_abs + 3)
+    if starts == 0:
+        # Jitter can make the first post-quarantine probe succeed. It is outside
+        # the user-free accounting window (recovered - 1 s), so that window is
+        # legitimately empty; require the actual successful recovery probe.
+        conn_check = check("probe connections at the proxy vs probe_start events",
+                           f"{conns}/{starts} ({detail})", conns == 0 and recovery_result is not None,
+                           "equal; empty only with a successful recovery recheck")
     return [check("exhausted after all paths died, s", t_ex and round(t_ex, 1), t_ex is not None and t_ex <= 20,
                   "<= 20"),
             check("balancer while exhausted: exhausted, active", f"{balancer['is_exhausted']}, {balancer['active']!r}",
@@ -884,7 +916,9 @@ def exhausted(stand, xray, work, name):
                   "<= 180"),
             at_once_check(peak),
             spacing_check(gap),
-            probe_conn_check(cs, probe_events, ports, t_ex_abs + 3),
+            conn_check,
+            check("successful recheck caused recovery", recovery_result and recovery_result["fields"].get("outbound"),
+                  recovery_result is not None, "nonstale recheck success immediately before recovered switch"),
             connectivity_conn_check(cs, c.events, m["down"]),
             per_name_check(c.events, names, m["down"]),
             check("probes", n, True, "info")]

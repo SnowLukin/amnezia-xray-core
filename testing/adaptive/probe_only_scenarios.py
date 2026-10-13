@@ -335,24 +335,37 @@ def probe_only_no_traffic(stand, xray, work, name):
 
 @scenario()
 def probe_only_start_and_pin(stand, xray, work, name):
-    cfg = client_config(fixture(name, {"a", "b"}, 2, promote=False), 2)
+    cfg = bench.api_config(client_config(fixture(name, {"a", "b"}, 2, promote=False), 2))
     checks, outputs = [], []
-    for field in ("startOutbound", "startPinnedOutbound"):
+    for field in ("startup.outbound", "startup.pin"):
         invalid = copy.deepcopy(cfg)
         settings = invalid["routing"]["balancers"][0]["strategy"]["settings"]
-        settings.pop("startOutbound", None)
-        settings[field] = "p-c"
+        startup = settings.setdefault("startup", {})
+        startup.pop("outbound", None)
+        if field == "startup.outbound":
+            startup["outbound"] = "p-c"
+        else:
+            startup["pin"] = {"outbound": "p-c", "timeout": "0s"}
         path = os.path.join(work, name + "-" + field + ".json")
         with open(path, "w") as stream:
             json.dump(invalid, stream)
         result = subprocess.run([xray, "run", "-test", "-c", path], capture_output=True, text=True, timeout=10)
         output = result.stdout + result.stderr
         outputs.append({"field": field, "returncode": result.returncode, "output": output})
-        checks.append(check("Ошибка загрузки " + field, output[-300:], result.returncode != 0 and field in output, "rejected"))
+        checks.append(check("Ошибка загрузки " + field, output[-300:],
+                            result.returncode != 0 and "startup" in output and
+                            "p-c" in output and "probe-only" in output, "probe-only startup rejected"))
     with bench.Client(xray, cfg, work, name) as client:
-        response = client.api("pin", "auto", "p-c")
+        # Negative commands return the v2 Result envelope. Client.api unwraps
+        # failures by raising, so inspect the real CLI envelope here instead.
+        result = subprocess.run([xray, "api", "health", f"--server=127.0.0.1:{bench.API_PORT}",
+                                 "pin", "auto", "p-c"], capture_output=True, text=True, timeout=10, check=True)
+        response = json.loads(result.stdout)
         status = client.status()
-    checks.append(check("Pin probe-only отклонён", response, response.get("ok") is False and active(status) != "p-c", "false"))
+    checks.append(check("Pin probe-only отклонён", response,
+                        response.get("success") is False and
+                        response.get("error", {}).get("code") == "invalid_argument" and
+                        active(status) != "p-c", "invalid_argument; selection unchanged"))
     with open(os.path.join(work, name + "-raw.json"), "w") as stream:
         json.dump({"config_errors": outputs, "pin": response, "status": status, "events": client.events}, stream, indent=1)
     return checks
