@@ -196,6 +196,7 @@ class ProcessCleanupTest(unittest.TestCase):
         owned = mock.Mock()
         owned.wait.side_effect = [subprocess.TimeoutExpired("owned-server", 5), 0]
         stand.procs = [owned]
+        stand.udp_targets = None
         stand.__exit__()
         self.assertEqual(owned.mock_calls,
                          [mock.call.terminate(), mock.call.wait(timeout=5),

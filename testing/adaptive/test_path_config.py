@@ -11,6 +11,21 @@ import path_scenarios
 import scenarios
 
 
+def provider_answer_calls(tree):
+    parents = {child: parent for parent in ast.walk(tree) for child in ast.iter_child_nodes(parent)}
+    for call in (node for node in ast.walk(tree) if isinstance(node, ast.Call)):
+        if not isinstance(call.func, ast.Attribute) or call.func.attr != "answer":
+            continue
+        if isinstance(call.func.value, ast.Name) and call.func.value.id == "self":
+            owner = parents.get(call)
+            while owner is not None and not isinstance(owner, ast.ClassDef):
+                owner = parents.get(owner)
+            if owner is not None and any(isinstance(base, ast.Name) and base.id == "BaseHTTPRequestHandler"
+                                         for base in owner.bases):
+                continue
+        yield call
+
+
 def candidates(cfg):
     return [item["tag"] for item in cfg["outbounds"] if item.get("path", {}).get("balancer") == "auto"]
 
@@ -88,12 +103,20 @@ class PathConfigTest(unittest.TestCase):
             if path.name.startswith("test_"):
                 continue
             tree = ast.parse(path.read_text())
-            for call in (node for node in ast.walk(tree) if isinstance(node, ast.Call)):
-                if not isinstance(call.func, ast.Attribute) or call.func.attr != "answer":
-                    continue
+            for call in provider_answer_calls(tree):
                 with self.subTest(file=path.name, line=call.lineno):
                     self.assertTrue(len(call.args) >= 2 or any(key.arg == "costs" for key in call.keywords),
                                     f"{path.name}:{call.lineno} omits exact path costs")
+
+    def test_http_answer_is_distinct_from_provider_answer(self):
+        source = "class Handler(BaseHTTPRequestHandler):\n def do_GET(self): self.answer(32768)\n"
+        self.assertEqual(list(provider_answer_calls(ast.parse(source))), [])
+
+    def test_missing_prices_are_still_detected_on_stand_and_self(self):
+        source = "stand.answer(members)\nclass Stand:\n def run(self): self.answer(members)\n"
+        calls = list(provider_answer_calls(ast.parse(source)))
+        self.assertEqual(len(calls), 2)
+        self.assertTrue(all(len(call.args) == 1 and not call.keywords for call in calls))
 
     def test_stand_starting_answer_has_exact_path(self):
         stand = object.__new__(bench.Stand)

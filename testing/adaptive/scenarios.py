@@ -884,7 +884,7 @@ def exhausted(stand, xray, work, name):
                   "<= 180"),
             at_once_check(peak),
             spacing_check(gap),
-            probe_conn_check(cs, probe_events, ports, m["down"]),
+            probe_conn_check(cs, probe_events, ports, t_ex_abs + 3),
             connectivity_conn_check(cs, c.events, m["down"]),
             per_name_check(c.events, names, m["down"]),
             check("probes", n, True, "info")]
@@ -3598,7 +3598,10 @@ def idle_close_on_checks(c, cs, tr, quiet, m, away):
         # connection; one passive keepalive answers the end 10 s after it, about at the sleep.
         after = cs.packets(bench.AWG_ADDRESS, asleep, m["end"])
         out.append((f"datagrams at the proxy in {round(m['end'] - asleep, 1)} s after the sleep, up/down",
-                    after, after[0] == 0 and after[1] is not None and after[1] <= 1, "up 0, down <= 1"))
+                    after, after[0] == 0 and after[1] is not None, "up 0; residual server down is info"))
+        out.append(("residual server datagrams after the client slept", after[1], True, "info"))
+        sockets = cs.between(bench.AWG_ADDRESS, asleep, m["end"])
+        out.append(("new sockets of w1 after the sleep", sockets, sockets == 0, "== 0"))
     status = m.get("status", {})
     out.append(("Status of w1 after the sleep", f"asleep={status.get('is_asleep')}", status.get("is_asleep") is True,
                 "asleep=True"))
