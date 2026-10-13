@@ -1,0 +1,20 @@
+// TEST PROCESS INSTRUMENTATION ONLY. This source is appended to main/main.go
+// through a Go build overlay; production protocol and verifier sources are intact.
+func init() {
+	path := os.Getenv("XRAY_TEST_FALLBACK_CA")
+	if path == "" {
+		return
+	}
+	if os.Getenv("GODEBUG") != "x509usefallbackroots=1" {
+		panic("test CA fixture requires isolated x509usefallbackroots=1")
+	}
+	pemData, err := os.ReadFile(path)
+	if err != nil {
+		panic(err)
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(pemData) || len(pool.Subjects()) != 1 {
+		panic("test CA fixture requires exactly one trust anchor")
+	}
+	x509.SetFallbackRoots(pool)
+}
