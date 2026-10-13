@@ -10,22 +10,11 @@ func (e *engine) isProbeOnly(tag string) bool {
 	return e.s.isProbeOnly(tag)
 }
 
-func (e *engine) probeOnlyThreshold(s *selector) int {
-	threshold := 0
-	for _, p := range e.providers {
-		if p.cfg.balancer == s.tag {
-			threshold = max(threshold, p.cfg.minHealthy)
-		}
-	}
-	return threshold
-}
-
 func (e *engine) probeOnlyNeeded(s *selector) bool {
-	if s == nil {
-		return false
-	}
-	threshold := e.probeOnlyThreshold(s)
-	return s.started && threshold > 0 && e.healthy(s) < threshold
+	// keepVerified is the candidate maintenance target. A provider's
+	// minHealthy controls its FETCH trigger, not whether these credentials
+	// may be verified, including when the base config supplies them.
+	return e.s.features.Candidates && s != nil && s.started
 }
 
 func (e *engine) probeOnlyTags(s *selector) []string {
@@ -83,10 +72,14 @@ func (e *engine) resetProbeOnly(tag string) {
 	}
 }
 
-func (e *engine) cancelCandidates(selectorTag string) {
+func (e *engine) cancelCandidateQueue(selectorTag string) {
 	e.queue = slices.DeleteFunc(e.queue, func(j *probeJob) bool {
 		return j.reason == reasonCandidate && (selectorTag == "" || j.selector == selectorTag)
 	})
+}
+
+func (e *engine) cancelCandidates(selectorTag string) {
+	e.cancelCandidateQueue(selectorTag)
 	for _, j := range e.running {
 		if j.reason == reasonCandidate && (selectorTag == "" || j.selector == selectorTag) {
 			j.invalidated = true
@@ -105,14 +98,18 @@ func (e *engine) candidateCurrent(j *probeJob) bool {
 }
 
 func (e *engine) updateProbeOnly(s *selector, now time.Time) time.Time {
-	if !e.s.features.Candidates {
-		return time.Time{}
-	}
 	if !e.probeOnlyNeeded(s) {
-		if s.probeOnlyActive {
+		if s != nil && s.probeOnlyActive {
 			s.probeOnlyActive = false
 			e.cancelCandidates(s.tag)
 		}
+		return time.Time{}
+	}
+	// Candidate maintenance improves future capacity and waits for demand.
+	// Drop queued jobs while paused so tick cannot start them later in this
+	// turn. A probe already running remains valid for its handler and epoch.
+	if e.networkDown || e.idle(now) || e.memoryLow || s.pinned != "" {
+		e.cancelCandidateQueue(s.tag)
 		return time.Time{}
 	}
 	tags := e.probeOnlyTags(s)
@@ -124,9 +121,6 @@ func (e *engine) updateProbeOnly(s *selector, now time.Time) time.Time {
 				e.resetProbeOnly(tag)
 			}
 		}
-	}
-	if e.networkDown {
-		return time.Time{}
 	}
 	for _, j := range e.running {
 		if j.reason == reasonCandidate {

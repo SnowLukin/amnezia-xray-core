@@ -89,7 +89,7 @@ func TestProbeOnlyCandidatesFollowPriceAndDeclarationOneAtATime(t *testing.T) {
 	}
 }
 
-func TestProbeOnlyAllFailedStopsUntilThresholdRearms(t *testing.T) {
+func TestProbeOnlyAllFailedStopsUntilNetworkEpochRearms(t *testing.T) {
 	te := probeOnlyTestEngine(t, 1,
 		&PathDefinition{Tag: "real", Cost: 1},
 		&PathDefinition{Tag: "candidate", Cost: 2, IsProbeOnly: true})
@@ -101,15 +101,21 @@ func TestProbeOnlyAllFailedStopsUntilThresholdRearms(t *testing.T) {
 	if jobs, _ := te.tick(at(time.Minute)); len(jobs) != 0 {
 		t.Fatalf("failed candidates were retried endlessly: %+v", jobs)
 	}
-	te.providers[0].cfg.minHealthy = 1
-	te.tick(at(2 * time.Minute))
-	te.providers[0].cfg.minHealthy = 2
-	if jobs, _ := te.tick(at(3 * time.Minute)); len(jobs) != 1 || jobs[0].reason != reasonCandidate {
-		t.Fatalf("new shortage did not retry failed inventory: %+v", jobs)
+	te.noteDemand(at(2 * time.Minute))
+	te.onNetworkChange("new", at(2*time.Minute))
+	jobs, _ = te.tick(at(3 * time.Minute))
+	var candidateJobs int
+	for _, j := range jobs {
+		if j.reason == reasonCandidate {
+			candidateJobs++
+		}
+	}
+	if candidateJobs != 1 {
+		t.Fatalf("new network epoch did not retry failed inventory exactly once: %+v", jobs)
 	}
 }
 
-func TestProbeOnlyVerifiedRechecksAndRecoveryCancelsWork(t *testing.T) {
+func TestProbeOnlyVerifiedRechecksDespiteRealRecovery(t *testing.T) {
 	te := probeOnlyTestEngine(t, 1,
 		&PathDefinition{Tag: "real", Cost: 1},
 		&PathDefinition{Tag: "candidate", Cost: 2, IsProbeOnly: true},
@@ -126,11 +132,11 @@ func TestProbeOnlyVerifiedRechecksAndRecoveryCancelsWork(t *testing.T) {
 	te.providers[0].cfg.minHealthy = 1
 	te.tick(at(15*time.Minute + time.Second))
 	te.onProbeResult(jobs[0], probeResult{ok: true, state: statusUp}, at(15*time.Minute+2*time.Second))
-	if !jobs[0].invalidated || te.probeOnlyVerified(te.sel, at(15*time.Minute+2*time.Second)) != 0 {
-		t.Fatal("completion after real recovery refreshed candidate proof")
+	if jobs[0].invalidated || te.probeOnlyVerified(te.sel, at(15*time.Minute+2*time.Second)) != 1 {
+		t.Fatal("real recovery invalidated independent candidate proof")
 	}
 	if jobs, _ := te.tick(at(16 * time.Minute)); len(jobs) != 0 {
-		t.Fatalf("candidate work survived real recovery: %+v", jobs)
+		t.Fatalf("fresh verified candidate was probed again: %+v", jobs)
 	}
 }
 
