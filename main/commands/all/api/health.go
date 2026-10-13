@@ -102,20 +102,11 @@ func executeHealth(cmd *base.Command, args []string) {
 		response, err = client.DrainEvents(ctx, &healthService.DrainEventsRequest{})
 	case "network":
 		req := &healthService.NetworkChangedRequest{}
-		labels := map[string]string{}
-		for i := 1; i < len(a); i++ {
-			if a[i] == "--label" && i+1 < len(a) {
-				i++
-				pair := strings.SplitN(a[i], "=", 2)
-				if len(pair) != 2 {
-					base.Fatalf("health network: label needs key=value")
-				}
-				labels[pair[0]] = pair[1]
-			} else if req.Network == "" {
-				req.Network = a[i]
-			} else {
-				base.Fatalf("health network: unexpected argument")
-			}
+
+		var labels map[string]string
+		req.Network, labels, err = healthNetworkArguments(a[1:])
+		if err != nil {
+			base.Fatalf("health network: %s", err)
 		}
 		if len(labels) > 0 {
 			response, err = client.NetworkChangedWithLabels(ctx, &healthService.NetworkChangedWithLabelsRequest{Network: req.Network, Labels: labels})
@@ -248,4 +239,30 @@ func decodedHealthResult(r *healthService.Result) []byte {
 	}{r.Success, r.Run, json.RawMessage(r.Data), r.Error}
 	raw, _ := json.Marshal(out)
 	return raw
+}
+
+// Arguments follow the subcommand, after the shared flag parser has stopped.
+// An explicitly empty opaque id remains an id, rather than a label argument.
+func healthNetworkArguments(args []string) (string, map[string]string, error) {
+	id := ""
+	labels := make(map[string]string)
+	start := 0
+	if len(args) > 0 && args[0] != "--label" && !strings.HasPrefix(args[0], "--label=") {
+		id, start = args[0], 1
+	}
+	for i := start; i < len(args); i++ {
+		value := strings.TrimPrefix(args[i], "--label=")
+		if args[i] == "--label" && i+1 < len(args) {
+			i++
+			value = args[i]
+		} else if value == args[i] {
+			return "", nil, errors.New("expected --label key=value")
+		}
+		key, val, ok := strings.Cut(value, "=")
+		if !ok || key == "" {
+			return "", nil, errors.New("expected --label key=value")
+		}
+		labels[key] = val
+	}
+	return id, labels, nil
 }
