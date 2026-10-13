@@ -1,5 +1,7 @@
 package tun
 
+import "github.com/xtls/xray-core/common/safe"
+
 import (
 	"context"
 	"time"
@@ -68,6 +70,8 @@ func (t *stackGVisor) Start() error {
 
 	tcpForwarder := tcp.NewForwarder(ipStack, 0, 65535, func(r *tcp.ForwarderRequest) {
 		go func(r *tcp.ForwarderRequest) {
+			defer safe.Recover(safe.Connection, "proxy/tun/stack_gvisor.go:t.Start", func() { r.Complete(true) })
+
 			var wq waiter.Queue
 			id := r.ID()
 
@@ -78,6 +82,8 @@ func (t *stackGVisor) Start() error {
 				r.Complete(true)
 				return
 			}
+
+			defer safe.Closer(ep)()
 
 			options := ep.SocketOptions()
 			options.SetKeepAlive(false)
@@ -91,7 +97,6 @@ func (t *stackGVisor) Start() error {
 			)
 
 			// close the socket
-			ep.Close()
 			// send connection complete upstream
 			r.Complete(false)
 		}(r)

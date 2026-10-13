@@ -1,5 +1,7 @@
 package tls
 
+import "github.com/xtls/xray-core/common/safe"
+
 import (
 	"bytes"
 	"context"
@@ -162,6 +164,11 @@ func QueryRecord(domain string, server string, sockopt *internet.SocketConfig) (
 		if echConfigCache.UpdateLock.TryLock() {
 			go func() {
 				defer echConfigCache.UpdateLock.Unlock()
+				defer safe.Recover(safe.Subsystem, "transport/internet/tls/ech.go:QueryRecord", nil)
+				if !safe.Allowed(safe.Subsystem, "transport/internet/tls/ech.go:QueryRecord", nil) {
+					return
+				}
+
 				echConfigCache.Update(domain, server, true, sockopt)
 			}()
 		}

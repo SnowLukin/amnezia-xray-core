@@ -1,5 +1,7 @@
 package dns
 
+import "github.com/xtls/xray-core/common/safe"
+
 import (
 	"context"
 	go_errors "errors"
@@ -271,7 +273,15 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, d internet.
 						return err
 					}
 				} else {
-					go h.handleIPQuery(id, qType, domain, writer, timer)
+					go safe.Run(safe.Connection, "proxy/dns/dns.go:h.Process", safe.Closer(link.Reader, link.Writer), func() func() {
+						safeFn := h.handleIPQuery
+						safeArg0 := id
+						safeArg1 := qType
+						safeArg2 := domain
+						safeArg3 := writer
+						safeArg4 := timer
+						return func() { safeFn(safeArg0, safeArg1, safeArg2, safeArg3, safeArg4) }
+					}())
 				}
 			case RuleAction_Direct:
 				if err := connWriter.WriteMessage(b); err != nil {

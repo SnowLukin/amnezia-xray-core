@@ -1,5 +1,7 @@
 package hysteria
 
+import "github.com/xtls/xray-core/common/safe"
+
 import (
 	"context"
 	go_tls "crypto/tls"
@@ -244,7 +246,7 @@ func (c *client) dial(ctx context.Context) error {
 		m:    make(map[uint32]*InterConn),
 		next: 1,
 	}
-	go c.udpSM.run()
+	go safe.Run(safe.Connection, "transport/internet/hysteria/dialer.go:c.dial", func() { c.udpSM.conn.CloseWithError(0, "worker panic recovered") }, func() func() { safeFn := c.udpSM.run; return func() { safeFn() } }())
 
 	return nil
 }
@@ -286,10 +288,10 @@ func (c *client) udp(ctx context.Context) (stat.Connection, error) {
 
 func (c *client) clean() {
 	c.Lock()
+	defer c.Unlock()
 	if c.status() == StatusInactive {
 		c.close()
 	}
-	c.Unlock()
 }
 
 type dialerConf struct {
@@ -304,12 +306,15 @@ type clientManager struct {
 
 func (m *clientManager) clean() {
 	ticker := time.NewTicker(idleCleanupInterval)
+	defer ticker.Stop()
 	for range ticker.C {
-		m.RLock()
-		for _, c := range m.m {
-			c.clean()
-		}
-		m.RUnlock()
+		func() {
+			m.RLock()
+			defer m.RUnlock()
+			for _, c := range m.m {
+				c.clean()
+			}
+		}()
 	}
 }
 
@@ -331,7 +336,7 @@ func Dial(ctx context.Context, dest net.Destination, streamSettings *internet.Me
 		manager = &clientManager{
 			m: make(map[dialerConf]*client),
 		}
-		go manager.clean()
+		go safe.Run(safe.Subsystem, "transport/internet/hysteria/dialer.go:Dial", nil, func() func() { safeFn := manager.clean; return func() { safeFn() } }())
 	})
 
 	manager.RLock()

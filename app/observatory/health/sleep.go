@@ -375,9 +375,14 @@ func (o *Observer) sleepOutbounds(batch []sleepJob) {
 		}
 		results[i] = o.sleepOutbound(j, open)
 	}
-	o.mu.Lock()
-	o.e.onSlept(batch, results, o.now())
-	o.mu.Unlock()
+
+	func() {
+		o.mu.Lock()
+		defer o.mu.Unlock()
+
+		o.e.onSlept(batch, results, o.now())
+
+	}()
 	o.wake()
 }
 

@@ -1,5 +1,7 @@
 package udp
 
+import "github.com/xtls/xray-core/common/safe"
+
 import (
 	"context"
 
@@ -80,7 +82,7 @@ func ListenUDP(ctx context.Context, address net.Address, port net.Port, streamSe
 	hub.udpConn, _ = hub.conn.(*net.UDPConn)
 	hub.cache = make(chan *udp.Packet, hub.capacity)
 
-	go hub.start()
+	go safe.Run(safe.Subsystem, "transport/internet/udp/hub.go:ListenUDP", safe.Closer(hub), func() func() { safeFn := hub.start; return func() { safeFn() } }())
 	return hub, nil
 }
 

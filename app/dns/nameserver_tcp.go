@@ -1,5 +1,7 @@
 package dns
 
+import "github.com/xtls/xray-core/common/safe"
+
 import (
 	"bytes"
 	"context"
@@ -136,6 +138,19 @@ func (s *TCPNameServer) sendQuery(ctx context.Context, noResponseErrCh chan<- er
 
 	for _, req := range reqs {
 		go func(r *dnsRequest) {
+			defer safe.Recover(safe.Subsystem, "app/dns/nameserver_tcp.go:s.sendQuery", func() {
+				if noResponseErrCh != nil {
+					noResponseErrCh <- safe.ErrPanic
+				}
+			})
+			if !safe.Allowed(safe.Subsystem, "app/dns/nameserver_tcp.go:s.sendQuery", func() {
+				if noResponseErrCh != nil {
+					noResponseErrCh <- safe.ErrPanic
+				}
+			}) {
+				return
+			}
+
 			dnsCtx := ctx
 
 			if inbound := session.InboundFromContext(ctx); inbound != nil {

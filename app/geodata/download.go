@@ -1,5 +1,7 @@
 package geodata
 
+import "github.com/xtls/xray-core/common/safe"
+
 import (
 	"context"
 	"crypto/tls"
@@ -40,6 +42,8 @@ type idleConn struct {
 
 func (c *idleConn) Read(b []byte) (int, error) {
 	t := time.AfterFunc(idleTimeout, func() {
+		defer safe.Recover(safe.Connection, "app/geodata/download.go:c.Read", safe.Closer(c))
+
 		_ = c.Close()
 	})
 

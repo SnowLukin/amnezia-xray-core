@@ -1,5 +1,7 @@
 package http
 
+import "github.com/xtls/xray-core/common/safe"
+
 import (
 	"bufio"
 	"bytes"
@@ -254,6 +256,8 @@ func setUpHTTPTunnel(ctx context.Context, dest net.Destination, target string, u
 		wg.Add(1)
 
 		go func() {
+			defer safe.Recover(safe.Connection, "proxy/http/client.go:setUpHTTPTunnel", func() { pErr = safe.ErrPanic; safe.Close(pr, pw, rawConn); wg.Done() })
+
 			_, pErr = pw.Write(firstPayload)
 			wg.Done()
 		}()

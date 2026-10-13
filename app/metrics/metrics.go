@@ -1,5 +1,7 @@
 package metrics
 
+import "github.com/xtls/xray-core/common/safe"
+
 import (
 	"context"
 	"encoding/json"
@@ -61,7 +63,12 @@ func (p *MetricsHandler) Start() error {
 		p.tcpListener = TCPlistener
 		errors.LogInfo(context.Background(), "Metrics server listening on ", p.listen)
 
-		go p.serve(TCPlistener, handler)
+		go safe.Run(safe.Subsystem, "app/metrics/metrics.go:p.Start", safe.Closer(TCPlistener), func() func() {
+			safeFn := p.serve
+			safeArg0 := TCPlistener
+			safeArg1 := handler
+			return func() { safeFn(safeArg0, safeArg1) }
+		}())
 	}
 
 	if p.tag == "" {
@@ -77,7 +84,12 @@ func (p *MetricsHandler) Start() error {
 	}
 	p.listener = listener
 
-	go p.serve(listener, handler)
+	go safe.Run(safe.Subsystem, "app/metrics/metrics.go:p.Start", safe.Closer(listener), func() func() {
+		safeFn := p.serve
+		safeArg0 := listener
+		safeArg1 := handler
+		return func() { safeFn(safeArg0, safeArg1) }
+	}())
 
 	if err := p.ohm.RemoveHandler(context.Background(), p.tag); err != nil {
 		errors.LogInfo(context.Background(), "failed to remove existing handler")

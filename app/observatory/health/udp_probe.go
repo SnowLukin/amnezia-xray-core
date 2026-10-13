@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/binary"
+	"github.com/xtls/xray-core/common/safe"
 	"io"
 	"slices"
 	"sync"
@@ -128,7 +129,11 @@ func (o *Observer) probeUDPDestination(parent context.Context, tag string, desti
 	state := probeStateFrom(ctx)
 	dialErrors := make(chan error, 1)
 	dialTimedOut := atomic.Bool{}
-	dialTimer := time.AfterFunc(o.s.passive.dialTimeout, func() { dialTimedOut.Store(true); cancel() })
+	dialTimer := time.AfterFunc(o.s.passive.dialTimeout, func() {
+		defer safe.Recover(safe.Connection, "app/observatory/health/udp_probe.go:dialTimer", nil)
+		dialTimedOut.Store(true)
+		cancel()
+	})
 	defer dialTimer.Stop()
 	state.udpDial = func(err error) {
 		dialTimer.Stop()
@@ -178,6 +183,7 @@ func runSTUN(parent context.Context, conn net.Conn, settings *udpSettings) udpPr
 	closeDone := make(chan struct{})
 	stopClose := make(chan struct{})
 	go func() {
+		defer safe.Recover(safe.Connection, "app/observatory/health/udp_probe.go:runSTUN", safe.Closer(conn, cancel))
 		defer close(closeDone)
 		select {
 		case <-ctx.Done():
@@ -186,6 +192,7 @@ func runSTUN(parent context.Context, conn net.Conn, settings *udpSettings) udpPr
 		}
 	}()
 	go func() {
+		defer safe.Recover(safe.Connection, "app/observatory/health/udp_probe.go:runSTUN", safe.Closer(conn, cancel))
 		defer close(readDone)
 		packet := make([]byte, 65535)
 		for {
@@ -264,9 +271,10 @@ func runSTUN(parent context.Context, conn net.Conn, settings *udpSettings) udpPr
 		// Each write is bounded even when the connection ignores deadlines.
 		sendTimerDone := make(chan struct{})
 		sendTimer := time.AfterFunc(settings.timeout, func() {
+			defer close(sendTimerDone)
+			defer safe.Recover(safe.Connection, "app/observatory/health/udp_probe.go:sendTimer", nil)
 			sendTimedOut.Store(true)
 			cancel()
-			close(sendTimerDone)
 		})
 		n, err := conn.Write(packet[:])
 		if !sendTimer.Stop() {

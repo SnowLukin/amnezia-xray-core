@@ -67,12 +67,17 @@ func (o *Observer) newClosureTracker(tag string, abort func(), tcpProof, registe
 		t.abort = nil
 	}
 	if register {
-		o.trackMu.Lock()
-		if o.closures == nil {
-			o.closures = make(map[*closureTracker]struct{})
-		}
-		o.closures[t] = struct{}{}
-		o.trackMu.Unlock()
+
+		func() {
+			o.trackMu.Lock()
+			defer o.trackMu.Unlock()
+
+			if o.closures == nil {
+				o.closures = make(map[*closureTracker]struct{})
+			}
+			o.closures[t] = struct{}{}
+
+		}()
 	}
 	return t
 }

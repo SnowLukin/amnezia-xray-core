@@ -1,5 +1,7 @@
 package splithttp
 
+import "github.com/xtls/xray-core/common/safe"
+
 import (
 	"bytes"
 	"context"
@@ -77,10 +79,14 @@ func (h *requestHandler) upsertSession(sessionId string) *httpSession {
 
 	shouldReap := done.New()
 	go func() {
+		defer safe.Recover(safe.Connection, "transport/internet/splithttp/hub.go:h.upsertSession", safe.Closer(s.uploadQueue, shouldReap))
+
 		time.Sleep(30 * time.Second)
 		shouldReap.Close()
 	}()
 	go func() {
+		defer safe.Recover(safe.Connection, "transport/internet/splithttp/hub.go:h.upsertSession", safe.Closer(s.uploadQueue, shouldReap))
+
 		select {
 		case <-shouldReap.Wait():
 			h.sessions.Delete(sessionId)
@@ -219,6 +225,8 @@ func (h *requestHandler) ServeHTTP(writer http.ResponseWriter, request *http.Req
 				hasLegacyRefererCompatMarker := request.Header.Get("Referer") != ""
 				if (hasLegacyRefererCompatMarker || obfsPaddingAccepted) && scStreamUpServerSecs.To > 0 {
 					go func() {
+						defer safe.Recover(safe.Connection, "transport/internet/splithttp/hub.go:h.ServeHTTP", safe.Closer(httpSC))
+
 						for {
 							_, err := httpSC.Write(bytes.Repeat([]byte{'X'}, int(h.config.GetNormalizedXPaddingBytes().rand())))
 							if err != nil {
@@ -522,6 +530,11 @@ func ListenXH(ctx context.Context, address net.Address, port net.Port, streamSet
 			Handler: handler,
 		}
 		go func() {
+			defer safe.Recover(safe.Subsystem, "transport/internet/splithttp/hub.go:ListenXH", safe.Closer(l))
+			if !safe.Allowed(safe.Subsystem, "transport/internet/splithttp/hub.go:ListenXH", safe.Closer(l)) {
+				return
+			}
+
 			if err := l.h3server.ServeListener(l.h3listener); err != nil {
 				errors.LogErrorInner(ctx, err, "failed to serve HTTP/3 for XHTTP/3")
 			}
@@ -565,6 +578,11 @@ func ListenXH(ctx context.Context, address net.Address, port net.Port, streamSet
 			Protocols:         protocols,
 		}
 		go func() {
+			defer safe.Recover(safe.Subsystem, "transport/internet/splithttp/hub.go:ListenXH", safe.Closer(l))
+			if !safe.Allowed(safe.Subsystem, "transport/internet/splithttp/hub.go:ListenXH", safe.Closer(l)) {
+				return
+			}
+
 			if err := l.server.Serve(l.listener); err != nil {
 				errors.LogErrorInner(ctx, err, "failed to serve HTTP for XHTTP")
 			}

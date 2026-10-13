@@ -1,5 +1,7 @@
 package grpc
 
+import "github.com/xtls/xray-core/common/safe"
+
 import (
 	"context"
 	"time"
@@ -102,6 +104,11 @@ func Listen(ctx context.Context, address net.Address, port net.Port, settings *i
 	}
 
 	go func() {
+		defer safe.Recover(safe.Subsystem, "transport/internet/grpc/hub.go:Listen", safe.Closer(listener))
+		if !safe.Allowed(safe.Subsystem, "transport/internet/grpc/hub.go:Listen", safe.Closer(listener)) {
+			return
+		}
+
 		var streamListener net.Listener
 		var err error
 		if port == net.Port(0) { // unix

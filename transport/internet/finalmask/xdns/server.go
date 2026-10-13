@@ -1,5 +1,7 @@
 package xdns
 
+import "github.com/xtls/xray-core/common/safe"
+
 import (
 	"bytes"
 	"context"
@@ -88,9 +90,9 @@ func NewConnServer(c *Config, raw net.PacketConn) (net.PacketConn, error) {
 		writeQueueMap: make(map[string]*queue),
 	}
 
-	go conn.clean()
-	go conn.recvLoop()
-	go conn.sendLoop()
+	go safe.Run(safe.Connection, "transport/internet/finalmask/xdns/server.go:NewConnServer", safe.Closer(conn), func() func() { safeFn := conn.clean; return func() { safeFn() } }())
+	go safe.Run(safe.Connection, "transport/internet/finalmask/xdns/server.go:NewConnServer", safe.Closer(conn), func() func() { safeFn := conn.recvLoop; return func() { safeFn() } }())
+	go safe.Run(safe.Connection, "transport/internet/finalmask/xdns/server.go:NewConnServer", safe.Closer(conn), func() func() { safeFn := conn.sendLoop; return func() { safeFn() } }())
 
 	return conn, nil
 }

@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"github.com/xtls/xray-core/common/safe"
 	"reflect"
 	"sync"
 
@@ -262,6 +263,9 @@ func (s *Instance) Close() error {
 	s.statusLock.Lock()
 	defer s.statusLock.Unlock()
 
+	if s.running {
+		defer safe.EndRun()
+	}
 	s.running = false
 
 	var errs []interface{}
@@ -388,6 +392,7 @@ func (s *Instance) Start() error {
 	s.statusLock.Lock()
 	defer s.statusLock.Unlock()
 
+	safe.BeginRun()
 	s.running = true
 	for _, f := range s.features {
 		if err := f.Start(); err != nil {

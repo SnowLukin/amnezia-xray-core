@@ -1,5 +1,7 @@
 package singbridge
 
+import "github.com/xtls/xray-core/common/safe"
+
 import (
 	"context"
 	"os"
@@ -63,7 +65,13 @@ func (d *XrayOutboundDialer) DialContext(ctx context.Context, network string, de
 	uplinkReader, uplinkWriter := pipe.New(opts...)
 	downlinkReader, downlinkWriter := pipe.New(opts...)
 	conn := cnc.NewConnection(cnc.ConnectionInputMulti(downlinkWriter), cnc.ConnectionOutputMulti(uplinkReader))
-	go d.outbound.Process(ctx, &transport.Link{Reader: downlinkReader, Writer: uplinkWriter}, d.dialer)
+	go safe.Run(safe.Connection, "common/singbridge/dialer.go:d.DialContext", safe.Closer(downlinkReader, uplinkWriter), func() func() {
+		safeFn := d.outbound.Process
+		safeArg0 := ctx
+		safeArg1 := &transport.Link{Reader: downlinkReader, Writer: uplinkWriter}
+		safeArg2 := d.dialer
+		return func() { safeFn(safeArg0, safeArg1, safeArg2) }
+	}())
 	return conn, nil
 }
 

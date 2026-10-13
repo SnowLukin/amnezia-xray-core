@@ -2,6 +2,7 @@ package task
 
 import (
 	"context"
+	"github.com/xtls/xray-core/common/safe"
 
 	"github.com/xtls/xray-core/common/signal/semaphore"
 )
@@ -9,7 +10,7 @@ import (
 // OnSuccess executes g() after f() returns nil.
 func OnSuccess(f func() error, g func() error) func() error {
 	return func() error {
-		if err := f(); err != nil {
+		if err := safe.Error(safe.Connection, "common/task/task.go:Run", f); err != nil {
 			return err
 		}
 		return g()
@@ -25,7 +26,7 @@ func Run(ctx context.Context, tasks ...func() error) error {
 	for _, task := range tasks {
 		<-s.Wait()
 		go func(f func() error) {
-			err := f()
+			err := safe.Error(safe.Connection, "common/task/task.go:Run", f)
 			if err == nil {
 				s.Signal()
 				return

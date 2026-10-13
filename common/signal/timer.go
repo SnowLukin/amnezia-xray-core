@@ -67,6 +67,8 @@ func (t *ActivityTimer) SetTimeout(timeout time.Duration) {
 	}
 	newCheckTask := &task.Periodic{
 		Interval: timeout,
+		Scope:    "connection",
+		Where:    "common/signal/timer.go:ActivityTimer.check",
 		Execute:  t.check,
 	}
 	common.CloseIfExists(t.checkTask)

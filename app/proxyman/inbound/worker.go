@@ -1,5 +1,7 @@
 package inbound
 
+import "github.com/xtls/xray-core/common/safe"
+
 import (
 	"context"
 	"sync"
@@ -139,7 +141,7 @@ func (w *tcpWorker) Start() error {
 	}
 
 	hub, err := internet.ListenTCP(ctx, w.address, w.port, w.stream, func(conn stat.Connection) {
-		go w.callback(conn)
+		go safe.Run(safe.Connection, "app/proxyman/inbound/worker.go:w.Start", safe.Closer(conn), func() func() { safeFn := w.callback; safeArg0 := conn; return func() { safeFn(safeArg0) } }())
 	})
 	if err != nil {
 		return errors.New("failed to listen TCP on ", w.port).AtWarning().Base(err)
@@ -330,6 +332,8 @@ func (w *udpWorker) callback(b *buf.Buffer, source net.Destination, originalDest
 		common.Must(w.checker.Start())
 
 		go func() {
+			defer safe.Recover(safe.Connection, "app/proxyman/inbound/worker.go:w.callback", safe.Closer(conn))
+
 			ctx, cancel := context.WithCancel(w.ctx)
 			conn.cancel = cancel
 			sid := session.NewID()
@@ -426,7 +430,7 @@ func (w *udpWorker) Start() error {
 	}
 
 	w.hub = h
-	go w.handlePackets()
+	go safe.Run(safe.Subsystem, "app/proxyman/inbound/worker.go:w.Start", safe.Closer(w), func() func() { safeFn := w.handlePackets; return func() { safeFn() } }())
 	return nil
 }
 
@@ -525,7 +529,7 @@ func (w *dsWorker) Port() net.Port {
 func (w *dsWorker) Start() error {
 	ctx := context.Background()
 	hub, err := internet.ListenUnix(ctx, w.address, w.stream, func(conn stat.Connection) {
-		go w.callback(conn)
+		go safe.Run(safe.Connection, "app/proxyman/inbound/worker.go:w.Start", safe.Closer(conn), func() func() { safeFn := w.callback; safeArg0 := conn; return func() { safeFn(safeArg0) } }())
 	})
 	if err != nil {
 		return errors.New("failed to listen Unix Domain Socket on ", w.address).AtWarning().Base(err)

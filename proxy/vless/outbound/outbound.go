@@ -1,5 +1,7 @@
 package outbound
 
+import "github.com/xtls/xray-core/common/safe"
+
 import (
 	"bytes"
 	"context"
@@ -123,6 +125,11 @@ func New(ctx context.Context, config *Config) (*Handler, error) {
 			Interval: time.Second * 2,
 		}
 		go func() {
+			defer safe.Recover(safe.Subsystem, "proxy/vless/outbound/outbound.go:New", safe.Closer(handler.reverse))
+			if !safe.Allowed(safe.Subsystem, "proxy/vless/outbound/outbound.go:New", safe.Closer(handler.reverse)) {
+				return
+			}
+
 			time.Sleep(2 * time.Second)
 			handler.reverse.Start()
 		}()
@@ -161,7 +168,11 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
 			h.preConns = make(chan *ConnExpire)
 			for range h.testpre { // TODO: randomize
 				go func() {
-					defer func() { recover() }()
+					defer safe.Recover(safe.Subsystem, "proxy/vless/outbound/outbound.go:h.Process", nil)
+					if !safe.Allowed(safe.Subsystem, "proxy/vless/outbound/outbound.go:h.Process", nil) {
+						return
+					}
+
 					ctx := xctx.ContextWithID(context.Background(), session.NewID())
 					for {
 						conn, err := dialer.Dial(ctx, rec.Destination)
@@ -469,6 +480,8 @@ func (r *Reverse) monitor() error {
 		w.Worker = worker
 		r.workers = append(r.workers, w)
 		go func() {
+			defer safe.Recover(safe.Connection, "proxy/vless/outbound/outbound.go:r.monitor", safe.Closer(reader1, reader2, writer1, writer2))
+
 			ctx := session.ContextWithOutbounds(r.ctx, []*session.Outbound{{
 				Target: net.Destination{Address: net.DomainAddress("v1.rvs.cool")},
 			}})

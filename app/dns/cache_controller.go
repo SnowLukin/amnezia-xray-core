@@ -1,5 +1,7 @@
 package dns
 
+import "github.com/xtls/xray-core/common/safe"
+
 import (
 	"context"
 	go_errors "errors"
@@ -165,7 +167,7 @@ func (c *CacheController) writeAndShrink(expiredKeys []string) {
 		c.dirtyips = c.ips
 		c.ips = make(map[string]*record, int(float64(lenAfter)*1.1))
 		c.highWatermark = lenAfter
-		go c.migrate()
+		go safe.Run(safe.Subsystem, "app/dns/cache_controller.go:c.writeAndShrink", nil, func() func() { safeFn := c.migrate; return func() { safeFn() } }())
 	}
 }
 
@@ -175,17 +177,6 @@ type migrationEntry struct {
 }
 
 func (c *CacheController) migrate() {
-	defer func() {
-		if r := recover(); r != nil {
-			errors.LogError(context.Background(), c.name, " panic during cache migration: ", r)
-			c.Lock()
-			c.dirtyips = nil
-			// c.ips = make(map[string]*record)
-			// c.highWatermark = 0
-			c.Unlock()
-		}
-	}()
-
 	c.RLock()
 	dirtyips := c.dirtyips
 	c.RUnlock()

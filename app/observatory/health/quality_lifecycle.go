@@ -99,8 +99,13 @@ func (q *connectionQuality) publishedSample() {
 		// Release the private gate before taking the observer lock. Finish's
 		// existing lock can continue controller/stat/cleanup work immediately.
 		o := request.observer
-		o.mu.Lock()
-		o.collectQualityReadyEnd(q, request)
-		o.mu.Unlock()
+
+		func() {
+			o.mu.Lock()
+			defer o.mu.Unlock()
+
+			o.collectQualityReadyEnd(q, request)
+
+		}()
 	}
 }

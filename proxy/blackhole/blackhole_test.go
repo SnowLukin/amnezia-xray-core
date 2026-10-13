@@ -24,7 +24,9 @@ func TestBlackholeHTTPResponse(t *testing.T) {
 
 	var mb buf.MultiBuffer
 	var rerr error
+	readDone := make(chan struct{})
 	go func() {
+		defer close(readDone)
 		b, e := reader.ReadMultiBuffer()
 		mb = b
 		rerr = e
@@ -35,6 +37,7 @@ func TestBlackholeHTTPResponse(t *testing.T) {
 		Writer: writer,
 	}
 	common.Must(handler.Process(ctx, &link, nil))
+	<-readDone
 	common.Must(rerr)
 	if mb.IsEmpty() {
 		t.Error("expect http response, but nothing")

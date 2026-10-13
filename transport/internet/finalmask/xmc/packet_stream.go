@@ -1,5 +1,7 @@
 package xmc
 
+import "github.com/xtls/xray-core/common/safe"
+
 import (
 	"bytes"
 	"fmt"
@@ -44,7 +46,7 @@ func newPacketStream(reader io.Reader, writer io.Writer, isClient bool) *packetS
 		done:     make(chan struct{}),
 	}
 	if !isClient {
-		go s.keepAliveLoop()
+		go safe.Run(safe.Connection, "transport/internet/finalmask/xmc/packet_stream.go:newPacketStream", safe.Closer(s), func() func() { safeFn := s.keepAliveLoop; return func() { safeFn() } }())
 	}
 	return s
 }

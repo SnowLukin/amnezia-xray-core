@@ -485,9 +485,16 @@ func (o *Observer) RequestProbe(r ProbeRequest) (ProbeTicket, error) {
 			return ProbeTicket{}, err
 		}
 	}
-	o.mu.Lock()
-	id, tags, err := o.e.requestProbeKind(r.Balancer, r.Outbounds, r.IsUDP, o.now())
-	o.mu.Unlock()
+	var id uint64
+	var tags []string
+	var err error
+	func() {
+		o.mu.Lock()
+		defer o.mu.Unlock()
+
+		id, tags, err = o.e.requestProbeKind(r.Balancer, r.Outbounds, r.IsUDP, o.now())
+
+	}()
 	if err != nil {
 		return ProbeTicket{}, err
 	}

@@ -30,13 +30,18 @@ func (o *Observer) currentUDPFlow(f *udpFlow) bool {
 }
 
 func (o *Observer) udpFirstWrite(f *udpFlow, now time.Time) {
-	o.mu.Lock()
-	current := o.currentUDPFlow(f)
-	if current {
-		o.pruneUDPEvidenceLocked(f.path, now)
-		o.e.onUDPUserWrite(f.path, now)
-	}
-	o.mu.Unlock()
+	var current bool
+	func() {
+		o.mu.Lock()
+		defer o.mu.Unlock()
+
+		current = o.currentUDPFlow(f)
+		if current {
+			o.pruneUDPEvidenceLocked(f.path, now)
+			o.e.onUDPUserWrite(f.path, now)
+		}
+
+	}()
 	if current {
 		if o.s.passive.udpReplyTimeout > 0 {
 			o.watchUDPEvidence()

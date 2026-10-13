@@ -1,5 +1,7 @@
 package outbound
 
+import "github.com/xtls/xray-core/common/safe"
+
 import (
 	"context"
 	"crypto/rand"
@@ -316,7 +318,12 @@ func (h *Handler) Dial(ctx context.Context, dest net.Destination) (stat.Connecti
 				uplinkReader, uplinkWriter := pipe.New(opts...)
 				downlinkReader, downlinkWriter := pipe.New(opts...)
 
-				go handler.Dispatch(ctx, &transport.Link{Reader: uplinkReader, Writer: downlinkWriter})
+				go safe.Run(safe.Connection, "app/proxyman/outbound/handler.go:h.Dial", safe.Closer(uplinkReader, downlinkWriter), func() func() {
+					safeFn := handler.Dispatch
+					safeArg0 := ctx
+					safeArg1 := &transport.Link{Reader: uplinkReader, Writer: downlinkWriter}
+					return func() { safeFn(safeArg0, safeArg1) }
+				}())
 				conn := cnc.NewConnection(cnc.ConnectionInputMulti(uplinkWriter), cnc.ConnectionOutputMulti(downlinkReader))
 
 				if config := tls.ConfigFromStreamSettings(h.streamSettings); config != nil {

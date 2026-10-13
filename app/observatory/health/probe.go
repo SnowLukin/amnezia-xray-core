@@ -5,6 +5,7 @@ import (
 	gotls "crypto/tls"
 	"crypto/x509"
 	"errors"
+	"github.com/xtls/xray-core/common/safe"
 	"io"
 	"net/http"
 	"strconv"
@@ -54,9 +55,15 @@ func (s *probeState) begin(started time.Time, cancel context.CancelFunc, dialTim
 	s.requestTimeout = requestTimeout
 	s.progressTimeout = progressTimeout
 	if dialTimeout < maxProbeTimeout {
-		s.dialTimer = time.AfterFunc(max(0, dialTimeout-time.Since(started)), func() { s.expire("dial_timeout") })
+		s.dialTimer = time.AfterFunc(max(0, dialTimeout-time.Since(started)), func() {
+			defer safe.Recover(safe.Connection, "app/observatory/health/probe.go:probeState.expire", nil)
+			s.expire("dial_timeout")
+		})
 	}
-	s.absoluteTimer = time.AfterFunc(max(0, maxProbeTimeout-time.Since(started)), func() { s.expire("timeout") })
+	s.absoluteTimer = time.AfterFunc(max(0, maxProbeTimeout-time.Since(started)), func() {
+		defer safe.Recover(safe.Connection, "app/observatory/health/probe.go:probeState.expire", nil)
+		s.expire("timeout")
+	})
 }
 
 func (s *probeState) expire(reason string) {
@@ -112,8 +119,14 @@ func (s *probeState) checkDialDeadlineLocked(elapsed time.Duration) {
 
 func (s *probeState) startRequestTimersLocked(requestRemaining time.Duration) {
 	progress := max(s.progressTimeout, 3*s.dialElapsed)
-	s.progressTimer = time.AfterFunc(progress, func() { s.expire("no_progress") })
-	s.requestTimer = time.AfterFunc(requestRemaining, func() { s.expire("timeout") })
+	s.progressTimer = time.AfterFunc(progress, func() {
+		defer safe.Recover(safe.Connection, "app/observatory/health/probe.go:probeState.expire", nil)
+		s.expire("no_progress")
+	})
+	s.requestTimer = time.AfterFunc(requestRemaining, func() {
+		defer safe.Recover(safe.Connection, "app/observatory/health/probe.go:probeState.expire", nil)
+		s.expire("timeout")
+	})
 }
 
 func probeDialFailureKind(err error) failureKind {
@@ -254,6 +267,13 @@ func (o *Observer) probeStepWithContext(parent context.Context, tag string, step
 		ctx, cancel := context.WithCancel(parent)
 		cancels[i] = cancel
 		go func(index int, destination string) {
+			defer safe.Recover(safe.Subsystem, "app/observatory/health/probe.go:Observer.probeDestination", func() {
+				o.fail()
+				results <- struct {
+					index int
+					probeAttemptResult
+				}{index, probeAttemptResult{err: "worker panic recovered", class: "other"}}
+			})
 			r := o.probeDestination(ctx, tag, step, destination)
 			results <- struct {
 				index int

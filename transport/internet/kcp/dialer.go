@@ -1,5 +1,7 @@
 package kcp
 
+import "github.com/xtls/xray-core/common/safe"
+
 import (
 	"context"
 	"io"
@@ -22,6 +24,8 @@ var globalConv = uint32(dice.RollUint16())
 func fetchInput(_ context.Context, input io.Reader, reader PacketReader, conn *Connection) {
 	cache := make(chan *buf.Buffer, 1024)
 	go func() {
+		defer safe.Recover(safe.Connection, "transport/internet/kcp/dialer.go:fetchInput", func() { safe.Close(input); close(cache) })
+
 		for {
 			payload := buf.New()
 			if _, err := payload.ReadFrom(input); err != nil {
@@ -92,7 +96,14 @@ func DialKCP(ctx context.Context, dest net.Destination, streamSettings *internet
 		Conversation: conv,
 	}, conn, conn, kcpSettings)
 
-	go fetchInput(ctx, conn, reader, session)
+	go safe.Run(safe.Connection, "transport/internet/kcp/dialer.go:DialKCP", safe.Closer(conn, reader), func() func() {
+		safeFn := fetchInput
+		safeArg0 := ctx
+		safeArg1 := conn
+		safeArg2 := reader
+		safeArg3 := session
+		return func() { safeFn(safeArg0, safeArg1, safeArg2, safeArg3) }
+	}())
 
 	var iConn stat.Connection = session
 

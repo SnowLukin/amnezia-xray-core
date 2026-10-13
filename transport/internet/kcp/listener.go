@@ -1,5 +1,7 @@
 package kcp
 
+import "github.com/xtls/xray-core/common/safe"
+
 import (
 	"context"
 	gotls "crypto/tls"
@@ -55,7 +57,7 @@ func NewListener(ctx context.Context, address net.Address, port net.Port, stream
 	l.Unlock()
 	errors.LogInfo(ctx, "listening on ", address, ":", port)
 
-	go l.handlePackets()
+	go safe.Run(safe.Subsystem, "transport/internet/kcp/listener.go:NewListener", safe.Closer(l), func() func() { safeFn := l.handlePackets; return func() { safeFn() } }())
 
 	return l, nil
 }
@@ -135,7 +137,7 @@ func (l *Listener) Close() error {
 	defer l.Unlock()
 
 	for _, conn := range l.sessions {
-		go conn.Terminate()
+		go safe.Run(safe.Connection, "transport/internet/kcp/listener.go:l.Close", safe.Closer(conn), func() func() { safeFn := conn.Terminate; return func() { safeFn() } }())
 	}
 
 	return nil

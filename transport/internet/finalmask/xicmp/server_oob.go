@@ -2,6 +2,8 @@
 
 package xicmp
 
+import "github.com/xtls/xray-core/common/safe"
+
 import (
 	"context"
 	goerrors "errors"
@@ -81,9 +83,9 @@ func NewConnServer(c *Config, raw net.PacketConn) (net.PacketConn, error) {
 	common.Must(conn.ipv4PC.SetControlMessage(ipv4.FlagDst, true))
 	common.Must(conn.ipv6PC.SetControlMessage(ipv6.FlagDst, true))
 
-	go conn.clean()
-	go conn.recv4()
-	go conn.recv6()
+	go safe.Run(safe.Connection, "transport/internet/finalmask/xicmp/server_oob.go:NewConnServer", safe.Closer(conn), func() func() { safeFn := conn.clean; return func() { safeFn() } }())
+	go safe.Run(safe.Connection, "transport/internet/finalmask/xicmp/server_oob.go:NewConnServer", safe.Closer(conn), func() func() { safeFn := conn.recv4; return func() { safeFn() } }())
+	go safe.Run(safe.Connection, "transport/internet/finalmask/xicmp/server_oob.go:NewConnServer", safe.Closer(conn), func() func() { safeFn := conn.recv6; return func() { safeFn() } }())
 
 	return conn, nil
 }

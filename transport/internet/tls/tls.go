@@ -1,5 +1,7 @@
 package tls
 
+import "github.com/xtls/xray-core/common/safe"
+
 import (
 	"context"
 	"crypto/rand"
@@ -35,6 +37,8 @@ const tlsCloseTimeout = 250 * time.Millisecond
 
 func (c *Conn) Close() error {
 	timer := time.AfterFunc(tlsCloseTimeout, func() {
+		defer safe.Recover(safe.Connection, "transport/internet/tls/tls.go:c.Close", nil)
+
 		c.Conn.NetConn().Close()
 	})
 	defer timer.Stop()
@@ -80,6 +84,8 @@ var _ Interface = (*UConn)(nil)
 
 func (c *UConn) Close() error {
 	timer := time.AfterFunc(tlsCloseTimeout, func() {
+		defer safe.Recover(safe.Connection, "transport/internet/tls/tls.go:c.Close", nil)
+
 		c.Conn.NetConn().Close()
 	})
 	defer timer.Stop()
@@ -223,6 +229,7 @@ var ModernFingerprints = map[string]*utls.ClientHelloID{
 	"hellochrome_120":  &utls.HelloChrome_120,
 	"hellochrome_131":  &utls.HelloChrome_131,
 	"hellochrome_133":  &utls.HelloChrome_133,
+	"hellochrome_155":  &utls.HelloChrome_155,
 	"helloios_13":      &utls.HelloIOS_13,
 	"helloios_14":      &utls.HelloIOS_14,
 	"helloedge_106":    &utls.HelloEdge_106,

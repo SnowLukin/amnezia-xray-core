@@ -2,6 +2,8 @@
 
 package xicmp
 
+import "github.com/xtls/xray-core/common/safe"
+
 import (
 	"context"
 	goerrors "errors"
@@ -72,9 +74,9 @@ func NewConnServer(c *Config, raw net.PacketConn) (net.PacketConn, error) {
 		closedCh: make(chan struct{}),
 	}
 
-	go conn.clean()
-	go conn.recv4()
-	go conn.recv6()
+	go safe.Run(safe.Connection, "transport/internet/finalmask/xicmp/server.go:NewConnServer", safe.Closer(conn), func() func() { safeFn := conn.clean; return func() { safeFn() } }())
+	go safe.Run(safe.Connection, "transport/internet/finalmask/xicmp/server.go:NewConnServer", safe.Closer(conn), func() func() { safeFn := conn.recv4; return func() { safeFn() } }())
+	go safe.Run(safe.Connection, "transport/internet/finalmask/xicmp/server.go:NewConnServer", safe.Closer(conn), func() func() { safeFn := conn.recv6; return func() { safeFn() } }())
 
 	return conn, nil
 }

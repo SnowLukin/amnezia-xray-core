@@ -1,5 +1,7 @@
 package reality
 
+import "github.com/xtls/xray-core/common/safe"
+
 import (
 	"bytes"
 	"context"
@@ -183,6 +185,8 @@ func UClient(c net.Conn, config *Config, ctx context.Context, dest net.Destinati
 	if !uConn.Verified {
 		errors.LogError(ctx, "REALITY: received real certificate (potential MITM or redirection)")
 		go func() {
+			defer safe.Recover(safe.Connection, "transport/internet/reality/reality.go:UClient", safe.Closer(uConn))
+
 			client := &http.Client{
 				Transport: &http2.Transport{
 					DialTLSContext: func(ctx context.Context, network, addr string, cfg *gotls.Config) (net.Conn, error) {
@@ -266,7 +270,7 @@ func UClient(c net.Conn, config *Config, ctx context.Context, dest net.Destinati
 			get(true)
 			concurrency := int(crypto.RandBetween(config.SpiderY[2], config.SpiderY[3]))
 			for i := 0; i < concurrency; i++ {
-				go get(false)
+				go safe.Run(safe.Connection, "transport/internet/reality/reality.go:UClient", safe.Closer(uConn), func() func() { safeFn := get; safeArg0 := false; return func() { safeFn(safeArg0) } }())
 			}
 			// Do not close the connection
 		}()

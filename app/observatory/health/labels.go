@@ -156,10 +156,15 @@ func (o *Observer) NetworkChangedWithLabels(id, labels string) error {
 }
 
 func (o *Observer) networkChanged(id string, labels map[string]string) {
-	o.mu.Lock()
-	o.e.onNetworkChangeWithLabels(id, labels, o.now())
-	o.generation.Store(o.e.generation)
-	o.qualityEpoch.Store(o.e.qualityEpoch)
-	o.mu.Unlock()
+
+	func() {
+		o.mu.Lock()
+		defer o.mu.Unlock()
+
+		o.e.onNetworkChangeWithLabels(id, labels, o.now())
+		o.generation.Store(o.e.generation)
+		o.qualityEpoch.Store(o.e.qualityEpoch)
+
+	}()
 	o.wake()
 }

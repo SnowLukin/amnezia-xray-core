@@ -1,5 +1,7 @@
 package observatory
 
+import "github.com/xtls/xray-core/common/safe"
+
 import (
 	"context"
 	"net"
@@ -49,7 +51,7 @@ func (o *Observer) Type() interface{} {
 func (o *Observer) Start() error {
 	if o.config != nil && len(o.config.SubjectSelector) != 0 {
 		o.finished = done.New()
-		go o.background()
+		go safe.Run(safe.Subsystem, "app/observatory/observer.go:o.Start", safe.Closer(o.finished), func() func() { safeFn := o.background; return func() { safeFn() } }())
 	}
 	return nil
 }
@@ -95,6 +97,11 @@ func (o *Observer) background() {
 
 		for _, v := range outbounds {
 			go func(v string) {
+				defer safe.Recover(safe.Subsystem, "app/observatory/observer.go:o.background", func() { o.finished.Close(); ch <- struct{}{} })
+				if !safe.Allowed(safe.Subsystem, "app/observatory/observer.go:o.background", func() { o.finished.Close(); ch <- struct{}{} }) {
+					return
+				}
+
 				result := o.probe(v)
 				o.updateStatusForResult(v, &result)
 				ch <- struct{}{}

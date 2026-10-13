@@ -1,5 +1,7 @@
 package mux
 
+import "github.com/xtls/xray-core/common/safe"
+
 import (
 	"context"
 	"io"
@@ -103,8 +105,8 @@ func NewServerWorker(ctx context.Context, d routing.Dispatcher, link *transport.
 	if inbound := session.InboundFromContext(ctx); inbound != nil {
 		inbound.CanSpliceCopy = 3
 	}
-	go worker.run(ctx)
-	go worker.monitor()
+	go safe.Run(safe.Connection, "common/mux/server.go:NewServerWorker", safe.Closer(worker), func() func() { safeFn := worker.run; safeArg0 := ctx; return func() { safeFn(safeArg0) } }())
+	go safe.Run(safe.Connection, "common/mux/server.go:NewServerWorker", safe.Closer(worker), func() func() { safeFn := worker.monitor; return func() { safeFn() } }())
 	return worker, nil
 }
 
@@ -257,7 +259,14 @@ func (w *ServerWorker) handleStatusNew(ctx context.Context, meta *FrameMetadata,
 			x.Mux.Close(false)
 			return errors.New("failed to add new session")
 		}
-		go handle(ctx, x.Mux, w.link.Writer)
+		session := x.Mux
+		go safe.Run(safe.Connection, "common/mux/server.go:w.handleStatusNew", func() { session.Close(false) }, func() func() {
+			safeFn := handle
+			safeArg0 := ctx
+			safeArg1 := session
+			safeArg2 := w.link.Writer
+			return func() { safeFn(safeArg0, safeArg1, safeArg2) }
+		}())
 		return nil
 	}
 
@@ -282,7 +291,13 @@ func (w *ServerWorker) handleStatusNew(ctx context.Context, meta *FrameMetadata,
 		s.Close(false)
 		return errors.New("failed to add new session")
 	}
-	go handle(ctx, s, w.link.Writer)
+	go safe.Run(safe.Connection, "common/mux/server.go:w.handleStatusNew", func() { s.Close(false) }, func() func() {
+		safeFn := handle
+		safeArg0 := ctx
+		safeArg1 := s
+		safeArg2 := w.link.Writer
+		return func() { safeFn(safeArg0, safeArg1, safeArg2) }
+	}())
 	if !meta.Option.Has(OptionData) {
 		return nil
 	}

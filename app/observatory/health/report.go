@@ -36,6 +36,7 @@ type reportCounts struct {
 	CensusProbeBytes               int64            `json:"census_probe_bytes"`
 	FallbackBalancerCount          int64            `json:"fallback_balancer_count"`
 	FallbackBalancerMs             map[string]int64 `json:"fallback_balancer_ms,omitempty"`
+	PanicsRecovered                uint64           `json:"panics_recovered"`
 	UDPProbeCount                  int64            `json:"udp_probe_count"`
 	UDPProbeOKCount                int64            `json:"udp_probe_ok_count"`
 	UDPProbeLossyCount             int64            `json:"udp_probe_lossy_count"`
@@ -215,6 +216,9 @@ func (r *report) count(typ string, f map[string]any) {
 	c := &r.counts
 	c.Events++
 	switch typ {
+	case "panic_recovered":
+		c.PanicsRecovered++
+		r.decide()
 	case "switch":
 		reason, _ := f["reason"].(string)
 		from, _ := f["from"].(string)

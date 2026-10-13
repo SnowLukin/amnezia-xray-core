@@ -1,5 +1,7 @@
 package salamander
 
+import "github.com/xtls/xray-core/common/safe"
+
 import (
 	"crypto/rand"
 	"encoding/binary"
@@ -109,7 +111,7 @@ func NewGeckoConnClient(c *GeckoConfig, raw net.PacketConn) (net.PacketConn, err
 		perSource:  make(map[string]int),
 		closeCh:    make(chan struct{}),
 	}
-	go g.gcLoop()
+	go safe.Run(safe.Connection, "transport/internet/finalmask/salamander/conn.go:NewGeckoConnClient", safe.Closer(g), func() func() { safeFn := g.gcLoop; return func() { safeFn() } }())
 	return g, nil
 }
 

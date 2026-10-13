@@ -1,5 +1,7 @@
 package tcp
 
+import "github.com/xtls/xray-core/common/safe"
+
 import (
 	"context"
 	gotls "crypto/tls"
@@ -79,7 +81,11 @@ func ListenTCP(ctx context.Context, address net.Address, port net.Port, streamSe
 	}
 	if config := reality.ConfigFromStreamSettings(streamSettings); config != nil {
 		l.realityConfig = config.GetREALITYConfig()
-		go goreality.DetectPostHandshakeRecordsLens(l.realityConfig)
+		go safe.Run(safe.Subsystem, "transport/internet/tcp/hub.go:ListenTCP", nil, func() func() {
+			safeFn := goreality.DetectPostHandshakeRecordsLens
+			safeArg0 := l.realityConfig
+			return func() { safeFn(safeArg0) }
+		}())
 	}
 
 	if tcpSettings.HeaderSettings != nil {
@@ -94,7 +100,7 @@ func ListenTCP(ctx context.Context, address net.Address, port net.Port, streamSe
 		l.authConfig = auth
 	}
 
-	go l.keepAccepting()
+	go safe.Run(safe.Subsystem, "transport/internet/tcp/hub.go:ListenTCP", safe.Closer(l), func() func() { safeFn := l.keepAccepting; return func() { safeFn() } }())
 	return l, nil
 }
 
@@ -114,13 +120,18 @@ func (v *Listener) keepAccepting() {
 		}
 
 		go func() {
+			defer safe.Recover(safe.Connection, "transport/internet/tcp/hub.go:v.keepAccepting", func() { safe.Close(conn) })
+
 			if v.tlsConfig != nil {
 				conn = tls.Server(conn, v.tlsConfig)
 			} else if v.realityConfig != nil {
-				if conn, err = reality.Server(conn, v.realityConfig); err != nil {
-					errors.LogInfo(context.Background(), err.Error())
+				wrapped, handshakeErr := reality.Server(conn, v.realityConfig)
+				if handshakeErr != nil {
+					safe.Close(conn)
+					errors.LogInfo(context.Background(), handshakeErr.Error())
 					return
 				}
+				conn = wrapped
 			}
 			if v.authConfig != nil {
 				conn = v.authConfig.Server(conn)

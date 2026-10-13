@@ -1,5 +1,7 @@
 package hysteria
 
+import "github.com/xtls/xray-core/common/safe"
+
 import (
 	"context"
 	gotls "crypto/tls"
@@ -95,8 +97,8 @@ func (h *httpHandler) AuthHTTP(w http.ResponseWriter, r *http.Request) bool {
 					udpIdleTimeout: time.Duration(h.config.UdpIdleTimeout) * time.Second,
 					user:           h.user,
 				}
-				go udpSM.clean()
-				go udpSM.run()
+				go safe.Run(safe.Connection, "transport/internet/hysteria/hub.go:h.AuthHTTP", func() { udpSM.conn.CloseWithError(0, "worker panic recovered") }, func() func() { safeFn := udpSM.clean; return func() { safeFn() } }())
+				go safe.Run(safe.Connection, "transport/internet/hysteria/hub.go:h.AuthHTTP", func() { udpSM.conn.CloseWithError(0, "worker panic recovered") }, func() func() { safeFn := udpSM.run; return func() { safeFn() } }())
 			}
 
 			w.Header().Set(ResponseHeaderUDPEnabled, strconv.FormatBool(h.validator != nil))
@@ -178,7 +180,7 @@ func (l *Listener) keepAccepting() {
 			}
 			break
 		}
-		go l.handleClient(conn)
+		go safe.Run(safe.Connection, "transport/internet/hysteria/hub.go:l.keepAccepting", func() { conn.CloseWithError(0, "worker panic recovered") }, func() func() { safeFn := l.handleClient; safeArg0 := conn; return func() { safeFn(safeArg0) } }())
 	}
 }
 
@@ -328,7 +330,7 @@ func Listen(ctx context.Context, address net.Address, port net.Port, streamSetti
 		listener: listener,
 	}
 
-	go l.keepAccepting()
+	go safe.Run(safe.Subsystem, "transport/internet/hysteria/hub.go:Listen", safe.Closer(l), func() func() { safeFn := l.keepAccepting; return func() { safeFn() } }())
 
 	return l, nil
 }

@@ -1,5 +1,7 @@
 package realm
 
+import "github.com/xtls/xray-core/common/safe"
+
 import (
 	"context"
 	go_errors "errors"
@@ -74,7 +76,7 @@ func NewConnServer(config *Config, raw net.PacketConn) (net.PacketConn, error) {
 		stun:   make(chan STUNPacketEvent, defaultEventBuffer),
 	}
 
-	go conn.run()
+	go safe.Run(safe.Connection, "transport/internet/finalmask/realm/server.go:NewConnServer", safe.Closer(conn), func() func() { safeFn := conn.run; return func() { safeFn() } }())
 
 	return conn, nil
 }
@@ -246,8 +248,22 @@ retry:
 
 	ctx, cancel := context.WithCancel(context.Background())
 	errCh := make(chan error, 2)
-	go c.heartbeatLoop(ctx, resp.SessionID, resp.TTL, errCh)
-	go c.eventsLoop(ctx, resp.SessionID, resp.TTL, errCh)
+	go safe.Run(safe.Connection, "transport/internet/finalmask/realm/server.go:c.run", safe.Closer(c), func() func() {
+		safeFn := c.heartbeatLoop
+		safeArg0 := ctx
+		safeArg1 := resp.SessionID
+		safeArg2 := resp.TTL
+		safeArg3 := errCh
+		return func() { safeFn(safeArg0, safeArg1, safeArg2, safeArg3) }
+	}())
+	go safe.Run(safe.Connection, "transport/internet/finalmask/realm/server.go:c.run", safe.Closer(c), func() func() {
+		safeFn := c.eventsLoop
+		safeArg0 := ctx
+		safeArg1 := resp.SessionID
+		safeArg2 := resp.TTL
+		safeArg3 := errCh
+		return func() { safeFn(safeArg0, safeArg1, safeArg2, safeArg3) }
+	}())
 	select {
 	case <-c.ctx.Done():
 	case err = <-errCh:
@@ -348,7 +364,13 @@ func (c *realmConnServer) eventsLoop(ctx context.Context, sid string, ttl int, e
 				break
 			}
 			last = time.Now()
-			go c.punchEvent(ctx, sid, ev)
+			go safe.Run(safe.Connection, "transport/internet/finalmask/realm/server.go:c.eventsLoop", safe.Closer(c), func() func() {
+				safeFn := c.punchEvent
+				safeArg0 := ctx
+				safeArg1 := sid
+				safeArg2 := ev
+				return func() { safeFn(safeArg0, safeArg1, safeArg2) }
+			}())
 		}
 	}
 }

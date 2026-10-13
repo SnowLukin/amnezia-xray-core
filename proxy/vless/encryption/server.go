@@ -1,5 +1,7 @@
 package encryption
 
+import "github.com/xtls/xray-core/common/safe"
+
 import (
 	"bytes"
 	"crypto/cipher"
@@ -80,6 +82,11 @@ func (i *ServerInstance) Init(nfsSKeysBytes [][]byte, xorMode uint32, secondsFro
 		i.Tickets = make([][16]byte, 0, 1024)
 		i.Sessions = make(map[[16]byte]*ServerSession)
 		go func() {
+			defer safe.Recover(safe.Subsystem, "proxy/vless/encryption/server.go:i.Init", nil)
+			if !safe.Allowed(safe.Subsystem, "proxy/vless/encryption/server.go:i.Init", nil) {
+				return
+			}
+
 			for {
 				time.Sleep(time.Minute)
 				i.RWLock.Lock()

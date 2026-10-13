@@ -1,5 +1,7 @@
 package mux
 
+import "github.com/xtls/xray-core/common/safe"
+
 import (
 	"context"
 	goerrors "errors"
@@ -55,7 +57,10 @@ func (m *ClientManager) DispatchIsolated(ctx context.Context, link *transport.Li
 	if err != nil {
 		return err
 	}
-	stopClose := context.AfterFunc(ctx, func() { _ = worker.Close() })
+	stopClose := context.AfterFunc(ctx, func() {
+		defer safe.Recover(safe.Connection, "common/mux/client.go:m.DispatchIsolated", nil)
+		_ = worker.Close()
+	})
 	if !worker.Dispatch(ctx, link) {
 		stopClose()
 		_ = worker.Close()
@@ -190,6 +195,8 @@ func (f *DialingWorkerFactory) createWithContext(parent context.Context) (*Clien
 	}
 
 	go func(p proxy.Outbound, d internet.Dialer, c common.Closable) {
+		defer safe.Recover(safe.Connection, "common/mux/client.go:f.createWithContext", safe.Closer(c, uplinkReader, downlinkWriter))
+
 		outbounds := []*session.Outbound{{
 			Target: net.TCPDestination(muxCoolAddress, muxCoolPort),
 		}}
@@ -237,8 +244,8 @@ func NewClientWorker(stream transport.Link, s ClientStrategy) (*ClientWorker, er
 		strategy:       s,
 	}
 
-	go c.fetchOutput()
-	go c.monitor()
+	go safe.Run(safe.Connection, "common/mux/client.go:NewClientWorker", safe.Closer(c), func() func() { safeFn := c.fetchOutput; return func() { safeFn() } }())
+	go safe.Run(safe.Connection, "common/mux/client.go:NewClientWorker", safe.Closer(c), func() func() { safeFn := c.monitor; return func() { safeFn() } }())
 
 	return c, nil
 }
@@ -361,7 +368,13 @@ func (m *ClientWorker) Dispatch(ctx context.Context, link *transport.Link) bool 
 	}
 	s.input = link.Reader
 	s.output = link.Writer
-	go fetchInput(ctx, s, m.link.Writer)
+	go safe.Run(safe.Connection, "common/mux/client.go:m.Dispatch", func() { s.Close(false) }, func() func() {
+		safeFn := fetchInput
+		safeArg0 := ctx
+		safeArg1 := s
+		safeArg2 := m.link.Writer
+		return func() { safeFn(safeArg0, safeArg1, safeArg2) }
+	}())
 	_, directPipe := link.Reader.(*pipe.Reader)
 	if !directPipe {
 		if wrapped, ok := link.Reader.(interface{ UnderlyingReader() buf.Reader }); ok {

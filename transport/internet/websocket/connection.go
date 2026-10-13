@@ -1,5 +1,7 @@
 package websocket
 
+import "github.com/xtls/xray-core/common/safe"
+
 import (
 	"io"
 	"net"
@@ -27,6 +29,8 @@ func (c *connection) NetConn() net.Conn { return c.conn.NetConn() }
 func NewConnection(conn *websocket.Conn, remoteAddr net.Addr, extraReader io.Reader, heartbeatPeriod uint32) *connection {
 	if heartbeatPeriod != 0 {
 		go func() {
+			defer safe.Recover(safe.Connection, "transport/internet/websocket/connection.go:NewConnection", safe.Closer(conn))
+
 			for {
 				time.Sleep(time.Duration(heartbeatPeriod) * time.Second)
 				if err := conn.WriteControl(websocket.PingMessage, []byte{}, time.Time{}); err != nil {

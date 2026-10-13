@@ -1,5 +1,7 @@
 package dispatcher
 
+import "github.com/xtls/xray-core/common/safe"
+
 import (
 	"context"
 	"strings"
@@ -225,7 +227,10 @@ func trackOnlineIP(ctx context.Context, sm stats.Manager, email, ip string) {
 	name := "user>>>" + email + ">>>online"
 	if om, _ := sm.GetOrRegisterOnlineMap(name); om != nil {
 		om.AddIP(ip)
-		context.AfterFunc(ctx, func() { om.RemoveIP(ip) })
+		context.AfterFunc(ctx, func() {
+			defer safe.Recover(safe.Connection, "app/dispatcher/default.go:trackOnlineIP", nil)
+			om.RemoveIP(ip)
+		})
 	}
 }
 
@@ -285,9 +290,17 @@ func (d *DefaultDispatcher) Dispatch(ctx context.Context, destination net.Destin
 	sniffingRequest := content.SniffingRequest
 	inbound, outbound := d.getLink(ctx)
 	if !sniffingRequest.Enabled {
-		go d.routedDispatch(ctx, outbound, destination)
+		go safe.Run(safe.Connection, "app/dispatcher/default.go:d.Dispatch", safe.Closer(inbound.Reader, inbound.Writer, outbound.Reader, outbound.Writer), func() func() {
+			safeFn := d.routedDispatch
+			safeArg0 := ctx
+			safeArg1 := outbound
+			safeArg2 := destination
+			return func() { safeFn(safeArg0, safeArg1, safeArg2) }
+		}())
 	} else {
 		go func() {
+			defer safe.Recover(safe.Connection, "app/dispatcher/default.go:d.Dispatch", safe.Closer(inbound.Reader, inbound.Writer, outbound.Reader, outbound.Writer))
+
 			cReader := &cachedReader{
 				reader: outbound.Reader.(*pipe.Reader),
 			}
@@ -314,6 +327,7 @@ func (d *DefaultDispatcher) Dispatch(ctx context.Context, destination net.Destin
 					ob.Target = destination
 				}
 			}
+			safe.TestPanic("connection", destination.NetAddr())
 			d.routedDispatch(ctx, outbound, destination)
 		}()
 	}
@@ -341,6 +355,7 @@ func (d *DefaultDispatcher) DispatchLink(ctx context.Context, destination net.De
 	outbound = WrapLink(ctx, d.policy, d.stats, outbound)
 	sniffingRequest := content.SniffingRequest
 	if !sniffingRequest.Enabled {
+		safe.TestPanic("connection", destination.NetAddr())
 		d.routedDispatch(ctx, outbound, destination)
 	} else {
 		cReader := &cachedReader{
@@ -369,6 +384,7 @@ func (d *DefaultDispatcher) DispatchLink(ctx context.Context, destination net.De
 				ob.Target = destination
 			}
 		}
+		safe.TestPanic("connection", destination.NetAddr())
 		d.routedDispatch(ctx, outbound, destination)
 	}
 

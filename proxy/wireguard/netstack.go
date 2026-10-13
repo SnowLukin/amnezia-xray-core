@@ -5,6 +5,8 @@
 
 package wireguard
 
+import "github.com/xtls/xray-core/common/safe"
+
 import (
 	"context"
 	"crypto/rand"
@@ -513,7 +515,10 @@ func (tnet *Net) exchange(ctx context.Context, server netip.Addr, q dnsmessage.Q
 		}
 		// The deadline ends the wait for the answer, which a canceled ctx
 		// does not: end it then as well.
-		stop := context.AfterFunc(ctx, func() { c.SetDeadline(time.Now()) })
+		stop := context.AfterFunc(ctx, func() {
+			defer safe.Recover(safe.Connection, "proxy/wireguard/netstack.go:tnet.exchange", nil)
+			c.SetDeadline(time.Now())
+		})
 		var p dnsmessage.Parser
 		var h dnsmessage.Header
 		if useUDP {
@@ -681,12 +686,16 @@ func (tnet *Net) LookupContextHost(ctx context.Context, host string) ([]string, 
 	var lastErr error
 	if tnet.hasV4 {
 		go func() {
+			defer safe.Recover(safe.Connection, "proxy/wireguard/netstack.go:tnet.LookupContextHost", func() { lane <- result{error: safe.ErrPanic} })
+
 			p, server, err := tnet.tryOneName(ctx, host+".", dnsmessage.TypeA)
 			lane <- result{p, server, err}
 		}()
 	}
 	if tnet.hasV6 {
 		go func() {
+			defer safe.Recover(safe.Connection, "proxy/wireguard/netstack.go:tnet.LookupContextHost", func() { lane <- result{error: safe.ErrPanic} })
+
 			p, server, err := tnet.tryOneName(ctx, host+".", dnsmessage.TypeAAAA)
 			lane <- result{p, server, err}
 		}()

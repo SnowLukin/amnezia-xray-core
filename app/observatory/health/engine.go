@@ -129,7 +129,9 @@ const lowMemoryRecheck = 2 * time.Minute
 // the caller passes the time and runs the probes the engine asks for.
 // It is not safe for concurrent use; the observer guards it with a mutex.
 type engine struct {
-	census    *censusState
+	census *censusState
+
+	frozen    *atomic.Bool
 	s         *settings
 	rnd       *rand.Rand
 	run       string
@@ -979,6 +981,9 @@ func (e *engine) ranked(s *selector, now time.Time, skip func(string) bool) []st
 }
 
 func (e *engine) updateCandidates(s *selector, candidates []string, now time.Time) {
+	if e.frozen != nil && e.frozen.Load() {
+		return
+	}
 	for t := range e.replacing {
 		if s.offers(t) && !slices.Contains(candidates, t) {
 			// Taken in the moment the provider swaps the handler: the next
@@ -1108,6 +1113,9 @@ func (e *engine) start(s *selector, now time.Time) {
 }
 
 func (e *engine) switchTo(s *selector, tag string, reason string, now time.Time) {
+	if e.frozen != nil && e.frozen.Load() {
+		return
+	}
 	if tag == "" || !e.expiredLeaseUsable(tag) || e.isProbeOnly(tag) || s.cfg.isProbeOnly(tag) || !s.hasCandidate(tag) {
 		return
 	}
@@ -1158,6 +1166,9 @@ func (e *engine) switchTo(s *selector, tag string, reason string, now time.Time)
 }
 
 func (e *engine) exhaust(s *selector, now time.Time) {
+	if e.frozen != nil && e.frozen.Load() {
+		return
+	}
 	from := s.current()
 	e.cancelWakeProbe(from)
 	if from != "" && !s.activeSince.IsZero() {
@@ -1833,6 +1844,9 @@ func (e *engine) tick(now time.Time) ([]*probeJob, time.Time) {
 // no kick. Sleeps are planned last, once the probes of the turn started:
 // an outbound they probe stays awake.
 func (e *engine) step(now time.Time) ([]*probeJob, []*refreshJob, time.Time) {
+	if e.frozen != nil && e.frozen.Load() {
+		return nil, nil, time.Time{}
+	}
 	jobs, wake := e.tick(now)
 	queued, ended := e.nextID, e.leaseEnds
 	refreshes, refreshWake := e.tickProviders(now)

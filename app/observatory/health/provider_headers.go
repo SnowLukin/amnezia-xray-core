@@ -293,9 +293,14 @@ func (o *Observer) SetProviderHeaders(provider string, headers map[string]string
 		}
 		set[canon] = v
 	}
-	o.mu.Lock()
-	err := o.e.setProviderHeaders(provider, set, o.now())
-	o.mu.Unlock()
+	var err error
+	func() {
+		o.mu.Lock()
+		defer o.mu.Unlock()
+
+		err = o.e.setProviderHeaders(provider, set, o.now())
+
+	}()
 	if err != nil {
 		return err
 	}

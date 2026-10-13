@@ -1,5 +1,7 @@
 package tls
 
+import "github.com/xtls/xray-core/common/safe"
+
 import (
 	"context"
 	gotls "crypto/tls"
@@ -65,6 +67,8 @@ func (c *grpcUtls) ClientHandshake(ctx context.Context, authority string, rawCon
 	conn := UClient(rawConn, cfg, c.fingerprint).(*UConn)
 	errChannel := make(chan error, 1)
 	go func() {
+		defer safe.Recover(safe.Connection, "transport/internet/tls/grpc.go:c.ClientHandshake", func() { safe.Close(conn); errChannel <- safe.ErrPanic; close(errChannel) })
+
 		errChannel <- conn.HandshakeContext(ctx)
 		close(errChannel)
 	}()

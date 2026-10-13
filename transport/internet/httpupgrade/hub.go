@@ -1,5 +1,7 @@
 package httpupgrade
 
+import "github.com/xtls/xray-core/common/safe"
+
 import (
 	"bufio"
 	"context"
@@ -110,7 +112,7 @@ func (s *server) keepAccepting() {
 			}
 			continue
 		}
-		go s.Handle(conn)
+		go safe.Run(safe.Connection, "transport/internet/httpupgrade/hub.go:s.keepAccepting", safe.Closer(conn), func() func() { safeFn := s.Handle; safeArg0 := conn; return func() { safeFn(safeArg0) } }())
 	}
 }
 
@@ -164,7 +166,7 @@ func ListenHTTPUpgrade(ctx context.Context, address net.Address, port net.Port, 
 		innnerListener: listener,
 		socketSettings: streamSettings.SocketSettings,
 	}
-	go serverInstance.keepAccepting()
+	go safe.Run(safe.Subsystem, "transport/internet/httpupgrade/hub.go:ListenHTTPUpgrade", safe.Closer(serverInstance), func() func() { safeFn := serverInstance.keepAccepting; return func() { safeFn() } }())
 	return serverInstance, nil
 }
 

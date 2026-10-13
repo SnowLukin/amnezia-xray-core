@@ -1,5 +1,7 @@
 package wireguard
 
+import "github.com/xtls/xray-core/common/safe"
+
 import (
 	"context"
 	"fmt"
@@ -55,6 +57,8 @@ func createForwarder(gstack *stack.Stack, handler func(conn net.Conn, dest net.D
 
 	tcpForwarder := tcp.NewForwarder(gstack, 0, 65535, func(r *tcp.ForwarderRequest) {
 		go func(r *tcp.ForwarderRequest) {
+			defer safe.Recover(safe.Connection, "proxy/wireguard/tun.go:createForwarder", func() { r.Complete(true) })
+
 			var wq waiter.Queue
 			id := r.ID()
 
@@ -65,6 +69,8 @@ func createForwarder(gstack *stack.Stack, handler func(conn net.Conn, dest net.D
 				return
 			}
 
+			defer safe.Closer(ep)()
+
 			options := ep.SocketOptions()
 			options.SetKeepAlive(false)
 			options.SetReuseAddress(true)
@@ -72,7 +78,6 @@ func createForwarder(gstack *stack.Stack, handler func(conn net.Conn, dest net.D
 
 			handler(gonet.NewTCPConn(&wq, ep), net.TCPDestination(net.IPAddress(id.LocalAddress.AsSlice()), net.Port(id.LocalPort)))
 
-			ep.Close()
 			r.Complete(false)
 		}(r)
 	})
@@ -142,7 +147,12 @@ func (m *udpManager) feed(src net.Destination, dst net.Destination, data []byte)
 			m.mutex.Unlock()
 		}
 		m.m[src.NetAddr()] = uc
-		go m.handler(uc, dst)
+		go safe.Run(safe.Connection, "proxy/wireguard/tun.go:m.feed", safe.Closer(uc), func() func() {
+			safeFn := m.handler
+			safeArg0 := uc
+			safeArg1 := dst
+			return func() { safeFn(safeArg0, safeArg1) }
+		}())
 	}
 
 	select {

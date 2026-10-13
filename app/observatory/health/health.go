@@ -9,6 +9,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"github.com/xtls/xray-core/common/safe"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -40,6 +42,9 @@ type Observer struct {
 	dispatcher routing.Dispatcher
 	ohm        outbound.Manager
 	stats      stats.Manager
+
+	failed      atomic.Bool
+	panicCursor uint64
 
 	mu      sync.Mutex
 	e       *engine
@@ -142,6 +147,8 @@ func newObserver(ctx context.Context, config *Config) *Observer {
 	_, _ = rand.Read(id[:])
 	o.run = hex.EncodeToString(id[:])
 	o.e.run = o.run
+	o.e.frozen = &o.failed
+	o.panicCursor, _, _ = safe.Snapshot(0)
 	o.runCtx, o.stopRun = context.WithCancel(ctx)
 	o.newHandler = o.createHandler
 	collectorStart := time.Time{}
@@ -201,7 +208,7 @@ func (o *Observer) Start() error {
 	o.seedProviderSets()
 	o.applyInitial()
 	running.Store(o)
-	go o.loop(o.done)
+	go o.guard("health.go:Observer.loop", func() { o.loop(o.done) })
 	return nil
 }
 
@@ -226,17 +233,27 @@ func (o *Observer) applyInitial() {
 				"is_ok": false, "error": cutText(err.Error(), maxFailureText)})
 			continue
 		}
-		o.mu.Lock()
-		o.e.baseFromInitial(rt.p, a)
-		o.mu.Unlock()
+
+		func() {
+			o.mu.Lock()
+			defer o.mu.Unlock()
+
+			o.e.baseFromInitial(rt.p, a)
+
+		}()
 		// The headers lie under those the host set before the start, name by
 		// name, which gen zero tells.
 		if _, err := o.applySet(rt, a, &refreshJob{p: rt.p, trigger: triggerInitial}); err != nil {
 			continue
 		}
-		o.mu.Lock()
-		o.e.startFromInitial(rt.p, a.age, a.nextRefreshIn, a.hasNextRefreshIn, o.now())
-		o.mu.Unlock()
+
+		func() {
+			o.mu.Lock()
+			defer o.mu.Unlock()
+
+			o.e.startFromInitial(rt.p, a.age, a.nextRefreshIn, a.hasNextRefreshIn, o.now())
+
+		}()
 	}
 }
 
@@ -288,10 +305,15 @@ func (o *Observer) seedProviderSets() {
 func (o *Observer) Close() error {
 	running.CompareAndSwap(o, nil)
 	o.once.Do(func() { close(o.done) })
-	o.mu.Lock()
-	o.finishUDPFlowsLocked()
-	o.e.interruptCensus("close", o.now())
-	o.mu.Unlock()
+
+	func() {
+		o.mu.Lock()
+		defer o.mu.Unlock()
+
+		o.finishUDPFlowsLocked()
+		o.e.interruptCensus("close", o.now())
+
+	}()
 	o.stopRun()
 	o.closeProviders()
 	return nil
@@ -307,35 +329,54 @@ func (o *Observer) wake() {
 func (o *Observer) loop(done chan struct{}) {
 	timer := time.NewTimer(time.Hour)
 	timer.Stop()
+	defer timer.Stop()
 	for {
-		o.mu.Lock()
-		now := o.now()
-		jobs, refreshes, wake := o.e.step(now)
-		label, labelWake := o.e.nextLabelRequest(o.runCtx, now)
-		wake = soonestOf(wake, labelWake)
-		downs := o.e.takeDowns()
-		sleeps := o.e.takeSleeps()
-		unpinned := o.e.takeUnpinned()
-		o.mu.Unlock()
+		if o.failed.Load() {
+			return
+		}
+		var now time.Time
+		var jobs []*probeJob
+		var refreshes []*refreshJob
+		var wake time.Time
+		var label *labelJob
+		var labelWake time.Time
+		var downs []downMark
+		var sleeps []sleepJob
+		var unpinned bool
+		func() {
+			o.mu.Lock()
+			defer o.mu.Unlock()
+
+			safe.TestPanic("health", "loop")
+			o.collectPanicsLocked()
+			now = o.now()
+			jobs, refreshes, wake = o.e.step(now)
+			label, labelWake = o.e.nextLabelRequest(o.runCtx, now)
+			wake = soonestOf(wake, labelWake)
+			downs = o.e.takeDowns()
+			sleeps = o.e.takeSleeps()
+			unpinned = o.e.takeUnpinned()
+
+		}()
 		// Ending a connection reports back to the observer, so it happens
 		// outside the lock.
 		for _, d := range downs {
 			o.closePending(d)
 		}
 		if len(sleeps) > 0 {
-			go o.sleepOutbounds(sleeps)
+			go o.guard("health.go:Observer.sleepOutbounds", func() { o.sleepOutbounds(sleeps) })
 		}
 		if unpinned {
-			go o.endOverdueDrains()
+			go o.guard("health.go:Observer.endOverdueDrains", func() { o.endOverdueDrains() })
 		}
 		for _, j := range jobs {
-			go o.runProbe(j)
+			go o.guard("health.go:Observer.runProbe", func() { o.runProbe(j) })
 		}
 		if label != nil {
-			go o.runLabelRequest(label)
+			go o.guard("health.go:Observer.runLabelRequest", func() { o.runLabelRequest(label) })
 		}
 		for _, r := range refreshes {
-			go o.runRefresh(r)
+			go o.guard("health.go:Observer.runRefresh", func() { o.runRefresh(r) })
 		}
 		if !wake.IsZero() {
 			d := wake.Sub(now)
@@ -361,20 +402,33 @@ func (o *Observer) loop(done chan struct{}) {
 }
 
 func (o *Observer) runProbe(j *probeJob) {
-	ctx, cancel := context.WithCancel(o.runCtx)
-	o.mu.Lock()
-	j.cancel = cancel
-	j.qualityEpoch = o.e.qualityEpoch
-	if j.invalidated || j.forgotten {
-		cancel()
+	if o.failed.Load() {
+		return
 	}
-	o.mu.Unlock()
+	ctx, cancel := context.WithCancel(o.runCtx)
+
+	func() {
+		o.mu.Lock()
+		defer o.mu.Unlock()
+
+		j.cancel = cancel
+		j.qualityEpoch = o.e.qualityEpoch
+		if j.invalidated || j.forgotten {
+			cancel()
+		}
+
+	}()
 	defer cancel()
 	if j.isUDP {
 		r := o.probeUDPWithContext(ctx, j.tag, o.s.udpProbe)
-		o.mu.Lock()
-		o.e.onUDPProbeResult(j, r, o.now())
-		o.mu.Unlock()
+
+		func() {
+			o.mu.Lock()
+			defer o.mu.Unlock()
+
+			o.e.onUDPProbeResult(j, r, o.now())
+
+		}()
 		o.wake()
 		return
 	}
@@ -388,9 +442,14 @@ func (o *Observer) runProbe(j *probeJob) {
 	} else {
 		r = o.probeWithContext(ctx, j.tag, j.profile)
 	}
-	o.mu.Lock()
-	o.e.onProbeResult(j, r, o.now())
-	o.mu.Unlock()
+
+	func() {
+		o.mu.Lock()
+		defer o.mu.Unlock()
+
+		o.e.onProbeResult(j, r, o.now())
+
+	}()
 	o.wake()
 }
 
@@ -450,13 +509,21 @@ func (o *Observer) StartDial(ctx context.Context, tag string, server net.Destina
 	registry := o.connectionRegistry(tag)
 	activity, proofSignal := o.connectionSignals(tag)
 	proofSignal = proofSignal && (!udp || o.s.features.passiveTCP())
-	o.mu.Lock()
-	connectionPath := o.e.path(tag)
-	connectionEpoch := connectionPath.controllerEpoch
-	udpEpoch, udpIncarnation := o.e.udpEpoch, connectionPath.udpIncarnation
-	o.e.noteDemand(o.now())
-	o.e.used(tag, o.now())
-	o.mu.Unlock()
+	var connectionPath *path
+	var connectionEpoch uint64
+	var udpEpoch uint64
+	var udpIncarnation uint64
+	func() {
+		o.mu.Lock()
+		defer o.mu.Unlock()
+
+		connectionPath = o.e.path(tag)
+		connectionEpoch = connectionPath.controllerEpoch
+		udpEpoch, udpIncarnation = o.e.udpEpoch, connectionPath.udpIncarnation
+		o.e.noteDemand(o.now())
+		o.e.used(tag, o.now())
+
+	}()
 	if o.s.census != nil {
 		o.wake()
 	}
@@ -492,34 +559,44 @@ func (o *Observer) StartDial(ctx context.Context, tag string, server net.Destina
 	if _, ok := o.e.lastServer.Load(tag); !ok && t.server != "" {
 		o.e.lastServer.Store(tag, t.server)
 	}
-	o.mu.Lock()
-	t.udpPath = connectionPath
-	t.udpEpoch = udpEpoch
-	t.udpIncarnation = udpIncarnation
-	o.e.pathAt(tag, o.now())
-	o.mu.Unlock()
+
+	func() {
+		o.mu.Lock()
+		defer o.mu.Unlock()
+
+		t.udpPath = connectionPath
+		t.udpEpoch = udpEpoch
+		t.udpIncarnation = udpIncarnation
+		o.e.pathAt(tag, o.now())
+
+	}()
 	o.track(t)
 	return t
 }
 
 func (o *Observer) track(t *connTracker) {
-	o.trackMu.Lock()
-	if o.trackers == nil {
-		o.trackers = make(map[*connTracker]struct{})
-	}
-	o.trackers[t] = struct{}{}
-	o.tracked++
-	if o.tracked%256 == 0 {
-		now := o.nowNano()
-		for old := range o.trackers {
-			if old.abandoned(now) {
-				delete(o.trackers, old)
-				delete(o.watching, old)
-				old.watched.Store(false)
+
+	func() {
+		o.trackMu.Lock()
+		defer o.trackMu.Unlock()
+
+		if o.trackers == nil {
+			o.trackers = make(map[*connTracker]struct{})
+		}
+		o.trackers[t] = struct{}{}
+		o.tracked++
+		if o.tracked%256 == 0 {
+			now := o.nowNano()
+			for old := range o.trackers {
+				if old.abandoned(now) {
+					delete(o.trackers, old)
+					delete(o.watching, old)
+					old.watched.Store(false)
+				}
 			}
 		}
-	}
-	o.trackMu.Unlock()
+
+	}()
 	t.watch()
 }
 
@@ -543,7 +620,7 @@ func (o *Observer) watch(t *connTracker) {
 	done := o.done
 	o.trackMu.Unlock()
 	if start {
-		go o.sweepLoop(done)
+		go o.guard("health.go:Observer.sweepLoop", func() { o.sweepLoop(done) })
 	}
 }
 
@@ -595,19 +672,29 @@ func (o *Observer) closePending(d downMark) {
 	if d.silent {
 		f["is_silent"] = true
 	}
-	o.mu.Lock()
-	o.e.emit(o.now(), "pending_closed", f)
-	o.mu.Unlock()
+
+	func() {
+		o.mu.Lock()
+		defer o.mu.Unlock()
+
+		o.e.emit(o.now(), "pending_closed", f)
+
+	}()
 }
 
 func (o *Observer) untrack(t *connTracker) {
-	o.trackMu.Lock()
-	delete(o.trackers, t)
-	delete(o.watching, t)
-	// Nothing ends an untracked connection, and abort would keep its whole
-	// session reachable. closePending reads it under trackMu.
-	t.abort = nil
-	o.trackMu.Unlock()
+
+	func() {
+		o.trackMu.Lock()
+		defer o.trackMu.Unlock()
+
+		delete(o.trackers, t)
+		delete(o.watching, t)
+		// Nothing ends an untracked connection, and abort would keep its whole
+		// session reachable. closePending reads it under trackMu.
+		t.abort = nil
+
+	}()
 	t.watched.Store(false)
 }
 
@@ -630,21 +717,26 @@ func (o *Observer) sweepLoop(done chan struct{}) {
 			return
 		case <-ticker.C:
 		}
-		o.mu.Lock()
-		udpPending := o.sweepUDPEvidenceLocked(o.now())
-		o.trackMu.Lock()
-		if len(o.watching) == 0 && !udpPending {
-			o.sweeping = false
-			o.trackMu.Unlock()
-			o.mu.Unlock()
+		stop := func() bool {
+			o.mu.Lock()
+			defer o.mu.Unlock()
+			udpPending := o.sweepUDPEvidenceLocked(o.now())
+			o.trackMu.Lock()
+			defer o.trackMu.Unlock()
+			if len(o.watching) == 0 && !udpPending {
+				o.sweeping = false
+				return true
+			}
+			batch = batch[:0]
+			for t := range o.watching {
+				batch = append(batch, t)
+			}
+			return false
+		}()
+		if stop {
 			return
 		}
-		batch = batch[:0]
-		for t := range o.watching {
-			batch = append(batch, t)
-		}
-		o.trackMu.Unlock()
-		o.mu.Unlock()
+
 		now := o.nowNano()
 		for _, t := range batch {
 			lastRead, lastWrite := t.lastRead.Load(), t.lastWrite.Load()
@@ -679,28 +771,38 @@ func (o *Observer) failure(t *connTracker, kind failureKind) {
 	if !o.s.features.failure(kind) {
 		return
 	}
-	o.mu.Lock()
-	o.e.used(t.tag, o.now())
-	stale := false
-	if kind.pathLevel() {
-		p := o.e.paths[t.tag]
-		stale = o.e.startedInPause(o.base.Add(time.Duration(t.started))) ||
-			(p != nil && t.started < p.lastAnsweredStart)
-	}
-	if p := o.e.paths[t.tag]; p != nil && t.network == p.controllerEpoch && !stale {
-		o.e.onFailure(t.tag, kind, t.target, t.conn, o.now())
-	}
-	o.mu.Unlock()
+	var stale bool
+	func() {
+		o.mu.Lock()
+		defer o.mu.Unlock()
+
+		o.e.used(t.tag, o.now())
+		stale = false
+		if kind.pathLevel() {
+			p := o.e.paths[t.tag]
+			stale = o.e.startedInPause(o.base.Add(time.Duration(t.started))) ||
+				(p != nil && t.started < p.lastAnsweredStart)
+		}
+		if p := o.e.paths[t.tag]; p != nil && t.network == p.controllerEpoch && !stale {
+			o.e.onFailure(t.tag, kind, t.target, t.conn, o.now())
+		}
+
+	}()
 	o.wake()
 }
 
 func (o *Observer) answered(t *connTracker) {
-	o.mu.Lock()
-	o.collectQualityInitial(t.quality, t.tag, false)
-	if t.proof || o.s.features.passiveTCP() {
-		o.noteControllerReplyLocked(t.tag, t.started, t.network, t.udpPath)
-	}
-	o.mu.Unlock()
+
+	func() {
+		o.mu.Lock()
+		defer o.mu.Unlock()
+
+		o.collectQualityInitial(t.quality, t.tag, false)
+		if t.proof || o.s.features.passiveTCP() {
+			o.noteControllerReplyLocked(t.tag, t.started, t.network, t.udpPath)
+		}
+
+	}()
 }
 
 func (o *Observer) success(t *connTracker) {
@@ -746,41 +848,53 @@ func (o *Observer) connectionSuccess(tag string, started int64, epoch uint64, sn
 }
 
 func (o *Observer) witnessed(labelEpoch uint64) {
-	o.mu.Lock()
-	o.e.noteLabelSuccess(labelEpoch)
-	queued := len(o.e.queue)
-	o.e.sawSuccess("witness", o.now())
-	more := len(o.e.queue) > queued
-	o.mu.Unlock()
+	var queued int
+	var more bool
+	func() {
+		o.mu.Lock()
+		defer o.mu.Unlock()
+
+		o.e.noteLabelSuccess(labelEpoch)
+		queued = len(o.e.queue)
+		o.e.sawSuccess("witness", o.now())
+		more = len(o.e.queue) > queued
+
+	}()
 	if more || o.s.labelRequest != nil {
 		o.wake()
 	}
 }
 
 func (o *Observer) finished(t *connTracker) {
-	o.mu.Lock()
-	o.collectQualityEnd(t.quality, t.tag, false, &t.bytesRead)
-	now := o.now()
-	if o.s.features.Report || o.s.features.Metrics {
-		st := &o.e.pathAt(t.tag, now).stats
-		if t.bytesRead.Load() > 0 {
-			st.connsOK++
-		} else if t.bytesWritten.Load() > 0 {
-			st.connsFailed++
+	var now time.Time
+	var woke bool
+	func() {
+		o.mu.Lock()
+		defer o.mu.Unlock()
+
+		o.collectQualityEnd(t.quality, t.tag, false, &t.bytesRead)
+		now = o.now()
+		if o.s.features.Report || o.s.features.Metrics {
+			st := &o.e.pathAt(t.tag, now).stats
+			if t.bytesRead.Load() > 0 {
+				st.connsOK++
+			} else if t.bytesWritten.Load() > 0 {
+				st.connsFailed++
+			}
+			st.bytesUp += t.bytesWritten.Load()
+			st.bytesDown += t.bytesRead.Load()
+			if ttfb := t.ttfb.Load(); ttfb > 0 {
+				st.ttfb.add(time.Duration(ttfb))
+			}
 		}
-		st.bytesUp += t.bytesWritten.Load()
-		st.bytesDown += t.bytesRead.Load()
-		if ttfb := t.ttfb.Load(); ttfb > 0 {
-			st.ttfb.add(time.Duration(ttfb))
-		}
-	}
-	// The loop plans the sleep of an outbound that has just woken; nothing
-	// else may wake it after the last connection ends. The end of one the
-	// observer ended, of an outbound found down, may let that outbound sleep
-	// now: the use starts its retries afresh, and the loop asks at once
-	// rather than when a retry that had grown is due.
-	woke := o.e.used(t.tag, now)
-	o.mu.Unlock()
+		// The loop plans the sleep of an outbound that has just woken; nothing
+		// else may wake it after the last connection ends. The end of one the
+		// observer ended, of an outbound found down, may let that outbound sleep
+		// now: the use starts its retries afresh, and the loop asks at once
+		// rather than when a retry that had grown is due.
+		woke = o.e.used(t.tag, now)
+
+	}()
 	if woke || t.has(reportedAborted) {
 		o.wake()
 	}
@@ -794,9 +908,14 @@ var _ outbound.ProcessObserver = (*Observer)(nil)
 // outbound that can sleep processes a connection, which may have woken it
 // whatever routed it there.
 func (o *Observer) ProcessStarted(tag string) {
-	o.mu.Lock()
-	woke := o.e.processStarted(tag, o.now())
-	o.mu.Unlock()
+	var woke bool
+	func() {
+		o.mu.Lock()
+		defer o.mu.Unlock()
+
+		woke = o.e.processStarted(tag, o.now())
+
+	}()
 	if woke {
 		o.wake()
 	}
@@ -804,9 +923,14 @@ func (o *Observer) ProcessStarted(tag string) {
 
 // ProcessEnded implements outbound.ProcessObserver.
 func (o *Observer) ProcessEnded(tag string) {
-	o.mu.Lock()
-	last := o.e.processEnded(tag, o.now())
-	o.mu.Unlock()
+	var last bool
+	func() {
+		o.mu.Lock()
+		defer o.mu.Unlock()
+
+		last = o.e.processEnded(tag, o.now())
+
+	}()
 	if last {
 		o.wake()
 	}
@@ -865,9 +989,14 @@ func (o *Observer) OutboundSelector(balancerTag string, settings *serial.TypedMe
 	if err := validateSelectorFeatures(cfg, o.s.features); err != nil {
 		return nil, err
 	}
-	o.mu.Lock()
-	s := o.e.addSelectorAt(balancerTag, newSelectorSettings(cfg), o.now())
-	o.mu.Unlock()
+	var s *selector
+	func() {
+		o.mu.Lock()
+		defer o.mu.Unlock()
+
+		s = o.e.addSelectorAt(balancerTag, newSelectorSettings(cfg), o.now())
+
+	}()
 	return &selectorHandle{o: o, s: s}, nil
 }
 
@@ -878,6 +1007,9 @@ type selectorHandle struct {
 
 // Select implements extension.OutboundSelector.
 func (h *selectorHandle) Select(candidates []string) string {
+	if h.o.failed.Load() {
+		return h.s.current()
+	}
 	now := h.o.now()
 	nano := now.UnixNano()
 	if prev := h.o.e.lastDemand.Swap(nano); h.o.s.schedule.idleAfter > 0 && (prev == 0 || now.Sub(time.Unix(0, prev)) > h.o.s.schedule.idleAfter) {
@@ -917,11 +1049,14 @@ func (h *selectorHandle) FallbackBalancer() string {
 // outbound. A configuration reload may change the target meanwhile; a stale
 // confirmation must not start an interval for the new target.
 func (h *selectorHandle) FallbackSelected(to string) {
+	if h.o.failed.Load() {
+		return
+	}
 	h.o.mu.Lock()
-	if h.o.e.selectors[h.s.tag] == h.s && h.s.cfg.fallbackBalancer == to {
+	defer h.o.mu.Unlock()
+	if !h.o.failed.Load() && h.o.e.selectors[h.s.tag] == h.s && h.s.cfg.fallbackBalancer == to {
 		h.o.e.beginFallback(h.s, h.o.now())
 	}
-	h.o.mu.Unlock()
 }
 
 func equalStrings(a, b []string) bool {
@@ -945,11 +1080,16 @@ func (o *Observer) NetworkChanged(id string) { o.networkChanged(id, nil) }
 
 // NetworkLost pauses all decisions until NetworkChanged.
 func (o *Observer) NetworkLost() {
-	o.mu.Lock()
-	o.e.cancelLabelRequest(o.now())
-	o.e.labelProof = false
-	o.e.onNetworkLost(o.now())
-	o.mu.Unlock()
+
+	func() {
+		o.mu.Lock()
+		defer o.mu.Unlock()
+
+		o.e.cancelLabelRequest(o.now())
+		o.e.labelProof = false
+		o.e.onNetworkLost(o.now())
+
+	}()
 }
 
 // SetMemoryLow tells the observer whether the process is short of memory.
@@ -961,9 +1101,14 @@ func (o *Observer) NetworkLost() {
 // event log keeps every event. It is safe to call from any goroutine;
 // repeating the current value does nothing.
 func (o *Observer) SetMemoryLow(low bool) {
-	o.mu.Lock()
-	changed := o.e.setMemoryLow(low, o.now())
-	o.mu.Unlock()
+	var changed bool
+	func() {
+		o.mu.Lock()
+		defer o.mu.Unlock()
+
+		changed = o.e.setMemoryLow(low, o.now())
+
+	}()
 	if !changed {
 		return
 	}
@@ -977,18 +1122,28 @@ func (o *Observer) SetMemoryLow(low bool) {
 // run is the run of the core the request is meant for, as Status reports
 // it; a request for another run is ignored. An empty run skips the check.
 func (o *Observer) Pin(balancer, tag, run string) bool {
-	o.mu.Lock()
-	ok := o.forThisRun("pin", balancer, run) && o.e.pin(balancer, tag, o.now())
-	o.mu.Unlock()
+	var ok bool
+	func() {
+		o.mu.Lock()
+		defer o.mu.Unlock()
+
+		ok = o.forThisRun("pin", balancer, run) && o.e.pin(balancer, tag, o.now())
+
+	}()
 	o.wake()
 	return ok
 }
 
 // Release lets the balancer choose again. run works as in Pin.
 func (o *Observer) Release(balancer, run string) bool {
-	o.mu.Lock()
-	ok := o.forThisRun("release", balancer, run) && o.e.release(balancer, o.now())
-	o.mu.Unlock()
+	var ok bool
+	func() {
+		o.mu.Lock()
+		defer o.mu.Unlock()
+
+		ok = o.forThisRun("release", balancer, run) && o.e.release(balancer, o.now())
+
+	}()
 	o.wake()
 	return ok
 }
@@ -1006,6 +1161,7 @@ func (o *Observer) forThisRun(what, balancer, run string) bool {
 func (o *Observer) DrainEvents() ([]byte, uint64) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
+	o.collectPanicsLocked()
 	return o.e.events.drain()
 }
 
@@ -1013,10 +1169,20 @@ func (o *Observer) DrainEvents() ([]byte, uint64) {
 // It is local diagnostics: network identity, server_name and last_error may
 // contain private addresses. Send Report or TakeReport to analytics instead.
 func (o *Observer) Status() []byte {
-	o.mu.Lock()
-	view := o.e.status(o.now())
-	view.Run = o.run
-	o.mu.Unlock()
+	var view statusView
+	func() {
+		o.mu.Lock()
+		defer o.mu.Unlock()
+
+		o.collectPanicsLocked()
+		view = o.e.status(o.now())
+		_, _, view.BrokenSubsystems = safe.Snapshot(0)
+		if o.failed.Load() && !slices.Contains(view.BrokenSubsystems, "app/observatory/health") {
+			view.BrokenSubsystems = append(view.BrokenSubsystems, "app/observatory/health")
+		}
+		view.Run = o.run
+
+	}()
 	out, _ := json.Marshal(view)
 	return out
 }
@@ -1027,13 +1193,19 @@ func (o *Observer) Status() []byte {
 // of this run before the host stops the core: it is due when the core made
 // any decision or sampled this run, and nothing is due after it.
 func (o *Observer) TakeReport(final bool) []byte {
-	o.mu.Lock()
-	if final {
-		o.finishUDPFlowsLocked()
-		o.e.interruptCensus("close", o.now())
-	}
-	v := o.e.takeReport(final, o.now())
-	o.mu.Unlock()
+	var v *reportView
+	func() {
+		o.mu.Lock()
+		defer o.mu.Unlock()
+
+		if final {
+			o.finishUDPFlowsLocked()
+			o.e.interruptCensus("close", o.now())
+		}
+		o.collectPanicsLocked()
+		v = o.e.takeReport(final, o.now())
+
+	}()
 	return o.marshalReport(v)
 }
 
@@ -1042,9 +1214,15 @@ func (o *Observer) TakeReport(final bool) []byte {
 // none. A host keeps it to send the window when the process is killed
 // before the stop.
 func (o *Observer) PeekReport() []byte {
-	o.mu.Lock()
-	v := o.e.snapshotReport(o.now())
-	o.mu.Unlock()
+	var v *reportView
+	func() {
+		o.mu.Lock()
+		defer o.mu.Unlock()
+
+		o.collectPanicsLocked()
+		v = o.e.snapshotReport(o.now())
+
+	}()
 	return o.marshalReport(v)
 }
 

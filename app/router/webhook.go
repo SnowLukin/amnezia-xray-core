@@ -1,5 +1,7 @@
 package router
 
+import "github.com/xtls/xray-core/common/safe"
+
 import (
 	"bytes"
 	"context"
@@ -79,7 +81,14 @@ func NewWebhookNotifier(cfg *WebhookConfig) (*WebhookNotifier, error) {
 
 	if h.deduplication > 0 {
 		h.wg.Add(1)
-		go h.cleanupLoop()
+		go func() {
+			defer h.wg.Done()
+			defer safe.Recover(safe.Subsystem, "app/router/webhook.go:NewWebhookNotifier", nil)
+			if !safe.Allowed(safe.Subsystem, "app/router/webhook.go:NewWebhookNotifier", nil) {
+				return
+			}
+			h.cleanupLoop()
+		}()
 	}
 
 	return h, nil
@@ -105,6 +114,11 @@ func (h *WebhookNotifier) Fire(ctx routing.Context, outboundTag string) {
 	}
 	go func() {
 		defer h.wg.Done()
+		defer safe.Recover(safe.Subsystem, "app/router/webhook.go:h.Fire", nil)
+		if !safe.Allowed(safe.Subsystem, "app/router/webhook.go:h.Fire", nil) {
+			return
+		}
+
 		h.post(ev)
 	}()
 }
@@ -211,7 +225,6 @@ func (h *WebhookNotifier) isDuplicate(email string) bool {
 }
 
 func (h *WebhookNotifier) cleanupLoop() {
-	defer h.wg.Done()
 	ttl := time.Duration(h.deduplication) * time.Second
 	ticker := time.NewTicker(ttl)
 	defer ticker.Stop()

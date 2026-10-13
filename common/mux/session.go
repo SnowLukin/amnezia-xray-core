@@ -1,5 +1,7 @@
 package mux
 
+import "github.com/xtls/xray-core/common/safe"
+
 import (
 	"context"
 	"io"
@@ -235,18 +237,25 @@ var XUDPManager struct {
 func init() {
 	XUDPManager.Map = make(map[[8]byte]*XUDP)
 	go func() {
+		defer safe.Recover(safe.Subsystem, "common/mux/session.go:init", nil)
+		if !safe.Allowed(safe.Subsystem, "common/mux/session.go:init", nil) {
+			return
+		}
+
 		for {
 			time.Sleep(time.Minute)
 			now := time.Now()
-			XUDPManager.Lock()
-			for id, x := range XUDPManager.Map {
-				if x.Status == Expiring && now.After(x.Expire) {
-					x.Interrupt()
-					delete(XUDPManager.Map, id)
-					errors.LogDebug(context.Background(), "XUDP del ", id)
+			func() {
+				XUDPManager.Lock()
+				defer XUDPManager.Unlock()
+				for id, x := range XUDPManager.Map {
+					if x.Status == Expiring && now.After(x.Expire) {
+						x.Interrupt()
+						delete(XUDPManager.Map, id)
+						errors.LogDebug(context.Background(), "XUDP del ", id)
+					}
 				}
-			}
-			XUDPManager.Unlock()
+			}()
 		}
 	}()
 }

@@ -37,6 +37,9 @@ func foldReport(t *testing.T, raw []byte) (reportCounts, bool) {
 		f := ev.Fields
 		c.Events++
 		switch ev.Type {
+		case "panic_recovered":
+			c.PanicsRecovered++
+			decided = true
 		case "switch":
 			reason, _ := f["reason"].(string)
 			c.Switches++
@@ -285,6 +288,7 @@ func TestReportAddsUpTheEvents(t *testing.T) {
 	te.emit(now, "fallback_balancer", map[string]any{"balancer": "auto", "to": "main", "is_active": true})
 	te.emit(now, "fallback_balancer", map[string]any{"balancer": "auto", "to": "main", "is_active": false})
 
+	te.emit(now, "panic_recovered", map[string]any{"scope": "connection", "where": "test.go:worker"})
 	raw, dropped := te.events.drain()
 	if dropped != 0 {
 		t.Fatalf("setup: %d events dropped", dropped)

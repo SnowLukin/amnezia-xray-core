@@ -336,13 +336,19 @@ func (o *Observer) probeJobContext(parent context.Context, j *probeJob) context.
 	if !j.isProbeOnly || (j.reason != reasonCandidate && j.reason != reasonHost && j.reason != reasonCensus) {
 		return parent
 	}
-	o.mu.Lock()
-	p := o.e.paths[j.tag]
-	credential := &probeCredential{job: j, path: p}
-	if p != nil {
-		credential.incarnation = p.udpIncarnation
-	}
-	o.mu.Unlock()
+	var p *path
+	var credential *probeCredential
+	func() {
+		o.mu.Lock()
+		defer o.mu.Unlock()
+
+		p = o.e.paths[j.tag]
+		credential = &probeCredential{job: j, path: p}
+		if p != nil {
+			credential.incarnation = p.udpIncarnation
+		}
+
+	}()
 	return context.WithValue(parent, probeCredentialKey{}, credential)
 }
 
@@ -352,11 +358,17 @@ func (o *Observer) firstUserWrite(t *connTracker) {
 	if o.s.udpProbe == nil {
 		return
 	}
-	o.mu.Lock()
-	p := t.udpPath
-	changed := p != nil && t.udpEpoch == o.e.udpEpoch && o.e.paths[t.tag] == p && p.udpIncarnation == t.udpIncarnation &&
-		o.e.onUDPUserWrite(p, o.now())
-	o.mu.Unlock()
+	var p *path
+	var changed bool
+	func() {
+		o.mu.Lock()
+		defer o.mu.Unlock()
+
+		p = t.udpPath
+		changed = p != nil && t.udpEpoch == o.e.udpEpoch && o.e.paths[t.tag] == p && p.udpIncarnation == t.udpIncarnation &&
+			o.e.onUDPUserWrite(p, o.now())
+
+	}()
 	if changed {
 		o.wake()
 	}
@@ -366,12 +378,18 @@ func (o *Observer) watchUDPEvidence() {
 	if o.s.passive.sweepInterval <= 0 {
 		return
 	}
-	o.trackMu.Lock()
-	start := !o.sweeping
-	o.sweeping = true
-	done := o.done
-	o.trackMu.Unlock()
+	var start bool
+	var done chan struct{}
+	func() {
+		o.trackMu.Lock()
+		defer o.trackMu.Unlock()
+
+		start = !o.sweeping
+		o.sweeping = true
+		done = o.done
+
+	}()
 	if start {
-		go o.sweepLoop(done)
+		go o.guard("udp_state.go:Observer.sweepLoop", func() { o.sweepLoop(done) })
 	}
 }

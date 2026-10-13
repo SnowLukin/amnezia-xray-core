@@ -2,6 +2,7 @@ package internet
 
 import (
 	"context"
+	"github.com/xtls/xray-core/common/safe"
 	"time"
 
 	"github.com/xtls/xray-core/common/errors"
@@ -157,6 +158,8 @@ func sortIPs(ips []net.IP, prioritizeIPv6 bool, interleave uint32) []net.IP {
 }
 
 func tcpTryDial(ctx context.Context, src net.Address, sockopt *SocketConfig, ip net.IP, port net.Port, index int, resultCh chan<- *result) {
+	defer safe.Recover(safe.Connection, "transport/internet/happy_eyeballs.go:tcpTryDial", func() { resultCh <- &result{index: index, err: safe.ErrPanic} })
+
 	conn, err := effectiveSystemDialer.Dial(ctx, src, net.Destination{Address: net.IPAddress(ip), Network: net.Network_TCP, Port: port}, sockopt)
 	select {
 	case <-ctx.Done():

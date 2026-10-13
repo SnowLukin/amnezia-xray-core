@@ -2,6 +2,7 @@ package buf
 
 import (
 	"context"
+	"github.com/xtls/xray-core/common/safe"
 	"io"
 	"net"
 	"os"
@@ -56,15 +57,13 @@ func (r *TimeoutWrapperReader) ReadMultiBufferTimeout(duration time.Duration) (M
 	if r.done == nil {
 		r.done = make(chan struct{})
 		go func() {
+			defer close(r.done)
+			defer safe.Recover(safe.Connection, "common/buf/io.go:ReadMultiBufferTimeout", func() { r.err = safe.ErrPanic; safe.Close(r.Reader) })
 			r.mb, r.err = r.Reader.ReadMultiBuffer()
-			close(r.done)
 		}()
 	}
-	timeout := make(chan struct{})
-	go func() {
-		time.Sleep(duration)
-		close(timeout)
-	}()
+	timeout := time.NewTimer(duration)
+	defer timeout.Stop()
 	select {
 	case <-r.done:
 		r.done = nil
@@ -72,7 +71,7 @@ func (r *TimeoutWrapperReader) ReadMultiBufferTimeout(duration time.Duration) (M
 			r.Counter.Add(int64(r.mb.Len()))
 		}
 		return r.mb, r.err
-	case <-timeout:
+	case <-timeout.C:
 		return nil, nil
 	}
 }

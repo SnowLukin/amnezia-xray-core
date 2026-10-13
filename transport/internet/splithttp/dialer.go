@@ -1,5 +1,7 @@
 package splithttp
 
+import "github.com/xtls/xray-core/common/safe"
+
 import (
 	"context"
 	gotls "crypto/tls"
@@ -259,7 +261,10 @@ func createHTTPClient(dest net.Destination, streamSettings *internet.MemoryStrea
 				if err != nil {
 					return nil, err
 				}
-				context.AfterFunc(conn.Context(), func() { pktConn.Close() })
+				context.AfterFunc(conn.Context(), func() {
+					defer safe.Recover(safe.Connection, "transport/internet/splithttp/dialer.go:createHTTPClient", nil)
+					pktConn.Close()
+				})
 
 				switch quicParams.Congestion {
 				case "reno":
@@ -500,6 +505,8 @@ func Dial(ctx context.Context, dest net.Destination, streamSettings *internet.Me
 	}
 
 	go func() {
+		defer safe.Recover(safe.Connection, "transport/internet/splithttp/dialer.go:Dial", safe.Closer(&conn, uploadPipeReader, uploadPipeWriter))
+
 		var seq int64
 		var lastWrite time.Time
 
@@ -545,6 +552,8 @@ func Dial(ctx context.Context, dest net.Destination, streamSettings *internet.Me
 				}
 
 				go func(hClient DialerClient) {
+					defer safe.Recover(safe.Connection, "transport/internet/splithttp/dialer.go:Dial", safe.Closer(&conn, uploadPipeReader, uploadPipeWriter, wroteRequest))
+
 					err := hClient.PostPacket(
 						ctx,
 						requestURL.String(),
@@ -595,11 +604,12 @@ func (w uploadWriter) Write(b []byte) (int, error) {
 
 	var writed int
 	for _, buff := range buffer.MultiBuffer {
+		n := int(buff.Len()) // ownership passes to the reader in WriteMultiBuffer
 		err := w.WriteMultiBuffer(buf.MultiBuffer{buff})
 		if err != nil {
 			return writed, err
 		}
-		writed += int(buff.Len())
+		writed += n
 	}
 	return writed, nil
 }

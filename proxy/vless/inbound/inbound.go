@@ -1,5 +1,7 @@
 package inbound
 
+import "github.com/xtls/xray-core/common/safe"
+
 import (
 	"bytes"
 	"context"
@@ -203,7 +205,11 @@ func New(ctx context.Context, config *Config, dc dns.Client, validator vless.Val
 		}
 
 		handler.unixListener = listener
-		go handler.acceptUnixSocketClients(ctx)
+		go safe.Run(safe.Subsystem, "proxy/vless/inbound/inbound.go:New", nil, func() func() {
+			safeFn := handler.acceptUnixSocketClients
+			safeArg0 := ctx
+			return func() { safeFn(safeArg0) }
+		}())
 	}
 
 	return handler, nil
@@ -707,7 +713,11 @@ func (r *Reverse) NewMux(ctx context.Context, link *transport.Link, observer fea
 	}
 	r.picker.AddWorker(worker)
 	if burstObs, ok := observer.(extension.BurstObservatory); ok {
-		go burstObs.Check([]string{r.Tag()})
+		go safe.Run(safe.Connection, "proxy/vless/inbound/inbound.go:r.NewMux", nil, func() func() {
+			safeFn := burstObs.Check
+			safeArg0 := []string{r.Tag()}
+			return func() { safeFn(safeArg0) }
+		}())
 	}
 	select {
 	case <-ctx.Done():
@@ -757,7 +767,12 @@ func (h *Handler) acceptUnixSocketClients(ctx context.Context) {
 		h.clientConnections[conn] = struct{}{}
 		h.clientMutex.Unlock()
 
-		go h.handleUnixSocketClient(ctx, conn)
+		go safe.Run(safe.Connection, "proxy/vless/inbound/inbound.go:h.acceptUnixSocketClients", safe.Closer(conn), func() func() {
+			safeFn := h.handleUnixSocketClient
+			safeArg0 := ctx
+			safeArg1 := conn
+			return func() { safeFn(safeArg0, safeArg1) }
+		}())
 	}
 }
 

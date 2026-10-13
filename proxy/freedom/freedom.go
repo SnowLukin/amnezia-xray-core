@@ -1,5 +1,7 @@
 package freedom
 
+import "github.com/xtls/xray-core/common/safe"
+
 import (
 	"context"
 	"crypto/rand"
@@ -354,6 +356,8 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
 		delay := h.blockDelay(blockedRule)
 		errors.LogInfo(ctx, "blocked target: ", *blockedDest, ", blackholing connection for ", delay)
 		timer := time.AfterFunc(delay, func() {
+			defer safe.Recover(safe.Connection, "proxy/freedom/freedom.go:h.Process", nil)
+
 			common.Interrupt(input)
 			common.Interrupt(output)
 			errors.LogInfo(ctx, "closed blackholed connection to blocked target: ", *blockedDest)

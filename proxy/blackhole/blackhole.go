@@ -1,6 +1,8 @@
 // Package blackhole is an outbound handler that blocks all connections.
 package blackhole
 
+import "github.com/xtls/xray-core/common/safe"
+
 import (
 	"context"
 	"time"
@@ -50,7 +52,13 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
 		timer := signal.CancelAfterInactivity(ctx, func() {
 			cancel()
 		}, time.Duration(30+dice.Roll(61))*time.Second)
-		go buf.Copy(link.Reader, buf.Discard, buf.UpdateActivity(timer))
+		go safe.Run(safe.Connection, "proxy/blackhole/blackhole.go:h.Process", safe.Closer(link.Reader, link.Writer), func() func() {
+			safeFn := buf.Copy
+			safeArg0 := link.Reader
+			safeArg1 := buf.Discard
+			safeArg2 := buf.UpdateActivity(timer)
+			return func() { safeFn(safeArg0, safeArg1, safeArg2) }
+		}())
 		<-ctx.Done()
 	}
 	return nil

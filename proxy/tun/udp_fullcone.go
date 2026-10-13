@@ -1,5 +1,7 @@
 package tun
 
+import "github.com/xtls/xray-core/common/safe"
+
 import (
 	"context"
 	"io"
@@ -64,7 +66,12 @@ func (u *udpConnectionHandler) HandlePacket(src net.Destination, dst net.Destina
 		conn = &udpConn{handler: u, egress: egress, src: src, dst: dst}
 		u.udpConns[src] = conn
 
-		go u.handleConnection(conn, dst)
+		go safe.Run(safe.Connection, "proxy/tun/udp_fullcone.go:u.HandlePacket", safe.Closer(conn), func() func() {
+			safeFn := u.handleConnection
+			safeArg0 := conn
+			safeArg1 := dst
+			return func() { safeFn(safeArg0, safeArg1) }
+		}())
 	}
 
 	// send packet data to the egress channel, if it has buffer, or discard

@@ -171,9 +171,14 @@ func (e *engine) labelResult(j *labelJob, labels map[string]string, class string
 
 func (o *Observer) runLabelRequest(j *labelJob) {
 	labels, class := o.fetchNetworkLabels(j.ctx)
-	o.mu.Lock()
-	o.e.labelResult(j, labels, class, o.now())
-	o.mu.Unlock()
+
+	func() {
+		o.mu.Lock()
+		defer o.mu.Unlock()
+
+		o.e.labelResult(j, labels, class, o.now())
+
+	}()
 	o.wake()
 }
 
@@ -249,9 +254,14 @@ func (o *Observer) labelSucceeded(epoch uint64) {
 	if o.s.labelRequest == nil {
 		return
 	}
-	o.mu.Lock()
-	fresh := o.e.noteLabelSuccess(epoch)
-	o.mu.Unlock()
+	var fresh bool
+	func() {
+		o.mu.Lock()
+		defer o.mu.Unlock()
+
+		fresh = o.e.noteLabelSuccess(epoch)
+
+	}()
 	if fresh {
 		o.wake()
 	}

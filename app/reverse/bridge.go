@@ -1,5 +1,7 @@
 package reverse
 
+import "github.com/xtls/xray-core/common/safe"
+
 import (
 	"context"
 	"time"
@@ -209,10 +211,14 @@ func (w *BridgeWorker) Dispatch(ctx context.Context, dest net.Destination) (*tra
 	uplinkReader, uplinkWriter := pipe.New(opt...)
 	downlinkReader, downlinkWriter := pipe.New(opt...)
 
-	go w.handleInternalConn(&transport.Link{
-		Reader: downlinkReader,
-		Writer: uplinkWriter,
-	})
+	go safe.Run(safe.Connection, "app/reverse/bridge.go:w.Dispatch", safe.Closer(downlinkReader, uplinkWriter), func() func() {
+		safeFn := w.handleInternalConn
+		safeArg0 := &transport.Link{
+			Reader: downlinkReader,
+			Writer: uplinkWriter,
+		}
+		return func() { safeFn(safeArg0) }
+	}())
 
 	return &transport.Link{
 		Reader: uplinkReader,

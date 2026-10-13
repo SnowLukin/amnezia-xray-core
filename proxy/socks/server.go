@@ -1,5 +1,7 @@
 package socks
 
+import "github.com/xtls/xray-core/common/safe"
+
 import (
 	"context"
 	goerrors "errors"
@@ -172,6 +174,8 @@ func (s *Server) processTCP(ctx context.Context, conn stat.Connection, dispatche
 		tempUDPConn.SetTimeout(plcy.Timeouts.ConnectionIdle)
 		errCh := make(chan error, 1)
 		go func() {
+			defer safe.Recover(safe.Connection, "proxy/socks/server.go:s.processTCP", func() { safe.Close(tempUDPConn, conn); errCh <- safe.ErrPanic })
+
 			errCh <- s.handleUDPPayload(ctx, tempUDPConn, dispatcher)
 		}()
 		// Associated TCP keeps the UDP alive

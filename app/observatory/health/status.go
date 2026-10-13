@@ -123,6 +123,7 @@ type statusView struct {
 	Features              map[string]bool   `json:"features"`
 	WitnessQuality        *qualityPathView  `json:"witness_quality,omitempty"`
 	QualitySamplesDropped uint64            `json:"quality_samples_dropped,omitempty"`
+	BrokenSubsystems      []string          `json:"broken_subsystems"`
 	// Names this run of the core; pin and release requests may carry it.
 	Run         string             `json:"run,omitempty"`
 	NetworkID   string             `json:"network_id,omitempty"`

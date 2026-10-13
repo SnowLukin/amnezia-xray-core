@@ -8,9 +8,14 @@ import (
 // UserPresent queues checks of stale selected paths after the user unlocks
 // the device. It returns without waiting for any network result.
 func (o *Observer) UserPresent() {
-	o.mu.Lock()
-	o.e.userPresent(o.now())
-	o.mu.Unlock()
+
+	func() {
+		o.mu.Lock()
+		defer o.mu.Unlock()
+
+		o.e.userPresent(o.now())
+
+	}()
 	o.wake()
 }
 

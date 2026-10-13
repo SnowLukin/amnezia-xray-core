@@ -1,6 +1,7 @@
 package task
 
 import (
+	"github.com/xtls/xray-core/common/safe"
 	"runtime"
 
 	"golang.org/x/sync/errgroup"
@@ -32,7 +33,7 @@ func ParallelForN(n int, fn func(i int) error) error {
 		}
 		eg.Go(func() error {
 			for i := start; i < end; i++ {
-				if err := fn(i); err != nil {
+				if err := safe.Error(safe.Connection, "common/task/parallel.go:ParallelForN", func() error { return fn(i) }); err != nil {
 					return err
 				}
 			}

@@ -1,5 +1,7 @@
 package burst
 
+import "github.com/xtls/xray-core/common/safe"
+
 import (
 	"context"
 	"fmt"
@@ -98,6 +100,11 @@ func (h *HealthPing) StartScheduler(selector func() ([]string, error)) {
 
 	// init run to get a fast check result
 	go func() {
+		defer safe.Recover(safe.Subsystem, "app/observatory/burst/healthping.go:h.StartScheduler", nil)
+		if !safe.Allowed(safe.Subsystem, "app/observatory/burst/healthping.go:h.StartScheduler", nil) {
+			return
+		}
+
 		tags, err := selector()
 		if err != nil {
 			errors.LogWarning(h.ctx, "error select outbounds for initial health check: ", err)
@@ -107,8 +114,18 @@ func (h *HealthPing) StartScheduler(selector func() ([]string, error)) {
 	}()
 
 	go func() {
+		defer safe.Recover(safe.Subsystem, "app/observatory/burst/healthping.go:h.StartScheduler", nil)
+		if !safe.Allowed(safe.Subsystem, "app/observatory/burst/healthping.go:h.StartScheduler", nil) {
+			return
+		}
+
 		for {
 			go func() {
+				defer safe.Recover(safe.Subsystem, "app/observatory/burst/healthping.go:h.StartScheduler", nil)
+				if !safe.Allowed(safe.Subsystem, "app/observatory/burst/healthping.go:h.StartScheduler", nil) {
+					return
+				}
+
 				tags, err := selector()
 				if err != nil {
 					errors.LogWarning(h.ctx, "error select outbounds for scheduled health check: ", err)
@@ -184,6 +201,11 @@ func (h *HealthPing) doCheck(ctx context.Context, tags []string, duration time.D
 				delay = time.Duration(dice.RollInt63n(int64(duration)))
 			}
 			timers = append(timers, time.AfterFunc(delay, func() {
+				defer safe.Recover(safe.Subsystem, "app/observatory/burst/healthping.go:h.doCheck", func() { ch <- &rtt{handler: handler, value: rttFailed} })
+				if !safe.Allowed(safe.Subsystem, "app/observatory/burst/healthping.go:h.doCheck", func() { ch <- &rtt{handler: handler, value: rttFailed} }) {
+					return
+				}
+
 				errors.LogDebug(h.ctx, "checking ", handler)
 				delay, err := client.MeasureDelay(h.Settings.HttpMethod)
 				if err == nil {

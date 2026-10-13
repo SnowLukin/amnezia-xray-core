@@ -1,5 +1,7 @@
 package commander
 
+import "github.com/xtls/xray-core/common/safe"
+
 import (
 	"context"
 	"net"
@@ -94,7 +96,7 @@ func (c *Commander) Start() error {
 			return err
 		}
 		errors.LogInfo(context.Background(), "API server listening on ", l.Addr())
-		go listen(l)
+		go safe.Run(safe.Subsystem, "app/commander/commander.go:c.Start", safe.Closer(l), func() func() { safeFn := listen; safeArg0 := l; return func() { safeFn(safeArg0) } }())
 		return nil
 	}
 
@@ -103,7 +105,7 @@ func (c *Commander) Start() error {
 		done:   done.New(),
 	}
 
-	go listen(listener)
+	go safe.Run(safe.Subsystem, "app/commander/commander.go:c.Start", safe.Closer(listener), func() func() { safeFn := listen; safeArg0 := listener; return func() { safeFn(safeArg0) } }())
 
 	if err := c.ohm.RemoveHandler(context.Background(), c.tag); err != nil {
 		errors.LogInfoInner(context.Background(), err, "failed to remove existing handler")

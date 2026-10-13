@@ -1,5 +1,7 @@
 package internet
 
+import "github.com/xtls/xray-core/common/safe"
+
 import (
 	"context"
 	"fmt"
@@ -120,7 +122,12 @@ func redirect(ctx context.Context, dst net.Destination, obt string, h outbound.H
 	ur, uw := pipe.New(pipe.OptionsFromContext(ctx)...)
 	dr, dw := pipe.New(pipe.OptionsFromContext(ctx)...)
 
-	go h.Dispatch(context.WithoutCancel(ctx), &transport.Link{Reader: ur, Writer: dw})
+	go safe.Run(safe.Connection, "transport/internet/dialer.go:redirect", safe.Closer(ur, dw), func() func() {
+		safeFn := h.Dispatch
+		safeArg0 := context.WithoutCancel(ctx)
+		safeArg1 := &transport.Link{Reader: ur, Writer: dw}
+		return func() { safeFn(safeArg0, safeArg1) }
+	}())
 	var readerOpt cnc.ConnectionOption
 	if dst.Network == net.Network_TCP {
 		readerOpt = cnc.ConnectionOutputMulti(dr)

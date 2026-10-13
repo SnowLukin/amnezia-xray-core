@@ -1,6 +1,7 @@
 package task
 
 import (
+	"github.com/xtls/xray-core/common/safe"
 	"sync"
 	"time"
 )
@@ -11,6 +12,9 @@ type Periodic struct {
 	Interval time.Duration
 	// Execute is the task function
 	Execute func() error
+	// Scope and Where identify the owner of this periodic worker.
+	Scope string
+	Where string
 
 	access  sync.Mutex
 	timer   *time.Timer
@@ -29,7 +33,18 @@ func (t *Periodic) checkedExecute() error {
 		return nil
 	}
 
-	if err := t.Execute(); err != nil {
+	scope, where := t.Scope, t.Where
+	if scope == "" {
+		scope = safe.Subsystem
+	}
+	if where == "" {
+		where = safe.FunctionWhere(t.Execute)
+	}
+	err := safe.ErrPanic
+	if safe.Allowed(scope, where, nil) {
+		err = safe.Error(scope, where, t.Execute)
+	}
+	if err != nil {
 		t.access.Lock()
 		t.running = false
 		t.access.Unlock()
@@ -44,6 +59,7 @@ func (t *Periodic) checkedExecute() error {
 	}
 
 	t.timer = time.AfterFunc(t.Interval, func() {
+		defer safe.Recover(scope, where, func() { t.access.Lock(); defer t.access.Unlock(); t.running = false })
 		t.checkedExecute()
 	})
 

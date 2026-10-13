@@ -1,5 +1,7 @@
 package dns
 
+import "github.com/xtls/xray-core/common/safe"
+
 import (
 	"context"
 	go_errors "errors"
@@ -20,6 +22,9 @@ type CachedNameserver interface {
 
 // queryIP is called from dns.Server->queryIPTimeout
 func queryIP(ctx context.Context, s CachedNameserver, domain string, option dns.IPOption) ([]net.IP, uint32, error) {
+	if safe.Broken("app/dns") {
+		return nil, 0, safe.ErrPanic
+	}
 	fqdn := Fqdn(domain)
 
 	cache := s.getCacheController()
@@ -35,7 +40,14 @@ func queryIP(ctx context.Context, s CachedNameserver, domain string, option dns.
 				if cache.serveStale && (cache.serveExpiredTTL == 0 || cache.serveExpiredTTL < ttl) {
 					errors.LogDebugInner(ctx, err, cache.name, " cache OPTIMISTE ", fqdn, " -> ", ips)
 					log.Record(&log.DNSLog{Server: cache.name, Domain: fqdn, Result: ips, Status: log.DNSCacheOptimiste, Elapsed: 0, Error: err})
-					go pull(ctx, s, fqdn, option)
+					go safe.Run(safe.Subsystem, "app/dns/nameserver_cached.go:queryIP", nil, func() func() {
+						safeFn := pull
+						safeArg0 := ctx
+						safeArg1 := s
+						safeArg2 := fqdn
+						safeArg3 := option
+						return func() { safeFn(safeArg0, safeArg1, safeArg2, safeArg3) }
+					}())
 					return ips, 1, err
 				}
 			}

@@ -1,5 +1,7 @@
 package browser_dialer
 
+import "github.com/xtls/xray-core/common/safe"
+
 import (
 	"bytes"
 	"context"
@@ -89,7 +91,7 @@ func Reload() {
 				}
 			}),
 		}
-		go server.ListenAndServe()
+		go safe.Run(safe.Subsystem, "transport/internet/browser_dialer/dialer.go:Reload", safe.Closer(server), func() func() { safeFn := server.ListenAndServe; return func() { safeFn() } }())
 	}
 }
 

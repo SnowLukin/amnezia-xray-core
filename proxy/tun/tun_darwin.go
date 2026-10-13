@@ -2,6 +2,8 @@
 
 package tun
 
+import "github.com/xtls/xray-core/common/safe"
+
 import (
 	"context"
 	"errors"
@@ -123,7 +125,7 @@ func (t *DarwinTun) Start() error {
 			return err
 		}
 		t.routeMonitor = os.NewFile(uintptr(fd), "xray-route-monitor")
-		go t.monitorRouteChanges()
+		go safe.Run(safe.Subsystem, "proxy/tun/tun_darwin.go:t.Start", nil, func() func() { safeFn := t.monitorRouteChanges; return func() { safeFn() } }())
 	}
 	return nil
 }

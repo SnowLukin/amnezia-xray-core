@@ -1,5 +1,7 @@
 package log
 
+import "github.com/xtls/xray-core/common/safe"
+
 import (
 	"io"
 	"log"
@@ -105,7 +107,7 @@ func (l *generalLogger) Handle(msg Message) {
 
 	select {
 	case <-l.access.Wait():
-		go l.run()
+		go safe.Run(safe.Subsystem, "common/log/logger.go:l.Handle", nil, func() func() { safeFn := l.run; return func() { safeFn() } }())
 	default:
 	}
 }

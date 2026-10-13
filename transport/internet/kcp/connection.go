@@ -1,5 +1,7 @@
 package kcp
 
+import "github.com/xtls/xray-core/common/safe"
+
 import (
 	"bytes"
 	"context"
@@ -126,6 +128,7 @@ type Updater struct {
 	shouldTerminate func() bool
 	updateFunc      func()
 	notifier        *semaphore.Instance
+	onPanic         func()
 }
 
 func NewUpdater(interval uint32, shouldContinue func() bool, shouldTerminate func() bool, updateFunc func()) *Updater {
@@ -142,7 +145,7 @@ func NewUpdater(interval uint32, shouldContinue func() bool, shouldTerminate fun
 func (u *Updater) WakeUp() {
 	select {
 	case <-u.notifier.Wait():
-		go u.run()
+		go safe.Run(safe.Connection, "transport/internet/kcp/connection.go:u.WakeUp", u.onPanic, func() func() { safeFn := u.run; return func() { safeFn() } }())
 	default:
 	}
 }
@@ -154,6 +157,7 @@ func (u *Updater) run() {
 		return
 	}
 	ticker := time.NewTicker(u.Interval())
+	defer ticker.Stop()
 	for u.shouldContinue() {
 		u.updateFunc()
 		<-ticker.C
@@ -245,6 +249,8 @@ func NewConnection(meta ConnMetadata, writer io.Writer, closer io.Closer, config
 		isTerminated,
 		conn.updateTask,
 	)
+	conn.dataUpdater.onPanic = func() { conn.Terminate() }
+	conn.pingUpdater.onPanic = func() { conn.Terminate() }
 	conn.pingUpdater.WakeUp()
 
 	return conn
@@ -452,7 +458,7 @@ func (c *Connection) SetState(state State) {
 		c.pingUpdater.SetInterval(time.Second)
 		c.dataUpdater.WakeUp()
 		c.pingUpdater.WakeUp()
-		go c.Terminate()
+		go safe.Run(safe.Connection, "transport/internet/kcp/connection.go:c.SetState", safe.Closer(c), func() func() { safeFn := c.Terminate; return func() { safeFn() } }())
 	}
 }
 

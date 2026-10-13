@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/xtls/xray-core/common/safe"
 	"io"
 	"maps"
 	"math"
@@ -579,12 +580,20 @@ func (o *Observer) runtimeFor(p *provider) *providerRuntime {
 }
 
 func (o *Observer) emit(typ string, fields map[string]any) {
-	o.mu.Lock()
-	o.e.emit(o.now(), typ, fields)
-	o.mu.Unlock()
+
+	func() {
+		o.mu.Lock()
+		defer o.mu.Unlock()
+
+		o.e.emit(o.now(), typ, fields)
+
+	}()
 }
 
 func (o *Observer) runRefresh(j *refreshJob) {
+	if o.failed.Load() {
+		return
+	}
 	rt := o.runtimeFor(j.p)
 	var r refreshOutcome
 	body, bodyErr := o.requestBody(rt, j)
@@ -611,9 +620,14 @@ func (o *Observer) runRefresh(j *refreshJob) {
 		r.nextRefreshIn = res.answer.nextRefreshIn
 		r.hasNextRefreshIn = res.answer.hasNextRefreshIn
 	}
-	o.mu.Lock()
-	o.e.onRefreshDone(j, r, o.now())
-	o.mu.Unlock()
+
+	func() {
+		o.mu.Lock()
+		defer o.mu.Unlock()
+
+		o.e.onRefreshDone(j, r, o.now())
+
+	}()
 	o.wake()
 }
 
@@ -657,10 +671,17 @@ func (o *Observer) fetchSet(rt *providerRuntime, j *refreshJob, body []byte) (fe
 	var lastErr error
 	asked, attempt := false, 0
 	for _, v := range via {
-		o.mu.Lock()
-		tag, skip := o.e.resolveVia(v, o.now())
-		low := o.e.memoryLow
-		o.mu.Unlock()
+		var tag string
+		var skip string
+		var low bool
+		func() {
+			o.mu.Lock()
+			defer o.mu.Unlock()
+
+			tag, skip = o.e.resolveVia(v, o.now())
+			low = o.e.memoryLow
+
+		}()
 		if skip == "" && tag != "" && o.ohm.GetHandler(tag) == nil {
 			skip = "no such outbound"
 		}
@@ -723,9 +744,14 @@ func (o *Observer) fetchingVia(tag string, delta int) {
 	if tag == "" {
 		return
 	}
-	o.mu.Lock()
-	o.e.fetchingVia(tag, delta, o.now())
-	o.mu.Unlock()
+
+	func() {
+		o.mu.Lock()
+		defer o.mu.Unlock()
+
+		o.e.fetchingVia(tag, delta, o.now())
+
+	}()
 }
 
 func (o *Observer) fetchOnce(cfg *providerSettings, headers map[string]string, tag string, body []byte) (fetchResult, error) {
@@ -922,33 +948,48 @@ func (o *Observer) applySet(rt *providerRuntime, a *providerAnswer, j *refreshJo
 		o.emit("provider_apply", fields)
 		return false, err
 	}
+	if o.failed.Load() {
+		return false, safe.ErrPanic
+	}
 	if o.applyClosed {
 		return fail(errors.New("closed"))
 	}
-	o.mu.Lock()
-	err := o.e.checkHeaderRoom(rt.p, a, j.headersGen)
-	o.mu.Unlock()
+	var err error
+	func() {
+		o.mu.Lock()
+		defer o.mu.Unlock()
+
+		err = o.e.checkHeaderRoom(rt.p, a, j.headersGen)
+
+	}()
 	if err != nil {
 		return fail(err)
 	}
 	if _, err := checkHeads(rt.cfg, a); err != nil {
 		return fail(err)
 	}
-	o.mu.Lock()
-	err = o.checkGroupOwnership(rt, a)
-	o.mu.Unlock()
+
+	func() {
+		o.mu.Lock()
+		defer o.mu.Unlock()
+
+		err = o.checkGroupOwnership(rt, a)
+
+	}()
 	if err != nil {
 		return fail(err)
 	}
-	o.mu.Lock()
 	modeChanged := false
-	for _, path := range a.paths {
-		if o.e.isProbeOnly(path.Tag) != path.IsProbeOnly {
-			modeChanged = true
-			break
+	func() {
+		o.mu.Lock()
+		defer o.mu.Unlock()
+		for _, path := range a.paths {
+			if o.e.isProbeOnly(path.Tag) != path.IsProbeOnly {
+				modeChanged = true
+				break
+			}
 		}
-	}
-	o.mu.Unlock()
+	}()
 	if a.version == rt.version && !modeChanged {
 		// The version names the set, not the answer: the most common answer
 		// while leases run is the same set with later ends, which renews
@@ -963,23 +1004,33 @@ func (o *Observer) applySet(rt *providerRuntime, a *providerAnswer, j *refreshJo
 		}
 		kept := compactAnswer(a.body)
 		now := o.now()
-		o.mu.Lock()
-		leases, moved := o.e.acceptLeases(rt.p, rt.p.tags, leasesOf(a, rt.cfg.prefix), now)
-		if moved {
-			o.e.refreshCandidates(now)
-		}
-		gen := rt.p.headersGen
-		names, stale := o.e.takeAnswerHeaders(rt.p, a.headers, j.headersGen, headersBy(j), now)
-		based := o.e.takeBase(rt.p, a, now)
-		o.e.keepAnswer(rt.p, a, kept, leases.ends || rt.p.headersGen != gen || based, now)
-		fields["is_ok"] = true
-		fields["is_changed"] = false
-		fields["unchanged"] = len(rt.p.tags)
-		leaseFields(fields, leases, rt.p)
-		headerFields(fields, names, stale)
-		baseFields(fields, a)
-		o.e.emit(now, "provider_apply", fields)
-		o.mu.Unlock()
+		var leases leaseCounts
+		var moved bool
+		var gen uint64
+		var names []string
+		var stale bool
+		var based bool
+		func() {
+			o.mu.Lock()
+			defer o.mu.Unlock()
+
+			leases, moved = o.e.acceptLeases(rt.p, rt.p.tags, leasesOf(a, rt.cfg.prefix), now)
+			if moved {
+				o.e.refreshCandidates(now)
+			}
+			gen = rt.p.headersGen
+			names, stale = o.e.takeAnswerHeaders(rt.p, a.headers, j.headersGen, headersBy(j), now)
+			based = o.e.takeBase(rt.p, a, now)
+			o.e.keepAnswer(rt.p, a, kept, leases.ends || rt.p.headersGen != gen || based, now)
+			fields["is_ok"] = true
+			fields["is_changed"] = false
+			fields["unchanged"] = len(rt.p.tags)
+			leaseFields(fields, leases, rt.p)
+			headerFields(fields, names, stale)
+			baseFields(fields, a)
+			o.e.emit(now, "provider_apply", fields)
+
+		}()
 		return false, nil
 	}
 	if err := validateAnswerProbes(o.s, a); err != nil {
@@ -1021,7 +1072,7 @@ func (o *Observer) applySet(rt *providerRuntime, a *providerAnswer, j *refreshJo
 			}
 			if err != nil {
 				for _, c := range changes {
-					common.Close(c.handler)
+					safe.Close(c.handler)
 				}
 				return fail(fmt.Errorf("routing: %w", err))
 			}
@@ -1078,29 +1129,37 @@ func (o *Observer) applySet(rt *providerRuntime, a *providerAnswer, j *refreshJo
 	}
 	demoted := map[string]pathSettings{}
 	wasRetiring := map[string]bool{}
-	o.mu.Lock()
-	o.e.replacingTags(reset, o.now())
-	for _, path := range a.paths {
-		metadata, exists := o.s.paths.Load(path.Tag)
-		if !exists || !path.IsProbeOnly {
-			continue
-		}
-		old := metadata.(pathSettings)
-		if old.isProbeOnly {
-			continue
-		}
-		demoted[path.Tag] = old
-		wasRetiring[path.Tag] = o.e.retiring[path.Tag]
-		// Select reads the mode without a lock, before the handler can be replaced.
-		o.s.paths.Store(path.Tag, pathSettings{probe: old.probe, isProbeOnly: true, labels: old.labels})
-		o.e.retiring[path.Tag] = true
-	}
-	if len(demoted) > 0 {
-		o.e.refreshCandidates(o.now())
-	}
-	o.mu.Unlock()
-	if err := o.registerSet(added, replaced); err != nil {
+	previousSelection := map[*selector]func(){}
+	func() {
 		o.mu.Lock()
+		defer o.mu.Unlock()
+		for _, sel := range o.e.selectors {
+			previousSelection[sel] = rememberSelector(sel)
+		}
+		o.e.replacingTags(reset, o.now())
+		for _, path := range a.paths {
+			metadata, exists := o.s.paths.Load(path.Tag)
+			if !exists || !path.IsProbeOnly {
+				continue
+			}
+			old := metadata.(pathSettings)
+			if old.isProbeOnly {
+				continue
+			}
+			demoted[path.Tag] = old
+			wasRetiring[path.Tag] = o.e.retiring[path.Tag]
+			// Select reads the mode without a lock, before the handler can be replaced.
+			o.s.paths.Store(path.Tag, pathSettings{probe: old.probe, isProbeOnly: true, labels: old.labels})
+			o.e.retiring[path.Tag] = true
+		}
+		if len(demoted) > 0 {
+			o.e.refreshCandidates(o.now())
+		}
+	}()
+	restorePrepared := func() {
+		o.mu.Lock()
+		defer o.mu.Unlock()
+
 		clear(o.e.replacing)
 		for tag, old := range demoted {
 			o.s.paths.Store(tag, old)
@@ -1113,9 +1172,25 @@ func (o *Observer) applySet(rt *providerRuntime, a *providerAnswer, j *refreshJo
 		if len(demoted) > 0 {
 			o.e.refreshCandidates(o.now())
 		}
-		o.mu.Unlock()
-		return fail(err)
+
+		for _, restore := range previousSelection {
+			restore()
+		}
 	}
+	registrationErr := func() (err error) {
+		defer func() {
+			if p := recover(); p != nil {
+				restorePrepared()
+				panic(p)
+			}
+		}()
+		return o.registerSet(added, replaced)
+	}()
+	if registrationErr != nil {
+		restorePrepared()
+		return fail(registrationErr)
+	}
+
 	for _, c := range changes {
 		rt.built[c.tag] = c.config
 	}
@@ -1153,66 +1228,80 @@ func (o *Observer) applySet(rt *providerRuntime, a *providerAnswer, j *refreshJo
 			for _, b := range routing.BalancingRule {
 				keep[b.Tag] = true
 			}
-			o.mu.Lock()
-			o.e.keepSelectorsAt(keep, o.now())
-			o.mu.Unlock()
+
+			func() {
+				o.mu.Lock()
+				defer o.mu.Unlock()
+
+				o.e.keepSelectorsAt(keep, o.now())
+
+			}()
 		}
 	}
 
 	kept := compactAnswer(a.body)
 	now := o.now()
-	o.mu.Lock()
-	exhausted := false
-	if s := o.e.selectors[rt.cfg.balancer]; s != nil {
-		exhausted = s.exhausted
-	}
-	addedTags := make([]string, len(added))
-	for i, c := range added {
-		addedTags[i] = c.tag
-	}
-	// A HandlerService replacement can finish an old drain before this
-	// answer arrives. Every tag included again belongs to the live set.
-	for _, tag := range tags {
-		if o.e.retiring[tag] && !slices.Contains(revive, tag) {
-			revive = append(revive, tag)
+	var exhausted bool
+	var addedTags []string
+	var leases leaseCounts
+	var names []string
+	var stale bool
+	func() {
+		o.mu.Lock()
+		defer o.mu.Unlock()
+
+		exhausted = false
+		if s := o.e.selectors[rt.cfg.balancer]; s != nil {
+			exhausted = s.exhausted
 		}
-	}
-	// Before the balancers see the set: an outbound whose lease ended on
-	// arrival is never taken as new.
-	for _, tag := range rt.p.tags {
-		l := rt.p.leases[tag]
-		if !inSet[tag] && (o.e.expired[tag] || (l != nil && l.left(now) <= 0)) {
-			if rt.p.retiredExpired == nil {
-				rt.p.retiredExpired = map[string]bool{}
+		addedTags = make([]string, len(added))
+		for i, c := range added {
+			addedTags[i] = c.tag
+		}
+		// A HandlerService replacement can finish an old drain before this
+		// answer arrives. Every tag included again belongs to the live set.
+		for _, tag := range tags {
+			if o.e.retiring[tag] && !slices.Contains(revive, tag) {
+				revive = append(revive, tag)
 			}
-			rt.p.retiredExpired[tag] = true
 		}
-	}
-	for _, tag := range tags {
-		delete(rt.p.retiredExpired, tag)
-	}
-	leases, _ := o.e.acceptLeases(rt.p, tags, leasesOf(a, rt.cfg.prefix), now)
-	o.e.applyProviderSet(rt.p, providerChange{
-		tags: tags, paths: a.paths, groups: a.groups, added: addedTags, retire: removed, revive: revive, reset: reset,
-	}, now)
-	staged = nil
-	rt.p.version = a.version
-	rt.p.draining = len(rt.draining)
-	names, stale := o.e.takeAnswerHeaders(rt.p, a.headers, j.headersGen, headersBy(j), now)
-	o.e.takeBase(rt.p, a, now)
-	o.e.keepAnswer(rt.p, a, kept, true, now)
-	fields["is_ok"] = true
-	fields["is_changed"] = true
-	fields["added"] = len(added)
-	fields["replaced"] = len(replaced)
-	fields["removed"] = len(removed)
-	fields["unchanged"] = len(unchanged)
-	fields["was_exhausted"] = exhausted
-	leaseFields(fields, leases, rt.p)
-	headerFields(fields, names, stale)
-	baseFields(fields, a)
-	o.e.emit(now, "provider_apply", fields)
-	o.mu.Unlock()
+		// Before the balancers see the set: an outbound whose lease ended on
+		// arrival is never taken as new.
+		for _, tag := range rt.p.tags {
+			l := rt.p.leases[tag]
+			if !inSet[tag] && (o.e.expired[tag] || (l != nil && l.left(now) <= 0)) {
+				if rt.p.retiredExpired == nil {
+					rt.p.retiredExpired = map[string]bool{}
+				}
+				rt.p.retiredExpired[tag] = true
+			}
+		}
+		for _, tag := range tags {
+			delete(rt.p.retiredExpired, tag)
+		}
+		leases, _ = o.e.acceptLeases(rt.p, tags, leasesOf(a, rt.cfg.prefix), now)
+		o.e.applyProviderSet(rt.p, providerChange{
+			tags: tags, paths: a.paths, groups: a.groups, added: addedTags, retire: removed, revive: revive, reset: reset,
+		}, now)
+		staged = nil
+		rt.p.version = a.version
+		rt.p.draining = len(rt.draining)
+		names, stale = o.e.takeAnswerHeaders(rt.p, a.headers, j.headersGen, headersBy(j), now)
+		o.e.takeBase(rt.p, a, now)
+		o.e.keepAnswer(rt.p, a, kept, true, now)
+		fields["is_ok"] = true
+		fields["is_changed"] = true
+		fields["added"] = len(added)
+		fields["replaced"] = len(replaced)
+		fields["removed"] = len(removed)
+		fields["unchanged"] = len(unchanged)
+		fields["was_exhausted"] = exhausted
+		leaseFields(fields, leases, rt.p)
+		headerFields(fields, names, stale)
+		baseFields(fields, a)
+		o.e.emit(now, "provider_apply", fields)
+
+	}()
 	o.settleDrains(rt)
 	return true, nil
 }
@@ -1353,19 +1442,30 @@ func (o *Observer) buildSet(rt *providerRuntime, a *providerAnswer) ([]*outbound
 	for _, path := range a.paths {
 		modes[path.Tag] = path.IsProbeOnly
 	}
-	o.mu.Lock()
-	changedModes := make(map[string]bool, len(a.paths))
-	for tag, mode := range modes {
-		changedModes[tag] = o.e.isProbeOnly(tag) != mode
-	}
-	o.mu.Unlock()
+	var changedModes map[string]bool
+	func() {
+		o.mu.Lock()
+		defer o.mu.Unlock()
+
+		changedModes = make(map[string]bool, len(a.paths))
+		for tag, mode := range modes {
+			changedModes[tag] = o.e.isProbeOnly(tag) != mode
+		}
+
+	}()
 	var changes []*outboundChange
 	var unchanged []string
 	closeAll := func() {
 		for _, c := range changes {
-			common.Close(c.handler)
+			safe.Close(c.handler)
 		}
 	}
+	defer func() {
+		if p := recover(); p != nil {
+			closeAll()
+			panic(p)
+		}
+	}()
 	for i, cfg := range configs {
 		cfg.Tag = tags[i]
 		cfg.IsProbeOnly = modes[cfg.Tag]
@@ -1408,31 +1508,38 @@ func (o *Observer) registerSet(added, replaced []*outboundChange) error {
 	var undo []func()
 	rollback := func(err error) error {
 		for i := len(undo) - 1; i >= 0; i-- {
-			undo[i]()
+			safe.Run(safe.Connection, "app/observatory/health/provider_set.go:rollback", nil, undo[i])
 		}
 		for _, c := range added {
-			common.Close(c.handler)
+			safe.Close(c.handler)
 		}
 		for _, c := range replaced {
-			common.Close(c.handler)
+			safe.Close(c.handler)
 		}
 		return err
 	}
+	defer func() {
+		if p := recover(); p != nil {
+			rollback(safe.ErrPanic)
+			panic(p)
+		}
+	}()
+
 	for _, c := range replaced {
 		if err := o.ohm.RemoveHandler(o.ctx, c.tag); err != nil {
 			return rollback(err)
 		}
 		undo = append(undo, func() { _ = o.ohm.AddHandler(o.ctx, c.old) })
+		undo = append(undo, func() { _ = o.ohm.RemoveHandler(o.ctx, c.tag) })
 		if err := o.ohm.AddHandler(o.ctx, c.handler); err != nil {
 			return rollback(err)
 		}
-		undo = append(undo, func() { _ = o.ohm.RemoveHandler(o.ctx, c.tag) })
 	}
 	for _, c := range added {
+		undo = append(undo, func() { _ = o.ohm.RemoveHandler(o.ctx, c.tag) })
 		if err := o.ohm.AddHandler(o.ctx, c.handler); err != nil {
 			return rollback(err)
 		}
-		undo = append(undo, func() { _ = o.ohm.RemoveHandler(o.ctx, c.tag) })
 	}
 	return nil
 }
@@ -1465,7 +1572,7 @@ func (o *Observer) startDrain(rt *providerRuntime, tag string, h outbound.Handle
 	rt.drains++
 	d := &drainingOutbound{tag: tag, handler: h, registered: registered, seq: rt.drains, since: o.nowNano()}
 	rt.draining[h] = d
-	d.timer = time.AfterFunc(rt.cfg.drain, func() { o.finishDrain(rt, d) })
+	d.timer = time.AfterFunc(rt.cfg.drain, func() { o.guard("provider_set.go:Observer.finishDrain", func() { o.finishDrain(rt, d) }) })
 }
 
 // settleDrains ends at once the drains nothing waits for: outbounds without
@@ -1479,21 +1586,26 @@ func (o *Observer) settleDrains(rt *providerRuntime) {
 	open := o.oldestConnections()
 	var idle, overdue []*drainingOutbound
 	pinned := map[*drainingOutbound]bool{}
-	o.mu.Lock()
-	for _, d := range rt.draining {
-		pinned[d] = d.registered && o.e.pinnedTo(d.tag)
-		started, ok := open[d.tag]
-		// Connections through a replaced tag that started later went to the
-		// new handler.
-		busy := ok && (d.registered || started <= d.since)
-		switch {
-		case d.overdue && !pinned[d]:
-			overdue = append(overdue, d)
-		case !busy && !(d.registered && o.e.active(d.tag)):
-			idle = append(idle, d)
+
+	func() {
+		o.mu.Lock()
+		defer o.mu.Unlock()
+
+		for _, d := range rt.draining {
+			pinned[d] = d.registered && o.e.pinnedTo(d.tag)
+			started, ok := open[d.tag]
+			// Connections through a replaced tag that started later went to the
+			// new handler.
+			busy := ok && (d.registered || started <= d.since)
+			switch {
+			case d.overdue && !pinned[d]:
+				overdue = append(overdue, d)
+			case !busy && !(d.registered && o.e.active(d.tag)):
+				idle = append(idle, d)
+			}
 		}
-	}
-	o.mu.Unlock()
+
+	}()
 	for _, d := range overdue {
 		o.endDrain(rt, d)
 	}
@@ -1543,7 +1655,7 @@ func (o *Observer) oldestConnections() map[string]int64 {
 func (o *Observer) settleAllDrains() {
 	o.applyMu.Lock()
 	defer o.applyMu.Unlock()
-	if o.applyClosed {
+	if o.applyClosed || o.failed.Load() {
 		return
 	}
 	for _, rt := range o.providers {
@@ -1554,12 +1666,17 @@ func (o *Observer) settleAllDrains() {
 func (o *Observer) finishDrain(rt *providerRuntime, d *drainingOutbound) {
 	o.applyMu.Lock()
 	defer o.applyMu.Unlock()
-	if o.applyClosed {
+	if o.applyClosed || o.failed.Load() {
 		return
 	}
-	o.mu.Lock()
-	pinned := d.registered && o.e.pinnedTo(d.tag)
-	o.mu.Unlock()
+	var pinned bool
+	func() {
+		o.mu.Lock()
+		defer o.mu.Unlock()
+
+		pinned = d.registered && o.e.pinnedTo(d.tag)
+
+	}()
 	if pinned {
 		// A pinned balancer stays on its outbound whatever happens to it.
 		// Closed under the pin, the outbound would leave it a tag without
@@ -1580,21 +1697,26 @@ func (o *Observer) finishDrain(rt *providerRuntime, d *drainingOutbound) {
 func (o *Observer) endOverdueDrains() {
 	o.applyMu.Lock()
 	defer o.applyMu.Unlock()
-	if o.applyClosed {
+	if o.applyClosed || o.failed.Load() {
 		return
 	}
 	var ended []*drainingOutbound
 	var of []*providerRuntime
-	o.mu.Lock()
-	for _, rt := range o.providers {
-		for _, d := range rt.draining {
-			if d.overdue && !o.e.pinnedTo(d.tag) {
-				ended = append(ended, d)
-				of = append(of, rt)
+
+	func() {
+		o.mu.Lock()
+		defer o.mu.Unlock()
+
+		for _, rt := range o.providers {
+			for _, d := range rt.draining {
+				if d.overdue && !o.e.pinnedTo(d.tag) {
+					ended = append(ended, d)
+					of = append(of, rt)
+				}
 			}
 		}
-	}
-	o.mu.Unlock()
+
+	}()
 	for i, d := range ended {
 		o.endDrain(of[i], d)
 	}
@@ -1631,13 +1753,18 @@ func (o *Observer) endDrain(rt *providerRuntime, d *drainingOutbound) {
 			}
 		}
 	}
-	o.mu.Lock()
-	if gone {
-		o.e.dropProviderOutbound(d.tag, o.now())
-	}
-	rt.p.draining = len(rt.draining)
-	o.e.emit(o.now(), "provider_drained", map[string]any{"provider": rt.cfg.tag, "outbound": d.tag, "is_replaced": !d.registered})
-	o.mu.Unlock()
+
+	func() {
+		o.mu.Lock()
+		defer o.mu.Unlock()
+
+		if gone {
+			o.e.dropProviderOutbound(d.tag, o.now())
+		}
+		rt.p.draining = len(rt.draining)
+		o.e.emit(o.now(), "provider_drained", map[string]any{"provider": rt.cfg.tag, "outbound": d.tag, "is_replaced": !d.registered})
+
+	}()
 	if registered || !d.registered {
 		common.Close(d.handler)
 	}
@@ -1664,9 +1791,14 @@ func (o *Observer) closeProviders() {
 // tag is empty, to fetch its set as soon as its limits allow. It returns
 // false when there is no such provider.
 func (o *Observer) RequestProviderRefresh(provider string) bool {
-	o.mu.Lock()
-	ok := o.e.requestRefresh(provider)
-	o.mu.Unlock()
+	var ok bool
+	func() {
+		o.mu.Lock()
+		defer o.mu.Unlock()
+
+		ok = o.e.requestRefresh(provider)
+
+	}()
 	if ok {
 		o.wake()
 	}

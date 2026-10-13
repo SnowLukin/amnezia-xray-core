@@ -1,5 +1,7 @@
 package xdns
 
+import "github.com/xtls/xray-core/common/safe"
+
 import (
 	"bytes"
 	"context"
@@ -110,8 +112,8 @@ func NewConnClient(c *Config, raw net.PacketConn) (net.PacketConn, error) {
 
 	common.Must2(rand.Read(conn.clientID))
 
-	go conn.recvLoop()
-	go conn.sendLoop()
+	go safe.Run(safe.Connection, "transport/internet/finalmask/xdns/client.go:NewConnClient", safe.Closer(conn), func() func() { safeFn := conn.recvLoop; return func() { safeFn() } }())
+	go safe.Run(safe.Connection, "transport/internet/finalmask/xdns/client.go:NewConnClient", safe.Closer(conn), func() func() { safeFn := conn.sendLoop; return func() { safeFn() } }())
 
 	return conn, nil
 }

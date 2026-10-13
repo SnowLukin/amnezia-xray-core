@@ -1,5 +1,7 @@
 package wireguard
 
+import "github.com/xtls/xray-core/common/safe"
+
 import (
 	"context"
 	"encoding/hex"
@@ -290,7 +292,9 @@ func (t *tunnelDial) entered() {
 	t.since = time.Now()
 	t.mu.Lock()
 	if !t.dialed {
-		t.timer = time.AfterFunc(askHandshakeAfter, t.poll)
+		t.timer = time.AfterFunc(askHandshakeAfter, func() {
+			safe.Run(safe.Subsystem, "proxy/wireguard/client_observe.go:t.entered", nil, func() func() { safeFn := t.poll; return func() { safeFn() } }())
+		})
 	}
 	t.mu.Unlock()
 }

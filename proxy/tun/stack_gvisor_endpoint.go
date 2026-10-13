@@ -1,5 +1,7 @@
 package tun
 
+import "github.com/xtls/xray-core/common/safe"
+
 import (
 	"context"
 	"errors"
@@ -58,7 +60,12 @@ func (e *LinkEndpoint) Attach(dispatcher stack.NetworkDispatcher) {
 
 	if dispatcher != nil {
 		ctx, cancel := context.WithCancel(context.Background())
-		go e.dispatchLoop(ctx, dispatcher)
+		go safe.Run(safe.Subsystem, "proxy/tun/stack_gvisor_endpoint.go:e.Attach", safe.Closer(e), func() func() {
+			safeFn := e.dispatchLoop
+			safeArg0 := ctx
+			safeArg1 := dispatcher
+			return func() { safeFn(safeArg0, safeArg1) }
+		}())
 		e.dispatcherCancel = cancel
 	}
 }

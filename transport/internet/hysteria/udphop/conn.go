@@ -1,5 +1,7 @@
 package udphop
 
+import "github.com/xtls/xray-core/common/safe"
+
 import (
 	"errors"
 	"math/rand"
@@ -84,8 +86,12 @@ func NewUDPHopPacketConn(addrs []net.Addr, hopIntervalMin time.Duration, hopInte
 			},
 		},
 	}
-	go hConn.recvLoop(hConn.currentConn)
-	go hConn.hopLoop()
+	go safe.Run(safe.Connection, "transport/internet/hysteria/udphop/conn.go:NewUDPHopPacketConn", safe.Closer(hConn), func() func() {
+		safeFn := hConn.recvLoop
+		safeArg0 := hConn.currentConn
+		return func() { safeFn(safeArg0) }
+	}())
+	go safe.Run(safe.Connection, "transport/internet/hysteria/udphop/conn.go:NewUDPHopPacketConn", safe.Closer(hConn), func() func() { safeFn := hConn.hopLoop; return func() { safeFn() } }())
 	return hConn
 }
 
@@ -157,7 +163,7 @@ func (u *UdpHopPacketConn) hop() {
 	if !u.writeDeadline.IsZero() {
 		_ = u.currentConn.SetWriteDeadline(u.writeDeadline)
 	}
-	go u.recvLoop(newConn)
+	go safe.Run(safe.Connection, "transport/internet/hysteria/udphop/conn.go:u.hop", safe.Closer(u), func() func() { safeFn := u.recvLoop; safeArg0 := newConn; return func() { safeFn(safeArg0) } }())
 }
 
 func (u *UdpHopPacketConn) ReadFrom(b []byte) (n int, addr net.Addr, err error) {

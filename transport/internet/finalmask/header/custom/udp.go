@@ -1,5 +1,7 @@
 package custom
 
+import "github.com/xtls/xray-core/common/safe"
+
 import (
 	"bytes"
 	"context"
@@ -395,7 +397,7 @@ func (c *udpCustomStandaloneClientConn) WriteTo(p []byte, addr net.Addr) (n int,
 
 func (c *udpCustomStandaloneClientConn) ensureReader() {
 	c.once.Do(func() {
-		go c.readerLoop(c.queue)
+		go safe.Run(safe.Connection, "transport/internet/finalmask/header/custom/udp.go:c.ensureReader", safe.Closer(c), func() func() { safeFn := c.readerLoop; safeArg0 := c.queue; return func() { safeFn(safeArg0) } }())
 	})
 }
 

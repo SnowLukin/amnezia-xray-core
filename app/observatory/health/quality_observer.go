@@ -70,9 +70,14 @@ func (o *Observer) qualityWitnessAnswered(t *witnessTracker) {
 	if t.quality == nil {
 		return
 	}
-	o.mu.Lock()
-	o.collectQualityInitial(t.quality, "", true)
-	o.mu.Unlock()
+
+	func() {
+		o.mu.Lock()
+		defer o.mu.Unlock()
+
+		o.collectQualityInitial(t.quality, "", true)
+
+	}()
 }
 
 // Finished's tracker CAS supplies idempotence. qualityRead, unlike the legacy
@@ -82,7 +87,12 @@ func (o *Observer) qualityWitnessFinished(t *witnessTracker) {
 	if t.quality == nil {
 		return
 	}
-	o.mu.Lock()
-	o.collectQualityEnd(t.quality, "", true, &t.qualityRead)
-	o.mu.Unlock()
+
+	func() {
+		o.mu.Lock()
+		defer o.mu.Unlock()
+
+		o.collectQualityEnd(t.quality, "", true, &t.qualityRead)
+
+	}()
 }

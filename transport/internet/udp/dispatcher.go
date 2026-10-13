@@ -1,5 +1,7 @@
 package udp
 
+import "github.com/xtls/xray-core/common/safe"
+
 import (
 	"context"
 	goerrors "errors"
@@ -101,7 +103,15 @@ func (v *Dispatcher) getInboundRay(ctx context.Context, dest net.Destination) (*
 
 	entry.timer = signal.CancelAfterInactivity(ctx, entry.terminate, time.Minute)
 	v.conn = entry
-	go handleInput(ctx, entry, dest, v.callback, v.callClose)
+	go safe.Run(safe.Connection, "transport/internet/udp/dispatcher.go:v.getInboundRay", safe.Closer(entry.link.Reader, entry.link.Writer), func() func() {
+		safeFn := handleInput
+		safeArg0 := ctx
+		safeArg1 := entry
+		safeArg2 := dest
+		safeArg3 := v.callback
+		safeArg4 := v.callClose
+		return func() { safeFn(safeArg0, safeArg1, safeArg2, safeArg3, safeArg4) }
+	}())
 	return entry, nil
 }
 

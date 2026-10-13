@@ -1,5 +1,7 @@
 package splithttp
 
+import "github.com/xtls/xray-core/common/safe"
+
 import (
 	"bytes"
 	"context"
@@ -69,6 +71,8 @@ func (c *DefaultDialerClient) OpenStream(ctx context.Context, url string, sessio
 
 	wrc = &WaitReadCloser{Wait: make(chan struct{})}
 	go func() {
+		defer safe.Recover(safe.Connection, "transport/internet/splithttp/client.go:c.OpenStream", safe.Closer(body, gotConn, wrc))
+
 		resp, err := c.client.Do(req)
 		if err != nil {
 			if !uploadOnly { // stream-down is enough
@@ -186,39 +190,54 @@ func (c *DefaultDialerClient) Close() error {
 	return nil
 }
 
+// WaitReadCloser publishes the response once and closes it once. Reading the
+// body pointer is synchronized with both publication and early cancellation.
 type WaitReadCloser struct {
 	Wait chan struct{}
 	io.ReadCloser
+	mu     sync.Mutex
+	ready  bool
+	closed bool
 }
 
 func (w *WaitReadCloser) Set(rc io.ReadCloser) {
+	w.mu.Lock()
+	if w.closed || w.ready {
+		w.mu.Unlock()
+		safe.Close(rc)
+		return
+	}
 	w.ReadCloser = rc
-	defer func() {
-		if recover() != nil {
-			rc.Close()
-		}
-	}()
+	w.ready = true
 	close(w.Wait)
+	w.mu.Unlock()
 }
-
 func (w *WaitReadCloser) Read(b []byte) (int, error) {
-	if w.ReadCloser == nil {
-		if <-w.Wait; w.ReadCloser == nil {
-			return 0, io.ErrClosedPipe
-		}
+	<-w.Wait
+	w.mu.Lock()
+	rc := w.ReadCloser
+	closed := w.closed
+	w.mu.Unlock()
+	if rc == nil || closed {
+		return 0, io.ErrClosedPipe
 	}
-	return w.ReadCloser.Read(b)
+	return rc.Read(b)
 }
-
 func (w *WaitReadCloser) Close() error {
-	if w.ReadCloser != nil {
-		return w.ReadCloser.Close()
+	w.mu.Lock()
+	if w.closed {
+		w.mu.Unlock()
+		return nil
 	}
-	defer func() {
-		if recover() != nil && w.ReadCloser != nil {
-			w.ReadCloser.Close()
-		}
-	}()
-	close(w.Wait)
+	w.closed = true
+	if !w.ready {
+		w.ready = true
+		close(w.Wait)
+	}
+	rc := w.ReadCloser
+	w.mu.Unlock()
+	if rc != nil {
+		return rc.Close()
+	}
 	return nil
 }

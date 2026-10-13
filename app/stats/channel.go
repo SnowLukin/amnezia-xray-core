@@ -1,5 +1,7 @@
 package stats
 
+import "github.com/xtls/xray-core/common/safe"
+
 import (
 	"context"
 	"sync"
@@ -102,6 +104,11 @@ func (c *Channel) Start() error {
 	if !c.Running() {
 		c.closed = make(chan struct{}) // Reset close signal
 		go func() {
+			defer safe.Recover(safe.Subsystem, "app/stats/channel.go:c.Start", safe.Closer(c))
+			if !safe.Allowed(safe.Subsystem, "app/stats/channel.go:c.Start", safe.Closer(c)) {
+				return
+			}
+
 			for {
 				select {
 				case pub := <-c.channel: // Published message received
@@ -153,7 +160,7 @@ func (c channelMessage) publishNonBlocking(publisher chan channelMessage) {
 	select {
 	case publisher <- c:
 	default: // Create another goroutine to keep sending message
-		go c.publish(publisher)
+		go safe.Run(safe.Subsystem, "app/stats/channel.go:c.publishNonBlocking", nil, func() func() { safeFn := c.publish; safeArg0 := publisher; return func() { safeFn(safeArg0) } }())
 	}
 }
 
@@ -168,6 +175,6 @@ func (c channelMessage) broadcastNonBlocking(subscriber chan interface{}) {
 	select {
 	case subscriber <- c.message:
 	default: // Create another goroutine to keep sending message
-		go c.broadcast(subscriber)
+		go safe.Run(safe.Subsystem, "app/stats/channel.go:c.broadcastNonBlocking", nil, func() func() { safeFn := c.broadcast; safeArg0 := subscriber; return func() { safeFn(safeArg0) } }())
 	}
 }

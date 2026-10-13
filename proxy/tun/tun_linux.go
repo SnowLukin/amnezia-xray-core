@@ -2,6 +2,8 @@
 
 package tun
 
+import "github.com/xtls/xray-core/common/safe"
+
 import (
 	"context"
 	"net"
@@ -186,7 +188,7 @@ func (t *LinuxTun) Start() error {
 
 	if updater != nil {
 		t.routeMonitorStop = make(chan struct{})
-		go t.monitorRouteChanges()
+		go safe.Run(safe.Subsystem, "proxy/tun/tun_linux.go:t.Start", nil, func() func() { safeFn := t.monitorRouteChanges; return func() { safeFn() } }())
 	}
 
 	return nil
