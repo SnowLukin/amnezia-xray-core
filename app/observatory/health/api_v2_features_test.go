@@ -447,3 +447,263 @@ func TestV2NetworkMemoryUsesMinimalSuccessProof(t *testing.T) {
 	}
 	tr.Finished(nil)
 }
+
+func TestV2CollectorsNeverGrantControllerProof(t *testing.T) {
+	type snapshot struct {
+		state                   pathStatus
+		networkDown             bool
+		choice                  string
+		answered                int64
+		lastSuccess, tcpSuccess time.Time
+	}
+	for _, consumer := range []string{"none", "udp", "memory", "present"} {
+		for _, collector := range []string{"quality", "report"} {
+			t.Run(consumer+"/"+collector, func(t *testing.T) {
+				capture := func(enabled bool) snapshot {
+					f := v2NoEvidence()
+					switch consumer {
+					case "udp":
+						f.UdpReplies = v2Bool(true)
+					case "memory":
+						f.NetworkMemory = v2Bool(true)
+					case "present":
+						f.UserPresent = v2Bool(true)
+					}
+					if collector == "quality" {
+						f.Quality = v2Bool(enabled)
+					} else {
+						f.Report = v2Bool(enabled)
+					}
+					o, s, now := v2Observer(f, v2NoClosures())
+					defer o.Close()
+					o.NetworkLost()
+					tr := o.StartDial(context.Background(), "a", net.Destination{}, nil)
+					if tr != nil {
+						read, _ := tr.Dialed(nil, nil, nil, nil)
+						*now = now.Add(time.Millisecond)
+						read.Add(o.s.passive.successBytes)
+						tr.Finished(nil)
+					}
+					p := o.e.path("a")
+					return snapshot{p.status, o.e.networkDown, s.current(), p.lastAnsweredStart, p.lastSuccess, p.lastTCPSuccess}
+				}
+				off, on := capture(false), capture(true)
+				if off != on {
+					t.Fatalf("collector grants proof: off=%+v on=%+v", off, on)
+				}
+				if consumer == "none" || consumer == "udp" {
+					if on.state != statusUnknown || !on.networkDown {
+						t.Fatal("no controller consumer was enabled")
+					}
+				} else if on.state != statusUp || on.networkDown {
+					t.Fatal("explicit controller consumer lost proof")
+				}
+				if consumer == "udp" && on.tcpSuccess.IsZero() {
+					t.Fatal("UDP detector lost independent TCP proof")
+				}
+			})
+		}
+	}
+}
+
+func v2NetworkScopeObserver(t *testing.T, shared bool) (*Observer, *selector, *time.Time) {
+	t.Helper()
+	f := v2NoEvidence()
+	f.ProbeRequests = v2Bool(true)
+	sf := v2NoClosures()
+	sf.NetworkChanges = v2Bool(true)
+	o, _, now := v2Observer(f, sf)
+	paths := []*PathDefinition{{Tag: "c", Balancer: "other", Cost: 1}, {Tag: "d", Balancer: "other", Cost: 2}}
+	if shared {
+		paths = append(paths, &PathDefinition{Tag: "a", Balancer: "other", Cost: 3})
+	}
+	for _, p := range paths {
+		if p.Tag != "a" {
+			o.s.paths.Store(p.Tag, pathSettings{})
+		}
+	}
+	other := o.e.addSelector("other", newSelectorSettings(&SelectorConfig{Paths: paths, Features: v2NoClosures()}))
+	tags := []string{"c", "d"}
+	if shared {
+		tags = append(tags, "a")
+	}
+	o.e.updateCandidates(other, tags, *now)
+	t.Cleanup(func() { o.Close() })
+	return o, other, now
+}
+
+func TestV2NetworkChangesPreserveIgnoredPrivatePolicy(t *testing.T) {
+	o, other, now := v2NetworkScopeObserver(t, false)
+	p := o.e.path("d")
+	p.setStatus(statusDown, "probe", *now)
+	p.quarantineLevel = 2
+	p.quarantineUntil = now.Add(2 * time.Minute)
+	other.penalty["d"] = 2
+	other.returnedTo = "d"
+	other.failoverTried = map[string]bool{"d": true}
+	beforeUntil := p.quarantineUntil
+	o.NetworkChanged("new")
+	if p.status != statusDown || p.quarantineLevel != 2 || !p.quarantineUntil.Equal(beforeUntil) || other.penalty["d"] != 2 || other.returnedTo != "d" || !other.failoverTried["d"] {
+		t.Fatal("reacting sibling reset ignored private policy")
+	}
+	if p.controllerEpoch != 0 || o.e.path("a").controllerEpoch != o.e.generation {
+		t.Fatal("path controller epochs were not scoped")
+	}
+}
+
+func TestV2NetworkChangesPreserveIgnoredLiveProof(t *testing.T) {
+	o, _, _ := v2NetworkScopeObserver(t, false)
+	o.s.features.NetworkMemory = true
+	o.s.remember = true
+	o.e.networks = map[string]map[string]string{}
+	tr := o.StartDial(context.Background(), "c", net.Destination{}, nil).(*closureTracker)
+	read, _ := tr.Dialed(nil, nil, nil, nil)
+	o.NetworkChanged("new")
+	read.Add(o.s.passive.successBytes)
+	if o.e.path("c").status != statusUp || o.e.networks["new"]["other"] != "c" {
+		t.Fatal("enabled sibling invalidated ignored live proof")
+	}
+	tr.Finished(nil)
+}
+
+func TestV2NetworkChangesPreserveIgnoredRunningRequest(t *testing.T) {
+	o, _, now := v2NetworkScopeObserver(t, false)
+	id, _, err := o.e.requestProbeKind("other", []string{"c"}, false, *now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var job *probeJob
+	for _, j := range o.e.queue {
+		if j.tag == "c" {
+			job = j
+			break
+		}
+	}
+	if job == nil {
+		t.Fatal("request did not queue a probe")
+	}
+	o.e.queue = nil
+	o.e.begin(job, *now)
+	o.NetworkChanged("new")
+	var request *probeRequest
+	for _, r := range o.e.requests {
+		if r.id == id {
+			request = r
+		}
+	}
+	if request == nil || !request.open() || job.invalidated || job.generation != o.e.generation || request.generation != job.generation {
+		t.Fatal("ignored request/probe lost its generation claim")
+	}
+	o.e.onProbeResult(job, probeResult{ok: true}, now.Add(time.Second))
+	if request.open() || request.items[0].result != probeOK {
+		t.Fatal("retained ignored probe could not complete its request")
+	}
+}
+
+func TestV2NetworkChangesScopeMixedSharedRequest(t *testing.T) {
+	o, _, now := v2NetworkScopeObserver(t, true)
+	_, _, err := o.e.requestProbeKind("other", []string{"a", "c"}, false, *now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := o.e.requests[0]
+	o.NetworkChanged("new")
+	if !request.open() || request.items[0].result != probeExpired || request.items[1].result != probePending {
+		t.Fatalf("mixed request items: %+v", request.items)
+	}
+	var private *probeJob
+	for _, j := range o.e.queue {
+		if j.tag == "c" {
+			private = j
+			break
+		}
+	}
+	if private == nil || private.generation != o.e.generation {
+		t.Fatal("shared reset removed private pending work")
+	}
+	o.e.begin(private, *now)
+	o.e.onProbeResult(private, probeResult{ok: true}, now.Add(time.Second))
+	if request.open() || request.items[1].result != probeOK {
+		t.Fatal("private item did not finish after shared item expired")
+	}
+}
+
+func TestV2NetworkChangesRefreshSharedPhysicalClaims(t *testing.T) {
+	for _, reason := range []probeReason{reasonFailover, reasonReturnToCheaper} {
+		t.Run(reason.String(), func(t *testing.T) {
+			o, other, now := v2NetworkScopeObserver(t, true)
+			other.cfg.returnToCheaper.interval = time.Minute
+			if reason == reasonFailover {
+				other.failoverProbing = map[string]bool{"a": true}
+				other.failoverTried = map[string]bool{"c": true, "a": true}
+			} else {
+				other.returnToCheaperTarget = "a"
+			}
+			old := o.e.enqueue("a", reason, "other", *now)
+			if old == nil {
+				t.Fatal("shared claim probe missing")
+			}
+			o.e.queue = nil
+			o.e.begin(old, *now)
+			o.NetworkChanged("new")
+			if !old.invalidated {
+				t.Fatal("shared old callback can still mutate reset physical state")
+			}
+			var replacement *probeJob
+			for _, j := range o.e.queue {
+				if j.tag == "a" && j.selector == "other" && j.reason == reason {
+					replacement = j
+					break
+				}
+			}
+			if replacement == nil || replacement.generation != o.e.generation {
+				t.Fatal("shared IGNORE claim was stranded without replacement work")
+			}
+		})
+	}
+}
+
+func TestV2NetworkChangesPreserveIgnoredGroupAndSilence(t *testing.T) {
+	o, other, now := v2NetworkScopeObserver(t, false)
+	other.cfg.paths["c"].groupName = "set"
+	other.cfg.paths["c"].groupLimit = 3
+	other.cfg.paths["d"].groupName = "set"
+	other.cfg.paths["d"].groupLimit = 3
+	o.e.syncGroups(other)
+	for range 3 {
+		o.e.groupFailure("c", *now)
+	}
+	group := other.groups["set"]
+	if group == nil || !group.down {
+		t.Fatal("fixture did not quarantine its group")
+	}
+	until, failed, level := group.until, group.failed, group.level
+	p := o.e.path("d")
+	p.setStatus(statusDown, "probe", *now)
+	p.quarantineUntil = now.Add(time.Minute)
+	mark := downMark{tag: "d", at: *now, watch: true, silentAfter: 8 * time.Second}
+	o.e.watchSilence(mark)
+	o.NetworkChanged("new")
+	if !group.down || !group.until.Equal(until) || group.failed != failed || group.level != level {
+		t.Fatal("enabled sibling reset ignored group")
+	}
+	if len(o.e.silences) != 1 || o.e.silences[0].generation != o.e.generation || o.e.silenceVerdict(o.e.silences[0]) != silenceEnd {
+		t.Fatal("ignored silent-close claim was lost through global generation")
+	}
+}
+
+func TestV2NetworkChangesNeverRevivePreviouslyStaleJob(t *testing.T) {
+	o, _, now := v2NetworkScopeObserver(t, false)
+	old := o.e.enqueue("c", reasonRecheck, "other", *now)
+	o.NetworkChanged("one")
+	// A delayed callback already belonging to an obsolete generation stays stale.
+	old.generation = 0
+	o.NetworkChanged("two")
+	if old.generation == o.e.generation {
+		t.Fatal("network change revived a previously stale job")
+	}
+	o.e.onProbeResult(old, probeResult{ok: true}, now.Add(time.Second))
+	if o.e.path("c").status != statusUnknown {
+		t.Fatal("old callback changed current ignored path")
+	}
+}

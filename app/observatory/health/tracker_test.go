@@ -543,7 +543,7 @@ func TestRequestOfAnotherRunIsIgnored(t *testing.T) {
 
 func TestDialsOfThePreviousNetworkDoNotJudgeTheNewOne(t *testing.T) {
 	o, clk := newTestObserver()
-	o.e.updateCandidates(o.e.addSelector("auto", legacyScenarioSelector(&SelectorConfig{}, nil)), []string{"a1", "b1"}, clk.now())
+	o.e.updateCandidates(o.e.addSelector("auto", legacyScenarioSelector(&SelectorConfig{Paths: observed("a1", "b1")}, nil)), []string{"a1", "b1"}, clk.now())
 	var dials []*connTracker
 	for i := 0; i < 3; i++ {
 		dials = append(dials, o.StartDial(context.Background(), "a1", net.Destination{}, nil).(*connTracker))

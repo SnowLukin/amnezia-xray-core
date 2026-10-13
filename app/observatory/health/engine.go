@@ -307,7 +307,7 @@ func (e *engine) jitter(d time.Duration, j float64) time.Duration {
 func (e *engine) path(tag string) *path {
 	p := e.paths[tag]
 	if p == nil {
-		p = &path{tag: tag}
+		p = &path{tag: tag, controllerEpoch: e.generation}
 		e.paths[tag] = p
 	}
 	return p
@@ -2430,7 +2430,10 @@ func (e *engine) resumePending(now time.Time) {
 
 // ---- host signals -------------------------------------------------------------
 
-// onNetworkChange forgets what was learned in the previous network.
+// onNetworkChange separates intrinsic network-scoped measurement caches from
+// optional controller reset. One physical tag has one shared health state: if
+// any selector referencing it reacts, that tag is reset for every claimant.
+// Private tags and policy of IGNORE selectors retain their state and work.
 func (e *engine) onNetworkChange(id string, now time.Time) {
 	e.resetUDPNetwork(now)
 	e.candidateEpoch++
@@ -2438,8 +2441,6 @@ func (e *engine) onNetworkChange(id string, now time.Time) {
 	for tag := range e.paths {
 		if e.isProbeOnly(tag) {
 			e.resetProbeOnly(tag)
-			e.paths[tag].clearProbeSnapshot()
-			e.paths[tag].setStatus(statusUnknown, "network_change", now)
 		}
 	}
 	e.cancelLoneFailures()
@@ -2451,8 +2452,7 @@ func (e *engine) onNetworkChange(id string, now time.Time) {
 	e.changeQualityNetwork(id, known, now)
 	e.providersOnNetworkChange(known, now)
 	e.idleNet.changed = now
-	e.networkID = id
-	e.networkKnown = known
+	e.networkID, e.networkKnown = id, known
 	e.endPause(now)
 	e.doubt = false
 	e.checkFails = 0
@@ -2460,25 +2460,39 @@ func (e *engine) onNetworkChange(id string, now time.Time) {
 	e.nextConnectivity = time.Time{}
 	e.connectivityIgnored = false
 
-	forget := false
-	for _, s := range e.selectors {
-		if s.cfg.onNetworkChange != NetworkChangeMode_IGNORE {
-			forget = true
+	reacting := map[string]bool{}
+	reset := map[string]bool{}
+	for _, sel := range e.selectors {
+		if sel.cfg.onNetworkChange == NetworkChangeMode_IGNORE {
+			continue
+		}
+		reacting[sel.tag] = true
+		for tag := range sel.cfg.paths {
+			reset[tag] = true
+		}
+		for _, tag := range sel.inventory {
+			reset[tag] = true
+		}
+		for _, tag := range sel.candidates {
+			reset[tag] = true
+		}
+		if tag := sel.current(); tag != "" {
+			reset[tag] = true
 		}
 	}
-	if !forget {
+	if len(reacting) == 0 {
 		e.emit(now, "network_change", map[string]any{"network": id, "is_known": known, "generation": e.generation, "is_ignored": true})
 		return
 	}
+	oldGeneration := e.generation
 	e.generation++
-	for _, j := range e.queue {
-		if j.reason == reasonAudit {
-			e.skipAudit(j)
-		}
-	}
-	e.pendingSuspicion = map[string]verdict{}
 	e.emit(now, "network_change", map[string]any{"network": id, "is_known": known, "generation": e.generation})
-	for _, p := range e.paths {
+	for tag, p := range e.paths {
+		if !reset[tag] {
+			continue
+		}
+		delete(e.pendingSuspicion, tag)
+		p.controllerEpoch = e.generation
 		p.rescue = nil
 		p.failures = p.failures[:0]
 		p.quarantineLevel = 0
@@ -2493,11 +2507,61 @@ func (e *engine) onNetworkChange(id string, now time.Time) {
 		p.lastError = ""
 		p.lastClass = ""
 		p.lastProbeResult = probeResult{}
+		p.clearProbeSnapshot()
 		p.setStatus(statusUnknown, "network_change", now)
 	}
-	e.queue = e.queue[:0]
-	for _, s := range e.sortedSelectors() {
-		for _, g := range s.groups {
+	var replacements []*probeJob
+	resetJob := func(j *probeJob) bool {
+		if j.isUDP || !reset[j.tag] {
+			if !j.invalidated && j.generation == oldGeneration {
+				j.generation = e.generation
+			}
+			return false
+		}
+		if j.reason == reasonAudit {
+			e.skipAudit(j)
+		}
+		// Retained IGNORE claims on a shared physical tag need a new probe;
+		// leaving their map slots attached to the canceled job would strand them.
+		if !j.invalidated && j.generation == oldGeneration && !reacting[j.selector] && j.selector != "" &&
+			(j.reason == reasonFailover || j.reason == reasonReturnToCheaper || j.reason == reasonGroup) {
+			replacements = append(replacements, j)
+		}
+		j.invalidated = true
+		return true
+	}
+	e.queue = slices.DeleteFunc(e.queue, resetJob)
+	for _, j := range e.running {
+		resetJob(j)
+	}
+	for _, r := range e.requests {
+		if !r.open() || r.isUDP || r.generation != oldGeneration {
+			continue
+		}
+		r.generation = e.generation
+		for i := range r.items {
+			it := &r.items[i]
+			if it.result == probePending && (reset[it.tag] || e.isProbeOnly(it.tag)) {
+				it.result, it.source = probeExpired, "network_change"
+			}
+		}
+		if r.answered() {
+			e.closeRequest(r, "network_change", now)
+		}
+	}
+	e.keepRequests()
+	e.silences = slices.DeleteFunc(e.silences, func(c silenceCheck) bool { return reset[c.mark.tag] })
+	for i := range e.silences {
+		if e.silences[i].generation == oldGeneration {
+			e.silences[i].generation = e.generation
+		}
+	}
+	e.downs = slices.DeleteFunc(e.downs, func(d downMark) bool { return reset[d.tag] })
+	for _, sel := range e.sortedSelectors() {
+		if !reacting[sel.tag] {
+			continue
+		}
+		for _, g := range sel.groups {
 			g.down = false
 			g.provisional = false
 			g.failed = 0
@@ -2506,22 +2570,25 @@ func (e *engine) onNetworkChange(id string, now time.Time) {
 			g.lastFailed = ""
 			g.lastWorking = ""
 		}
-		s.failoverTried = nil
-		s.failoverProbing = nil
-		s.returnToCheaperTarget = ""
-		s.penaltyServed = false
-		if s.cfg.onNetworkChange != NetworkChangeMode_IGNORE {
-			s.penalty = map[string]float64{}
-			s.returnedTo = ""
-		}
-		if s.cfg.onNetworkChange != NetworkChangeMode_RECHECK {
+		sel.failoverTried = nil
+		sel.failoverProbing = nil
+		sel.returnToCheaperTarget = ""
+		sel.penaltyServed = false
+		sel.penalty = map[string]float64{}
+		sel.returnedTo = ""
+		if sel.cfg.onNetworkChange != NetworkChangeMode_RECHECK {
 			continue
 		}
-		if s.pinned != "" {
-			s.recheckOnRelease = true
+		if sel.pinned != "" {
+			sel.recheckOnRelease = true
 			continue
 		}
-		e.recheckChoice(s, known, now)
+		e.recheckChoice(sel, known, now)
+	}
+	for _, old := range replacements {
+		if sel := e.selectors[old.selector]; sel != nil {
+			e.enqueue(old.tag, old.reason, old.selector, now)
+		}
 	}
 }
 

@@ -26,6 +26,7 @@ type closureTracker struct {
 	state            atomic.Int32
 	aborted          atomic.Bool
 	proved           atomic.Bool
+	answered         atomic.Bool
 	bytesRead        atomic.Int64
 	lastRead         atomic.Int64
 	spliced          atomic.Bool
@@ -54,16 +55,12 @@ func (o *Observer) connectionRegistry(tag string) bool {
 	return false
 }
 
-func (o *Observer) newClosureTracker(tag string, abort func(), tcpProof, register, activity, proof bool) *closureTracker {
-	t := &closureTracker{o: o, tag: tag, abort: abort, started: o.nowNano(), network: o.generation.Load(), tcpProof: tcpProof, activity: activity, proof: proof, progress: register}
+func (o *Observer) newClosureTracker(tag string, abort func(), tcpProof, register, activity, proof bool, snapshot *path, epoch, udpEpoch, incarnation uint64) *closureTracker {
+	t := &closureTracker{o: o, tag: tag, abort: abort, started: o.nowNano(), network: epoch, tcpProof: tcpProof, activity: activity, proof: proof, progress: register}
 	t.read.t = t
-	if tcpProof || proof {
-		o.mu.Lock()
-		t.proofPath = o.e.pathAt(tag, o.now())
-		t.proofEpoch = o.e.udpEpoch
-		t.proofIncarnation = t.proofPath.udpIncarnation
-		o.mu.Unlock()
-	}
+	t.proofPath = snapshot
+	t.proofEpoch = udpEpoch
+	t.proofIncarnation = incarnation
 	if !register {
 		t.abort = nil
 	}
@@ -171,23 +168,13 @@ func (c *closureReadCounter) Add(n int64) int64 {
 		if c.t.activity {
 			c.t.o.e.lastDemand.Store(c.t.o.now().UnixNano())
 		}
-		if (c.t.tcpProof || c.t.proof) && total >= c.t.o.s.passive.successBytes && c.t.proved.CompareAndSwap(false, true) {
+		if c.t.proof && c.t.answered.CompareAndSwap(false, true) {
 			c.t.o.mu.Lock()
-			if c.t.network == c.t.o.e.generation {
-				p := c.t.o.e.paths[c.t.tag]
-				// A newer network/replacement may not inherit an older connection's proof.
-				if p == c.t.proofPath && c.t.proofEpoch == c.t.o.e.udpEpoch && p.udpIncarnation == c.t.proofIncarnation {
-					if c.t.tcpProof {
-						p.lastTCPSuccess = c.t.o.now()
-						c.t.o.sweepUDPEvidenceLocked(c.t.o.now())
-					}
-					if c.t.proof {
-						c.t.o.e.onSuccess(c.t.tag, c.t.o.now())
-					}
-				}
-			}
+			c.t.o.noteControllerReplyLocked(c.t.tag, c.t.started, c.t.network, c.t.proofPath)
 			c.t.o.mu.Unlock()
-			c.t.o.wake()
+		}
+		if (c.t.tcpProof || c.t.proof) && total >= c.t.o.s.passive.successBytes && c.t.proved.CompareAndSwap(false, true) {
+			c.t.o.connectionSuccess(c.t.tag, c.t.started, c.t.network, c.t.proofPath, c.t.proofEpoch, c.t.proofIncarnation, c.t.tcpProof, c.t.proof)
 		}
 	}
 	if c.inner != nil {
@@ -205,7 +192,7 @@ var _ outbound.DialTracker = (*closureTracker)(nil)
 // enabling passive detectors or telemetry collection.
 func (o *Observer) connectionSignals(tag string) (activity, proof bool) {
 	f := o.s.features
-	proof = f.NetworkMemory || f.LabelRequest || f.UserPresent || f.Connectivity
+	proof = f.passiveTCP() || f.NetworkMemory || f.LabelRequest || f.UserPresent || f.Connectivity
 	activity = len(o.providers) > 0
 	o.mu.Lock()
 	for _, s := range o.e.selectors {

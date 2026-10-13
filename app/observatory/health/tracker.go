@@ -53,6 +53,7 @@ type connTracker struct {
 	// UDP flows have no request and answer to wait for; only their dial is judged.
 	udp      bool
 	activity bool
+	proof    bool
 	// Ends the user connection; nil when none waits for this dial.
 	abort func()
 

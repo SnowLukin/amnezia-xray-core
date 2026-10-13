@@ -118,7 +118,7 @@ func (f featureSettings) status() map[string]bool {
 		"step_profiles":       f.StepProfiles,
 		"candidates":          f.Candidates,
 		"probe_requests":      f.ProbeRequests,
-		"udp_probes":          f.UdpProbes,
+		"udp_probe":           f.UdpProbes,
 		"connectivity":        f.Connectivity,
 		"witnesses":           f.Witnesses,
 		"network_memory":      f.NetworkMemory,

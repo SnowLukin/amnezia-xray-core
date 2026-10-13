@@ -435,7 +435,11 @@ func (o *Observer) StartDial(ctx context.Context, tag string, server net.Destina
 	quality := o.newConnectionQuality(udp, 0)
 	registry := o.connectionRegistry(tag)
 	activity, proofSignal := o.connectionSignals(tag)
+	proofSignal = proofSignal && (!udp || o.s.features.passiveTCP())
 	o.mu.Lock()
+	connectionPath := o.e.path(tag)
+	connectionEpoch := connectionPath.controllerEpoch
+	udpEpoch, udpIncarnation := o.e.udpEpoch, connectionPath.udpIncarnation
 	o.e.noteDemand(o.now())
 	o.e.used(tag, o.now())
 	o.mu.Unlock()
@@ -443,7 +447,7 @@ func (o *Observer) StartDial(ctx context.Context, tag string, server net.Destina
 		proof := !udp && o.s.features.UdpReplies
 		proofSignal = proofSignal && !udp
 		if registry || proof || activity || proofSignal {
-			return o.newClosureTracker(tag, abort, proof, registry, activity, proofSignal)
+			return o.newClosureTracker(tag, abort, proof, registry, activity, proofSignal, connectionPath, connectionEpoch, udpEpoch, udpIncarnation)
 		}
 		return nil
 	}
@@ -457,9 +461,10 @@ func (o *Observer) StartDial(ctx context.Context, tag string, server net.Destina
 		conn:     connFrom(ctx),
 		udp:      udp,
 		activity: activity,
+		proof:    proofSignal,
 		abort:    abort,
 		started:  o.nowNano(),
-		network:  o.generation.Load(),
+		network:  connectionEpoch,
 	}
 	if quality != nil {
 		quality.started = t.started
@@ -469,9 +474,10 @@ func (o *Observer) StartDial(ctx context.Context, tag string, server net.Destina
 		o.e.lastServer.Store(tag, t.server)
 	}
 	o.mu.Lock()
-	t.udpPath = o.e.pathAt(tag, o.now())
-	t.udpEpoch = o.e.udpEpoch
-	t.udpIncarnation = t.udpPath.udpIncarnation
+	t.udpPath = connectionPath
+	t.udpEpoch = udpEpoch
+	t.udpIncarnation = udpIncarnation
+	o.e.pathAt(tag, o.now())
 	o.mu.Unlock()
 	o.track(t)
 	return t
@@ -662,7 +668,7 @@ func (o *Observer) failure(t *connTracker, kind failureKind) {
 		stale = o.e.startedInPause(o.base.Add(time.Duration(t.started))) ||
 			(p != nil && t.started < p.lastAnsweredStart)
 	}
-	if t.network == o.e.generation && !stale {
+	if p := o.e.paths[t.tag]; p != nil && t.network == p.controllerEpoch && !stale {
 		o.e.onFailure(t.tag, kind, t.target, t.conn, o.now())
 	}
 	o.mu.Unlock()
@@ -672,25 +678,44 @@ func (o *Observer) failure(t *connTracker, kind failureKind) {
 func (o *Observer) answered(t *connTracker) {
 	o.mu.Lock()
 	o.collectQualityInitial(t.quality, t.tag, false)
-	if t.network == o.e.generation {
-		p := o.e.pathAt(t.tag, o.now())
-		p.lastAnsweredStart = max(p.lastAnsweredStart, t.started)
+	if t.proof || o.s.features.passiveTCP() {
+		o.noteControllerReplyLocked(t.tag, t.started, t.network, t.udpPath)
 	}
 	o.mu.Unlock()
 }
 
 func (o *Observer) success(t *connTracker) {
+	o.connectionSuccess(t.tag, t.started, t.network, t.udpPath, t.udpEpoch, t.udpIncarnation,
+		!t.udp && o.s.features.UdpReplies, t.proof || o.s.features.passiveTCP())
+}
+
+// noteControllerReplyLocked and connectionSuccess are shared by full and
+// lightweight trackers. Collector presence never grants controller proof.
+func (o *Observer) noteControllerReplyLocked(tag string, started int64, epoch uint64, snapshot *path) {
+	p := o.e.paths[tag]
+	if p != nil && (snapshot == nil || p == snapshot) && p.controllerEpoch == epoch {
+		p.lastAnsweredStart = max(p.lastAnsweredStart, started)
+	}
+}
+
+func (o *Observer) connectionSuccess(tag string, started int64, epoch uint64, snapshot *path, udpEpoch, incarnation uint64, tcpProof, controllerProof bool) {
+	if !tcpProof && !controllerProof {
+		return
+	}
 	o.mu.Lock()
-	if t.network != o.e.generation {
+	p := o.e.paths[tag]
+	if p == nil || (snapshot != nil && p != snapshot) || p.controllerEpoch != epoch {
 		o.mu.Unlock()
 		return
 	}
 	queued := len(o.e.queue)
-	if !t.udp && t.udpPath != nil && t.udpEpoch == o.e.udpEpoch && o.e.paths[t.tag] == t.udpPath && t.udpPath.udpIncarnation == t.udpIncarnation {
-		t.udpPath.lastTCPSuccess = o.now()
+	if tcpProof && udpEpoch == o.e.udpEpoch && p.udpIncarnation == incarnation {
+		p.lastTCPSuccess = o.now()
 		o.sweepUDPEvidenceLocked(o.now())
 	}
-	o.e.onSuccess(t.tag, o.now())
+	if controllerProof {
+		o.e.onSuccess(tag, o.now())
+	}
 	more := len(o.e.queue) > queued
 	o.mu.Unlock()
 	if more {

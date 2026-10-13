@@ -83,6 +83,8 @@ const maxFailures = 64
 // path is everything known about one outbound.
 type path struct {
 	tag string
+	// Controller epoch changes only when a selector using this physical path reacts.
+	controllerEpoch uint64
 	// When the outbound first showed up as a candidate or with a connection:
 	// the counters below count from here.
 	created     time.Time
