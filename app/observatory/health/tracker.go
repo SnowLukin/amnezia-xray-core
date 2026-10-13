@@ -4,6 +4,7 @@ import (
 	"context"
 	goerrors "errors"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -88,6 +89,8 @@ type connTracker struct {
 	idleMark int64
 	idleRead uint64
 
+	// Guards connection retention and splice socket publication against Finish.
+	connMu     sync.Mutex
 	dialedConn net.Conn
 	quality    *connectionQuality
 	read       stats.Counter
@@ -134,7 +137,9 @@ func (t *connTracker) Dialed(conn net.Conn, err error, read, write stats.Counter
 		}
 		return nil, nil
 	}
+	t.connMu.Lock()
 	t.dialedConn = conn
+	t.connMu.Unlock()
 	t.quality.dialed(conn, now)
 	t.read = read
 	t.write = write
@@ -147,7 +152,12 @@ func (t *connTracker) onSpliced() {
 	if t.spliced.Swap(true) {
 		return
 	}
-	rc := rawConnOf(t.dialedConn)
+	t.connMu.Lock()
+	conn := t.dialedConn
+	t.connMu.Unlock()
+	// Unwrapping and the syscall may run while processing finishes. Retain
+	// only this local connection until publication is checked below.
+	rc := rawConnOf(conn)
 	if rc == nil {
 		return
 	}
@@ -156,9 +166,15 @@ func (t *connTracker) onSpliced() {
 	if !ok || rx == 0 {
 		return
 	}
+	t.connMu.Lock()
+	if t.state.Load() == trackerFinished {
+		t.connMu.Unlock()
+		return
+	}
 	t.kernelBase.Store(rx)
 	t.kernelRx.Store(rx)
 	t.socket.Store(&rc)
+	t.connMu.Unlock()
 	t.watch()
 }
 
@@ -297,8 +313,10 @@ func (t *connTracker) Finished(err error) {
 	t.o.untrack(t)
 	// The proxy is done with the connection; a reference to the tracker left
 	// somewhere must not keep it and its buffers alive.
+	t.connMu.Lock()
 	t.dialedConn = nil
 	t.socket.Store(nil)
+	t.connMu.Unlock()
 	t.o.finished(t)
 	if t.quality != nil {
 		t.quality.socket.Store(nil)
