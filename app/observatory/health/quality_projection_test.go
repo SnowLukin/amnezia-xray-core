@@ -105,7 +105,7 @@ func TestQualityStatusProjectionPreservesZeroAndLegacyTTFB(t *testing.T) {
 	o.e.quality.addEnd(o.e.qualityEpoch, "retired-measurement", false, qualityEndSample{bytesDown: 1 << 20})
 	before := len(o.e.paths)
 	status := o.e.status(t0.Add(time.Second))
-	if len(o.e.paths) != before || status.Network != o.e.networkID || status.WitnessQuality == nil {
+	if len(o.e.paths) != before || status.NetworkID != o.e.networkID || status.WitnessQuality == nil {
 		t.Fatal("status projection changed policy paths or lost opaque network/witness state")
 	}
 	fields := qualityProjectionJSON(t, status)

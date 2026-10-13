@@ -27,6 +27,9 @@ func (o *Observer) collectQualityInitial(q *connectionQuality, tag string, witne
 	}
 	if sample, ok := q.takeInitial(); ok {
 		o.e.quality.addInitial(q.network, tag, witness, sample)
+		if !witness {
+			o.e.labelQualityPath(tag, q.network)
+		}
 	}
 }
 
@@ -55,6 +58,9 @@ func (o *Observer) collectQualityReadyEnd(q *connectionQuality, request qualityE
 	}
 	o.collectQualityInitial(q, request.tag, request.witness)
 	o.e.quality.addEnd(q.network, request.tag, request.witness, q.end(request.bytesDown))
+	if !request.witness {
+		o.e.labelQualityPath(request.tag, q.network)
+	}
 }
 
 // Only the winner that has finished publishing the witness's first point may

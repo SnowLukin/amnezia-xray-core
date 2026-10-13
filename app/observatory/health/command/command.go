@@ -54,12 +54,19 @@ func (s *service) NetworkChanged(_ context.Context, r *NetworkChangedRequest) (*
 }
 func (s *service) NetworkChangedWithLabels(_ context.Context, r *NetworkChangedWithLabelsRequest) (*Result, error) {
 	o := s.observer
-	if err := o.FeatureError("host_labels"); err != nil {
-		return result(o, nil, err), nil
+	if o == nil {
+		return result(nil, nil, nil), nil
 	}
-	// The measurement-context implementation provides the atomic labels call.
-	return result(o, nil, health.NewCommandError("feature_disabled", "network labels are unavailable")), nil
+	raw, _ := json.Marshal(r.Labels)
+	if len(r.Labels) == 0 {
+		raw = []byte("{}")
+	}
+	if err := o.NetworkChangedWithLabels(r.Network, string(raw)); err != nil {
+		return result(o, nil, health.NewCommandError("invalid_argument", err.Error())), nil
+	}
+	return result(o, nil, nil), nil
 }
+
 func (s *service) NetworkLost(context.Context, *NetworkLostRequest) (*Result, error) {
 	o := s.observer
 	if o == nil {

@@ -1088,7 +1088,7 @@ func (o *Observer) applySet(rt *providerRuntime, a *providerAnswer, j *refreshJo
 		demoted[path.Tag] = old
 		wasRetiring[path.Tag] = o.e.retiring[path.Tag]
 		// Select reads the mode without a lock, before the handler can be replaced.
-		o.s.paths.Store(path.Tag, pathSettings{probe: old.probe, isProbeOnly: true})
+		o.s.paths.Store(path.Tag, pathSettings{probe: old.probe, isProbeOnly: true, labels: old.labels})
 		o.e.retiring[path.Tag] = true
 	}
 	if len(demoted) > 0 {

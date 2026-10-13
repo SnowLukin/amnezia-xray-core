@@ -1,6 +1,7 @@
 package health
 
 import (
+	"maps"
 	"net/http"
 	"slices"
 	"strings"
@@ -282,6 +283,7 @@ type probeOnlySettings struct {
 }
 
 type pathSettings struct {
+	labels      map[string]string
 	probe       string
 	isProbeOnly bool
 }
@@ -299,6 +301,8 @@ type wakeSettings struct {
 }
 
 type settings struct {
+	labelRequest      *labelRequestSettings
+	reportLabels      map[string]string
 	disabledProviders map[string]bool
 	features          featureSettings
 	witnesses         []string
@@ -550,6 +554,12 @@ func toBackoff(b *Backoff, def backoff) backoff {
 
 func newSettings(c *Config) *settings {
 	s := &settings{baseOrder: map[string][]string{}, features: newFeatureSettings(c.GetFeatures())}
+	if s.features.SessionLabels {
+		s.reportLabels = filterLabels(c.GetSessionLabels(), 8)
+	}
+	if lr := c.GetLabelRequest(); s.features.LabelRequest && lr != nil {
+		s.labelRequest = &labelRequestSettings{outbound: lr.Outbound, destination: lr.Destination, labels: maps.Clone(lr.Labels), timeout: dur(lr.Timeout, 4*time.Second), requestsPerHour: num(lr.RequestsPerHour, 6)}
+	}
 	if u := c.GetUdpProbe(); s.features.UdpProbes && u != nil {
 		s.udpProbe = &udpSettings{requests: num(u.Requests, 5), interval: dur(u.Interval, 200*time.Millisecond), timeout: dur(u.Timeout, 2*time.Second), perHour: num(u.PerHour, 6)}
 		for _, address := range u.Destinations {
@@ -559,7 +569,7 @@ func newSettings(c *Config) *settings {
 	}
 	s.wake = wakeSettings{freshness: dur(c.GetWake().GetFreshness(), defaultWakeFreshness), minInterval: dur(c.GetWake().GetMinInterval(), defaultWakeMinInterval)}
 	for _, p := range c.GetPaths() {
-		s.paths.Store(p.Tag, pathSettings{probe: p.Probe, isProbeOnly: p.IsProbeOnly})
+		s.paths.Store(p.Tag, pathSettings{probe: p.Probe, isProbeOnly: p.IsProbeOnly, labels: filterLabels(p.Labels, 6)})
 		s.baseOrder[p.Balancer] = append(s.baseOrder[p.Balancer], p.Tag)
 	}
 	p := c.GetPassive()
@@ -771,6 +781,7 @@ type selectorSettings struct {
 }
 
 type costEntrySettings struct {
+	labels         map[string]string
 	groupName      string
 	groupLimit     int
 	cost           float64
@@ -806,8 +817,9 @@ func newSelectorSettings(c *SelectorConfig) *selectorSettings {
 	paths := map[string]*costEntrySettings{}
 	order := make([]string, 0, len(c.GetPaths()))
 	for _, p := range c.GetPaths() {
-		entry := &costEntrySettings{cost: float64(p.Cost), lazy: p.IsLazy, returnInterval: p.ReturnInterval, returnEnabled: p.ReturnIsEnabled, probe: p.Probe, isProbeOnly: p.IsProbeOnly}
+		entry := &costEntrySettings{labels: filterLabels(p.Labels, 6), cost: float64(p.Cost), lazy: p.IsLazy, returnInterval: p.ReturnInterval, returnEnabled: p.ReturnIsEnabled, probe: p.Probe, isProbeOnly: p.IsProbeOnly}
 		if g := groups[p.Group]; g != nil && p.Group != "" {
+			entry.labels = mergeLabels(g.Labels, p.Labels)
 			entry.groupName = g.Name
 			entry.groupLimit = min(max(num(g.FailedInRowToLeave, 3), 1), 16)
 			entry.cost = float64(g.Cost)

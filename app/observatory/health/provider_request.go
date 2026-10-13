@@ -65,9 +65,11 @@ type requestFailure struct {
 }
 
 type requestNetwork struct {
-	ID      string `json:"id,omitempty"`
-	IsKnown bool   `json:"isKnown"`
-	IsUp    bool   `json:"isUp"`
+	Labels   map[string]string `json:"labels,omitempty"`
+	IPLabels map[string]string `json:"ipLabels,omitempty"`
+	ID       string            `json:"id,omitempty"`
+	IsKnown  bool              `json:"isKnown"`
+	IsUp     bool              `json:"isUp"`
 }
 
 type requestBalancer struct {
@@ -123,7 +125,10 @@ type requestProbe struct {
 
 // providerRequest gathers the body of the refresh j of p that starts now.
 func (e *engine) providerRequest(p *provider, j *refreshJob, now time.Time) *providerRequest {
-	quality := e.currentQuality(now)
+	quality := qualitySegmentView{}
+	if e.s.features.Quality {
+		quality = e.currentQuality(now)
+	}
 	r := &providerRequest{
 		Protocol:              providerProtocol,
 		QualitySamplesDropped: quality.SamplesDropped,
@@ -139,6 +144,9 @@ func (e *engine) providerRequest(p *provider, j *refreshJob, now time.Time) *pro
 		Balancer:              requestBalancer{Tag: p.cfg.balancer},
 		Outbounds:             make([]requestOutbound, 0, len(p.tags)),
 		networkID:             e.networkID,
+	}
+	if labels := e.networkLabels(); labels != nil {
+		r.Network.Labels, r.Network.IPLabels = labels.Host, labels.IP
 	}
 	if quality.Witness != nil {
 		r.WitnessQuality = requestQualityOf(*quality.Witness)

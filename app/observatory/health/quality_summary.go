@@ -1,6 +1,7 @@
 package health
 
 import (
+	"maps"
 	"math"
 	"math/bits"
 	"sort"
@@ -106,29 +107,37 @@ func (s qualityCounterSum) number() float64 {
 // measurements that can honestly be zero. Counts accompany sampled histograms;
 // a histogram without samples contributes neither its count nor its quantiles.
 type qualityPathView struct {
-	BytesDown            *int64   `json:"bytes_down,omitempty"`
-	BytesDownOverflow    bool     `json:"bytes_down_overflow,omitempty"`
-	TTFBCount            uint64   `json:"ttfb_count,omitempty"`
-	TTFBP50Ms            *int64   `json:"ttfb_p50_ms,omitempty"`
-	TTFBP90Ms            *int64   `json:"ttfb_p90_ms,omitempty"`
-	DialCount            uint64   `json:"dial_count,omitempty"`
-	DialP50Ms            *int64   `json:"dial_p50_ms,omitempty"`
-	DialP90Ms            *int64   `json:"dial_p90_ms,omitempty"`
-	TCPCount             uint64   `json:"tcp_count,omitempty"`
-	TCPRTTP50Ms          *int64   `json:"tcp_rtt_p50_ms,omitempty"`
-	TCPRTTP90Ms          *int64   `json:"tcp_rtt_p90_ms,omitempty"`
-	TCPRTTMinMs          *int64   `json:"tcp_rtt_min_ms,omitempty"`
-	BulkCount            uint64   `json:"bulk_count,omitempty"`
-	BulkKbpsP50          *int64   `json:"bulk_kbps_p50,omitempty"`
-	BulkKbpsP90          *int64   `json:"bulk_kbps_p90,omitempty"`
-	BulkKbpsMax          *int64   `json:"bulk_kbps_max,omitempty"`
-	BulkRTTP50Ms         *int64   `json:"bulk_rtt_p50_ms,omitempty"`
-	BulkSplicedCount     *uint64  `json:"bulk_spliced_count,omitempty"`
-	RXOutOfOrderFraction *float64 `json:"rx_out_of_order_fraction,omitempty"`
-	TXRetransmitFraction *float64 `json:"tx_retransmit_fraction,omitempty"`
+	ProbeCount           uint64            `json:"probe_count,omitempty"`
+	ProbeFailedCount     uint64            `json:"probe_failed_count,omitempty"`
+	ProbeConnectP50Ms    *int64            `json:"probe_connect_p50_ms,omitempty"`
+	ProbeReasons         map[string]uint64 `json:"probe_reasons,omitempty"`
+	BytesDown            *int64            `json:"bytes_down,omitempty"`
+	BytesDownOverflow    bool              `json:"bytes_down_overflow,omitempty"`
+	TTFBCount            uint64            `json:"ttfb_count,omitempty"`
+	TTFBP50Ms            *int64            `json:"ttfb_p50_ms,omitempty"`
+	TTFBP90Ms            *int64            `json:"ttfb_p90_ms,omitempty"`
+	DialCount            uint64            `json:"dial_count,omitempty"`
+	DialP50Ms            *int64            `json:"dial_p50_ms,omitempty"`
+	DialP90Ms            *int64            `json:"dial_p90_ms,omitempty"`
+	TCPCount             uint64            `json:"tcp_count,omitempty"`
+	TCPRTTP50Ms          *int64            `json:"tcp_rtt_p50_ms,omitempty"`
+	TCPRTTP90Ms          *int64            `json:"tcp_rtt_p90_ms,omitempty"`
+	TCPRTTMinMs          *int64            `json:"tcp_rtt_min_ms,omitempty"`
+	BulkCount            uint64            `json:"bulk_count,omitempty"`
+	BulkKbpsP50          *int64            `json:"bulk_kbps_p50,omitempty"`
+	BulkKbpsP90          *int64            `json:"bulk_kbps_p90,omitempty"`
+	BulkKbpsMax          *int64            `json:"bulk_kbps_max,omitempty"`
+	BulkRTTP50Ms         *int64            `json:"bulk_rtt_p50_ms,omitempty"`
+	BulkSplicedCount     *uint64           `json:"bulk_spliced_count,omitempty"`
+	RXOutOfOrderFraction *float64          `json:"rx_out_of_order_fraction,omitempty"`
+	TXRetransmitFraction *float64          `json:"tx_retransmit_fraction,omitempty"`
 }
 
 type qualitySegmentView struct {
+	// Kept separately from JSON so path metadata is emitted once per report,
+	// including measured paths whose provider handler has already been removed.
+	pathLabels     map[string]map[string]string
+	Network        *networkLabelsView         `json:"network,omitempty"`
 	IsNetworkKnown bool                       `json:"is_network_known"`
 	DurationMs     int64                      `json:"duration_ms"`
 	Paths          map[string]qualityPathView `json:"paths,omitempty"`
@@ -140,6 +149,10 @@ type qualitySegmentView struct {
 }
 
 type qualityAccumulator struct {
+	labels                      map[string]string
+	probeConnect                qualityTimeHistogram
+	probes, probesFailed        uint64
+	probeReasons                map[string]uint64
 	ttfb, dial, tcpRTT, bulkRTT qualityTimeHistogram
 	bulk                        qualitySpeedHistogram
 	bytesDown                   int64
@@ -235,6 +248,11 @@ func qualityScalar[T any](v T) *T { return &v }
 
 func (a *qualityAccumulator) view() qualityPathView {
 	v := qualityPathView{}
+	v.ProbeCount, v.ProbeFailedCount = a.probes, a.probesFailed
+	v.ProbeReasons = maps.Clone(a.probeReasons)
+	if a.probeConnect.total > 0 {
+		v.ProbeConnectP50Ms = qualityScalar(a.probeConnect.quantile(0.5))
+	}
 	if a.hasBytes {
 		v.BytesDown = qualityScalar(a.bytesDown)
 		v.BytesDownOverflow = a.bytesDownOverflow
@@ -275,7 +293,8 @@ func (a *qualityAccumulator) view() qualityPathView {
 }
 
 type qualityNetworkMetadata struct {
-	known bool
+	labels *networkLabelsView
+	known  bool
 }
 
 type qualityCollection struct {
@@ -340,8 +359,8 @@ func (c *qualityCollection) addEnd(tag string, witness bool, sample qualityEndSa
 
 func (c *qualityCollection) view(now time.Time, limit int) qualitySegmentView {
 	v := qualitySegmentView{
-		IsNetworkKnown: c.network.known,
-		DurationMs:     wholeMilliseconds(now.Round(0).Sub(c.started)), SamplesDropped: c.samplesDropped,
+		IsNetworkKnown: c.network.known, Network: cloneNetworkLabels(c.network.labels),
+		DurationMs: wholeMilliseconds(now.Round(0).Sub(c.started)), SamplesDropped: c.samplesDropped,
 	}
 	if c.witness != nil {
 		w := c.witness.view()
@@ -365,6 +384,12 @@ func (c *qualityCollection) view(now time.Time, limit int) qualitySegmentView {
 	v.Paths = make(map[string]qualityPathView, shown)
 	for _, tag := range tags[:shown] {
 		v.Paths[tag] = c.paths[tag].view()
+		if labels := c.paths[tag].labels; len(labels) > 0 {
+			if v.pathLabels == nil {
+				v.pathLabels = make(map[string]map[string]string)
+			}
+			v.pathLabels[tag] = maps.Clone(labels)
+		}
 	}
 	v.PathsDropped = len(tags) - shown
 	return v
@@ -483,6 +508,8 @@ func cloneQualityPointer[T any](p *T) *T {
 }
 
 func cloneQualityPath(v qualityPathView) qualityPathView {
+	v.ProbeConnectP50Ms = cloneQualityPointer(v.ProbeConnectP50Ms)
+	v.ProbeReasons = maps.Clone(v.ProbeReasons)
 	v.BytesDown = cloneQualityPointer(v.BytesDown)
 	v.TTFBP50Ms, v.TTFBP90Ms = cloneQualityPointer(v.TTFBP50Ms), cloneQualityPointer(v.TTFBP90Ms)
 	v.DialP50Ms, v.DialP90Ms = cloneQualityPointer(v.DialP50Ms), cloneQualityPointer(v.DialP90Ms)
@@ -498,6 +525,14 @@ func cloneQualityPath(v qualityPathView) qualityPathView {
 }
 
 func cloneQualitySegment(v qualitySegmentView) qualitySegmentView {
+	if v.pathLabels != nil {
+		labels := make(map[string]map[string]string, len(v.pathLabels))
+		for tag, values := range v.pathLabels {
+			labels[tag] = maps.Clone(values)
+		}
+		v.pathLabels = labels
+	}
+	v.Network = cloneNetworkLabels(v.Network)
 	if v.Paths != nil {
 		paths := make(map[string]qualityPathView, len(v.Paths))
 		for tag, path := range v.Paths {

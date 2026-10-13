@@ -28,34 +28,35 @@ func (p *path) statusUDP(now time.Time) UDPStatus {
 }
 
 type pathStatusView struct {
-	CanSleep             *bool            `json:"can_sleep,omitempty"`
-	CanCloseUnchosenIdle *bool            `json:"can_close_unchosen_idle,omitempty"`
-	Quality              *qualityPathView `json:"quality,omitempty"`
-	Outbound             string           `json:"outbound"`
-	IsProbeOnly          bool             `json:"is_probe_only"`
-	State                string           `json:"state"`
-	Reason               string           `json:"reason,omitempty"`
-	ForMs                int64            `json:"for_ms"`
-	Failures             int              `json:"failures"`
-	QuarantineMs         int64            `json:"quarantine_ms,omitempty"`
-	QuarantineLevel      int              `json:"quarantine_level,omitempty"`
-	IsProvisional        bool             `json:"is_provisional,omitempty"`
-	RTTMs                int64            `json:"rtt_ms,omitempty"`
-	LastError            string           `json:"last_error,omitempty"`
-	ServerName           string           `json:"server_name,omitempty"`
-	ConnsOK              int64            `json:"conns_ok"`
-	ConnsFailed          int64            `json:"conns_failed"`
-	BytesUp              int64            `json:"bytes_up"`
-	BytesDown            int64            `json:"bytes_down"`
-	FailuresByKind       map[string]int64 `json:"failures_by_kind,omitempty"`
-	TTFBP50Ms            int64            `json:"ttfb_p50_ms"`
-	TTFBP90Ms            int64            `json:"ttfb_p90_ms"`
-	Probes               int64            `json:"probes"`
-	ProbesFailed         int64            `json:"probes_failed"`
-	ProbeBytes           int64            `json:"probe_bytes"`
-	Probe                *statusProbeView `json:"probe,omitempty"`
-	UDP                  UDPStatus        `json:"udp"`
-	ActiveMs             int64            `json:"active_ms"`
+	Labels               map[string]string `json:"labels,omitempty"`
+	CanSleep             *bool             `json:"can_sleep,omitempty"`
+	CanCloseUnchosenIdle *bool             `json:"can_close_unchosen_idle,omitempty"`
+	Quality              *qualityPathView  `json:"quality,omitempty"`
+	Outbound             string            `json:"outbound"`
+	IsProbeOnly          bool              `json:"is_probe_only"`
+	State                string            `json:"state"`
+	Reason               string            `json:"reason,omitempty"`
+	ForMs                int64             `json:"for_ms"`
+	Failures             int               `json:"failures"`
+	QuarantineMs         int64             `json:"quarantine_ms,omitempty"`
+	QuarantineLevel      int               `json:"quarantine_level,omitempty"`
+	IsProvisional        bool              `json:"is_provisional,omitempty"`
+	RTTMs                int64             `json:"rtt_ms,omitempty"`
+	LastError            string            `json:"last_error,omitempty"`
+	ServerName           string            `json:"server_name,omitempty"`
+	ConnsOK              int64             `json:"conns_ok"`
+	ConnsFailed          int64             `json:"conns_failed"`
+	BytesUp              int64             `json:"bytes_up"`
+	BytesDown            int64             `json:"bytes_down"`
+	FailuresByKind       map[string]int64  `json:"failures_by_kind,omitempty"`
+	TTFBP50Ms            int64             `json:"ttfb_p50_ms"`
+	TTFBP90Ms            int64             `json:"ttfb_p90_ms"`
+	Probes               int64             `json:"probes"`
+	ProbesFailed         int64             `json:"probes_failed"`
+	ProbeBytes           int64             `json:"probe_bytes"`
+	Probe                *statusProbeView  `json:"probe,omitempty"`
+	UDP                  UDPStatus         `json:"udp"`
+	ActiveMs             int64             `json:"active_ms"`
 	// What is left of the provider lease, below zero once it ended; none
 	// without a lease.
 	ExpiresInMs *int64 `json:"expires_in_ms,omitempty"`
@@ -120,9 +121,10 @@ type statusView struct {
 	WitnessQuality        *qualityPathView `json:"witness_quality,omitempty"`
 	QualitySamplesDropped uint64           `json:"quality_samples_dropped,omitempty"`
 	// Names this run of the core; pin and release requests may carry it.
-	Run         string `json:"run,omitempty"`
-	Network     string `json:"network,omitempty"`
-	IsNetworkUp bool   `json:"is_network_up"`
+	Run         string             `json:"run,omitempty"`
+	NetworkID   string             `json:"network_id,omitempty"`
+	Network     *networkLabelsView `json:"network,omitempty"`
+	IsNetworkUp bool               `json:"is_network_up"`
 	// "ok", "paused", "doubt" or "ignored"; empty without a connectivity check.
 	Connectivity string               `json:"connectivity,omitempty"`
 	Generation   uint64               `json:"generation"`
@@ -145,7 +147,7 @@ func (e *engine) status(now time.Time) statusView {
 		Features:       e.effectiveFeatures(),
 		Groups:         e.groupViews(now),
 		WitnessQuality: quality.Witness, QualitySamplesDropped: quality.SamplesDropped,
-		Network:      e.networkID,
+		NetworkID: e.networkID, Network: e.networkLabels(),
 		IsNetworkUp:  !e.networkDown,
 		Connectivity: e.connectivityState(),
 		Generation:   e.generation,
@@ -188,7 +190,7 @@ func (e *engine) status(now time.Time) statusView {
 	for _, tag := range tags {
 		p := e.paths[tag]
 		pv := pathStatusView{
-			Outbound:     tag,
+			Outbound: tag, Labels: e.s.pathLabels(tag),
 			IsProbeOnly:  e.isProbeOnly(tag),
 			State:        p.status.String(),
 			Reason:       p.reason,

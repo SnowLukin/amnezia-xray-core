@@ -3,6 +3,7 @@ package health
 import (
 	"cmp"
 	"context"
+	"maps"
 	"math"
 	"math/rand"
 	"slices"
@@ -83,6 +84,7 @@ func (r probeReason) String() string {
 // probeJob is one probe of an outbound. Jobs are shared: one probe of a tag
 // for a reason answers every balancer waiting for it.
 type probeJob struct {
+	qualityEpoch    uint64
 	id              uint64
 	tag             string
 	reason          probeReason
@@ -211,8 +213,15 @@ type engine struct {
 
 	report report
 	// Measurements have their own epoch even when routing ignores a change.
-	quality      *qualitySummary
-	qualityEpoch uint64
+	quality       *qualitySummary
+	qualityEpoch  uint64
+	hostLabels    map[string]string
+	labelNetwork  *labelNetwork
+	labelCache    map[string]*labelNetwork
+	labelOrder    []string
+	labelAttempts []time.Time
+	labelRunning  *labelJob
+	labelProof    bool
 }
 
 func newEngine(s *settings, seed int64) *engine {
@@ -324,6 +333,9 @@ func (e *engine) pathAt(tag string, now time.Time) *path {
 }
 
 func (e *engine) emit(now time.Time, typ string, fields map[string]any) {
+	if typ == "network_change" && len(e.hostLabels) > 0 {
+		fields["labels"] = maps.Clone(e.hostLabels)
+	}
 	e.events.add(now, typ, fields)
 	if e.s.features.Report {
 		e.report.count(typ, fields)
@@ -841,6 +853,13 @@ func (e *engine) addSelector(tag string, cfg *selectorSettings) *selector {
 		providerCfg := newSelectorSettings(&SelectorConfig{Paths: p.pathDefs, Groups: p.groupDefs})
 		for pathTag, path := range providerCfg.paths {
 			cfg.paths[pathTag] = path
+		}
+	}
+	for pathTag, p := range cfg.paths {
+		if stored, ok := e.s.paths.Load(pathTag); ok {
+			old := stored.(pathSettings)
+			old.labels = maps.Clone(p.labels)
+			e.s.paths.Store(pathTag, old)
 		}
 	}
 	if s, ok := e.selectors[tag]; ok {
@@ -1979,6 +1998,10 @@ func (e *engine) onProbeResult(j *probeJob, r probeResult, now time.Time) {
 			p.probing = false
 		}
 	}
+	if e.s.features.ProbeMeasurements && !stale && !j.isUDP {
+		e.quality.addProbe(j.qualityEpoch, j.tag, j.reason.String(), r)
+		e.labelQualityPath(j.tag, j.qualityEpoch)
+	}
 	p.stats.probes++
 	p.stats.probeBytes += r.bytes
 	if !r.ok {
@@ -2301,6 +2324,9 @@ func (e *engine) onConnectivity(r probeResult, now time.Time) {
 
 // sawSuccess handles proof that some outbound works.
 func (e *engine) sawSuccess(how string, now time.Time) {
+	if how == "traffic" || how == "witness" {
+		e.labelProof = true
+	}
 	e.lastSuccess = now
 	if e.endPause(now) {
 		e.emit(now, "network_up", map[string]any{"by": how})
@@ -2435,6 +2461,10 @@ func (e *engine) resumePending(now time.Time) {
 // any selector referencing it reacts, that tag is reset for every claimant.
 // Private tags and policy of IGNORE selectors retain their state and work.
 func (e *engine) onNetworkChange(id string, now time.Time) {
+	e.onNetworkChangeWithLabels(id, nil, now)
+}
+
+func (e *engine) onNetworkChangeWithLabels(id string, labels map[string]string, now time.Time) {
 	e.resetUDPNetwork(now)
 	e.candidateEpoch++
 	e.cancelCandidates("")
@@ -2450,6 +2480,12 @@ func (e *engine) onNetworkChange(id string, now time.Time) {
 		_, known = e.networks[id]
 	}
 	e.changeQualityNetwork(id, known, now)
+	e.hostLabels = nil
+	if e.s.features.HostLabels {
+		e.hostLabels = filterLabels(labels, 8)
+	}
+	e.changeLabelNetwork(id, now)
+	e.updateQualityLabels()
 	e.providersOnNetworkChange(known, now)
 	e.idleNet.changed = now
 	e.networkID, e.networkKnown = id, known
@@ -2635,6 +2671,9 @@ func (e *engine) setMemoryLow(low bool, now time.Time) bool {
 		return false
 	}
 	e.memoryLow = low
+	if low {
+		e.cancelLabelRequest(now)
+	}
 	if low {
 		e.gc(now, 0)
 		e.dropHostProbesForMemory()

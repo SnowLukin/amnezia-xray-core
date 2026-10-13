@@ -672,7 +672,11 @@ func (e *engine) applyProviderSet(p *provider, c providerChange, now time.Time) 
 		if g := groups[path.Group]; g != nil {
 			probe = g.Probe
 		}
-		next := pathSettings{probe: probe, isProbeOnly: path.IsProbeOnly}
+		labels := path.Labels
+		if g := groups[path.Group]; g != nil {
+			labels = mergeLabels(g.Labels, labels)
+		}
+		next := pathSettings{probe: probe, isProbeOnly: path.IsProbeOnly, labels: filterLabels(labels, 6)}
 		newPaths[path.Tag] = next
 		if old, ok := oldPaths[path.Tag]; ok && old.isProbeOnly && !next.isProbeOnly && old.probe == next.probe {
 			q := e.paths[path.Tag]

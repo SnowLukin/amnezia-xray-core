@@ -522,7 +522,7 @@ func TestQualityStage1IgnoreRetainsRawProbeAndRejectsOldQuality(t *testing.T) {
 			row = &status.Paths[i]
 		}
 	}
-	if row == nil || row.Probe == nil || row.Quality == nil || status.Network != nextNetwork ||
+	if row == nil || row.Probe == nil || row.Quality == nil || status.NetworkID != nextNetwork ||
 		row.Probe.Profile != beforeProbe.Profile || row.Probe.Reason != beforeProbe.Reason || row.Probe.Reason != reasonWake.String() || row.Probe.State != beforeProbe.State ||
 		row.Probe.AgoMs != clk.now().Sub(probeEnd).Milliseconds() || !reflect.DeepEqual(row.Probe.Steps, beforeProbe.Steps) {
 		t.Fatal("current Status lost retained raw probe alongside new network quality")

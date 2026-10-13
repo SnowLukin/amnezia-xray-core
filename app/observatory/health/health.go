@@ -92,6 +92,9 @@ func New(ctx context.Context, config *Config) (*Observer, error) {
 	if err := config.ValidateFeatures(); err != nil {
 		return nil, err
 	}
+	if err := config.ValidateMeasurementContext(); err != nil {
+		return nil, err
+	}
 	if err := validateQuietShare(config.GetReport()); err != nil {
 		return nil, err
 	}
@@ -142,13 +145,13 @@ func newObserver(ctx context.Context, config *Config) *Observer {
 	o.runCtx, o.stopRun = context.WithCancel(ctx)
 	o.newHandler = o.createHandler
 	collectorStart := time.Time{}
-	if s.features.Report || s.features.Quality {
+	if s.features.Report || s.features.Quality || s.features.ProbeMeasurements {
 		collectorStart = o.clock()
 	}
 	if s.features.Report {
 		o.e.report.begin(collectorStart)
 	}
-	if !s.passive.skipQuality {
+	if !s.passive.skipQuality || s.features.ProbeMeasurements {
 		o.e.quality = newQualitySummary(collectorStart)
 		o.e.quality.reporting = s.features.Report
 		if !s.features.Report {
@@ -170,6 +173,7 @@ func newObserver(ctx context.Context, config *Config) *Observer {
 		})
 	}
 	o.e.serverNameFor = o.serverName
+	o.e.changeLabelNetwork("", o.now())
 	return o
 }
 
@@ -305,6 +309,8 @@ func (o *Observer) loop(done chan struct{}) {
 		o.mu.Lock()
 		now := o.now()
 		jobs, refreshes, wake := o.e.step(now)
+		label, labelWake := o.e.nextLabelRequest(o.runCtx, now)
+		wake = soonestOf(wake, labelWake)
 		downs := o.e.takeDowns()
 		sleeps := o.e.takeSleeps()
 		unpinned := o.e.takeUnpinned()
@@ -322,6 +328,9 @@ func (o *Observer) loop(done chan struct{}) {
 		}
 		for _, j := range jobs {
 			go o.runProbe(j)
+		}
+		if label != nil {
+			go o.runLabelRequest(label)
 		}
 		for _, r := range refreshes {
 			go o.runRefresh(r)
@@ -353,6 +362,7 @@ func (o *Observer) runProbe(j *probeJob) {
 	ctx, cancel := context.WithCancel(o.runCtx)
 	o.mu.Lock()
 	j.cancel = cancel
+	j.qualityEpoch = o.e.qualityEpoch
 	if j.invalidated || j.forgotten {
 		cancel()
 	}
@@ -718,7 +728,7 @@ func (o *Observer) connectionSuccess(tag string, started int64, epoch uint64, sn
 	}
 	more := len(o.e.queue) > queued
 	o.mu.Unlock()
-	if more {
+	if more || o.s.labelRequest != nil {
 		o.wake()
 	}
 }
@@ -729,7 +739,7 @@ func (o *Observer) witnessed() {
 	o.e.sawSuccess("witness", o.now())
 	more := len(o.e.queue) > queued
 	o.mu.Unlock()
-	if more {
+	if more || o.s.labelRequest != nil {
 		o.wake()
 	}
 }
@@ -896,18 +906,13 @@ func equalStrings(a, b []string) bool {
 // NetworkChanged tells the observer that the device moved to another network.
 // id identifies the network for remembering working outbounds; an empty id
 // means the host cannot tell networks apart.
-func (o *Observer) NetworkChanged(id string) {
-	o.mu.Lock()
-	o.e.onNetworkChange(id, o.now())
-	o.generation.Store(o.e.generation)
-	o.qualityEpoch.Store(o.e.qualityEpoch)
-	o.mu.Unlock()
-	o.wake()
-}
+func (o *Observer) NetworkChanged(id string) { o.networkChanged(id, nil) }
 
 // NetworkLost pauses all decisions until NetworkChanged.
 func (o *Observer) NetworkLost() {
 	o.mu.Lock()
+	o.e.cancelLabelRequest(o.now())
+	o.e.labelProof = false
 	o.e.onNetworkLost(o.now())
 	o.mu.Unlock()
 }

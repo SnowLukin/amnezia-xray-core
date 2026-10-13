@@ -141,11 +141,13 @@ type reportStepTotals struct {
 }
 
 type reportView struct {
-	Run       string `json:"health_run"`
-	Reason    string `json:"report_reason"`
-	Index     int    `json:"report_index"`
-	WindowMs  int64  `json:"window_ms"`
-	SessionMs int64  `json:"session_ms"`
+	Labels     map[string]string            `json:"labels,omitempty"`
+	PathLabels map[string]map[string]string `json:"path_labels,omitempty"`
+	Run        string                       `json:"health_run"`
+	Reason     string                       `json:"report_reason"`
+	Index      int                          `json:"report_index"`
+	WindowMs   int64                        `json:"window_ms"`
+	SessionMs  int64                        `json:"session_ms"`
 	reportCounts
 	Active                 map[string]string     `json:"active"`
 	IsBalancerExhausted    bool                  `json:"is_balancer_exhausted"`
@@ -514,7 +516,7 @@ func (e *engine) reportView(reason string, now time.Time, take bool) *reportView
 	r := &e.report
 	wall := now.Round(0)
 	v := &reportView{
-		Groups:        e.groupViews(now),
+		Groups: e.groupViews(now), Labels: maps.Clone(e.s.reportLabels),
 		Reason:        reason,
 		Index:         r.taken + 1,
 		WindowMs:      wholeMilliseconds(wall.Sub(r.windowStart)),
@@ -530,6 +532,14 @@ func (e *engine) reportView(reason string, now time.Time, take bool) *reportView
 	// This builder is reached only when the outer report actually exists.
 	// Snapshot preserves the window; successful take resets only its quality.
 	v.Quality, v.QualitySegmentsDropped = e.quality.report(now, take)
+	for _, segment := range v.Quality {
+		for tag, labels := range segment.pathLabels {
+			if v.PathLabels == nil {
+				v.PathLabels = make(map[string]map[string]string)
+			}
+			v.PathLabels[tag] = maps.Clone(labels)
+		}
+	}
 	if !take {
 		v.SwitchReasons = maps.Clone(v.SwitchReasons)
 		v.SwitchHistory = slices.Clone(v.SwitchHistory)
@@ -583,6 +593,12 @@ func (e *engine) reportView(reason string, now time.Time, take bool) *reportView
 			loneProbesFailed: p.stats.loneProbesFailed,
 		}
 		if i < reportPaths {
+			if labels := e.s.pathLabels(tag); len(labels) > 0 {
+				if v.PathLabels == nil {
+					v.PathLabels = make(map[string]map[string]string)
+				}
+				v.PathLabels[tag] = labels
+			}
 			base := p.reported
 			udp := total.udp.delta(base.udp)
 			v.Paths[tag] = reportPath{
