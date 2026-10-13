@@ -867,7 +867,7 @@ The UDP fields ending in `_count` are global report counters.
       "census": {
         "sampleFraction": 0.03,
         "startAfter": "3m",
-        "onDemand": ["de-fallback", "cdn"]
+        "onDemand": ["de-fallback", "reserve-group"]
       }
     }
   }
@@ -896,7 +896,7 @@ The UDP fields ending in `_count` are global report counters.
     "paths": {
       "reality-nl": {"result": "ok", "source": "recent", "observed_state": "up", "is_selected": true},
       "awg-nl": {"result": "failed", "source": "probe", "error": "dial_timeout", "observed_state": "unknown"},
-      "relay": {"result": "ok", "source": "probe", "member": "relay-b1", "connect_ms": 61, "ms": 190, "observed_state": "up"},
+      "group-1": {"result": "ok", "source": "probe", "member": "group-1-b1", "connect_ms": 61, "ms": 190, "observed_state": "up"},
       "standby-1": {"result": "skipped", "reason": "on_demand"}
     }
   },

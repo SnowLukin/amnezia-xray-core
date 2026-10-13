@@ -203,19 +203,30 @@ def census_interrupt(stand, xray, work, name):
         bench.chaos(str(bench.address_port('tcp_tls', 0)), 'refuse')
         client.network('census-new-network')
         first = _census(client, seconds=4)
-        first_report = client.take_report()
+        interrupted_after = time.monotonic() - began
+        # TakeReport follows the ordinary due interval; PeekReport observes
+        # this window without fabricating an interval decision.
+        first_report = client.api('report')
         _request()
-        second = _census(client, count=2, seconds=15)
+        # The same SNI was already probed on the old network. Its real
+        # one-minute quota survives NetworkChanged, so wait for eligibility.
+        second = _census(client, count=2, seconds=70)
+        second_report = client.api('report')
         checks += [check('actual old-network census was running', bool(started), bool(started), 'true'),
                    check('network change emits partial snapshot promptly', first,
-                         first.get('is_complete') is False and time.monotonic() - began < 15, 'incomplete / <15s'),
+                         first.get('is_complete') is False and interrupted_after < 3, 'incomplete / <3s'),
                    check('report window keeps interrupted snapshot', first_report and first_report.get('census'),
                          bool(first_report) and first_report.get('census', {}).get('is_complete') is False, 'incomplete'),
                    check('new network receives one complete census after traffic and delay', second,
                          second.get('is_complete') is True and len(_events(client, 'census')) == 2, 'complete / 2 total'),
+                   check('both network snapshots survive the same report window', second_report.get('census'),
+                         second_report.get('census', {}).get('is_complete') is False and
+                         len(second_report.get('census', {}).get('additional', [])) == 1 and
+                         second_report['census']['additional'][0].get('is_complete') is True, 'first partial + additional complete'),
                    check('census interruption leaves backup unknown', _path(client, 'b1'),
                          _path(client, 'b1').get('state') == 'unknown' and _path(client, 'b1').get('failures') == 0, 'unknown / 0')]
-        _save(work, name, first=first, second=second, first_report=first_report, status=client.status(), events=client.events)
+        _save(work, name, first=first, second=second, first_report=first_report, interrupted_after=interrupted_after, second_report=second_report,
+              status=client.status(), events=client.events)
     checks.append(leak_check(client))
     return checks
 
@@ -234,14 +245,21 @@ def census_priority(stand, xray, work, name):
         switched = _poll(lambda: _active(client) == 'b1', 6)
         elapsed = time.monotonic() - began
         reply = _request()
+        downs = _events(client, 'path_state', outbound='a1', state='down')
+        switched_rows = _events(client, 'switch', to='b1', reason='failover')
+        start_rows = _events(client, 'probe_start', reason='failover')
+        decision_ms = switched_rows[-1]['ts'] - downs[-1]['ts'] if switched_rows and downs else None
+        preempt_ms = start_rows[0]['ts'] - downs[-1]['ts'] if start_rows and downs else None
         checks += [check('slow census probe had really started', bool(running), bool(running), 'true'),
-                   check('real failover preempts census before its 20-second body', elapsed,
-                         bool(switched) and elapsed < 6, '<6s; b1 selected'),
+                   check('failover starts promptly after real down evidence, before census body',
+                         {'decision_ms': decision_ms, 'probe_start_ms': preempt_ms, 'request_schedule_seconds': elapsed},
+                         bool(switched) and decision_ms is not None and 0 <= decision_ms < 2000 and
+                         preempt_ms is not None and 0 <= preempt_ms < 1000, 'start<1s / switch<2s after down'),
                    check('new selected path carries actual user response', reply, reply['is_ok'], '64KiB'),
                    check('ordinary failover probe started while census pending',
                          _events(client, 'probe_start', reason='failover'),
                          bool(_events(client, 'probe_start', reason='failover')), 'nonempty')]
-        _save(work, name, faults=faults, elapsed=elapsed, reply=reply, status=client.status(), events=client.events,
+        _save(work, name, faults=faults, elapsed=elapsed, decision_ms=decision_ms, preempt_ms=preempt_ms, reply=reply, status=client.status(), events=client.events,
               report=client.api('report'))
     checks.append(leak_check(client))
     return checks

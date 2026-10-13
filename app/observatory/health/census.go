@@ -342,8 +342,10 @@ func (e *engine) censusJobCurrent(j *probeJob) bool {
 		j.generation == e.generation && j.candidateEpoch == e.candidateEpoch
 }
 
-func (e *engine) hasOrdinaryProbeWork(now time.Time) bool {
-	for _, j := range e.queue {
+func (e *engine) hasOrdinaryProbeWork(kept []*probeJob, now time.Time) bool {
+	// Higher priority jobs have already been validated and compacted this tick.
+	// The original backing slice may still contain jobs that were discarded.
+	for _, j := range kept {
 		if j.reason == reasonCensus || j.invalidated || (j.reason != reasonConnectivity && j.generation != e.generation) {
 			continue
 		}
@@ -528,8 +530,8 @@ func (e *engine) peekCensus(now time.Time) *censusView {
 	}
 	view := e.census.pending[0].view(now)
 	for _, run := range e.census.pending[1:] {
-		extra := run.view(now)
-		view.Additional = append(view.Additional, &extra)
+		additional := run.view(now)
+		view.Additional = append(view.Additional, &additional)
 	}
 	return &view
 }

@@ -300,3 +300,26 @@ func TestCensusSnapshotsShareWindowAndCaptureMetadata(t *testing.T) {
 		t.Fatal("did not consume one window")
 	}
 }
+
+func TestCensusResumesAfterExpiredAudit(t *testing.T) {
+	e := censusTestEngine(t, 1, &PathDefinition{Tag: "a", Cost: 1}, &PathDefinition{Tag: "b", Cost: 2})
+	e.s.schedule.perMinute = 1
+	first := censusStartedJob(t, e, at(time.Second))
+	e.onProbeResult(first, probeResult{ok: true}, at(time.Second))
+	p := e.path("a")
+	p.status = statusDown
+	audit := e.enqueue("a", reasonAudit, "", at(2*time.Second))
+	audit.auditDown = p.downID
+	jobs, wake := e.tick(at(2 * time.Second))
+	if len(jobs) != 0 || !wake.Equal(at(2*time.Second).Add(auditWindow+time.Nanosecond)) {
+		t.Fatalf("setup expected pending audit behind quota: jobs=%v wake=%v", jobs, wake)
+	}
+	now := wake
+	jobs, wake = e.tick(now)
+	// The audit expires now; census must then use its own minute-quota wake,
+	// not lose that wake and remain pending until the one-hour idle deadline.
+	want := at(61 * time.Second)
+	if len(jobs) != 0 || !wake.Equal(want) {
+		t.Fatalf("expired audit stranded census: jobs=%v wake=%v want=%v queue=%v", jobs, wake, want, e.queue)
+	}
+}

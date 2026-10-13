@@ -1741,7 +1741,7 @@ func (e *engine) tick(now time.Time) ([]*probeJob, time.Time) {
 			if !e.censusJobCurrent(j) {
 				continue
 			}
-			if e.hasOrdinaryProbeWork(now) {
+			if e.hasOrdinaryProbeWork(kept, now) {
 				kept = append(kept, j)
 				continue
 			}

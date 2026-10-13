@@ -299,9 +299,10 @@ func TestReportAddsUpTheEvents(t *testing.T) {
 		t.Fatalf("decided %v, reason %q", decided, got.Reason)
 	}
 	// Every event-derived counter must be exercised by this fixture.
+	// Census budget/byte counters are charged directly and verified separately.
 	rv := reflect.ValueOf(want)
 	for i := 0; i < rv.NumField(); i++ {
-		if name := rv.Type().Field(i).Name; name != "EventsDropped" && name != "AuditSkipped" && name != "WakeSkipped" && name != "FallbackBalancerMs" && rv.Field(i).IsZero() {
+		if name := rv.Type().Field(i).Name; name != "EventsDropped" && name != "AuditSkipped" && name != "WakeSkipped" && name != "FallbackBalancerMs" && name != "CensusProbes" && name != "CensusProbeBytes" && rv.Field(i).IsZero() {
 			t.Errorf("the scenario leaves %s at zero", name)
 		}
 	}
