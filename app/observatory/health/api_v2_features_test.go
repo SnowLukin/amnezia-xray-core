@@ -707,3 +707,55 @@ func TestV2NetworkChangesNeverRevivePreviouslyStaleJob(t *testing.T) {
 		t.Fatal("old callback changed current ignored path")
 	}
 }
+
+// Mirrors a directly routed AWG stream: capability discovery and first idle
+// sample run before the response, then one small response leaves it silent.
+func TestV2CloseUnchosenIdleCountsFromLastRead(t *testing.T) {
+	f := v2NoEvidence()
+	f.CloseUnchosenIdle = v2Bool(true)
+	o, s, now := v2Observer(f, v2NoClosures())
+	defer o.Close()
+	sleepy := &v2SleepProxy{}
+	o.ohm = &v2Manager{h: map[string]outbound.Handler{"a": &v2Handler{p: v2PlainProxy{}}, "b": &v2Handler{p: sleepy}}}
+	if s.current() != "a" {
+		t.Fatal("unexpected chosen path")
+	}
+	var closed atomic.Int32
+	o.ProcessStarted("b")
+	tr := o.StartDial(context.Background(), "b", net.Destination{}, func() { closed.Add(1) }).(*closureTracker)
+	defer tr.Finished(nil)
+	read, _ := tr.Dialed(nil, nil, nil, nil)
+	turn := func() time.Time {
+		wake := o.e.planSleeps(*now)
+		if batch := o.e.takeSleeps(); len(batch) > 0 {
+			o.sleepOutbounds(batch)
+		}
+		return wake
+	}
+	turn() // Discover resource capability.
+	turn() // Sample before first response.
+	*now = now.Add(100 * time.Millisecond)
+	read.Add(1024)
+	lastRead := *now
+	*now = now.Add(o.s.closeIdleAfter - time.Millisecond - 100*time.Millisecond)
+	turn()
+	if closed.Load() != 0 {
+		t.Fatal("closed before idle deadline")
+	}
+	*now = lastRead.Add(o.s.closeIdleAfter - time.Millisecond)
+	turn()
+	if closed.Load() != 0 {
+		t.Fatal("closed before last-read idle deadline")
+	}
+	*now = lastRead.Add(o.s.closeIdleAfter)
+	turn()
+	if closed.Load() != 1 {
+		t.Fatalf("silent lightweight stream was not closed at lastRead+after: closes=%d planned=%v after=%v", closed.Load(), o.e.path("b").idleNext.Sub(lastRead), o.s.closeIdleAfter)
+	}
+	if sleepy.sleeps != 0 || o.s.sleepAfter != 0 || o.sweeping || o.trackers != nil {
+		t.Fatal("idle closure activated sleep or passive detector infrastructure")
+	}
+	if s.current() != "a" {
+		t.Fatal("resource closure changed choice")
+	}
+}

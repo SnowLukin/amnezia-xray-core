@@ -33,11 +33,11 @@ type closureTracker struct {
 	lastRead         atomic.Int64
 	spliced          atomic.Bool
 	// Guarded by trackMu, together with the registry and abort closure.
-	abort                func()
-	silentMark, idleMark int64
-	silentRead, idleRead int64
-	read                 closureReadCounter
-	write                closureWriteCounter
+	abort      func()
+	silentMark int64
+	silentRead int64
+	read       closureReadCounter
+	write      closureWriteCounter
 }
 
 func (o *Observer) connectionRegistry(tag string) bool {
@@ -133,11 +133,9 @@ func (t *closureTracker) idleSince(now int64) (int64, bool) {
 	if t.spliced.Load() {
 		return 0, false
 	}
-	n := t.bytesRead.Load()
-	if t.idleMark != 0 && n == t.idleRead && t.lastRead.Load() <= t.idleMark {
-		return t.idleMark, true
-	}
-	t.idleMark, t.idleRead = now, n
+	// Registry trackers timestamp every read. Unlike the full tracker after
+	// its success threshold, they need no counter sample to establish silence.
+	// Using the check time here would restart the wait after a late first check.
 	return max(t.lastRead.Load(), t.started), true
 }
 
