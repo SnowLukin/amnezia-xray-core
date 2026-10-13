@@ -103,8 +103,8 @@ def config(requested):
     }
     h['telemetry'] = {'report': {'sessionLabels': {'labels': {'cohort': 'matrix'}}}}
     effective = effective_features(requested)
-    for name in effective:
-        setv(h, FEATURES[name] + '.isEnabled', True)
+    for name in FEATURES:
+        setv(h, FEATURES[name] + '.isEnabled', name in effective)
     if 'report' in effective:
         h['telemetry']['report'].update(quietSampleFraction=1, interval='100ms')
     cfg['healthObservatory'] = h
@@ -118,7 +118,7 @@ def config(requested):
             outbound['settings']['domainStrategy'] = 'UseIPv4'
         if 'selection' in outbound:
             outbound['selection']['labels'] = {'node': outbound['tag']}
-    return cfg, effective
+    return bench.api_config(cfg), effective
 
 
 class LabelFixture:
@@ -357,7 +357,7 @@ def dependency_rejections(xray, out):
     cfg, _ = config({'session_labels'})
     setv(cfg, 'healthObservatory.telemetry.report.isEnabled', False)
     cfg['healthObservatory']['telemetry']['report'].pop('quietSampleFraction', None)
-    recipes.append(('sessionLabels without report', cfg, 'sessionLabels'))
+    recipes.append(('optional report opt-out rejected', cfg, 'report'))
     cfg, _ = config({'metrics'})
     cfg.pop('metrics')
     recipes.append(('metrics without exporter', cfg, 'metrics'))
@@ -370,7 +370,7 @@ def dependency_rejections(xray, out):
     profile['steps'][-1]['name'] = 'second'
     recipes.append(('two steps without stepProfiles', cfg, 'stepProfiles'))
     result = []
-    primary_features = {'loneFailureProbe': 'lone_failure_probe', 'sessionLabels': 'session_labels',
+    primary_features = {'loneFailureProbe': 'lone_failure_probe', 'sessionLabels': 'session_labels', 'report': 'session_labels',
                         'metrics': 'metrics', 'candidates': 'candidates', 'stepProfiles': 'step_profiles'}
     for name, cfg, required in recipes:
         if not select_case(name, primary=primary_features[required]):

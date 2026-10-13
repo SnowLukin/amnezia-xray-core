@@ -9,8 +9,7 @@ import (
 )
 
 func TestCurrentIsTheRunningObservatory(t *testing.T) {
-	cfg, err := core.LoadConfig("json", strings.NewReader(`{"log": {"loglevel": "none"},
-		"outbounds": [{"tag": "a1", "protocol": "freedom", "selection":{"balancer":"auto","cost":1}}], "routing":{"balancers":[{"tag":"auto","fallbackTag":"block","strategy":{"type":"leastCost"}}]}, "healthObservatory": {}}`))
+	cfg, err := core.LoadConfig("json", strings.NewReader(`{"log":{"loglevel":"none"},"outbounds":[{"tag":"a1","protocol":"freedom","selection":{"balancer":"auto","cost":1,"probe":"fixture"}}],"routing":{"balancers":[{"tag":"auto","fallbackTag":"block","strategy":{"type":"leastCost"}}]},"healthObservatory":{"probes":{"profiles":[{"name":"fixture","steps":[{"name":"transport","destinations":["http://127.0.0.1:1/probe"]}]}]}}}`))
 	if err != nil {
 		t.Fatal(err)
 	}

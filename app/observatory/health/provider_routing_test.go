@@ -47,7 +47,7 @@ func testRouting(raw json.RawMessage) (*router.Config, error) {
 func TestAnswerKeysOfProtocol1(t *testing.T) {
 	for _, parse := range []func([]byte) (*providerAnswer, error){parseAnswer, parseInitial} {
 		for _, key := range []string{"routing", "dns", "inbounds", "healthObservatory", "api", "policy", "transport", "log", "metrics", "stats", "reverse", "fakeDns", "observatory", "burstObservatory", "geodata"} {
-			_, err := parse([]byte(`{"protocol":1,"outbounds":[{"tag":"x","protocol":"vless","selection":{"balancer":"auto","cost":1}}],"` + key + `":{}}`))
+			_, err := parse([]byte(`{"protocol":1,"outbounds":[{"tag":"x","protocol":"vless","selection":{"balancer":"auto","probe":"check","cost":1}}],"` + key + `":{}}`))
 			if err == nil || !isAnswerError(err) {
 				t.Fatalf("accepted forbidden %s", key)
 			}
@@ -63,7 +63,7 @@ func TestProviderRoutingRejectionKeepsWholePreviousSet(t *testing.T) {
 	saved, seq := f.providerSet(t, 0)
 	var builds int
 	f.o.parseOutbounds = func(json.RawMessage) ([]*core.OutboundHandlerConfig, error) { builds++; return nil, nil }
-	_, err := parseAnswer([]byte(`{"protocol":1,"version":"rejected","outbounds":[{"tag":"x2","protocol":"vless","selection":{"balancer":"auto","cost":1}}],"routing":{"rules":[]}}`))
+	_, err := parseAnswer([]byte(`{"protocol":1,"version":"rejected","outbounds":[{"tag":"x2","protocol":"vless","selection":{"balancer":"auto","probe":"check","cost":1}}],"routing":{"rules":[]}}`))
 	if err == nil || !strings.Contains(err.Error(), "routing") {
 		t.Fatalf("routing refusal: %v", err)
 	}

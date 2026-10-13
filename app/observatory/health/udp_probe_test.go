@@ -354,3 +354,27 @@ func TestUDPReceiveTimeoutStartsAfterLastSuccessfulWrite(t *testing.T) {
 		t.Fatal("reader was not joined")
 	}
 }
+
+func TestUDPProbeUsesFourthDeclaredDestination(t *testing.T) {
+	previous := tagged.Dialer
+	defer func() { tagged.Dialer = previous }()
+	var seen []string
+	tagged.Dialer = func(ctx context.Context, _ routing.Dispatcher, dest net.Destination, _ string) (net.Conn, error) {
+		probeStateFrom(ctx).recordDial(nil)
+		seen = append(seen, dest.Address.String())
+		conn := newSTUNConn()
+		if len(seen) == 4 {
+			conn.onWrite = func(p []byte, _ int) { conn.packets <- stunReply(p) }
+		}
+		return conn, nil
+	}
+	observer := &Observer{runCtx: context.Background(), s: newSettings(&Config{})}
+	settings := &udpSettings{requests: 5, interval: time.Millisecond, timeout: 20 * time.Millisecond}
+	for _, name := range []string{"first.test", "second.test", "third.test", "fourth.test"} {
+		settings.destinations = append(settings.destinations, net.UDPDestination(net.DomainAddress(name), 3478))
+	}
+	result := observer.probeUDP("selected", settings)
+	if result.state != "ok" || result.destinationIndex != 3 || len(seen) != 4 {
+		t.Fatalf("result=%+v seen=%v", result, seen)
+	}
+}

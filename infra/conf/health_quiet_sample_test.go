@@ -16,8 +16,8 @@ func TestHealthQuietShareJSON(t *testing.T) {
 		{`{}`, 0},
 		{`{"telemetry":{"report":{}}}`, 0},
 		{`{"telemetry":{"report":{"quietSampleFraction":0}}}`, 0},
-		{`{"telemetry":{"report":{"isEnabled":true,"quietSampleFraction":0.05}}}`, 0.05},
-		{`{"telemetry":{"report":{"isEnabled":true,"quietSampleFraction":1}}}`, 1},
+		{`{"telemetry":{"report":{"quietSampleFraction":0.05}}}`, 0.05},
+		{`{"telemetry":{"report":{"quietSampleFraction":1}}}`, 1},
 	} {
 		cfg, err := buildHealth(t, tc.raw)
 		if err != nil || cfg.GetReport().GetQuietShare() != tc.want {

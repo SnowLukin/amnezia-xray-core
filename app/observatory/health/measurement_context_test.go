@@ -15,7 +15,7 @@ func measurementFeatures() *FeatureConfig {
 	return &FeatureConfig{HostLabels: qualityScalar(true), LabelRequest: qualityScalar(true), PathLabels: qualityScalar(true), SessionLabels: qualityScalar(true), ProbeMeasurements: qualityScalar(true), Quality: qualityScalar(true), Events: qualityScalar(true), Report: qualityScalar(true), NetworkMemory: qualityScalar(true), MemoryPressure: qualityScalar(true), ProbeRequests: qualityScalar(true)}
 }
 func measurementConfig() *Config {
-	return &Config{Features: measurementFeatures(), Network: &NetworkConfig{MaxNetworks: 2}, LabelRequest: &LabelRequestConfig{Outbound: "direct", Destination: "http://127.0.0.1/whoami", Labels: map[string]string{"asn": "X-Network-Asn"}, RequestsPerHour: 6}, Schedule: &ScheduleConfig{IdleAfter: int64(time.Hour)}}
+	return &Config{Features: measurementFeatures(), Network: &NetworkConfig{MaxNetworks: 2}, LabelRequest: &LabelRequestConfig{Outbound: "direct", Destinations: []string{"http://127.0.0.1/whoami"}, Labels: map[string]string{"asn": "X-Network-Asn"}, RequestsPerHour: 6}, Schedule: &ScheduleConfig{IdleAfter: int64(time.Hour)}}
 }
 func measurementEngine(t *testing.T) *testEngine {
 	e := newTestEngine(t, measurementConfig(), &SelectorConfig{NetworkChangeAction: NetworkChangeMode_IGNORE}, "a1", "b1")

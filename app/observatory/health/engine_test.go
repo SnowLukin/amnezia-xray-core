@@ -727,7 +727,7 @@ func TestStartPinReleasesItselfAfterItsTime(t *testing.T) {
 }
 
 func connectivityConfig() *Config {
-	return &Config{Connectivity: &ConnectivityConfig{Outbound: "direct", Destination: "http://x/204"}}
+	return &Config{Connectivity: &ConnectivityConfig{Outbound: "direct", Destinations: []string{"http://x/204"}}}
 }
 
 func TestConnectivityFailurePausesDecisions(t *testing.T) {

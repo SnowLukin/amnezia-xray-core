@@ -31,7 +31,7 @@ func legacyScenarioConfig(input *Config) *Config {
 	legacyFlag(&f.TunnelSleep, c.GetSleep().GetAfterLastUse() >= 0)
 	legacyFlag(&f.CloseUnchosenIdle, c.GetSleep().GetCloseIdleAfter() > 0)
 	legacyFlag(&f.NetworkMemory, !c.GetNetwork().GetNoMemory())
-	legacyFlag(&f.Connectivity, cc != nil && cc.GetOutbound() != "" && cc.GetDestination() != "")
+	legacyFlag(&f.Connectivity, cc != nil && cc.GetOutbound() != "" && len(cc.GetDestinations()) > 0)
 	legacyFlag(&f.Witnesses, len(cc.GetWitnesses()) > 0)
 	legacyFlag(&f.ProbeRequests, true)
 	legacyFlag(&f.Candidates, true)

@@ -16,8 +16,8 @@ func TestHealthWakeJSONPresence(t *testing.T) {
 	}{
 		{`{}`, 0, 0},
 		{`{"host":{"userPresent":{}}}`, 0, 0},
-		{`{"host":{"userPresent":{"isEnabled":false}}}`, 0, 0},
-		{`{"host":{"userPresent":{"isEnabled":true,"freshness":"2m","minInterval":"7m"}}}`, int64(2 * time.Minute), int64(7 * time.Minute)},
+		{`{"host":{}}`, 0, 0},
+		{`{"host":{"userPresent":{"freshness":"2m","minInterval":"7m"}}}`, int64(2 * time.Minute), int64(7 * time.Minute)},
 		{`{"host":{"userPresent":{"freshness":"60s"}}}`, int64(time.Minute), 0},
 		{`{"host":{"userPresent":{"minInterval":"3h"}}}`, 0, int64(3 * time.Hour)},
 	} {

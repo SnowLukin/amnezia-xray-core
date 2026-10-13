@@ -904,7 +904,7 @@ func TestLeasesStayWithinTheSet(t *testing.T) {
 }
 
 func leaseBody(version string, ends map[string]time.Time, server time.Time) []byte {
-	body := map[string]any{"outbounds": []fakeOutbound{{Tag: "x1", Protocol: "vless", V: 1, Path: json.RawMessage(`{"balancer":"auto","cost":1}`)}, {Tag: "x2", Protocol: "vless", V: 1, Path: json.RawMessage(`{"balancer":"auto","cost":1}`)}},
+	body := map[string]any{"outbounds": []fakeOutbound{{Tag: "x1", Protocol: "vless", V: 1, Path: json.RawMessage(`{"balancer":"auto","cost":1,"probe":"check"}`)}, {Tag: "x2", Protocol: "vless", V: 1, Path: json.RawMessage(`{"balancer":"auto","cost":1,"probe":"check"}`)}},
 		"version": version, "serverTime": server.UTC().Format(time.RFC3339)}
 	exp := map[string]string{}
 	for tag, end := range ends {

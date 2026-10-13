@@ -17,7 +17,8 @@ import (
 )
 
 // The v2 JSON schema is independent of the internal protobuf representation.
-// Presence is retained for flags whose documented default is true.
+// Optional feature objects enable by presence. Only default-on objects expose
+// isEnabled:false; the internal protobuf still carries explicit feature flags.
 type HealthFeatureConfig struct {
 	IsEnabled *bool `json:"isEnabled"`
 }
@@ -92,9 +93,9 @@ type HealthProbesConfig struct {
 }
 type HealthConnectivityConfig struct {
 	HealthFeatureConfig
-	Outbound    string             `json:"outbound"`
-	Destination string             `json:"destination"`
-	Timeout     *duration.Duration `json:"timeout"`
+	Outbound     string             `json:"outbound"`
+	Destinations []string           `json:"destinations"`
+	Timeout      *duration.Duration `json:"timeout"`
 }
 type HealthWitnessesConfig struct {
 	HealthFeatureConfig
@@ -107,7 +108,7 @@ type HealthNetworkMemoryConfig struct {
 type HealthLabelRequestConfig struct {
 	HealthFeatureConfig
 	Outbound        string             `json:"outbound"`
-	Destination     string             `json:"destination"`
+	Destinations    []string           `json:"destinations"`
 	Labels          map[string]string  `json:"labels"`
 	Timeout         *duration.Duration `json:"timeout"`
 	RequestsPerHour *int32             `json:"requestsPerHour"`
@@ -214,7 +215,7 @@ type HealthProviderApplyConfig struct {
 type HealthProviderConfig struct {
 	HealthFeatureConfig
 	Tag                string                       `json:"tag"`
-	URL                string                       `json:"url"`
+	URLs               []string                     `json:"urls"`
 	Method             string                       `json:"method"`
 	Headers            map[string]string            `json:"headers"`
 	Via                []string                     `json:"via"`
@@ -275,6 +276,14 @@ func validateJSONShape(raw []byte, typ reflect.Type, where string) error {
 			return errors.New(where, " must be an object")
 		}
 		for name, value := range values {
+			if name == "isEnabled" {
+				if !defaultOnFeature(where) {
+					return errors.New(where, ".isEnabled is not supported; include the block to enable it or omit it to disable it")
+				}
+				if !bytes.Equal(bytes.TrimSpace(value), []byte("false")) {
+					return errors.New(where, ".isEnabled only accepts false for a feature enabled by default")
+				}
+			}
 			t, ok := fields[name]
 			if !ok {
 				return errors.New(where, ".", name, ": unknown key")
@@ -336,8 +345,76 @@ func (c *HealthObservatoryConfig) UnmarshalJSON(raw []byte) error {
 		return err
 	}
 	type plain HealthObservatoryConfig
-	return json.Unmarshal(raw, (*plain)(c))
+	if err := json.Unmarshal(raw, (*plain)(c)); err != nil {
+		return err
+	}
+	applyFeaturePresence(raw, reflect.ValueOf(c).Elem(), "healthObservatory")
+	return nil
 }
+
+func defaultOnFeature(where string) bool {
+	if inheritedReturnFeature(where) {
+		return true
+	}
+	switch where {
+	case "healthObservatory.evidence.dialFailures", "healthObservatory.evidence.dialTimeout", "healthObservatory.evidence.serverUnverified", "healthObservatory.evidence.firstReply", "healthObservatory.evidence.earlyClose", "healthObservatory.evidence.stalledRequests", "leastCost.settings.failover.closePending", "leastCost.settings.failover.closeSilent":
+		return true
+	}
+	if strings.HasPrefix(where, "healthObservatory.providers[") {
+		for _, tail := range []string{".triggers.exhausted", ".triggers.leaseRenewal", ".triggers.backendSchedule", ".apply.expiredLeaseFallback"} {
+			if strings.HasSuffix(where, tail) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func inheritedReturnFeature(where string) bool {
+	return strings.HasSuffix(where, ".returnToCheaper") && (strings.HasPrefix(where, "selection.") || strings.HasPrefix(where, "outbounds[].selection.") || strings.Contains(where, ".groups["))
+}
+
+// The strict public JSON shape is decoded before presence is translated into
+// internal protobuf flags. Absent optional blocks retain a nil flag (off).
+func applyFeaturePresence(raw []byte, value reflect.Value, where string) {
+	for value.Kind() == reflect.Pointer {
+		if value.IsNil() {
+			return
+		}
+		value = value.Elem()
+	}
+	switch value.Kind() {
+	case reflect.Struct:
+		var fields map[string]json.RawMessage
+		if json.Unmarshal(raw, &fields) != nil || fields == nil {
+			return
+		}
+		if flag := value.FieldByName("IsEnabled"); flag.IsValid() && (!defaultOnFeature(where) || (inheritedReturnFeature(where) && flag.IsNil())) {
+			flag.Set(reflect.ValueOf(featurePresence(true)))
+		}
+		typ := value.Type()
+		for i := 0; i < typ.NumField(); i++ {
+			field := typ.Field(i)
+			if field.Anonymous {
+				continue
+			}
+			name := strings.Split(field.Tag.Get("json"), ",")[0]
+			if next, exists := fields[name]; exists && name != "" && name != "-" {
+				applyFeaturePresence(next, value.Field(i), where+"."+name)
+			}
+		}
+	case reflect.Slice:
+		var elements []json.RawMessage
+		if json.Unmarshal(raw, &elements) != nil {
+			return
+		}
+		for i, element := range elements {
+			applyFeaturePresence(element, value.Index(i), fmt.Sprintf("%s[%d]", where, i))
+		}
+	}
+}
+
+func featurePresence(on bool) *bool { return &on }
 func enabled(v *bool, def bool) bool {
 	if v == nil {
 		return def
@@ -394,6 +471,21 @@ func checkProbeURL(where, dest string) error {
 	u, err := url.Parse(dest)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 		return errors.New(where, " must be an http or https URL")
+	}
+	return nil
+}
+func checkURLs(where string, destinations []string) error {
+	if len(destinations) < 1 || len(destinations) > 4 {
+		return errors.New(where, " must contain 1 to 4 URLs")
+	}
+	for i, dest := range destinations {
+		path := fmt.Sprintf("%s[%d]", where, i)
+		if dest == "" {
+			return errors.New(path, " must not be empty")
+		}
+		if err := checkProbeURL(path, dest); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -497,13 +589,13 @@ func (c *HealthObservatoryConfig) Build() (proto.Message, error) {
 			return nil, errors.New(where, ".steps must contain 1 to 4 steps")
 		}
 		if len(profile.Steps) > 1 && !enabled(p.StepProfiles.IsEnabled, false) {
-			return nil, errors.New(where, ".steps requires healthObservatory.probes.stepProfiles.isEnabled")
+			return nil, errors.New(where, ".steps requires healthObservatory.probes.stepProfiles")
 		}
 		pp := &health.ProbeProfile{Name: profile.Name}
 		for j, step := range profile.Steps {
 			stepWhere := fmt.Sprintf("%s.steps[%d]", where, j)
 			if step.IsOptional && !enabled(p.StepProfiles.IsEnabled, false) {
-				return nil, errors.New(stepWhere, ".isOptional requires healthObservatory.probes.stepProfiles.isEnabled")
+				return nil, errors.New(stepWhere, ".isOptional requires healthObservatory.probes.stepProfiles")
 			}
 			for _, f := range []struct {
 				name  string
@@ -532,11 +624,13 @@ func (c *HealthObservatoryConfig) Build() (proto.Message, error) {
 		return nil, errors.New(strings.ReplaceAll(strings.ReplaceAll(strings.ReplaceAll(err.Error(), "healthObservatory: ", "healthObservatory."), "probes[", "probes.profiles["), "udpProbe", "probes.udp"))
 	}
 	cc := n.Connectivity
-	if enabled(cc.IsEnabled, false) && (cc.Outbound == "" || cc.Destination == "") {
-		return nil, errors.New("healthObservatory.network.connectivity requires outbound and destination")
+	if enabled(cc.IsEnabled, false) && cc.Outbound == "" {
+		return nil, errors.New("healthObservatory.network.connectivity.outbound is required")
 	}
-	if err := checkProbeURL("healthObservatory.network.connectivity.destination", cc.Destination); err != nil {
-		return nil, err
+	if enabled(cc.IsEnabled, false) {
+		if err := checkURLs("healthObservatory.network.connectivity.destinations", cc.Destinations); err != nil {
+			return nil, err
+		}
 	}
 	if enabled(n.Witnesses.IsEnabled, false) && len(n.Witnesses.Outbounds) == 0 {
 		return nil, errors.New("healthObservatory.network.witnesses.outbounds must not be empty")
@@ -546,18 +640,20 @@ func (c *HealthObservatoryConfig) Build() (proto.Message, error) {
 			return nil, errors.New("healthObservatory.network.witnesses.outbounds must not contain an empty prefix")
 		}
 	}
-	out.Connectivity = &health.ConnectivityConfig{Outbound: cc.Outbound, Destination: cc.Destination, Timeout: optionalDuration(cc.Timeout), Witnesses: n.Witnesses.Outbounds}
+	out.Connectivity = &health.ConnectivityConfig{Outbound: cc.Outbound, Destinations: cc.Destinations, Timeout: optionalDuration(cc.Timeout), Witnesses: n.Witnesses.Outbounds}
 	lr := n.LabelRequest
-	if enabled(lr.IsEnabled, false) && (lr.Outbound == "" || lr.Destination == "" || len(lr.Labels) == 0) {
-		return nil, errors.New("healthObservatory.network.labelRequest requires outbound, destination and labels")
+	if enabled(lr.IsEnabled, false) && (lr.Outbound == "" || len(lr.Labels) == 0) {
+		return nil, errors.New("healthObservatory.network.labelRequest requires outbound, destinations and labels")
 	}
-	if err := checkProbeURL("healthObservatory.network.labelRequest.destination", lr.Destination); err != nil {
-		return nil, err
+	if enabled(lr.IsEnabled, false) {
+		if err := checkURLs("healthObservatory.network.labelRequest.destinations", lr.Destinations); err != nil {
+			return nil, err
+		}
 	}
 	if err := validateLabelHeaders("healthObservatory.network.labelRequest.labels", lr.Labels); err != nil {
 		return nil, err
 	}
-	out.LabelRequest = &health.LabelRequestConfig{Outbound: lr.Outbound, Destination: lr.Destination, Labels: lr.Labels, Timeout: optionalDuration(lr.Timeout), RequestsPerHour: count(lr.RequestsPerHour)}
+	out.LabelRequest = &health.LabelRequestConfig{Outbound: lr.Outbound, Destinations: lr.Destinations, Labels: lr.Labels, Timeout: optionalDuration(lr.Timeout), RequestsPerHour: count(lr.RequestsPerHour)}
 	out.Schedule = &health.ScheduleConfig{MaxConcurrentProbes: count(p.Limits.MaxConcurrent), ProbesPerMinute: count(p.Limits.PerMinute), ProbesPerServerNamePerMinute: count(p.Limits.PerServerNamePerMinute), ProbeOnly: &health.ProbeOnlyConfig{KeepVerified: count(p.Candidates.KeepVerified), RecheckInterval: optionalDuration(p.Candidates.RecheckInterval)}, HostProbes: &health.HostProbesConfig{ProbesPerMinute: count(p.Limits.HostPerMinute), MaxOutbounds: count(p.Requests.MaxOutbounds), Timeout: optionalDuration(p.Requests.Timeout)}}
 	out.Network = &health.NetworkConfig{MaxNetworks: count(n.Memory.MaxNetworks)}
 	out.Wake = &health.WakeConfig{Freshness: optionalDuration(h.UserPresent.Freshness), MinInterval: optionalDuration(h.UserPresent.MinInterval)}
@@ -576,7 +672,7 @@ func (c *HealthObservatoryConfig) Build() (proto.Message, error) {
 		return nil, errors.New("healthObservatory.telemetry.report.quietSampleFraction must be in [0, 1]")
 	}
 	if (enabled(t.Report.SessionLabels.IsEnabled, false) || t.Report.QuietSampleFraction > 0) && !enabled(t.Report.IsEnabled, false) {
-		return nil, errors.New("healthObservatory.telemetry.report.sessionLabels and quietSampleFraction require healthObservatory.telemetry.report.isEnabled")
+		return nil, errors.New("healthObservatory.telemetry.report.sessionLabels and quietSampleFraction require healthObservatory.telemetry.report")
 	}
 	if err := validateLabels("healthObservatory.telemetry.report.sessionLabels.labels", t.Report.SessionLabels.Labels, 8); err != nil {
 		return nil, err
@@ -613,22 +709,23 @@ func countOr(v *int32, def int32) int32 {
 
 func (c *HealthProviderConfig) build() (*health.ProviderConfig, error) {
 	where := "healthObservatory.providers[" + c.Tag + "]"
-	on := enabled(c.IsEnabled, false)
 	if len(c.Tag) > 128 {
 		return nil, errors.New(where, ".tag must not exceed 128 bytes")
 	}
-	if on && (c.Tag == "" || c.URL == "" || c.Apply.Balancer == "" || c.Apply.TagPrefix == "") {
-		return nil, errors.New(where, " requires tag, url, apply.balancer and apply.tagPrefix")
+	if c.Tag == "" || c.Apply.Balancer == "" || c.Apply.TagPrefix == "" {
+		return nil, errors.New(where, " requires tag, urls, apply.balancer and apply.tagPrefix")
 	}
-	if err := checkProbeURL(where+".url", c.URL); err != nil {
+	if err := checkURLs(where+".urls", c.URLs); err != nil {
 		return nil, err
 	}
-	u, _ := url.Parse(c.URL)
-	if u != nil && u.User != nil {
-		return nil, errors.New(where, ".url: put credentials into headers")
-	}
-	if c.URL != "" && u.Scheme != "https" && !c.IsPlainHTTPAllowed {
-		return nil, errors.New(where, ".url must be https or set isPlainHttpAllowed")
+	for i, dest := range c.URLs {
+		u, _ := url.Parse(dest)
+		if u.User != nil {
+			return nil, errors.New(where, ".urls[", i, "]: put credentials into headers")
+		}
+		if u.Scheme != "https" && !c.IsPlainHTTPAllowed {
+			return nil, errors.New(where, ".urls[", i, "] must be https or set isPlainHttpAllowed")
+		}
 	}
 	method := strings.ToUpper(c.Method)
 	if method != "" && method != "GET" && method != "POST" {
@@ -692,7 +789,7 @@ func (c *HealthProviderConfig) build() (*health.ProviderConfig, error) {
 	default:
 		return nil, errors.New(where, ".triggers.networkChange.mode must be unknownNotCheapest, unknown or any")
 	}
-	out := &health.ProviderConfig{IsEnabled: c.IsEnabled, Tag: c.Tag, Url: c.URL, Method: method, Headers: c.Headers, Via: c.Via, Timeout: optionalDuration(c.Timeout), BaseVersion: c.BaseVersion,
+	out := &health.ProviderConfig{IsEnabled: featurePresence(true), Tag: c.Tag, Urls: c.URLs, Method: method, Headers: c.Headers, Via: c.Via, Timeout: optionalDuration(c.Timeout), BaseVersion: c.BaseVersion,
 		Features: &health.ProviderFeatureConfig{Periodic: t.Periodic.IsEnabled, MinHealthy: t.MinHealthy.IsEnabled, CostAbove: t.WhenCostAbove.IsEnabled, MaxAge: t.MaxAge.IsEnabled, NetworkChange: t.NetworkChange.IsEnabled, Exhausted: t.Exhausted.IsEnabled, LeaseRenewal: t.LeaseRenewal.IsEnabled, BackendSchedule: t.BackendSchedule.IsEnabled, ExpiredLeaseFallback: a.ExpiredLeaseFallback.IsEnabled},
 		Triggers: &health.ProviderTriggers{Interval: optionalDuration(t.Periodic.Interval), MinHealthyOutbounds: count(t.MinHealthy.Outbounds), MaxAge: optionalDuration(t.MaxAge.Age), NetworkChangeMode: mode, NetworkSettleDelay: durationPresence(t.NetworkChange.SettleDelay), Expiry: &health.ExpiryTrigger{RenewAtFraction: renew, UrgentAtFraction: urgent}},
 		Limits:   &health.ProviderLimits{MinInterval: optionalDuration(l.MinInterval), ExhaustedMinInterval: optionalDuration(l.UrgentMinInterval), MaxRefreshesPerHour: count(l.MaxRefreshesPerHour)},
@@ -713,7 +810,7 @@ func (c *HealthProviderConfig) build() (*health.ProviderConfig, error) {
 			}
 		}
 	}
-	if raw := bytes.TrimSpace(c.InitialAnswer); on && len(raw) > 0 && !bytes.Equal(raw, []byte("null")) {
+	if raw := bytes.TrimSpace(c.InitialAnswer); len(raw) > 0 && !bytes.Equal(raw, []byte("null")) {
 		out.InitialAnswer = raw
 	}
 	return out, nil
@@ -739,7 +836,11 @@ func (p *OutboundSelectionConfig) UnmarshalJSON(raw []byte) error {
 		return err
 	}
 	type plain OutboundSelectionConfig
-	return json.Unmarshal(raw, (*plain)(p))
+	if err := json.Unmarshal(raw, (*plain)(p)); err != nil {
+		return err
+	}
+	applyFeaturePresence(raw, reflect.ValueOf(p).Elem(), "selection")
+	return nil
 }
 func (o *OutboundDetourConfig) UnmarshalJSON(raw []byte) error {
 	var fields map[string]json.RawMessage
@@ -771,10 +872,6 @@ type strategyPathGroupConfig struct {
 	Probe              *string                `json:"probe"`
 	FailedInRowToLeave *int32                 `json:"failedInRowToLeave"`
 	Labels             map[string]string      `json:"labels"`
-}
-type strategyGroupsConfig struct {
-	HealthFeatureConfig
-	Items []*strategyPathGroupConfig `json:"items"`
 }
 type strategyFailoverConfig struct {
 	ShouldProbeBeforeSwitch *bool               `json:"shouldProbeBeforeSwitch"`
@@ -809,7 +906,7 @@ type strategyNetworkChangesConfig struct {
 type strategyLeastCostConfig struct {
 	Paths           []*health.PathDefinition               `json:"-"`
 	Failover        strategyFailoverConfig                 `json:"failover"`
-	Groups          strategyGroupsConfig                   `json:"groups"`
+	Groups          []*strategyPathGroupConfig             `json:"groups"`
 	ReturnToCheaper strategyLeastCostReturnToCheaperConfig `json:"returnToCheaper"`
 	Startup         strategyStartupConfig                  `json:"startup"`
 	NetworkChanges  strategyNetworkChangesConfig           `json:"networkChanges"`
@@ -820,7 +917,11 @@ func (v *strategyLeastCostConfig) UnmarshalJSON(raw []byte) error {
 		return err
 	}
 	type plain strategyLeastCostConfig
-	return json.Unmarshal(raw, (*plain)(v))
+	if err := json.Unmarshal(raw, (*plain)(v)); err != nil {
+		return err
+	}
+	applyFeaturePresence(raw, reflect.ValueOf(v).Elem(), "leastCost.settings")
+	return nil
 }
 func derefString(v *string) string {
 	if v == nil {
@@ -846,7 +947,7 @@ func selectionReturn(where string, v *SelectionReturnConfig, selectorEnabled boo
 		return nil, 0, err
 	}
 	if enabled(v.IsEnabled, false) && !selectorEnabled {
-		return nil, 0, errors.New(where, ".returnToCheaper.isEnabled requires balancer.returnToCheaper.isEnabled")
+		return nil, 0, errors.New(where, ".returnToCheaper requires balancer.returnToCheaper")
 	}
 	return v.IsEnabled, optionalDuration(v.Interval), nil
 }
@@ -876,15 +977,15 @@ func (v *strategyLeastCostConfig) Build() (proto.Message, error) {
 		return nil, errors.New("leastCost.settings.startup.pin.outbound is required")
 	}
 	if enabled(u.OnNetworkChange.IsEnabled, false) && (!enabled(u.IsEnabled, false) || !enabled(n.IsEnabled, false)) {
-		return nil, errors.New("leastCost.settings.returnToCheaper.onNetworkChange requires returnToCheaper.isEnabled and networkChanges.isEnabled")
+		return nil, errors.New("leastCost.settings.returnToCheaper.onNetworkChange requires returnToCheaper and networkChanges")
 	}
 	switch u.OnNetworkChange.Scope {
 	case "", "unknown", "all":
 	default:
 		return nil, errors.New("leastCost.settings.returnToCheaper.onNetworkChange.scope must be unknown or all")
 	}
-	out := &health.SelectorConfig{Paths: v.Paths, Features: &health.SelectorFeatureConfig{ProbeBeforeSwitch: f.ShouldProbeBeforeSwitch, ClosePending: f.ClosePending.IsEnabled, CloseSilent: f.CloseSilent.IsEnabled, DownAudit: f.DownAudit.IsEnabled, Groups: v.Groups.IsEnabled, ReturnToCheaper: u.IsEnabled, ReturnOnNetworkChange: u.OnNetworkChange.IsEnabled, NetworkChanges: n.IsEnabled, StartupPin: s.Pin.IsEnabled}, CloseSilentAfter: optionalDuration(f.CloseSilent.After), MinHoldTime: durationPresence(u.MinHoldTime), StartOutbound: s.Outbound, StartPinTimeout: optionalDuration(s.Pin.Timeout), ReturnToCheaper: &health.ReturnToCheaperConfig{Interval: optionalDuration(u.Interval), TryOnAllNetworks: u.OnNetworkChange.Scope == "all"}}
-	// Disabled startup settings remain validated, while the flags control use.
+	out := &health.SelectorConfig{Paths: v.Paths, Features: &health.SelectorFeatureConfig{ProbeBeforeSwitch: f.ShouldProbeBeforeSwitch, ClosePending: f.ClosePending.IsEnabled, CloseSilent: f.CloseSilent.IsEnabled, DownAudit: f.DownAudit.IsEnabled, Groups: featurePresence(v.Groups != nil), ReturnToCheaper: u.IsEnabled, ReturnOnNetworkChange: u.OnNetworkChange.IsEnabled, NetworkChanges: n.IsEnabled, StartupPin: s.Pin.IsEnabled}, CloseSilentAfter: optionalDuration(f.CloseSilent.After), MinHoldTime: durationPresence(u.MinHoldTime), StartOutbound: s.Outbound, StartPinTimeout: optionalDuration(s.Pin.Timeout), ReturnToCheaper: &health.ReturnToCheaperConfig{Interval: optionalDuration(u.Interval), TryOnAllNetworks: u.OnNetworkChange.Scope == "all"}}
+	// Startup preference and pin presence are independent.
 	out.StartPinnedOutbound = s.Pin.Outbound
 	switch f.ConfirmWithProbe {
 	case "", "auto":
@@ -908,11 +1009,11 @@ func (v *strategyLeastCostConfig) Build() (proto.Message, error) {
 		return nil, errors.New("leastCost.settings.networkChanges.action must be recheck or forget")
 	}
 	seen := map[string]bool{}
-	for _, g := range v.Groups.Items {
+	for _, g := range v.Groups {
 		if g == nil || g.Name == "" {
-			return nil, errors.New("leastCost.settings.groups.items[].name must be nonempty")
+			return nil, errors.New("leastCost.settings.groups[].name must be nonempty")
 		}
-		where := "leastCost.settings.groups.items[" + g.Name + "]"
+		where := "leastCost.settings.groups[" + g.Name + "]"
 		if len(g.Name) > 128 {
 			return nil, errors.New(where, ".name must not exceed 128 bytes")
 		}
@@ -972,7 +1073,7 @@ func checkLeastCost(c *Config) error {
 	if c.HealthObservatory != nil {
 		c.HealthObservatory.Paths = nil
 		if enabled(c.HealthObservatory.Telemetry.Metrics.IsEnabled, false) && c.Metrics == nil {
-			return errors.New("healthObservatory.telemetry.metrics.isEnabled requires metrics exporter")
+			return errors.New("healthObservatory.telemetry.metrics requires metrics exporter")
 		}
 	}
 	balancers := map[string]*BalancingRule{}
@@ -1018,12 +1119,15 @@ func checkLeastCost(c *Config) error {
 				return errors.New("balancer ", b.Tag, ".failover.downAudit requires an enabled path-level detector")
 			}
 			if enabled(v.Startup.Pin.IsEnabled, false) && !enabled(c.HealthObservatory.Host.Pinning.IsEnabled, false) {
-				return errors.New("balancer ", b.Tag, ".startup.pin requires healthObservatory.host.pinning.isEnabled")
+				return errors.New("balancer ", b.Tag, ".startup.pin requires healthObservatory.host.pinning")
 			}
 			gs := map[string]*strategyPathGroupConfig{}
-			for _, g := range v.Groups.Items {
-				if g.Probe != nil && !probeExists(c.HealthObservatory, *g.Probe) {
-					return errors.New("balancer ", b.Tag, ".groups.items[", g.Name, "].probe: unknown probe ", *g.Probe)
+			for _, g := range v.Groups {
+				if g.Probe == nil || *g.Probe == "" {
+					return errors.New("balancer ", b.Tag, ".groups[", g.Name, "].probe is required")
+				}
+				if !probeExists(c.HealthObservatory, *g.Probe) {
+					return errors.New("balancer ", b.Tag, ".groups[", g.Name, "].probe: unknown probe ", *g.Probe)
 				}
 				gs[g.Name] = g
 			}
@@ -1053,7 +1157,7 @@ func checkLeastCost(c *Config) error {
 		}
 		seenTags[o.Tag] = true
 		if p.IsProbeOnly && !enabled(c.HealthObservatory.Probes.Candidates.IsEnabled, false) {
-			return errors.New(where, ".isProbeOnly requires healthObservatory.probes.candidates.isEnabled")
+			return errors.New(where, ".isProbeOnly requires healthObservatory.probes.candidates")
 		}
 		if err := validateLabels(where+".labels", p.Labels, 6); err != nil {
 			return err
@@ -1071,8 +1175,8 @@ func checkLeastCost(c *Config) error {
 			if group == "" {
 				return errors.New(where, ".group needs nonempty name")
 			}
-			if !enabled(v.Groups.IsEnabled, false) {
-				return errors.New(where, ".group requires balancer.groups.isEnabled")
+			if v.Groups == nil {
+				return errors.New(where, ".group requires balancer.groups")
 			}
 			g := groups[p.Balancer][group]
 			if g == nil {
@@ -1090,7 +1194,10 @@ func checkLeastCost(c *Config) error {
 			if err := positiveCost(where, p.Cost); err != nil {
 				return err
 			}
-			if p.Probe != nil && !probeExists(c.HealthObservatory, *p.Probe) {
+			if p.Probe == nil || *p.Probe == "" {
+				return errors.New(where, ".probe is required")
+			}
+			if !probeExists(c.HealthObservatory, *p.Probe) {
 				return errors.New(where, ".probe: unknown probe ", *p.Probe)
 			}
 		}
@@ -1117,7 +1224,7 @@ func checkLeastCost(c *Config) error {
 		if len(v.Paths) == 0 && len(providers[tag]) == 0 {
 			return errors.New("balancer ", tag, ": leastCost has no selections and no enabled provider")
 		}
-		if enabled(v.Groups.IsEnabled, false) {
+		if v.Groups != nil {
 			for name := range groups[tag] {
 				used := false
 				for _, p := range v.Paths {

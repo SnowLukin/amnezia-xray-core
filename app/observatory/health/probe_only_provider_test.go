@@ -123,7 +123,7 @@ func TestProviderModeOnlyChangeReplacesHandlerAndDrains(t *testing.T) {
 		if old != nil && !oldProbeOnly {
 			f.open("p-x1")
 		}
-		a := answer(t, fakeOutbound{Tag: "x1", V: 1, Path: json.RawMessage(fmt.Sprintf(`{"balancer":"auto","cost":1,"isProbeOnly":%t}`, mode))})
+		a := answer(t, fakeOutbound{Tag: "x1", V: 1, Path: json.RawMessage(fmt.Sprintf(`{"balancer":"auto","probe":"check","cost":1,"isProbeOnly":%t}`, mode))})
 		// A reused version cannot hide a mode transition.
 		a.version = "same-version"
 		if changed, err := f.apply(t, a); !changed || err != nil {
@@ -237,7 +237,7 @@ func TestProviderDemotionBlocksSelectBeforeCommit(t *testing.T) {
 	}
 	m := &demotionRegistrationManager{fakeManager: f.m, installed: make(chan struct{}), release: make(chan struct{})}
 	f.o.ohm = m
-	a := answer(t, fakeOutbound{Tag: "x1", V: 1, Path: json.RawMessage(`{"balancer":"auto","cost":1,"isProbeOnly":true}`)})
+	a := answer(t, fakeOutbound{Tag: "x1", V: 1, Path: json.RawMessage(`{"balancer":"auto","probe":"check","cost":1,"isProbeOnly":true}`)})
 	done := make(chan error, 1)
 	go func() {
 		_, err := f.o.applySet(f.rt, a, &refreshJob{p: f.rt.p, trigger: triggerHost})
@@ -275,7 +275,7 @@ func TestProviderDemotionRegistrationFailureRestoresMode(t *testing.T) {
 	old := f.m.GetHandler("p-x1")
 	f.m.failAdd = "p-x2"
 	a := answer(t,
-		fakeOutbound{Tag: "x1", V: 1, Path: json.RawMessage(`{"balancer":"auto","cost":1,"isProbeOnly":true}`)},
+		fakeOutbound{Tag: "x1", V: 1, Path: json.RawMessage(`{"balancer":"auto","probe":"check","cost":1,"isProbeOnly":true}`)},
 		fakeOutbound{Tag: "x2", V: 1},
 	)
 	if changed, err := f.apply(t, a); changed || err == nil {

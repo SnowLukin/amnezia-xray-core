@@ -12,9 +12,9 @@ func TestLeastCostReturnIntervalPresence(t *testing.T) {
 		value string
 		want  int64
 		flag  *bool
-	}{{``, 0, nil}, {`,"returnToCheaper":{"isEnabled":false}`, 0, boolPtr(false)}, {`,"returnToCheaper":{"isEnabled":true,"interval":"90s"}`, int64(90 * time.Second), boolPtr(true)}} {
+	}{{``, 0, nil}, {`,"returnToCheaper":{"isEnabled":false}`, 0, boolPtr(false)}, {`,"returnToCheaper":{"interval":"90s"}`, int64(90 * time.Second), boolPtr(true)}} {
 		var c Config
-		raw := pathConfig(`,"selection":{"balancer":"auto","cost":1`+tc.value+`}`, `{"returnToCheaper":{"isEnabled":true}}`, `{}`)
+		raw := pathConfig(`,"selection":{"balancer":"auto","cost":1`+tc.value+`}`, `{"returnToCheaper":{}}`, `{}`)
 		if err := json.Unmarshal([]byte(raw), &c); err != nil {
 			t.Fatal(err)
 		}

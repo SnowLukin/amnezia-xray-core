@@ -16,7 +16,7 @@ import (
 func leasedAnswer(t *testing.T, version string, server, end time.Time, more string) *providerAnswer {
 	t.Helper()
 	a, err := parseAnswer([]byte(fmt.Sprintf(`{"version": %q, "serverTime": %q, "expiresAt": {"x1": %q},
-		"outbounds": [{"tag": "x1", "protocol": "vless", "v": 1,"selection":{"balancer":"auto","cost":1}}, {"tag": "x2", "protocol": "vless", "v": 1,"selection":{"balancer":"auto","cost":1}}]%s}`,
+		"outbounds": [{"tag": "x1", "protocol": "vless", "v": 1,"selection":{"balancer":"auto","probe":"check","cost":1}}, {"tag": "x2", "protocol": "vless", "v": 1,"selection":{"balancer":"auto","probe":"check","cost":1}}]%s}`,
 		version, stamp(server), stamp(end), more)))
 	if err != nil {
 		t.Fatal(err)
@@ -238,7 +238,7 @@ func TestProviderSetUnchangedAllocatesNothing(t *testing.T) {
 func TestProviderSetLeavesConfigHeadersOut(t *testing.T) {
 	f, _ := initialFixture(t, "")
 	f.rt.cfg.headers = map[string]string{"Authorization": "Bearer config", "X-Client": "core"}
-	a, err := parseAnswer([]byte(`{"outbounds": [{"tag": "x1", "protocol": "vless", "v": 1,"selection":{"balancer":"auto","cost":1}}], "headers": {}}`))
+	a, err := parseAnswer([]byte(`{"outbounds": [{"tag": "x1", "protocol": "vless", "v": 1,"selection":{"balancer":"auto","probe":"check","cost":1}}], "headers": {}}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -261,7 +261,7 @@ func TestProviderSetLeavesConfigHeadersOut(t *testing.T) {
 func TestKeptAnswerIsReplacedNotAdded(t *testing.T) {
 	f, _ := initialFixture(t, "")
 	for i := range 200 {
-		body := fmt.Sprintf("{ \"version\": \"v%d\",\n  \"outbounds\": [ {\"tag\": \"x1\", \"protocol\": \"vless\", \"v\": %d, \"selection\": {\"balancer\":\"auto\",\"cost\":1},\n \"pad\": %q} ] }",
+		body := fmt.Sprintf("{ \"version\": \"v%d\",\n  \"outbounds\": [ {\"tag\": \"x1\", \"protocol\": \"vless\", \"v\": %d, \"selection\": {\"balancer\":\"auto\",\"probe\":\"check\",\"cost\":1},\n \"pad\": %q} ] }",
 			i, i, strings.Repeat("p", i*100))
 		a, err := parseAnswer([]byte(body))
 		if err != nil {
@@ -288,7 +288,7 @@ func TestKeptAnswerIsReplacedNotAdded(t *testing.T) {
 // for what ProviderSet adds.
 func TestKeptSetOfALargeAnswerStartsTheNextCore(t *testing.T) {
 	f, _ := initialFixture(t, "")
-	head := `{"outbounds": [{"tag": "x1", "protocol": "vless", "v": 1, "selection": {"balancer":"auto","cost":1}, "pad": "`
+	head := `{"outbounds": [{"tag": "x1", "protocol": "vless", "v": 1, "selection": {"balancer":"auto","probe":"check","cost":1}, "pad": "`
 	tail := `"}]}`
 	body := head + strings.Repeat("<&>", (int(f.rt.cfg.maxBytes)-len(head)-len(tail))/3) + tail
 	a, err := parseAnswer([]byte(body))

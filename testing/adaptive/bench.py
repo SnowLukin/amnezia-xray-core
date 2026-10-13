@@ -730,8 +730,8 @@ class Client:
         self._stop = threading.Event()
         self.has_health = "healthObservatory" in config
         telemetry = config.get("healthObservatory", {}).get("telemetry", {})
-        self.has_events = self.has_health and telemetry.get("events", {}).get("isEnabled", False)
-        self.has_report = self.has_health and telemetry.get("report", {}).get("isEnabled", False)
+        self.has_events = self.has_health and "events" in telemetry
+        self.has_report = self.has_health and "report" in telemetry
         # Bytes (up, down) that went through outbound direct by the time the
         # client stopped; None if the counters could not be read.
         self.direct_bytes = None

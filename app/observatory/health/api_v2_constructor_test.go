@@ -13,7 +13,7 @@ import (
 func TestV2MetricsActualConstructorRequiresRegisteredExporter(t *testing.T) {
 	config := func(t *testing.T) *core.Config {
 		t.Helper()
-		cfg, err := core.LoadConfig("json", strings.NewReader(`{"metrics":{"tag":"metrics"},"healthObservatory":{"telemetry":{"metrics":{"isEnabled":true}}}}`))
+		cfg, err := core.LoadConfig("json", strings.NewReader(`{"metrics":{"tag":"metrics"},"healthObservatory":{"telemetry":{"metrics":{}}}}`))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -58,7 +58,7 @@ func TestV2MetricsActualConstructorRequiresRegisteredExporter(t *testing.T) {
 			if inst != nil {
 				inst.Close()
 			}
-			if err == nil || !strings.Contains(err.Error(), "healthObservatory.telemetry.metrics.isEnabled requires metrics exporter") {
+			if err == nil || !strings.Contains(err.Error(), "healthObservatory.telemetry.metrics requires metrics exporter") {
 				t.Fatalf("missing/late exporter error: %v", err)
 			}
 		})

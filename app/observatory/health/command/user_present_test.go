@@ -39,7 +39,7 @@ func TestUserPresentReturnsBeforeProbeFinishes(t *testing.T) {
 	      "selection": {"balancer": "auto", "cost": 1, "probe": "check"}}],
 	  "routing": {"rules": [{"domain": ["full:target.test"], "balancerTag": "auto"}],
 	    "balancers": [{"tag": "auto", "strategy": {"type": "leastCost"}, "fallbackTag": "drop"}]},
-	  "healthObservatory": {"host":{"userPresent":{"isEnabled":true}},"telemetry":{"report":{"isEnabled":true,"quietSampleFraction":1}},
+	  "healthObservatory": {"host":{"userPresent":{}},"telemetry":{"report":{"quietSampleFraction":1}},
 	    "probes": {"profiles":[{"name":"check","steps":[{"name":"transport","destinations":["`+ts.URL+`/204"],"timeout":"10s"}]}]}}
 	}`)
 	router := inst.GetFeature(routing.RouterType()).(routing.Router)

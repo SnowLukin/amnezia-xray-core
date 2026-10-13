@@ -31,12 +31,70 @@ func buildHealth(t *testing.T, raw string) (*health.Config, error) {
 	return m.(*health.Config), nil
 }
 func leastCostConfig(observer, settings string, selector ...string) string {
+	observer = withTestProbeFragment(observer)
 	sel := ""
 	if len(selector) > 0 {
 		raw, _ := json.Marshal(selector)
 		sel = `,"selector":` + string(raw)
 	}
-	return `{"outbounds":[{"tag":"a1","protocol":"freedom","selection":{"balancer":"auto","cost":1}},{"tag":"b1","protocol":"freedom","selection":{"balancer":"auto","cost":3}},{"tag":"block","protocol":"blackhole"}],"routing":{"balancers":[{"tag":"auto","fallbackTag":"block"` + sel + `,"strategy":{"type":"leastCost","settings":` + settings + `}}]}` + observer + `}`
+	return `{"outbounds":[{"tag":"a1","protocol":"freedom","selection":{"balancer":"auto","cost":1,"probe":"test"}},{"tag":"b1","protocol":"freedom","selection":{"balancer":"auto","cost":3,"probe":"test"}},{"tag":"block","protocol":"blackhole"}],"routing":{"balancers":[{"tag":"auto","fallbackTag":"block"` + sel + `,"strategy":{"type":"leastCost","settings":` + settings + `}}]}` + observer + `}`
+}
+func withTestProbeFragment(raw string) string {
+	if raw == "" {
+		return raw
+	}
+	var fields map[string]any
+	if json.Unmarshal([]byte("{"+strings.TrimPrefix(raw, ",")+"}"), &fields) != nil {
+		return raw
+	}
+	if h, ok := fields["healthObservatory"].(map[string]any); ok {
+		ensureTestProbe(h)
+	}
+	encoded, _ := json.Marshal(fields)
+	return "," + string(encoded[1:len(encoded)-1])
+}
+func ensureTestProbe(h map[string]any) {
+	p, _ := h["probes"].(map[string]any)
+	if p == nil {
+		p = map[string]any{}
+		h["probes"] = p
+	}
+	profiles, _ := p["profiles"].([]any)
+	for _, profile := range profiles {
+		if profile.(map[string]any)["name"] == "test" {
+			return
+		}
+	}
+	p["profiles"] = append(profiles, map[string]any{"name": "test", "steps": []any{map[string]any{"name": "test", "destinations": []any{"https://example.test/204"}}}})
+}
+func buildHealthProvider(t *testing.T, raw string) (*health.Config, error) {
+	t.Helper()
+	var h map[string]any
+	if err := json.Unmarshal([]byte(raw), &h); err != nil {
+		return nil, err
+	}
+	for _, item := range h["providers"].([]any) {
+		p := item.(map[string]any)
+		if p["tag"] == nil {
+			p["tag"] = "fresh"
+		}
+		if p["urls"] == nil {
+			p["urls"] = []string{"https://x.test/set"}
+		}
+		a, _ := p["apply"].(map[string]any)
+		if a == nil {
+			a = map[string]any{}
+			p["apply"] = a
+		}
+		if a["balancer"] == nil {
+			a["balancer"] = "auto"
+		}
+		if a["tagPrefix"] == nil {
+			a["tagPrefix"] = "p-"
+		}
+	}
+	encoded, _ := json.Marshal(h)
+	return buildHealth(t, string(encoded))
 }
 func loadConfig(raw string) error {
 	var c Config
@@ -47,7 +105,7 @@ func loadConfig(raw string) error {
 	return err
 }
 func TestHealthObservatoryV2Shape(t *testing.T) {
-	c, err := buildHealth(t, `{"evidence":{"dialTimeout":{"isEnabled":false,"timeout":"6s"},"firstReply":{"timeout":"5s"}},"network":{"connectivity":{"isEnabled":true,"outbound":"direct","destination":"https://example.test/204","timeout":"4s"},"witnesses":{"isEnabled":true,"outbounds":["direct"]}},"probes":{"limits":{"hostPerMinute":2},"requests":{"isEnabled":true,"maxOutbounds":4,"timeout":"1m"}},"resources":{"closeUnchosenIdle":{"isEnabled":true,"after":"15s"}}}`)
+	c, err := buildHealth(t, `{"evidence":{"dialTimeout":{"isEnabled":false,"timeout":"6s"},"firstReply":{"timeout":"5s"}},"network":{"connectivity":{"outbound":"direct","timeout":"4s","destinations":["https://example.test/204"]},"witnesses":{"outbounds":["direct"]}},"probes":{"limits":{"hostPerMinute":2},"requests":{"maxOutbounds":4,"timeout":"1m"}},"resources":{"closeUnchosenIdle":{"after":"15s"}}}`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,7 +120,7 @@ func TestHealthObservatoryV2Shape(t *testing.T) {
 	}
 }
 func TestHealthProbeStepsJSON(t *testing.T) {
-	c, err := buildHealth(t, `{"probes":{"stepProfiles":{"isEnabled":true},"profiles":[{"name":"full","steps":[{"name":"transport","destinations":["http://10.12.0.1/check"],"minBytes":32768},{"name":"egress","isOptional":true,"destinations":["https://one.test/204","https://two.test/204"],"method":"HEAD","expectedStatuses":[204],"timeout":"3s","progressTimeout":"1s"}]},{"name":"light","steps":[{"name":"light","destinations":["https://example.test/check"],"minBytes":8}]}]}}`)
+	c, err := buildHealth(t, `{"probes":{"stepProfiles":{},"profiles":[{"name":"full","steps":[{"name":"transport","destinations":["http://10.12.0.1/check"],"minBytes":32768},{"name":"egress","isOptional":true,"destinations":["https://one.test/204","https://two.test/204"],"method":"HEAD","expectedStatuses":[204],"timeout":"3s","progressTimeout":"1s"}]},{"name":"light","steps":[{"name":"light","destinations":["https://example.test/check"],"minBytes":8}]}]}}`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +142,7 @@ func TestHealthProbeStepsJSONRejects(t *testing.T) {
 		"profile destination": `{"name":"x","destination":"https://x.test","steps":[{"name":"a","destinations":["https://x.test"]}]}`, "profile method": `{"name":"x","method":"GET","steps":[{"name":"a","destinations":["https://x.test"]}]}`, "profile timeout": `{"name":"x","timeout":"1s","steps":[{"name":"a","destinations":["https://x.test"]}]}`, "wrong case": `{"name":"x","STEPS":[{"name":"a","destinations":["https://x.test"]}]}`,
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, err := buildHealth(t, `{"probes":{"stepProfiles":{"isEnabled":true},"profiles":[`+profile+`]}}`)
+			_, err := buildHealth(t, `{"probes":{"stepProfiles":{},"profiles":[`+profile+`]}}`)
 			if err == nil || !strings.Contains(err.Error(), "healthObservatory.probes.profiles") {
 				t.Fatalf("accepted invalid profile or wrong path: %v", err)
 			}
@@ -121,33 +179,32 @@ func TestHealthV2PreparedBlocksValidateSettings(t *testing.T) {
 }
 func TestHealthV2Dependencies(t *testing.T) {
 	for field, raw := range map[string]string{
-		"connectivity": `{"network":{"connectivity":{"isEnabled":true}}}`, "witnesses": `{"network":{"witnesses":{"isEnabled":true}}}`, "labelRequest": `{"network":{"labelRequest":{"isEnabled":true}}}`, "probes.udp": `{"probes":{"udp":{"isEnabled":true}}}`,
+		"connectivity": `{"network":{"connectivity":{}}}`, "witnesses": `{"network":{"witnesses":{}}}`, "labelRequest": `{"network":{"labelRequest":{}}}`, "probes.udp": `{"probes":{"udp":{}}}`,
 		"stepProfiles":     `{"probes":{"profiles":[{"name":"p","steps":[{"name":"a","destinations":["https://x.test"]},{"name":"b","destinations":["https://x.test"]}]}]}}`,
-		"loneFailureProbe": `{"evidence":{"dialFailures":{"isEnabled":false},"dialTimeout":{"isEnabled":false},"serverUnverified":{"isEnabled":false},"loneFailureProbe":{"isEnabled":true}}}`,
-		"report.isEnabled": `{"telemetry":{"report":{"sessionLabels":{"isEnabled":true}}}}`,
+		"loneFailureProbe": `{"evidence":{"dialFailures":{"isEnabled":false},"dialTimeout":{"isEnabled":false},"serverUnverified":{"isEnabled":false},"loneFailureProbe":{}}}`,
 	} {
 		_, err := buildHealth(t, raw)
 		if err == nil || !strings.Contains(err.Error(), field) {
 			t.Fatalf("%s: %v must name %s", raw, err, field)
 		}
 	}
-	for field, settings := range map[string]string{"networkChanges.isEnabled": `{"returnToCheaper":{"isEnabled":true,"onNetworkChange":{"isEnabled":true}}}`, "confirmWithProbe:auto": `{"failover":{"downAudit":{"isEnabled":true},"confirmWithProbe":"never"}}`, "host.pinning.isEnabled": `{"startup":{"pin":{"isEnabled":true,"outbound":"a1"}}}`} {
+	for field, settings := range map[string]string{"networkChanges": `{"returnToCheaper":{"onNetworkChange":{}}}`, "confirmWithProbe:auto": `{"failover":{"downAudit":{},"confirmWithProbe":"never"}}`, "host.pinning": `{"startup":{"pin":{"outbound":"a1"}}}`} {
 		if err := loadConfig(leastCostConfig(`,"healthObservatory":{}`, settings)); err == nil || !strings.Contains(err.Error(), field) {
 			t.Errorf("%s: %v", field, err)
 		}
 	}
-	if err := loadConfig(leastCostConfig(`,"healthObservatory":{"telemetry":{"metrics":{"isEnabled":true}}}`, `{}`)); err == nil || !strings.Contains(err.Error(), "metrics exporter") {
+	if err := loadConfig(leastCostConfig(`,"healthObservatory":{"telemetry":{"metrics":{}}}`, `{}`)); err == nil || !strings.Contains(err.Error(), "metrics exporter") {
 		t.Fatal(err)
 	}
 }
 func TestHealthV2FeatureLoadMatrix(t *testing.T) {
 	features := []string{
-		`"evidence":{"partialStalls":{"isEnabled":true}}`, `"evidence":{"udpReplies":{"isEnabled":true}}`, `"evidence":{"loneFailureProbe":{"isEnabled":true}}`,
-		`"probes":{"stepProfiles":{"isEnabled":true}}`, `"probes":{"candidates":{"isEnabled":true}}`, `"probes":{"requests":{"isEnabled":true}}`, `"probes":{"udp":{"isEnabled":true,"destinations":["stun.test:3478"]}}`,
-		`"network":{"connectivity":{"isEnabled":true,"outbound":"a1","destination":"https://x.test/204"}}`, `"network":{"witnesses":{"isEnabled":true,"outbounds":["a1"]}}`, `"network":{"memory":{"isEnabled":true}}`, `"network":{"hostLabels":{"isEnabled":true}}`, `"network":{"labelRequest":{"isEnabled":true,"outbound":"a1","destination":"https://x.test/labels","labels":{"asn":"X-Asn"}}}`,
-		`"host":{"pinning":{"isEnabled":true}}`, `"host":{"userPresent":{"isEnabled":true}}`, `"host":{"memoryPressure":{"isEnabled":true}}`, `"resources":{"tunnelSleep":{"isEnabled":true}}`, `"resources":{"closeUnchosenIdle":{"isEnabled":true}}`,
-		`"telemetry":{"events":{"isEnabled":true}}`, `"telemetry":{"report":{"isEnabled":true}}`, `"telemetry":{"quality":{"isEnabled":true}}`, `"telemetry":{"pathLabels":{"isEnabled":true}}`, `"telemetry":{"probeMeasurements":{"isEnabled":true}}`,
-		`"providers":[{"isEnabled":true,"tag":"p","url":"https://x.test/set","apply":{"balancer":"auto","tagPrefix":"p-"}}]`,
+		`"evidence":{"partialStalls":{}}`, `"evidence":{"udpReplies":{}}`, `"evidence":{"loneFailureProbe":{}}`,
+		`"probes":{"stepProfiles":{}}`, `"probes":{"candidates":{}}`, `"probes":{"requests":{}}`, `"probes":{"udp":{"destinations":["stun.test:3478"]}}`,
+		`"network":{"connectivity":{"outbound":"a1","destinations":["https://x.test/204"]}}`, `"network":{"witnesses":{"outbounds":["a1"]}}`, `"network":{"memory":{}}`, `"network":{"hostLabels":{}}`, `"network":{"labelRequest":{"outbound":"a1","labels":{"asn":"X-Asn"},"destinations":["https://x.test/labels"]}}`,
+		`"host":{"pinning":{}}`, `"host":{"userPresent":{}}`, `"host":{"memoryPressure":{}}`, `"resources":{"tunnelSleep":{}}`, `"resources":{"closeUnchosenIdle":{}}`,
+		`"telemetry":{"events":{}}`, `"telemetry":{"report":{}}`, `"telemetry":{"quality":{}}`, `"telemetry":{"pathLabels":{}}`, `"telemetry":{"probeMeasurements":{}}`,
+		`"providers":[{"tag":"p","apply":{"balancer":"auto","tagPrefix":"p-"},"urls":["https://x.test/set"]}]`,
 	}
 	bodies := []map[string]any{}
 	for _, feature := range features {
@@ -201,7 +258,7 @@ func TestHealthV2StockConfigStillLoads(t *testing.T) {
 	if err := loadConfig(leastCostConfig("", `{}`)); err == nil || !strings.Contains(err.Error(), "healthObservatory") {
 		t.Fatal(err)
 	}
-	for _, settings := range []string{`{"paths":[]}`, `{"shouldSkipDownAudit":false}`, `{"shouldProbeBeforeSwitch":true}`, `{"startOutbound":"a1"}`, `{"returnToCheaper":{"hasRandomPhase":true}}`, `{"groups":[]}`} {
+	for _, settings := range []string{`{"paths":[]}`, `{"shouldSkipDownAudit":false}`, `{"shouldProbeBeforeSwitch":true}`, `{"startOutbound":"a1"}`, `{"returnToCheaper":{"hasRandomPhase":true}}`, `{"groups":{"items":[]}}`} {
 		if err := loadConfig(leastCostConfig(`,"healthObservatory":{}`, settings)); err == nil {
 			t.Fatalf("accepted alias %s", settings)
 		}
@@ -211,60 +268,58 @@ func TestHealthV2StockConfigStillLoads(t *testing.T) {
 	}
 }
 func TestHealthProvidersBuild(t *testing.T) {
-	c, err := buildHealth(t, `{"providers":[{"isEnabled":true,"tag":"fresh","url":"https://api.test/set","headers":{"Authorization":"Bearer x"},"via":["auto","direct"],"timeout":"5s","triggers":{"periodic":{"isEnabled":false,"interval":"2h"},"minHealthy":{"isEnabled":true,"outbounds":3},"exhausted":{"isEnabled":false},"whenCostAbove":{"isEnabled":true,"cost":10,"after":"15m"},"networkChange":{"isEnabled":true,"mode":"unknown"}},"limits":{"minInterval":"1m","urgentMinInterval":"30s","maxRefreshesPerHour":2},"apply":{"balancer":"auto","tagPrefix":"p-","drainTimeout":"1m"}}]}`)
+	c, err := buildHealth(t, `{"providers":[{"tag":"fresh","headers":{"Authorization":"Bearer x"},"via":["auto","direct"],"timeout":"5s","triggers":{"minHealthy":{"outbounds":3},"exhausted":{"isEnabled":false},"whenCostAbove":{"cost":10,"after":"15m"},"networkChange":{"mode":"unknown"}},"limits":{"minInterval":"1m","urgentMinInterval":"30s","maxRefreshesPerHour":2},"apply":{"balancer":"auto","tagPrefix":"p-","drainTimeout":"1m"},"urls":["https://api.test/set"]}]}`)
 	if err != nil {
 		t.Fatal(err)
 	}
 	p := c.Providers[0]
-	if !p.GetIsEnabled() || p.Features.Periodic == nil || p.Features.GetPeriodic() || !p.Features.GetMinHealthy() || p.Features.Exhausted == nil || p.Features.GetExhausted() {
+	if !p.GetIsEnabled() || p.Features.Periodic != nil || p.Features.GetPeriodic() || !p.Features.GetMinHealthy() || p.Features.Exhausted == nil || p.Features.GetExhausted() {
 		t.Fatalf("flags %v", p.Features)
 	}
-	if p.Triggers.Interval != int64(2*time.Hour) || p.Triggers.MinHealthyOutbounds != 3 || p.Triggers.WhenCostAbove.Cost != 10 || p.Triggers.NetworkChangeMode != health.RefreshOnNetwork_REFRESH_UNKNOWN || p.Limits.MinInterval != int64(time.Minute) || p.Limits.MaxRefreshesPerHour != 2 || p.Headers["Authorization"] != "Bearer x" {
+	if p.Triggers.Interval != 0 || p.Triggers.MinHealthyOutbounds != 3 || p.Triggers.WhenCostAbove.Cost != 10 || p.Triggers.NetworkChangeMode != health.RefreshOnNetwork_REFRESH_UNKNOWN || p.Limits.MinInterval != int64(time.Minute) || p.Limits.MaxRefreshesPerHour != 2 || p.Headers["Authorization"] != "Bearer x" {
 		t.Fatalf("provider %v", p)
 	}
 }
 func TestHealthProviderInitial(t *testing.T) {
 	for _, initial := range []string{`null`, `{}`, `{"x":[1]}`, `[]`, `"{}"`, `1`, `{"outbounds":[{"protocol":"nosuch"}],"dns":{}}`, `{"v":"` + strings.Repeat("x", 1<<20) + `"}`} {
-		for _, on := range []bool{true, false} {
-			raw := fmt.Sprintf(`{"providers":[{"isEnabled":%v,"tag":"a","url":"https://x.test","apply":{"balancer":"auto","tagPrefix":"p-"},"initialAnswer":%s}]}`, on, initial)
-			c, err := buildHealth(t, raw)
-			if err != nil {
-				t.Fatal(err)
-			}
-			want := initial
-			if !on || initial == "null" {
-				want = ""
-			}
-			if got := string(c.Providers[0].InitialAnswer); got != want {
-				t.Fatalf("enabled=%v initial %.20s got %.20s", on, initial, got)
-			}
+		raw := fmt.Sprintf(`{"providers":[{"tag":"a","urls":["https://x.test"],"apply":{"balancer":"auto","tagPrefix":"p-"},"initialAnswer":%s}]}`, initial)
+		c, err := buildHealth(t, raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := initial
+		if initial == "null" {
+			want = ""
+		}
+		if got := string(c.Providers[0].InitialAnswer); got != want {
+			t.Fatalf("initial %.20s got %.20s", initial, got)
 		}
 	}
 }
 func TestHealthProviderMethodBaseVersionAndHeaders(t *testing.T) {
 	for method, want := range map[string]string{"get": "GET", "Post": "POST", "": ""} {
-		c, err := buildHealth(t, fmt.Sprintf(`{"providers":[{"method":%q,"baseVersion":%q,"apply":{"acceptedHeaders":[]}}]}`, method, strings.Repeat("b", 256)))
+		c, err := buildHealthProvider(t, fmt.Sprintf(`{"providers":[{"method":%q,"baseVersion":%q,"apply":{"acceptedHeaders":[]}}]}`, method, strings.Repeat("b", 256)))
 		if err != nil || c.Providers[0].Method != want || len(c.Providers[0].BaseVersion) != 256 || !c.Providers[0].Apply.FixedHeaders {
 			t.Fatalf("%s: %v %v", method, c, err)
 		}
 	}
 	for _, base := range []string{"", "cfg-12"} {
-		c, err := buildHealth(t, fmt.Sprintf(`{"providers":[{"baseVersion":%q}]}`, base))
+		c, err := buildHealthProvider(t, fmt.Sprintf(`{"providers":[{"baseVersion":%q}]}`, base))
 		if err != nil || c.Providers[0].BaseVersion != base {
 			t.Fatal(c, err)
 		}
 	}
-	if _, err := buildHealth(t, fmt.Sprintf(`{"providers":[{"baseVersion":%q}]}`, strings.Repeat("b", 257))); err == nil {
+	if _, err := buildHealthProvider(t, fmt.Sprintf(`{"providers":[{"baseVersion":%q}]}`, strings.Repeat("b", 257))); err == nil {
 		t.Fatal("oversize baseVersion accepted")
 	}
-	c, err := buildHealth(t, `{"providers":[{"apply":{"acceptedHeaders":["Authorization","X-Api-Key"]},"triggers":{"leaseRenewal":{"isEnabled":false,"renewAtFraction":0.6,"urgentAtFraction":0.9},"backendSchedule":{"isEnabled":false}}}]}`)
+	c, err := buildHealthProvider(t, `{"providers":[{"apply":{"acceptedHeaders":["Authorization","X-Api-Key"]},"triggers":{"leaseRenewal":{"isEnabled":false,"renewAtFraction":0.6,"urgentAtFraction":0.9},"backendSchedule":{"isEnabled":false}}}]}`)
 	if err != nil || c.Providers[0].Apply.FixedHeaders || c.Providers[0].Features.GetBackendSchedule() || c.Providers[0].Features.GetLeaseRenewal() {
 		t.Fatal(c, err)
 	}
 }
 func TestHealthProvidersReject(t *testing.T) {
 	for field, provider := range map[string]string{
-		"requires": `{"isEnabled":true,"tag":"a","url":"https://x.test"}`, "credentials": `{"url":"https://user:pw@x.test"}`, "url": `{"url":"ftp://x.test"}`, "https": `{"url":"http://x.test"}`, "mode": `{"triggers":{"networkChange":{"mode":"sometimes"}}}`, "cost": `{"triggers":{"whenCostAbove":{"cost":0}}}`, "cost required": `{"triggers":{"whenCostAbove":{"isEnabled":true}}}`, "after": `{"triggers":{"whenCostAbove":{"after":"-1s"}}}`, "via": `{"via":[""]}`, "method": `{"method":"PUT"}`, "renewAtFraction": `{"triggers":{"leaseRenewal":{"renewAtFraction":0.99}}}`, "renewal zero": `{"triggers":{"leaseRenewal":{"renewAtFraction":0}}}`, "urgent": `{"triggers":{"leaseRenewal":{"renewAtFraction":0.6,"urgentAtFraction":0.5}}}`, "urgent default": `{"triggers":{"leaseRenewal":{"urgentAtFraction":0.4}}}`, "Host": `{"apply":{"acceptedHeaders":["Host"]}}`, "proxy": `{"apply":{"acceptedHeaders":["proxy-authorization"]}}`, "bad token": `{"apply":{"acceptedHeaders":["X Key"]}}`, "zero limit": `{"limits":{"minInterval":"0s"}}`, "zero quota": `{"limits":{"maxRefreshesPerHour":0}}`, "ceiling": `{"apply":{"maxOutbounds":129}}`,
+		"requires": `{"tag":"a","url":"https://x.test"}`, "credentials": `{"url":"https://user:pw@x.test"}`, "url": `{"url":"ftp://x.test"}`, "https": `{"url":"http://x.test"}`, "mode": `{"triggers":{"networkChange":{"mode":"sometimes"}}}`, "cost": `{"triggers":{"whenCostAbove":{"cost":0}}}`, "cost required": `{"triggers":{"whenCostAbove":{}}}`, "after": `{"triggers":{"whenCostAbove":{"after":"-1s"}}}`, "via": `{"via":[""]}`, "method": `{"method":"PUT"}`, "renewAtFraction": `{"triggers":{"leaseRenewal":{"renewAtFraction":0.99}}}`, "renewal zero": `{"triggers":{"leaseRenewal":{"renewAtFraction":0}}}`, "urgent": `{"triggers":{"leaseRenewal":{"renewAtFraction":0.6,"urgentAtFraction":0.5}}}`, "urgent default": `{"triggers":{"leaseRenewal":{"urgentAtFraction":0.4}}}`, "Host": `{"apply":{"acceptedHeaders":["Host"]}}`, "proxy": `{"apply":{"acceptedHeaders":["proxy-authorization"]}}`, "bad token": `{"apply":{"acceptedHeaders":["X Key"]}}`, "zero limit": `{"limits":{"minInterval":"0s"}}`, "zero quota": `{"limits":{"maxRefreshesPerHour":0}}`, "ceiling": `{"apply":{"maxOutbounds":129}}`,
 	} {
 		if _, err := buildHealth(t, `{"providers":[`+provider+`]}`); err == nil {
 			t.Errorf("accepted %s %s", field, provider)
@@ -326,7 +381,7 @@ func TestHealthV2JSONAndDirectProtobufDefaults(t *testing.T) {
 	}
 }
 func TestHealthV2PresenceSurvivesProtobuf(t *testing.T) {
-	cfg, err := buildHealth(t, `{"evidence":{"dialFailures":{"isEnabled":false},"dialTimeout":{"isEnabled":false},"serverUnverified":{"isEnabled":false},"firstReply":{"isEnabled":false},"earlyClose":{"isEnabled":false},"stalledRequests":{"isEnabled":false}},"telemetry":{"events":{"isEnabled":false},"quality":{"isEnabled":true}}}`)
+	cfg, err := buildHealth(t, `{"evidence":{"dialFailures":{"isEnabled":false},"dialTimeout":{"isEnabled":false},"serverUnverified":{"isEnabled":false},"firstReply":{"isEnabled":false},"earlyClose":{"isEnabled":false},"stalledRequests":{"isEnabled":false}},"telemetry":{"quality":{}}}`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -338,13 +393,13 @@ func TestHealthV2PresenceSurvivesProtobuf(t *testing.T) {
 	if err := proto.Unmarshal(wire, &restored); err != nil {
 		t.Fatal(err)
 	}
-	if !proto.Equal(cfg, &restored) || restored.Features.DialFailures == nil || *restored.Features.DialFailures || restored.Features.Events == nil || *restored.Features.Events || !restored.Features.GetQuality() {
+	if !proto.Equal(cfg, &restored) || restored.Features.DialFailures == nil || *restored.Features.DialFailures || restored.Features.Events != nil || !restored.Features.GetQuality() {
 		t.Fatalf("presence lost: %v", restored.Features)
 	}
 }
 func TestHealthProviderImmediateCostDelayPresence(t *testing.T) {
 	for _, after := range []string{``, `,"after":"0s"`, `,"after":"1.000000001s"`} {
-		c, err := buildHealth(t, `{"providers":[{"triggers":{"whenCostAbove":{"cost":2`+after+`}}}]}`)
+		c, err := buildHealthProvider(t, `{"providers":[{"triggers":{"whenCostAbove":{"cost":2`+after+`}}}]}`)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -366,11 +421,11 @@ func TestHealthProviderImmediateCostDelayPresence(t *testing.T) {
 }
 
 func TestHealthV2CompleteProfileLoads(t *testing.T) {
-	observer := `{"evidence":{"partialStalls":{"isEnabled":true},"udpReplies":{"isEnabled":true},"loneFailureProbe":{"isEnabled":true}},"probes":{"stepProfiles":{"isEnabled":true},"profiles":[{"name":"full","steps":[{"name":"transport","destinations":["https://x.test/bytes"],"minBytes":32768},{"name":"egress","destinations":["https://x.test/204"],"isOptional":true}]}],"candidates":{"isEnabled":true},"requests":{"isEnabled":true},"udp":{"isEnabled":true,"destinations":["stun.test:3478"]}},"network":{"connectivity":{"isEnabled":true,"outbound":"b1","destination":"https://x.test/204"},"witnesses":{"isEnabled":true,"outbounds":["b1"]},"memory":{"isEnabled":true},"hostLabels":{"isEnabled":true},"labelRequest":{"isEnabled":true,"outbound":"b1","destination":"https://x.test/labels","labels":{"asn":"X-Asn"}}},"host":{"pinning":{"isEnabled":true},"userPresent":{"isEnabled":true},"memoryPressure":{"isEnabled":true}},"resources":{"tunnelSleep":{"isEnabled":true},"closeUnchosenIdle":{"isEnabled":true}},"telemetry":{"events":{"isEnabled":true},"report":{"isEnabled":true,"quietSampleFraction":0.05,"sessionLabels":{"isEnabled":true,"labels":{"cohort":"v2"}}},"quality":{"isEnabled":true},"pathLabels":{"isEnabled":true},"probeMeasurements":{"isEnabled":true},"metrics":{"isEnabled":true}},"providers":[{"isEnabled":true,"tag":"p","url":"https://x.test/set","triggers":{"periodic":{"isEnabled":true},"minHealthy":{"isEnabled":true},"whenCostAbove":{"isEnabled":true,"cost":2,"after":"0s"},"maxAge":{"isEnabled":true},"networkChange":{"isEnabled":true}},"apply":{"balancer":"auto","tagPrefix":"p-"}}]}`
-	settings := `{"failover":{"downAudit":{"isEnabled":true}},"groups":{"isEnabled":true,"items":[{"name":"relay","cost":1,"probe":"full","probePolicy":"onDemand","returnToCheaper":{"isEnabled":true,"interval":"10m"},"labels":{"location":"NL"}}]},"returnToCheaper":{"isEnabled":true,"onNetworkChange":{"isEnabled":true,"scope":"all"}},"startup":{"pin":{"isEnabled":true,"outbound":"a1","timeout":"0s"}},"networkChanges":{"isEnabled":true}}`
+	observer := `{"evidence":{"partialStalls":{},"udpReplies":{},"loneFailureProbe":{}},"probes":{"stepProfiles":{},"profiles":[{"name":"full","steps":[{"name":"transport","destinations":["https://x.test/bytes"],"minBytes":32768},{"name":"egress","destinations":["https://x.test/204"],"isOptional":true}]}],"candidates":{},"requests":{},"udp":{"destinations":["stun.test:3478"]}},"network":{"connectivity":{"outbound":"b1","destinations":["https://x.test/204"]},"witnesses":{"outbounds":["b1"]},"memory":{},"hostLabels":{},"labelRequest":{"outbound":"b1","labels":{"asn":"X-Asn"},"destinations":["https://x.test/labels"]}},"host":{"pinning":{},"userPresent":{},"memoryPressure":{}},"resources":{"tunnelSleep":{},"closeUnchosenIdle":{}},"telemetry":{"events":{},"report":{"quietSampleFraction":0.05,"sessionLabels":{"labels":{"cohort":"v2"}}},"quality":{},"pathLabels":{},"probeMeasurements":{},"metrics":{}},"providers":[{"tag":"p","triggers":{"periodic":{},"minHealthy":{},"whenCostAbove":{"cost":2,"after":"0s"},"maxAge":{},"networkChange":{}},"apply":{"balancer":"auto","tagPrefix":"p-"},"urls":["https://x.test/set"]}]}`
+	settings := `{"failover":{"downAudit":{}},"groups":[{"name":"relay","cost":1,"probe":"full","probePolicy":"onDemand","returnToCheaper":{"interval":"10m"},"labels":{"location":"NL"}}],"returnToCheaper":{"onNetworkChange":{"scope":"all"}},"startup":{"pin":{"outbound":"a1","timeout":"0s"}},"networkChanges":{}}`
 	raw := leastCostConfig(`,"metrics":{"tag":"metrics"},"healthObservatory":`+observer, settings)
-	raw = strings.Replace(raw, `"selection":{"balancer":"auto","cost":1}`, `"selection":{"balancer":"auto","group":"relay","labels":{"node":"n1"}}`, 1)
-	raw = strings.Replace(raw, `{"tag":"block","protocol":"blackhole"}`, `{"tag":"candidate","protocol":"freedom","selection":{"balancer":"auto","cost":2,"isProbeOnly":true}},{"tag":"block","protocol":"blackhole"}`, 1)
+	raw = strings.Replace(raw, `"selection":{"balancer":"auto","cost":1,"probe":"test"}`, `"selection":{"balancer":"auto","group":"relay","labels":{"node":"n1"}}`, 1)
+	raw = strings.Replace(raw, `{"tag":"block","protocol":"blackhole"}`, `{"tag":"candidate","protocol":"freedom","selection":{"balancer":"auto","cost":2,"probe":"test","isProbeOnly":true}},{"tag":"block","protocol":"blackhole"}`, 1)
 	if err := loadConfig(raw); err != nil {
 		t.Fatal(err)
 	}
@@ -403,7 +458,7 @@ func TestHealthV2LabelsValidateEvenWhileDisabled(t *testing.T) {
 
 func TestHealthV2ImmediateDelaysRetainPresence(t *testing.T) {
 	for _, value := range []string{``, `,"settleDelay":"0s"`, `,"settleDelay":"1.000000001s"`} {
-		c, err := buildHealth(t, `{"providers":[{"triggers":{"networkChange":{"isEnabled":false`+value+`}}}]}`)
+		c, err := buildHealthProvider(t, `{"providers":[{"triggers":{"networkChange":{`+strings.TrimPrefix(value, ",")+`}}}]}`)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -422,7 +477,7 @@ func TestHealthV2ImmediateDelaysRetainPresence(t *testing.T) {
 			}
 		}
 	}
-	if _, err := buildHealth(t, `{"providers":[{"triggers":{"networkChange":{"settleDelay":"-1s"}}}]}`); err == nil {
+	if _, err := buildHealthProvider(t, `{"providers":[{"triggers":{"networkChange":{"settleDelay":"-1s"}}}]}`); err == nil {
 		t.Fatal("negative settle delay accepted")
 	}
 	if err := loadConfig(leastCostConfig(`,"healthObservatory":{}`, `{"returnToCheaper":{"minHoldTime":"0s"}}`)); err != nil {
@@ -449,12 +504,12 @@ func TestHealthV2AdaptiveMetadataBounds(t *testing.T) {
 			t.Fatalf("selected tag%d: %v", length, err)
 		}
 		group := strings.Repeat("g", length)
-		settings := `{"groups":{"isEnabled":true,"items":[{"name":"` + group + `","cost":1}]}}`
-		raw = strings.Replace(leastCostConfig(`,"healthObservatory":{}`, settings), `"balancer":"auto","cost":1`, `"balancer":"auto","group":"`+group+`"`, 1)
+		settings := `{"groups":[{"name":"` + group + `","cost":1,"probe":"test"}]}`
+		raw = strings.Replace(leastCostConfig(`,"healthObservatory":{}`, settings), `"balancer":"auto","cost":1,"probe":"test"`, `"balancer":"auto","group":"`+group+`"`, 1)
 		if err := loadConfig(raw); (err == nil) != (length == 128) {
 			t.Fatalf("group%d: %v", length, err)
 		}
-		if _, err := buildHealth(t, `{"providers":[{"tag":"`+tag+`"}]}`); (err == nil) != (length == 128) {
+		if _, err := buildHealthProvider(t, `{"providers":[{"tag":"`+tag+`"}]}`); (err == nil) != (length == 128) {
 			t.Fatalf("provider tag%d: %v", length, err)
 		}
 	}

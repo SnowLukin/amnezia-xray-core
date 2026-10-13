@@ -19,7 +19,7 @@ func TestLeastCostGroupThreshold(t *testing.T) {
 	} {
 		t.Run(tc.value, func(t *testing.T) {
 			var cfg strategyLeastCostConfig
-			body := fmt.Sprintf(`{"groups":{"isEnabled":true,"items":[{"name":"relay","cost":1,%s}]}}`, strings.Trim(tc.value, "{}"))
+			body := fmt.Sprintf(`{"groups":[{"name":"relay","cost":1,%s}]}`, strings.Trim(tc.value, "{}"))
 			body = strings.Replace(body, `1,}`, `1}`, 1)
 			if err := json.Unmarshal([]byte(body), &cfg); err != nil {
 				t.Fatal(err)
@@ -43,7 +43,7 @@ func TestLeastCostGroupThreshold(t *testing.T) {
 
 func TestLeastCostRejectsDuplicateGroupNames(t *testing.T) {
 	var c Config
-	raw := `{"outbounds":[{"tag":"relay-a1","protocol":"freedom","selection":{"balancer":"auto","group":"relay"}}],"routing":{"balancers":[{"tag":"auto","fallbackTag":"block","strategy":{"type":"leastCost","settings":{"groups":{"isEnabled":true,"items":[{"name":"relay","cost":1},{"name":"relay","cost":2}]}}}}]},"healthObservatory":{}}`
+	raw := `{"outbounds":[{"tag":"relay-a1","protocol":"freedom","selection":{"balancer":"auto","group":"relay"}}],"routing":{"balancers":[{"tag":"auto","fallbackTag":"block","strategy":{"type":"leastCost","settings":{"groups":[{"name":"relay","cost":1},{"name":"relay","cost":2}]}}}]},"healthObservatory":{}}`
 	if err := json.Unmarshal([]byte(raw), &c); err != nil {
 		t.Fatal(err)
 	}

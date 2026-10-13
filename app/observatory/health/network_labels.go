@@ -18,10 +18,11 @@ import (
 const labelRetry = 10 * time.Minute
 
 type labelRequestSettings struct {
-	outbound, destination string
-	labels                map[string]string
-	timeout               time.Duration
-	requestsPerHour       int
+	outbound        string
+	destinations    []string
+	labels          map[string]string
+	timeout         time.Duration
+	requestsPerHour int
 }
 
 type labelNetwork struct {
@@ -51,11 +52,19 @@ func (c *Config) ValidateMeasurementContext() error {
 		if lr == nil {
 			return fmt.Errorf("network.labelRequest requires settings")
 		}
-		u, err := url.Parse(lr.Destination)
-		if lr.Destination != "" && (err != nil || u.Hostname() == "" || (u.Scheme != "https" && u.Scheme != "http") || u.User != nil || u.Fragment != "") {
-			return fmt.Errorf("network.labelRequest.destination must be an HTTP(S) URL without credentials or fragment")
+		if lr.Destination != "" {
+			return fmt.Errorf("network.labelRequest.destination is unsupported; use destinations")
 		}
-		if (c.GetFeatures().GetLabelRequest() && (lr.Outbound == "" || lr.Destination == "" || len(lr.Labels) == 0)) || len(lr.Labels) > 6 {
+		if (c.GetFeatures().GetLabelRequest() && len(lr.Destinations) < 1) || len(lr.Destinations) > 4 {
+			return fmt.Errorf("network.labelRequest.destinations must contain 1 to 4 addresses")
+		}
+		for i, destination := range lr.Destinations {
+			u, err := url.Parse(destination)
+			if err != nil || u.Hostname() == "" || (u.Scheme != "https" && u.Scheme != "http") || u.User != nil || u.Fragment != "" {
+				return fmt.Errorf("network.labelRequest.destinations[%d] must be an HTTP(S) URL without credentials or fragment", i)
+			}
+		}
+		if (c.GetFeatures().GetLabelRequest() && (lr.Outbound == "" || len(lr.Labels) == 0)) || len(lr.Labels) > 6 {
 			return fmt.Errorf("network.labelRequest needs outbound and 1 to 6 labels")
 		}
 		if lr.Timeout < 0 || lr.Timeout > int64(30*time.Second) || lr.RequestsPerHour < 0 || lr.RequestsPerHour > 60 {
@@ -170,6 +179,21 @@ func (o *Observer) runLabelRequest(j *labelJob) {
 
 func (o *Observer) fetchNetworkLabels(parent context.Context) (map[string]string, string) {
 	cfg := o.s.labelRequest
+	class := "request"
+	for _, destination := range cfg.destinations {
+		if parent.Err() != nil {
+			return nil, "canceled"
+		}
+		var labels map[string]string
+		labels, class = o.fetchNetworkLabelsAt(parent, cfg, destination)
+		if class == "" {
+			return labels, ""
+		}
+	}
+	return nil, class
+}
+
+func (o *Observer) fetchNetworkLabelsAt(parent context.Context, cfg *labelRequestSettings, destination string) (map[string]string, string) {
 	var wire atomic.Int64
 	ctx, cancel := context.WithTimeout(withProbe(parent, &wire), cfg.timeout)
 	defer cancel()
@@ -182,7 +206,7 @@ func (o *Observer) fetchNetworkLabels(parent context.Context) (map[string]string
 	}}
 	defer tr.CloseIdleConnections()
 	client := &http.Client{Transport: tr, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, cfg.destination, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, destination, nil)
 	if err != nil {
 		return nil, "request"
 	}

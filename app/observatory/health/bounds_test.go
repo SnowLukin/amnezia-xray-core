@@ -122,7 +122,7 @@ func TestObservesJudgedOutboundsAndTheNetworkCheck(t *testing.T) {
 	o := newObserver(context.Background(), &Config{
 		Features:     &FeatureConfig{Connectivity: v2Bool(true), Witnesses: v2Bool(true)},
 		Paths:        observed("a1", "a2"),
-		Connectivity: &ConnectivityConfig{Outbound: "check", Destination: "https://check.test/", Witnesses: []string{"direct"}},
+		Connectivity: &ConnectivityConfig{Outbound: "check", Destinations: []string{"https://check.test/"}, Witnesses: []string{"direct"}},
 		Providers:    []*ProviderConfig{quietProvider(nil)},
 	})
 	defer o.Close()
@@ -138,7 +138,7 @@ func TestConfigValuesHaveCeilings(t *testing.T) {
 	s := newSettings(&Config{
 		Features:     &FeatureConfig{Connectivity: v2Bool(true), Events: v2Bool(true)},
 		Probes:       []*ProbeProfile{{Timeout: huge, ProgressTimeout: huge}},
-		Connectivity: &ConnectivityConfig{Outbound: "direct", Destination: "https://check.test/", Timeout: huge},
+		Connectivity: &ConnectivityConfig{Outbound: "direct", Destinations: []string{"https://check.test/"}, Timeout: huge},
 		Schedule: &ScheduleConfig{MaxConcurrentProbes: 1 << 20, HostProbes: &HostProbesConfig{
 			ProbesPerMinute: 1 << 20, ReuseWindow: huge, MaxOutbounds: 1 << 20, Timeout: huge,
 		}},

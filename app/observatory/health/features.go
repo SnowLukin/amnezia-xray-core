@@ -1,6 +1,9 @@
 package health
 
-import "fmt"
+import (
+	"fmt"
+	"net/url"
+)
 
 // featureValue preserves absence independently of an explicit false.
 func featureValue(value *bool, fallback bool) bool {
@@ -146,26 +149,37 @@ func (c *Config) ValidateFeatures() error {
 	}
 	f := newFeatureSettings(c.GetFeatures())
 	if f.LoneFailureProbe && !f.DialFailures && !f.DialTimeout && !f.ServerUnverified {
-		return fmt.Errorf("healthObservatory.evidence.loneFailureProbe.isEnabled requires evidence.dialFailures.isEnabled, evidence.dialTimeout.isEnabled or evidence.serverUnverified.isEnabled")
+		return fmt.Errorf("healthObservatory.evidence.loneFailureProbe requires evidence.dialFailures, evidence.dialTimeout or evidence.serverUnverified")
 	}
 	if c.GetReport().GetQuietShare() > 0 && !f.Report {
-		return fmt.Errorf("healthObservatory.telemetry.report.quietSampleFraction requires telemetry.report.isEnabled")
+		return fmt.Errorf("healthObservatory.telemetry.report.quietSampleFraction requires telemetry.report")
 	}
 	if f.SessionLabels && !f.Report {
-		return fmt.Errorf("healthObservatory.telemetry.report.sessionLabels.isEnabled requires telemetry.report.isEnabled")
+		return fmt.Errorf("healthObservatory.telemetry.report.sessionLabels requires telemetry.report")
 	}
 	if f.Witnesses && len(c.GetConnectivity().GetWitnesses()) == 0 {
-		return fmt.Errorf("healthObservatory.network.witnesses.outbounds must be nonempty when witnesses.isEnabled")
+		return fmt.Errorf("healthObservatory.network.witnesses.outbounds must be nonempty when witnesses")
 	}
-	if f.Connectivity && (c.GetConnectivity().GetOutbound() == "" || c.GetConnectivity().GetDestination() == "") {
-		return fmt.Errorf("healthObservatory.network.connectivity requires outbound and destination when connectivity.isEnabled")
+	if f.Connectivity && (c.GetConnectivity().GetOutbound() == "" || len(c.GetConnectivity().GetDestinations()) == 0) {
+		return fmt.Errorf("healthObservatory.network.connectivity requires outbound and destinations")
+	}
+	if cc := c.GetConnectivity(); cc != nil {
+		if len(cc.Destinations) > 4 {
+			return fmt.Errorf("healthObservatory.network.connectivity.destinations must contain 1 to 4 addresses")
+		}
+		for i, destination := range cc.Destinations {
+			u, err := url.Parse(destination)
+			if err != nil || u.Hostname() == "" || (u.Scheme != "https" && u.Scheme != "http") || u.User != nil || u.Fragment != "" {
+				return fmt.Errorf("healthObservatory.network.connectivity.destinations[%d] must be an HTTP(S) URL without credentials or fragment", i)
+			}
+		}
 	}
 	if f.UdpProbes && len(c.GetUdpProbe().GetDestinations()) == 0 {
-		return fmt.Errorf("healthObservatory.probes.udp.destinations must be nonempty when udp.isEnabled")
+		return fmt.Errorf("healthObservatory.probes.udp.destinations must be nonempty when udp")
 	}
 	for i, p := range c.GetPaths() {
 		if p.GetIsProbeOnly() && !f.Candidates {
-			return fmt.Errorf("healthObservatory.paths[%d].isProbeOnly requires probes.candidates.isEnabled", i)
+			return fmt.Errorf("healthObservatory.paths[%d].isProbeOnly requires probes.candidates", i)
 		}
 	}
 	for i, p := range c.GetProbes() {
@@ -174,7 +188,7 @@ func (c *Config) ValidateFeatures() error {
 			needsSteps = needsSteps || step.GetIsOptional()
 		}
 		if needsSteps && !f.StepProfiles {
-			return fmt.Errorf("healthObservatory.probes.profiles[%d].steps requires probes.stepProfiles.isEnabled", i)
+			return fmt.Errorf("healthObservatory.probes.profiles[%d].steps requires probes.stepProfiles", i)
 		}
 	}
 	return nil
@@ -184,7 +198,7 @@ func validateSelectorFeatures(c *SelectorConfig, f featureSettings) error {
 	groups := make(map[string]map[string]string)
 	for i, g := range c.GetGroups() {
 		if err := ValidateLabels(g.GetLabels(), 6); err != nil {
-			return fmt.Errorf("leastCost.settings.groups.items[%d].labels: %w", i, err)
+			return fmt.Errorf("leastCost.settings.groups[%d].labels: %w", i, err)
 		}
 		groups[g.Name] = g.GetLabels()
 	}
@@ -210,25 +224,25 @@ func validateSelectorFeatures(c *SelectorConfig, f featureSettings) error {
 	}
 	returns := featureValue(sf.ReturnToCheaper, false)
 	if featureValue(sf.DownAudit, false) && (c.GetConfirmWithProbe() != ConfirmMode_AUTO || (!f.DialFailures && !f.DialTimeout && !f.ServerUnverified)) {
-		return fmt.Errorf("leastCost.settings.failover.downAudit.isEnabled requires confirmWithProbe:auto and an enabled path-level evidence detector")
+		return fmt.Errorf("leastCost.settings.failover.downAudit requires confirmWithProbe:auto and an enabled path-level evidence detector")
 	}
 	if featureValue(sf.ReturnOnNetworkChange, false) && (!returns || !featureValue(sf.NetworkChanges, false)) {
-		return fmt.Errorf("leastCost.settings.returnToCheaper.onNetworkChange.isEnabled requires returnToCheaper.isEnabled and networkChanges.isEnabled")
+		return fmt.Errorf("leastCost.settings.returnToCheaper.onNetworkChange requires returnToCheaper and networkChanges")
 	}
 	if featureValue(sf.StartupPin, false) && !f.Pinning {
-		return fmt.Errorf("leastCost.settings.startup.pin.isEnabled requires healthObservatory.host.pinning.isEnabled")
+		return fmt.Errorf("leastCost.settings.startup.pin requires healthObservatory.host.pinning")
 	}
 	for i, p := range c.GetPaths() {
 		if p.GetGroup() != "" && !featureValue(sf.Groups, false) {
-			return fmt.Errorf("leastCost.settings.paths[%d].group requires groups.isEnabled", i)
+			return fmt.Errorf("leastCost.settings.paths[%d].group requires groups", i)
 		}
 		if p.ReturnIsEnabled != nil && *p.ReturnIsEnabled && !returns {
-			return fmt.Errorf("leastCost.settings.paths[%d].returnToCheaper.isEnabled requires balancer returnToCheaper.isEnabled", i)
+			return fmt.Errorf("leastCost.settings.paths[%d].returnToCheaper requires balancer returnToCheaper", i)
 		}
 	}
 	for i, g := range c.GetGroups() {
 		if g.ReturnIsEnabled != nil && *g.ReturnIsEnabled && !returns {
-			return fmt.Errorf("leastCost.settings.groups.items[%d].returnToCheaper.isEnabled requires balancer returnToCheaper.isEnabled", i)
+			return fmt.Errorf("leastCost.settings.groups[%d].returnToCheaper requires balancer returnToCheaper", i)
 		}
 	}
 	return nil

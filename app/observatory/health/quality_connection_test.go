@@ -45,7 +45,7 @@ func qualityWitnessObserver(skip bool) (*Observer, *fakeClock) {
 		Paths:    observed("a1", "a2"),
 		Passive:  &PassiveConfig{ShouldSkipQuality: skip},
 		Connectivity: &ConnectivityConfig{
-			Outbound: "direct", Destination: "https://x.test/204", Witnesses: []string{"direct"},
+			Outbound: "direct", Destinations: []string{"https://x.test/204"}, Witnesses: []string{"direct"},
 		},
 	})
 	o.e = newEngine(o.s, 1)

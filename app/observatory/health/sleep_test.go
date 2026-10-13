@@ -462,8 +462,8 @@ func TestNeverSleepsRetiringReplacedOrConnectivity(t *testing.T) {
 	}{
 		{"retiring", nil, "w1", func(e *engine) { e.retiring["w1"] = true }},
 		{"replaced", nil, "w1", func(e *engine) { e.replacing["w1"] = true }},
-		{"network check", &Config{Connectivity: &ConnectivityConfig{Outbound: "w9", Destination: "https://check.test/"}}, "w9", nil},
-		{"witness", &Config{Connectivity: &ConnectivityConfig{Outbound: "a9", Destination: "https://check.test/",
+		{"network check", &Config{Connectivity: &ConnectivityConfig{Outbound: "w9", Destinations: []string{"https://check.test/"}}}, "w9", nil},
+		{"witness", &Config{Connectivity: &ConnectivityConfig{Outbound: "a9", Destinations: []string{"https://check.test/"},
 			Witnesses: []string{"w8"}}}, "w8", nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

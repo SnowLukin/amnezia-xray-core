@@ -316,7 +316,7 @@ func TestWitnessConnectionEndsTheNetworkPause(t *testing.T) {
 	s := newSettings(&Config{
 		Features:     &FeatureConfig{Connectivity: v2Bool(true), Witnesses: v2Bool(true)},
 		Paths:        observed("a1"),
-		Connectivity: &ConnectivityConfig{Outbound: "direct", Destination: "http://x/204", Witnesses: []string{"direct"}},
+		Connectivity: &ConnectivityConfig{Outbound: "direct", Destinations: []string{"http://x/204"}, Witnesses: []string{"direct"}},
 	})
 	clk := &fakeClock{t: t0}
 	o := &Observer{s: s, e: newEngine(s, 1), kick: make(chan struct{}, 1), clock: clk.now, base: t0.Add(-time.Second),
@@ -444,7 +444,7 @@ func TestDialsStartedInThePauseDoNotJudgeAfterIt(t *testing.T) {
 	s := newSettings(&Config{
 		Features:     &FeatureConfig{Connectivity: v2Bool(true)},
 		Paths:        observed("a1"),
-		Connectivity: &ConnectivityConfig{Outbound: "direct", Destination: "http://x/204"},
+		Connectivity: &ConnectivityConfig{Outbound: "direct", Destinations: []string{"http://x/204"}},
 	})
 	clk := &fakeClock{t: t0}
 	o := &Observer{s: s, e: newEngine(s, 1), kick: make(chan struct{}, 1), clock: clk.now, base: t0.Add(-time.Second),

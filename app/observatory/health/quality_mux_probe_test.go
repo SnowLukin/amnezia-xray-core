@@ -148,7 +148,7 @@ func startQualityProbeMuxFixture(t *testing.T) *qualityProbeMuxFixture {
 			"settings": {"startup":{"outbound":"v1"},"failover":{"shouldProbeBeforeSwitch":false}}}}]},
 		"healthObservatory": {
 			"evidence":{"dialTimeout":{"timeout":"3s"},"firstReply":{"timeout":"3s"},"stalledRequests":{"timeout":"5s"}},
-            "telemetry":{"quality":{"isEnabled":true},"report":{"isEnabled":true}},
+            "telemetry":{"quality":{},"report":{}},
             "probes":{"profiles":[{"name":"quality-local","steps":[{"name":"transport","destinations":[%q],"expectedStatuses":[200],
                 "minBytes":%d,"timeout":"4s","progressTimeout":"2s"}]}]}
 		}

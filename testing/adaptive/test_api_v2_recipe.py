@@ -12,9 +12,9 @@ class RecipeBoundaryTest(unittest.TestCase):
     def test_old_duration_disablement_becomes_explicit_flags(self):
         value = {'healthObservatory': {'_standRecipeV1': True, 'passive': {'udpReplyTimeout': '0s', 'loneFailureAfter': '0s'}, 'sleep': {'afterLastUse': '0s'}}, 'outbounds': []}
         got = v2.config(value)['healthObservatory']
-        self.assertEqual(got['evidence']['udpReplies'], {'isEnabled': False})
-        self.assertEqual(got['evidence']['loneFailureProbe'], {'isEnabled': False})
-        self.assertEqual(got['resources']['tunnelSleep'], {'isEnabled': False})
+        self.assertNotIn('udpReplies', got['evidence'])
+        self.assertNotIn('loneFailureProbe', got['evidence'])
+        self.assertNotIn('tunnelSleep', got['resources'])
 
     def test_negative_closure_flags_and_internal_marker_do_not_leak(self):
         value = {'healthObservatory': {'_standRecipeV1': True, 'passive': {'shouldKeepPendingOnDown': True, 'shouldSkipQuality': True}},
@@ -22,7 +22,7 @@ class RecipeBoundaryTest(unittest.TestCase):
                  'routing': {'balancers': [{'strategy': {'type': 'leastCost'}}]}}
         got = v2.config(value)
         self.assertFalse(got['routing']['balancers'][0]['strategy']['settings']['failover']['closePending']['isEnabled'])
-        self.assertFalse(got['healthObservatory']['telemetry']['quality']['isEnabled'])
+        self.assertNotIn('quality', got['healthObservatory']['telemetry'])
         self.assertEqual(got['outbounds'][0]['selection']['probePolicy'], 'onDemand')
         raw = json.dumps(got)
         for old in ('_standRecipeV1', 'shouldKeepPendingOnDown', 'shouldSkipQuality', 'isLazy', '"path"'):
@@ -40,11 +40,11 @@ class RecipeBoundaryTest(unittest.TestCase):
 
     def test_disabled_periods_preserve_zero_cost_feedback_delay(self):
         got = v2.provider({'triggers': {'interval': '0s', 'maxAge': '0s', 'minHealthyOutbounds': 0, 'shouldRefreshWhenExhausted': False, 'whenCostAbove': {'cost': 10, 'after': '0s'}}})
-        self.assertFalse(got['triggers']['periodic']['isEnabled'])
-        self.assertFalse(got['triggers']['maxAge']['isEnabled'])
-        self.assertFalse(got['triggers']['minHealthy']['isEnabled'])
+        self.assertNotIn('periodic', got['triggers'])
+        self.assertNotIn('maxAge', got['triggers'])
+        self.assertNotIn('minHealthy', got['triggers'])
         self.assertEqual(got['triggers']['whenCostAbove']['after'], '0s')
-        self.assertTrue(got['triggers']['whenCostAbove']['isEnabled'])
+        self.assertNotIn('isEnabled', got['triggers']['whenCostAbove'])
 
     def test_result_data_and_errors_are_unwrapped_once(self):
         self.assertEqual(v2.result_payload({'success': True, 'data': {'seq': 1, 'set': {}}}), {'seq': 1, 'set': {}})

@@ -117,7 +117,7 @@ func TestProviderV2ExpiredFallbackOnOff(t *testing.T) {
 }
 func TestProviderV2SemanticMetadataAndShapeBounds(t *testing.T) {
 	makeBody := func(tag, version string, extra string) []byte {
-		return []byte(fmt.Sprintf(`{"protocol":1,"version":%q,"outbounds":[{"tag":%q,"protocol":"vless","selection":{"balancer":"auto","cost":1}}]%s}`, version, tag, extra))
+		return []byte(fmt.Sprintf(`{"protocol":1,"version":%q,"outbounds":[{"tag":%q,"protocol":"vless","selection":{"balancer":"auto","probe":"check","cost":1}}]%s}`, version, tag, extra))
 	}
 	cfg := newProviderSettings(v2ProviderConfig())
 	for _, n := range []int{126, 127} {
@@ -141,7 +141,7 @@ func TestProviderV2SemanticMetadataAndShapeBounds(t *testing.T) {
 			t.Fatal("forbidden response accepted")
 		}
 	}
-	for _, selection := range []string{`{"balancer":"auto","cost":1,"isLazy":true}`, `{"balancer":"auto","cost":1,"returnInterval":"1h"}`, `{"balancer":"auto","cost":1,"probePolicy":"lazy"}`} {
+	for _, selection := range []string{`{"balancer":"auto","probe":"check","cost":1,"isLazy":true}`, `{"balancer":"auto","probe":"check","cost":1,"returnInterval":"1h"}`, `{"balancer":"auto","probe":"check","cost":1,"probePolicy":"lazy"}`} {
 		body := fmt.Sprintf(`{"outbounds":[{"tag":"x","protocol":"vless","selection":%s}]}`, selection)
 		a, err := parseAnswer([]byte(body))
 		if err == nil {
@@ -151,13 +151,13 @@ func TestProviderV2SemanticMetadataAndShapeBounds(t *testing.T) {
 			t.Fatal("retired response alias accepted")
 		}
 	}
-	a, _ := parseAnswer(makeBody("x", "v", `,"groups":[{"name":"unused","cost":1}]`))
+	a, _ := parseAnswer(makeBody("x", "v", `,"groups":[{"name":"unused","probe":"check","cost":1}]`))
 	if _, err := checkHeads(cfg, a); err == nil {
 		t.Fatal("unused group accepted")
 	}
 }
 func TestProviderV2MergedLabelsBoundedAndGroupPolicy(t *testing.T) {
-	body := `{"outbounds":[{"tag":"x","protocol":"vless","selection":{"balancer":"auto","group":"g","labels":{"node":"member"}}}],"groups":[{"name":"g","cost":2,"probePolicy":"onDemand","returnToCheaper":{"isEnabled":false},"labels":{"node":"group","fleet":"a"}}]}`
+	body := `{"outbounds":[{"tag":"x","protocol":"vless","selection":{"balancer":"auto","group":"g","labels":{"node":"member"}}}],"groups":[{"name":"g","probe":"check","cost":2,"probePolicy":"onDemand","returnToCheaper":{},"labels":{"node":"group","fleet":"a"}}]}`
 	a, err := parseAnswer([]byte(body))
 	if err != nil {
 		t.Fatal(err)
@@ -165,7 +165,7 @@ func TestProviderV2MergedLabelsBoundedAndGroupPolicy(t *testing.T) {
 	if _, err = checkHeads(newProviderSettings(v2ProviderConfig()), a); err != nil {
 		t.Fatal(err)
 	}
-	if !a.groups[0].IsLazy || a.groups[0].ReturnIsEnabled == nil || *a.groups[0].ReturnIsEnabled || a.paths[0].Labels["node"] != "member" || a.paths[0].Labels["fleet"] != "a" {
+	if !a.groups[0].IsLazy || a.groups[0].ReturnIsEnabled == nil || !*a.groups[0].ReturnIsEnabled || a.paths[0].Labels["node"] != "member" || a.paths[0].Labels["fleet"] != "a" {
 		t.Fatalf("group %v path %v", a.groups[0], a.paths[0])
 	}
 	for _, labels := range []string{`{"KEY":"x"}`, `{"node":"node.example/path"}`, `{"node":""}`, `{"node":"` + strings.Repeat("x", 33) + `"}`} {

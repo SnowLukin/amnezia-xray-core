@@ -109,10 +109,10 @@ func (o *Observer) probeUDPWithContext(parent context.Context, tag string, setti
 	if settings == nil || len(settings.destinations) == 0 {
 		return udpProbeResult{state: "unsupported", class: "disabled"}
 	}
-	for i, destination := range settings.destinations[:min(2, len(settings.destinations))] {
+	for i, destination := range settings.destinations {
 		r := o.probeUDPDestination(parent, tag, destination, settings)
 		r.destinationIndex = i
-		if r.canceled || r.state == "unsupported" || r.answered > 0 || i == min(2, len(settings.destinations))-1 {
+		if r.canceled || r.answered > 0 || i == len(settings.destinations)-1 {
 			return r
 		}
 	}

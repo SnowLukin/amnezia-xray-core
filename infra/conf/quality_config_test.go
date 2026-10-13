@@ -14,9 +14,9 @@ func TestHealthQualityFlag(t *testing.T) {
 		want bool
 	}{
 		{"default", `{}`, false},
-		{"empty_quality", `{"telemetry":{"quality":{}}}`, false},
-		{"explicit_false", `{"telemetry":{"quality":{"isEnabled":false}}}`, false},
-		{"enabled", `{"telemetry":{"quality":{"isEnabled":true}}}`, true},
+		{"empty_quality", `{"telemetry":{"quality":{}}}`, true},
+
+		{"enabled", `{"telemetry":{"quality":{}}}`, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg, err := buildHealth(t, tc.raw)

@@ -3,6 +3,7 @@ package health
 import (
 	"fmt"
 	"math"
+	"net/url"
 )
 
 // Direct protobuf entry points must not revive negative sentinel switches that
@@ -14,6 +15,16 @@ func validateProviderConfigurations(c *Config) error {
 			continue
 		}
 		where := fmt.Sprintf("healthObservatory.providers[%s]", p.GetTag())
+		urls := configuredAddresses(p.GetUrls(), p.GetUrl())
+		if len(urls) < 1 || len(urls) > 4 {
+			return fmt.Errorf("%s.urls must contain 1 to 4 addresses", where)
+		}
+		for i, destination := range urls {
+			u, err := url.Parse(destination)
+			if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil || u.Fragment != "" {
+				return fmt.Errorf("%s.urls[%d] must be an HTTP(S) URL without credentials or fragment", where, i)
+			}
+		}
 		l, a, t := p.GetLimits(), p.GetApply(), p.GetTriggers()
 		for name, value := range map[string]int64{"timeout": p.GetTimeout(), "limits.minInterval": l.GetMinInterval(), "limits.urgentMinInterval": l.GetExhaustedMinInterval(), "limits.maxRefreshesPerHour": int64(l.GetMaxRefreshesPerHour()), "apply.drainTimeout": a.GetDrainTimeout(), "apply.maxOutbounds": int64(a.GetMaxOutbounds())} {
 			if value < 0 {

@@ -1,72 +1,198 @@
 # Provider protocol 1 — API v2
 
+`network.connectivity.destinations`, `network.labelRequest.destinations` и `providers[].urls` — списки от 1 до 4 адресов. Проверка connectivity запускает адреса параллельно и принимает первый успешный HTTP-ответ в рамках одного probe job. Запрос меток идёт последовательно до первого успешного ответа; каждому адресу даётся настроенный timeout. Зеркала провайдера перебираются последовательно внутри маршрута via; это один refresh с прежними quota/backoff и `run + refreshNumber`. `via` выбирает маршрут, `urls` — зеркала HTTP-ручки. Одиночные `destination` и `url` не принимаются.
+
+
 Протокол HTTP остаётся `1`; внешняя конфигурация источника и `selection` в ответах следуют API v2. Переименования выполнены на месте: старый `path` и изменение `routing` в ответе отклоняются. Backend не управляет полной конфигурацией VPN через динамический источник.
 
 ## Конфигурация, запрос и ответ
 
 ```jsonc
 {
-  "healthObservatory": { "providers": [{
-    "isEnabled": true, "tag": "fresh",
-    "url": "https://api.example/set", "method": "POST",
-    "headers": { "Authorization": "Bearer <token>" }, "via": ["auto", "backup", "direct"],
-    "timeout": "10s", "isPlainHttpAllowed": false,
-    "triggers": {
-      "exhausted": { "isEnabled": true },
-      "periodic": { "isEnabled": false, "interval": "2h" },
-      "minHealthy": { "isEnabled": false, "outbounds": 2 },
-      "whenCostAbove": { "isEnabled": false, "cost": 10, "after": "15m" },
-      "maxAge": { "isEnabled": false, "age": "6h" },
-      "networkChange": { "isEnabled": false, "mode": "unknownNotCheapest", "settleDelay": "30s" },
-      "leaseRenewal": { "isEnabled": true, "renewAtFraction": 0.5, "urgentAtFraction": 0.8 },
-      "backendSchedule": { "isEnabled": true }
-    },
-    "limits": { "minInterval": "5m", "urgentMinInterval": "30s", "maxRefreshesPerHour": 6 },
-    "apply": { "balancer": "auto", "tagPrefix": "p-", "drainTimeout": "5m", "maxOutbounds": 64,
-               "allowedProtocols": ["vless", "vmess", "trojan", "shadowsocks", "wireguard", "hysteria", "socks", "http"],
-               "acceptedHeaders": ["Authorization"], "expiredLeaseFallback": { "isEnabled": true } },
-    "baseVersion": "cfg-12", "initialAnswer": null
-  }] }
+  "healthObservatory": {
+    "providers": [
+      {
+        "tag": "fresh",
+        "urls": [
+          "https://api.example/set"
+        ],
+        "method": "POST",
+        "headers": {
+          "Authorization": "Bearer <token>"
+        },
+        "via": [
+          "auto",
+          "backup",
+          "direct"
+        ],
+        "timeout": "10s",
+        "isPlainHttpAllowed": false,
+        "triggers": {
+          "exhausted": {},
+          "leaseRenewal": {
+            "renewAtFraction": 0.5,
+            "urgentAtFraction": 0.8
+          },
+          "backendSchedule": {}
+        },
+        "limits": {
+          "minInterval": "5m",
+          "urgentMinInterval": "30s",
+          "maxRefreshesPerHour": 6
+        },
+        "apply": {
+          "balancer": "auto",
+          "tagPrefix": "p-",
+          "drainTimeout": "5m",
+          "maxOutbounds": 64,
+          "allowedProtocols": [
+            "vless",
+            "vmess",
+            "trojan",
+            "shadowsocks",
+            "wireguard",
+            "hysteria",
+            "socks",
+            "http"
+          ],
+          "acceptedHeaders": [
+            "Authorization"
+          ],
+          "expiredLeaseFallback": {}
+        },
+        "baseVersion": "cfg-12",
+        "initialAnswer": null
+      }
+    ]
+  }
 }
 ```
 
-Без массива или с `isEnabled: false` нет запросов, парсинга initialAnswer и runtime handler замен. Provider не требуется ни для одного базового маршрута. Его ошибки не удаляют конфиговые outbound и последний принятый рабочий набор. Каждое новое сообщение проверяется до применения, затем атомарно заменяется только принадлежащий источнику набор; соединения старых обработчиков доживают по drainTimeout.
+Без массива providers нет запросов, парсинга initialAnswer и runtime handler замен. Каждый элемент массива — активный источник; выключенный источник удаляется из массива. Provider не требуется ни для одного базового маршрута. Его ошибки не удаляют конфиговые outbound и последний принятый рабочий набор. Каждое новое сообщение проверяется до применения, затем атомарно заменяется только принадлежащий источнику набор; соединения старых обработчиков доживают по drainTimeout.
 
 Умолчания изменяют поводы запросов, но оставляют прежние защитные gates: idle, pin, network down, low memory, Retry-After, backoff и quota. Ручной refresh не обходит их. Отложенный ручной запрос возвращает причину и `retry_in_ms`; его не нужно повторять циклом. Хост может поставить новые headers; значения никогда не попадают в ошибки/сводку. POST остаётся основным; GET остаётся для статического файла.
 
 **Провайдер не изменяет routing.** Источник меняет адреса, группы, аренды и принятые headers. Изменение маршрутизации сигнализируется через `baseVersion` и применяется хостом целым конфигом. Решение согласовано 13.10.2026: `isRoutingAccepted` удалён, поле `routing` в ответе отклоняется; отдельного флага routingUpdates нет.
 
 ```jsonc
-// Запрос: protocol остаётся 1, camelCase, прежняя идентичность повтора
 {
-  "protocol": 1, "provider": "fresh", "run": "provider-scoped-hash",
-  "refreshNumber": 7, "trigger": "expiry", "retryLevel": 1,
-  "version": "slots-7", "baseVersion": "cfg-12", "clientTime": "2026-10-13T13:00:00Z",
-  "lastFailure": { "status": 503, "code": "status", "agoMs": 61000 },
-  "network": { "id": "provider-scoped-network-hash", "isKnown": false, "isUp": true,
-               "labels": { "type": "wifi" }, "ipLabels": { "asn": "12345" } },
+  "protocol": 1,
+  "provider": "fresh",
+  "run": "provider-scoped-hash",
+  "refreshNumber": 7,
+  "trigger": "expiry",
+  "retryLevel": 1,
+  "version": "slots-7",
+  "baseVersion": "cfg-12",
+  "clientTime": "2026-10-13T13:00:00Z",
+  "lastFailure": {
+    "status": 503,
+    "code": "status",
+    "agoMs": 61000
+  },
+  "network": {
+    "id": "provider-scoped-network-hash",
+    "isKnown": false,
+    "isUp": true,
+    "labels": {
+      "type": "wifi"
+    },
+    "ipLabels": {
+      "asn": "12345"
+    }
+  },
   "isMemoryLow": false,
-  "balancer": { "tag": "auto", "current": "x2", "isOwn": true, "cost": 3,
-                "isExhausted": false, "isPinned": false, "heldMs": 840000 },
-  "outbounds": [{ "tag": "x2", "isProbeOnly": false, "state": "up", "activeMs": 840000,
-                  "probe": { "profile": "full", "reason": "failover", "state": "up", "isPassed": true, "agoMs": 30000,
-                             "steps": [{ "name": "transport", "isPassed": true, "connectMs": 80, "ms": 180, "bytes": 32768, "destination": 0 }] },
-                  "udp": { "state": "ok", "rttMs": 41, "agoMs": 40000 },
-                  "quality": { "ttfbCount": 14, "ttfbP50Ms": 120, "tcpRttMinMs": 38, "bulkKbpsP90": 18000 } }],
-  "groups": [{ "group": "g", "state": "up", "members": 6, "healthy": 4, "quarantined": 1, "clientPosition": 2, "failed": 0, "quarantineMs": 0 }],
-  "witnessQuality": { "dialCount": 20, "dialP50Ms": 40 }
+  "balancer": {
+    "tag": "auto",
+    "current": "x2",
+    "isOwn": true,
+    "cost": 3,
+    "isExhausted": false,
+    "isPinned": false,
+    "heldMs": 840000
+  },
+  "outbounds": [
+    {
+      "tag": "x2",
+      "isProbeOnly": false,
+      "state": "up",
+      "activeMs": 840000,
+      "probe": {
+        "profile": "full",
+        "reason": "failover",
+        "state": "up",
+        "isPassed": true,
+        "agoMs": 30000,
+        "steps": [
+          {
+            "name": "transport",
+            "isPassed": true,
+            "connectMs": 80,
+            "ms": 180,
+            "bytes": 32768,
+            "destination": 0
+          }
+        ]
+      },
+      "udp": {
+        "state": "ok",
+        "rttMs": 41,
+        "agoMs": 40000
+      },
+      "quality": {
+        "ttfbCount": 14,
+        "ttfbP50Ms": 120,
+        "tcpRttMinMs": 38,
+        "bulkKbpsP90": 18000
+      }
+    }
+  ],
+  "groups": [
+    {
+      "group": "g",
+      "state": "up",
+      "members": 6,
+      "healthy": 4,
+      "quarantined": 1,
+      "clientPosition": 2,
+      "failed": 0,
+      "quarantineMs": 0
+    }
+  ],
+  "witnessQuality": {
+    "dialCount": 20,
+    "dialP50Ms": 40
+  }
 }
 ```
 
 ```jsonc
-// Ответ: полный набор источника; routing/dns/inbounds в рекомендуемом варианте запрещены
 {
-  "protocol": 1, "version": "slots-8",
-  "outbounds": [{ "tag": "x2", "protocol": "vless", "settings": {},
-                  "selection": { "balancer": "auto", "cost": 1, "probe": "full", "isProbeOnly": false } }],
-  "groups": [], "expiresAt": { "x2": "2026-10-14T13:00:00Z" },
-  "serverTime": "2026-10-13T13:00:00Z", "nextRefreshIn": "2h",
-  "headers": { "Authorization": "Bearer <new-token>" }, "baseVersion": "cfg-12"
+  "protocol": 1,
+  "version": "slots-8",
+  "outbounds": [
+    {
+      "tag": "x2",
+      "protocol": "vless",
+      "settings": {},
+      "selection": {
+        "balancer": "auto",
+        "cost": 1,
+        "probe": "full",
+        "isProbeOnly": false
+      }
+    }
+  ],
+  "groups": [],
+  "expiresAt": {
+    "x2": "2026-10-14T13:00:00Z"
+  },
+  "serverTime": "2026-10-13T13:00:00Z",
+  "nextRefreshIn": "2h",
+  "headers": {
+    "Authorization": "Bearer <new-token>"
+  },
+  "baseVersion": "cfg-12"
 }
 ```
 
@@ -103,28 +229,104 @@
   "refreshNumber": 7,
   "trigger": "expiry",
   "retryLevel": 1,
-  "lastFailure": { "status": 503, "code": "status", "agoMs": 61000 },
+  "lastFailure": {
+    "status": 503,
+    "code": "status",
+    "agoMs": 61000
+  },
   "version": "slots-7781",
   "baseVersion": "cfg-12",
   "clientTime": "2026-10-08T12:00:03Z",
-  "network": { "id": "5d0c1f2a9b3e4c71", "isKnown": false, "isUp": true },
+  "network": {
+    "id": "5d0c1f2a9b3e4c71",
+    "isKnown": false,
+    "isUp": true
+  },
   "isMemoryLow": false,
-  "balancer": { "tag": "auto", "current": "x2", "isOwn": true, "cost": 3, "isExhausted": false, "isPinned": false,
-                "heldMs": 840000 },
+  "balancer": {
+    "tag": "auto",
+    "current": "x2",
+    "isOwn": true,
+    "cost": 3,
+    "isExhausted": false,
+    "isPinned": false,
+    "heldMs": 840000
+  },
   "outbounds": [
-    { "tag": "x1", "state": "down", "reason": "traffic", "stateMs": 81000, "seenMs": 3600000,
-      "quarantineLevel": 2, "quarantineMs": 81000, "failures": { "dial_timeout": 4 },
-      "probe": { "profile": "full", "state": "down", "steps": [
-        { "name": "transport", "isPassed": false, "connectMs": 800, "ms": 1800, "bytes": 0, "error": "timeout" }
-      ], "isPassed": false, "error": "timeout", "agoMs": 30000 },
-      "connsOk": 12, "connsFailed": 4, "bytesUp": 90112, "bytesDown": 1048576,
-      "activeMs": 600000, "ttfbP50Ms": 300, "expiresInMs": 61200000 },
-    { "tag": "x2", "state": "degraded", "probe": { "profile": "full", "state": "degraded", "steps": [
-        { "name": "transport", "isPassed": true, "connectMs": 80, "ms": 180, "bytes": 32768, "destination": 0 },
-        { "name": "egress", "isPassed": false, "connectMs": 70, "ms": 120, "bytes": 0, "error": "closed" }
-      ], "isPassed": true, "rttMs": 180, "agoMs": 840000 },
-      "connsOk": 412, "bytesDown": 52428800, "activeMs": 840000, "expiresInMs": 61200000 },
-    { "tag": "x3", "state": "unknown", "expiresInMs": -5000 }
+    {
+      "tag": "x1",
+      "state": "down",
+      "reason": "traffic",
+      "stateMs": 81000,
+      "seenMs": 3600000,
+      "quarantineLevel": 2,
+      "quarantineMs": 81000,
+      "failures": {
+        "dial_timeout": 4
+      },
+      "probe": {
+        "profile": "full",
+        "state": "down",
+        "steps": [
+          {
+            "name": "transport",
+            "isPassed": false,
+            "connectMs": 800,
+            "ms": 1800,
+            "bytes": 0,
+            "error": "timeout"
+          }
+        ],
+        "isPassed": false,
+        "error": "timeout",
+        "agoMs": 30000
+      },
+      "connsOk": 12,
+      "connsFailed": 4,
+      "bytesUp": 90112,
+      "bytesDown": 1048576,
+      "activeMs": 600000,
+      "ttfbP50Ms": 300,
+      "expiresInMs": 61200000
+    },
+    {
+      "tag": "x2",
+      "state": "degraded",
+      "probe": {
+        "profile": "full",
+        "state": "degraded",
+        "steps": [
+          {
+            "name": "transport",
+            "isPassed": true,
+            "connectMs": 80,
+            "ms": 180,
+            "bytes": 32768,
+            "destination": 0
+          },
+          {
+            "name": "egress",
+            "isPassed": false,
+            "connectMs": 70,
+            "ms": 120,
+            "bytes": 0,
+            "error": "closed"
+          }
+        ],
+        "isPassed": true,
+        "rttMs": 180,
+        "agoMs": 840000
+      },
+      "connsOk": 412,
+      "bytesDown": 52428800,
+      "activeMs": 840000,
+      "expiresInMs": 61200000
+    },
+    {
+      "tag": "x3",
+      "state": "unknown",
+      "expiresInMs": -5000
+    }
   ]
 }
 ```
@@ -161,7 +363,7 @@ Per outbound:
 | `seenMs` | How long the core has kept the counters of the outbound. |
 | `quarantineLevel`, `quarantineMs` | While the outbound rests after a failure: the level of its rest, which grows with every failure in a row, and how much longer it lasts. |
 | `failures` | Failures of user connections by kind over the life of the outbound: `dial_failed`, `dial_timeout`, `server_unverified` (REALITY did not verify the server), `no_response`, `closed`, `stall`, `partial_stall`. |
-| `probe` | The last current probe that finished: an actual snapshot includes `profile` (including an empty built-in name), `reason` (the probe job's reason), `state`, and attempted `steps` with `name`, `isPassed`, `connectMs` (connection establishment), `ms` (whole step), `bytes`, a `destination` index on success (including zero), or an `error` class on failure. If only legacy result fields exist, `profile`, `reason`, `state`, and `steps` are absent. The compatibility fields remain: `isPassed` means state other than `down`, `rttMs` when it passed, `error` as a class when it failed, and `agoMs` since its result. Failure classes include `dial_failed`, `dial_timeout`, `server_unverified`, `closed`, `timeout`, `no_progress`, `status_<N>`, `short_body` and `other`; addresses and error text are never sent. Stale or canceled probes do not replace the snapshot. A network change clears it unless the configured action is IGNORE. |
+| `probe` | The last current probe that finished: an actual snapshot includes `profile` (an explicitly configured name), `reason` (the probe job's reason), `state`, and attempted `steps` with `name`, `isPassed`, `connectMs` (connection establishment), `ms` (whole step), `bytes`, a `destination` index on success (including zero), or an `error` class on failure. If only legacy result fields exist, `profile`, `reason`, `state`, and `steps` are absent. The compatibility fields remain: `isPassed` means state other than `down`, `rttMs` when it passed, `error` as a class when it failed, and `agoMs` since its result. Failure classes include `dial_failed`, `dial_timeout`, `server_unverified`, `closed`, `timeout`, `no_progress`, `status_<N>`, `short_body` and `other`; addresses and error text are never sent. Stale or canceled probes do not replace the snapshot. A network change clears it unless the configured action is IGNORE. |
 | `udp` | Optional latest completed UDP probe in the current network: `state` (`ok`, `lossy`, `dead` or `unsupported`), `rttMs` and `agoMs`, all present inside the object, including known zero. The two durations are integer milliseconds. Unknown UDP is omitted. Every network notification clears this observation, including the same or empty ID and IGNORE; stale results and replaced handlers cannot republish it. UDP does not change path health, quarantine, selection or provider triggers. Example: `"udp": {"state":"dead","rttMs":0,"agoMs":40000}`. |
 | `connsOk`, `connsFailed`, `bytesUp`, `bytesDown` | User connections and their bytes. |
 | `activeMs` | How long a balancer has chosen the outbound, the current stretch included. |
@@ -193,7 +395,11 @@ arbitrary values.
 An answer other than 200 may carry an error body of the protocol:
 
 ```json
-{ "protocol": 1, "code": "rate_limited", "message": "..." }
+{
+  "protocol": 1,
+  "code": "rate_limited",
+  "message": "..."
+}
 ```
 
 The codes are `unauthorized`, `forbidden`, `rate_limited`, `unavailable`,
@@ -254,7 +460,7 @@ end is not asked again for it, and the lease then ends. A request that
 fails is repeated after the backoff, and while the device is idle only
 with user traffic. The shares and jitter are internal constants. `triggers.leaseRenewal.isEnabled: false` disables renewal fetches while lease expiration still applies.
 
-**The end.** With `expiredLeaseFallback.isEnabled: true` (default), an outbound whose lease ended stays a candidate of the
+**The end.** With присутствующем или отсутствующем `expiredLeaseFallback` без opt-out (default true), an outbound whose lease ended stays a candidate of the
 balancer, the last resort: new connections go to it only while no other
 usable outbound is left, so when every lease ended traffic still goes
 through those outbounds. Old connections are not ended. Such an outbound is

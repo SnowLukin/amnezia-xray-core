@@ -126,7 +126,7 @@ func TestDisabledCommandsAndLocalStatus(t *testing.T) {
 func TestProbeRunAndWait(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(204) }))
 	defer ts.Close()
-	s, inst := service(t, `{"log":{"loglevel":"none"},"outbounds":[{"tag":"drop","protocol":"blackhole"},{"tag":"a1","protocol":"freedom","selection":{"balancer":"auto","cost":1,"probe":"check"}}],"routing":{"rules":[{"domain":["full:a.test"],"balancerTag":"auto"}],"balancers":[{"tag":"auto","strategy":{"type":"leastCost"},"fallbackTag":"drop"}]},"healthObservatory":{"probes":{"requests":{"isEnabled":true},"profiles":[{"name":"check","steps":[{"name":"transport","destinations":["`+ts.URL+`/204"]}]}]}}}`)
+	s, inst := service(t, `{"log":{"loglevel":"none"},"outbounds":[{"tag":"drop","protocol":"blackhole"},{"tag":"a1","protocol":"freedom","selection":{"balancer":"auto","cost":1,"probe":"check"}}],"routing":{"rules":[{"domain":["full:a.test"],"balancerTag":"auto"}],"balancers":[{"tag":"auto","strategy":{"type":"leastCost"},"fallbackTag":"drop"}]},"healthObservatory":{"probes":{"requests":{},"profiles":[{"name":"check","steps":[{"name":"transport","destinations":["`+ts.URL+`/204"]}]}]}}}`)
 	router := inst.GetFeature(routing.RouterType()).(routing.Router)
 	_, err := router.PickRoute(routing_session.AsRoutingContext(session.ContextWithOutbounds(context.Background(), []*session.Outbound{{Target: net.TCPDestination(net.DomainAddress("a.test"), 80)}})))
 	if err != nil {
@@ -159,10 +159,10 @@ func TestProbeRunAndWait(t *testing.T) {
 }
 func TestReportAndProviderExportObject(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(`{"protocol":1,"version":"v1","outbounds":[{"tag":"x1","protocol":"freedom","selection":{"balancer":"auto","cost":1}}],"headers":{"Authorization":"Bearer secret"}}`))
+		w.Write([]byte(`{"protocol":1,"version":"v1","outbounds":[{"tag":"x1","protocol":"freedom","selection":{"balancer":"auto","cost":1,"probe":"check"}}],"headers":{"Authorization":"Bearer secret"}}`))
 	}))
 	defer ts.Close()
-	s, inst := service(t, `{"log":{"loglevel":"none"},"outbounds":[{"tag":"direct","protocol":"freedom"},{"tag":"drop","protocol":"blackhole"}],"routing":{"balancers":[{"tag":"auto","strategy":{"type":"leastCost"},"fallbackTag":"drop"}]},"healthObservatory":{"telemetry":{"report":{"isEnabled":true}},"providers":[{"isEnabled":true,"tag":"fresh","url":"`+ts.URL+`","isPlainHttpAllowed":true,"via":["direct"],"triggers":{"exhausted":{"isEnabled":false},"leaseRenewal":{"isEnabled":false},"backendSchedule":{"isEnabled":false}},"apply":{"balancer":"auto","tagPrefix":"p-","allowedProtocols":["freedom"]}}]}}`)
+	s, inst := service(t, `{"log":{"loglevel":"none"},"outbounds":[{"tag":"direct","protocol":"freedom"},{"tag":"drop","protocol":"blackhole"}],"routing":{"balancers":[{"tag":"auto","strategy":{"type":"leastCost"},"fallbackTag":"drop"}]},"healthObservatory":{"probes":{"profiles":[{"name":"check","steps":[{"name":"transport","destinations":["http://127.0.0.1:1/check"]}]}]},"telemetry":{"report":{}},"providers":[{"tag":"fresh","urls":["`+ts.URL+`"],"isPlainHttpAllowed":true,"via":["direct"],"triggers":{"exhausted":{"isEnabled":false},"leaseRenewal":{"isEnabled":false},"backendSchedule":{"isEnabled":false}},"apply":{"balancer":"auto","tagPrefix":"p-","allowedProtocols":["freedom"]}}]}}`)
 	selector, selectErr := health.FromInstance(inst).OutboundSelector("auto", nil)
 	if selectErr != nil {
 		t.Fatal(selectErr)

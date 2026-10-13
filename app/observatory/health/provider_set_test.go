@@ -35,16 +35,16 @@ type fakeHandler struct {
 
 func TestLoadOutboundsAcceptsSelectionAndRejectsRetiredPath(t *testing.T) {
 	for _, keys := range []string{
-		`"selection":{"balancer":"auto","cost":1}`,
-		`"Path":{"balancer":"auto","cost":1}`,
-		`"PATH":{"balancer":"auto","cost":1}`,
-		`"pAtH":{"balancer":"auto","cost":1}`,
-		`"selection":{"balancer":"auto","cost":1},"PATH":{"balancer":"auto","cost":1}`,
+		`"selection":{"balancer":"auto","probe":"check","cost":1}`,
+		`"Path":{"balancer":"auto","probe":"check","cost":1}`,
+		`"PATH":{"balancer":"auto","probe":"check","cost":1}`,
+		`"pAtH":{"balancer":"auto","probe":"check","cost":1}`,
+		`"selection":{"balancer":"auto","probe":"check","cost":1},"PATH":{"balancer":"auto","probe":"check","cost":1}`,
 	} {
 		t.Run(keys, func(t *testing.T) {
 			raw := json.RawMessage(`[{"tag":"x1","protocol":"freedom",` + keys + `}]`)
 			outbounds, err := loadOutbounds(raw)
-			if keys != `"selection":{"balancer":"auto","cost":1}` {
+			if keys != `"selection":{"balancer":"auto","probe":"check","cost":1}` {
 				if err == nil {
 					t.Fatal("retired path alias accepted")
 				}
@@ -175,7 +175,7 @@ func newApplyFixture(t *testing.T, drain time.Duration, mods ...func(*ProviderCo
 			mod(p)
 		}
 	})
-	o := newObserver(context.Background(), &Config{Providers: []*ProviderConfig{pc}, Features: &FeatureConfig{Events: proto.Bool(true), Report: proto.Bool(true), Quality: proto.Bool(true), MemoryPressure: proto.Bool(true), Pinning: proto.Bool(true), Candidates: proto.Bool(true)}})
+	o := newObserver(context.Background(), &Config{Providers: []*ProviderConfig{pc}, Probes: []*ProbeProfile{{Name: "check", Destination: "http://127.0.0.1/probe"}}, Features: &FeatureConfig{Events: proto.Bool(true), Report: proto.Bool(true), Quality: proto.Bool(true), MemoryPressure: proto.Bool(true), Pinning: proto.Bool(true), Candidates: proto.Bool(true)}})
 	t.Cleanup(func() { o.Close() })
 	f := &applyFixture{o: o, rt: o.providers[0], m: newFakeManager(), seq0: o.e.providers[0].seq}
 	o.ohm = f.m
@@ -218,7 +218,7 @@ func answer(t *testing.T, outbounds ...fakeOutbound) *providerAnswer {
 			outbounds[i].Protocol = "vless"
 		}
 		if outbounds[i].Path == nil {
-			outbounds[i].Path = json.RawMessage(`{"balancer":"auto","cost":1}`)
+			outbounds[i].Path = json.RawMessage(`{"balancer":"auto","probe":"check","cost":1}`)
 		}
 	}
 	body, _ := json.Marshal(map[string]any{"outbounds": outbounds})
@@ -243,7 +243,7 @@ func fixtureAnswerBody(raw []byte) []byte {
 		if _, exists := outbound["selection"]; exists {
 			continue
 		}
-		path, _ := json.Marshal(map[string]any{"balancer": "auto", "cost": 1})
+		path, _ := json.Marshal(map[string]any{"balancer": "auto", "probe": "check", "cost": 1})
 		outbound["selection"] = path
 		changed = true
 	}
@@ -419,7 +419,7 @@ func TestApplyBrokenSetChangesNothing(t *testing.T) {
 func TestApplyRejectsPathCostNotAboveZero(t *testing.T) {
 	for _, cost := range []string{"0", "-1"} {
 		f := newApplyFixture(t, time.Minute)
-		a, err := parseAnswer([]byte(`{"outbounds": [{"tag": "x1", "protocol": "vless", "v": 1, "selection":{"balancer":"auto","cost":` + cost + `}}]}`))
+		a, err := parseAnswer([]byte(`{"outbounds": [{"tag": "x1", "protocol": "vless", "v": 1, "selection":{"balancer":"auto","probe":"check","cost":` + cost + `}}]}`))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -496,7 +496,7 @@ func TestApplySameVersionChecksItsOutbounds(t *testing.T) {
 			kept, seq := f.providerSet(t, 0)
 			a := answer(t, set...)
 			if name == "selection needs cost" {
-				a.heads[0].Selection = json.RawMessage(`{"balancer":"auto","cost":-1}`)
+				a.heads[0].Selection = json.RawMessage(`{"balancer":"auto","probe":"check","cost":-1}`)
 			}
 			a.version = "v1"
 			if _, err := f.apply(t, a); err == nil {
@@ -582,7 +582,7 @@ func TestParseAge(t *testing.T) {
 }
 
 func TestParseAnswer(t *testing.T) {
-	a, err := parseAnswer([]byte(`{"outbounds": [{"tag": "x", "selection":{"balancer":"auto","cost":3}}], "nextRefreshIn": "90m"}`))
+	a, err := parseAnswer([]byte(`{"outbounds": [{"tag": "x", "selection":{"balancer":"auto","probe":"check","cost":3}}], "nextRefreshIn": "90m"}`))
 	if err != nil || a.nextRefreshIn != 90*time.Minute || a.heads[0].Selection == nil {
 		t.Fatalf("parsed %+v, %v", a, err)
 	}
@@ -651,16 +651,16 @@ func TestParseAnswer(t *testing.T) {
 // The version names the set: an answer that differs only in how to take it
 // is the applied set again, not a new one to build.
 func TestVersionIgnoresMetaKeys(t *testing.T) {
-	a1, _ := parseAnswer([]byte(`{"outbounds": [{"tag": "x", "selection":{"balancer":"auto","cost":2}}]}`))
-	a2, _ := parseAnswer([]byte(`{"protocol": 1, "outbounds": [{"tag": "x", "selection":{"balancer":"auto","cost":2}}], "nextRefreshIn": "1h",
+	a1, _ := parseAnswer([]byte(`{"outbounds": [{"tag": "x", "selection":{"balancer":"auto","probe":"check","cost":2}}]}`))
+	a2, _ := parseAnswer([]byte(`{"protocol": 1, "outbounds": [{"tag": "x", "selection":{"balancer":"auto","probe":"check","cost":2}}], "nextRefreshIn": "1h",
 		"serverTime": "2026-10-08T12:00:00Z", "expiresAt": {"x": "2026-10-09T12:00:00Z"}, "baseVersion": "cfg-12"}`))
-	a3, _ := parseAnswer([]byte(`{"outbounds": [{"tag": "x", "selection":{"balancer":"auto","cost":3}}]}`))
-	a4, _ := parseAnswer([]byte(`{"outbounds": [{"tag": "x", "selection":{"balancer":"auto","cost":2}}], "groups": [{"name":"g","cost":3}]}`))
+	a3, _ := parseAnswer([]byte(`{"outbounds": [{"tag": "x", "selection":{"balancer":"auto","probe":"check","cost":3}}]}`))
+	a4, _ := parseAnswer([]byte(`{"outbounds": [{"tag": "x", "selection":{"balancer":"auto","probe":"check","cost":2}}], "groups": [{"name":"g","probe":"check","cost":3}]}`))
 	if a1.version != a2.version || a1.version == a3.version || a1.version == a4.version {
 		t.Fatalf("versions %s %s %s %s; want the first two equal and the others apart", a1.version, a2.version, a3.version, a4.version)
 	}
 	// A set the host saved is the set it saved, with a fresh token or not.
-	saved, err := parseInitial([]byte(`{"outbounds": [{"tag": "x", "selection":{"balancer":"auto","cost":2}}], "headers": {"Authorization": "Bearer t2"},
+	saved, err := parseInitial([]byte(`{"outbounds": [{"tag": "x", "selection":{"balancer":"auto","probe":"check","cost":2}}], "headers": {"Authorization": "Bearer t2"},
 		"receivedAt": "2026-10-08T12:00:00Z"}`))
 	if err != nil || saved.version != a1.version || saved.receivedAt.IsZero() {
 		t.Fatalf("saved set %+v, %v", saved, err)

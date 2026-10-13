@@ -49,7 +49,7 @@ func TestRequestProbeInRunningCore(t *testing.T) {
 	    "balancers": [{"tag": "auto", "fallbackTag": "drop",
 	      "strategy": {"type": "leastCost", "settings": {}}}]},
 	  "healthObservatory": {
-	    "probes": {"requests":{"isEnabled":true},"profiles":[{"name":"host","steps":[{"name":"transport","destinations":["`+ts.URL+`/204"],"timeout":"2s","progressTimeout":"500ms"}]}]}
+	    "probes": {"requests":{},"profiles":[{"name":"host","steps":[{"name":"transport","destinations":["`+ts.URL+`/204"],"timeout":"2s","progressTimeout":"500ms"}]}]}
 	  }
 	}`))
 	if err != nil {

@@ -21,7 +21,16 @@ import (
 
 func measurementInstance(t *testing.T, destination string) (*health.Observer, *core.Instance) {
 	t.Helper()
-	raw := fmt.Sprintf(`{"log":{"loglevel":"none"},"outbounds":[{"tag":"a1","protocol":"freedom","settings":{"finalRules":[{"action":"allow"}]},"selection":{"balancer":"auto","cost":1,"labels":{"node":"n1"}}},{"tag":"direct","protocol":"freedom","settings":{"finalRules":[{"action":"allow"}]}},{"tag":"block","protocol":"blackhole"}],"routing":{"rules":[{"type":"field","network":"tcp","balancerTag":"auto"}],"balancers":[{"tag":"auto","fallbackTag":"block","strategy":{"type":"leastCost","settings":{"networkChanges":{"isEnabled":true,"action":"forget"}}}}]},"healthObservatory":{"telemetry":{"events":{"isEnabled":true},"quality":{"isEnabled":true},"pathLabels":{"isEnabled":true},"report":{"isEnabled":true,"quietSampleFraction":1,"sessionLabels":{"isEnabled":true,"labels":{"cohort":"test"}}}},"network":{"hostLabels":{"isEnabled":true},"labelRequest":{"isEnabled":true,"outbound":"direct","destination":%q,"timeout":"1s","labels":{"asn":"X-Network-Asn","country":"X-Network-Country","region":"X-Network-Region"}}}}}`, destination)
+	return measurementInstanceWithDestinations(t, []string{destination})
+}
+
+func measurementInstanceWithDestinations(t *testing.T, destinations []string) (*health.Observer, *core.Instance) {
+	t.Helper()
+	encoded, err := json.Marshal(destinations)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := fmt.Sprintf(`{"log":{"loglevel":"none"},"outbounds":[{"tag":"a1","protocol":"freedom","settings":{"finalRules":[{"action":"allow"}]},"selection":{"balancer":"auto","cost":1,"labels":{"node":"n1"},"probe":"fixture"}},{"tag":"direct","protocol":"freedom","settings":{"finalRules":[{"action":"allow"}]}},{"tag":"block","protocol":"blackhole"}],"routing":{"rules":[{"type":"field","network":"tcp","balancerTag":"auto"}],"balancers":[{"tag":"auto","fallbackTag":"block","strategy":{"type":"leastCost","settings":{"networkChanges":{"action":"forget"}}}}]},"healthObservatory":{"telemetry":{"events":{},"quality":{},"pathLabels":{},"report":{"quietSampleFraction":1,"sessionLabels":{"labels":{"cohort":"test"}}}},"network":{"hostLabels":{},"labelRequest":{"outbound":"direct","destinations":%s,"timeout":"1s","labels":{"asn":"X-Network-Asn","country":"X-Network-Country","region":"X-Network-Region"}}},"probes":{"profiles":[{"name":"fixture","steps":[{"name":"transport","destinations":["http://127.0.0.1:1/probe"]}]}]}}}`, string(encoded))
 	cfg, err := serial.LoadJSONConfig(strings.NewReader(raw))
 	if err != nil {
 		t.Fatal(err)
@@ -159,5 +168,40 @@ func TestMeasurementHTTPFailureClasses(t *testing.T) {
 				t.Fatal("failure result", all)
 			}
 		})
+	}
+}
+
+func TestMeasurementHTTPAddressFallback(t *testing.T) {
+	var counts [4]atomic.Int32
+	servers := make([]*httptest.Server, 4)
+	destinations := make([]string, 4)
+	for i := range servers {
+		index := i
+		servers[i] = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			counts[index].Add(1)
+			if index == 0 {
+				w.WriteHeader(503)
+				return
+			}
+			if index == 1 {
+				w.WriteHeader(204)
+				return
+			}
+			w.Header().Set("X-Network-Asn", "8359")
+			w.WriteHeader(204)
+		}))
+		defer servers[i].Close()
+		destinations[i] = servers[i].URL
+	}
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Write([]byte(strings.Repeat("working", 8192))) }))
+	defer target.Close()
+	observer, instance := measurementInstanceWithDestinations(t, destinations)
+	observer.NetworkChanged("address-list")
+	measurementTraffic(t, instance, target.URL)
+	measurementWait(t, func() bool { return strings.Contains(string(observer.Status()), `"asn":"8359"`) })
+	for i, want := range []int32{1, 1, 1, 0} {
+		if got := counts[i].Load(); got != want {
+			t.Fatalf("address %d requests=%d want=%d", i, got, want)
+		}
 	}
 }

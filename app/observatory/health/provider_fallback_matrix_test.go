@@ -54,8 +54,8 @@ func TestProviderFailuresKeepBaseUserRoute(t *testing.T) {
 			_ = listener.Close()
 			providers := "[]"
 			if mode != "absent" {
-				providers = fmt.Sprintf(`[{"isEnabled":true,"tag":"fresh","url":%q,"isPlainHttpAllowed":true,"via":["direct"],"timeout":"100ms",
-				  "triggers":{"exhausted":{"isEnabled":false},"leaseRenewal":{"isEnabled":true},"backendSchedule":{"isEnabled":false}},
+				providers = fmt.Sprintf(`[{"tag":"fresh","urls":[%q],"isPlainHttpAllowed":true,"via":["direct"],"timeout":"100ms",
+				  "triggers":{"exhausted":{"isEnabled":false},"leaseRenewal":{},"backendSchedule":{"isEnabled":false}},
 				  "limits":{"minInterval":"10ms","urgentMinInterval":"10ms","maxRefreshesPerHour":2},
 				  "apply":{"balancer":"auto","tagPrefix":"p-","allowedProtocols":["freedom"],"maxOutbounds":1}}]`, url)
 			}
@@ -63,9 +63,9 @@ func TestProviderFailuresKeepBaseUserRoute(t *testing.T) {
 			  "log":{"loglevel":"none"},
 			  "inbounds":[{"listen":"127.0.0.1","port":%d,"protocol":"socks"}],
 			  "outbounds":[{"tag":"direct","protocol":"freedom","settings":{"finalRules":[{"action":"allow"}]}},
-			    {"tag":"p-base","protocol":"freedom","settings":{"finalRules":[{"action":"allow"}]},"selection":{"balancer":"auto","cost":1}}],
+			    {"tag":"p-base","protocol":"freedom","settings":{"finalRules":[{"action":"allow"}]},"selection":{"balancer":"auto","probe":"check","cost":1}}],
 			  "routing":{"balancers":[{"tag":"auto","strategy":{"type":"leastCost","settings":{}},"fallbackTag":"direct"}],"rules":[{"type":"field","network":"tcp","balancerTag":"auto"}]},
-			  "healthObservatory":{"telemetry":{"events":{"isEnabled":true}},"providers":%s}
+			  "healthObservatory":{"probes":{"profiles":[{"name":"check","steps":[{"name":"transport","destinations":["http://127.0.0.1/probe"]}]}]},"telemetry":{"events":{}},"providers":%s}
 			}`, socksPort, providers)
 			cfg, err := core.LoadConfig("json", strings.NewReader(document))
 			if err != nil {

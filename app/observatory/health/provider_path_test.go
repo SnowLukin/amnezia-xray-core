@@ -30,7 +30,7 @@ func TestProviderOnlyPathObservedAtHandlerConstruction(t *testing.T) {
 		return &fakeHandler{tag: cfg.Tag, proxy: cfg.ProxySettings}, nil
 	}
 	a, err := parseAnswer([]byte(`{"outbounds":[{"tag":"x1","protocol":"freedom","selection":{"balancer":"auto","group":"relay"}}],
-		"groups":[{"name":"relay","cost":1}]}`))
+		"groups":[{"name":"relay","probe":"check","cost":1}]}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,7 +59,7 @@ func TestProviderPathStagingRollsBackOnFailure(t *testing.T) {
 				}
 				return &fakeHandler{tag: cfg.Tag, proxy: cfg.ProxySettings}, nil
 			}
-			first, err := parseAnswer([]byte(`{"version":"old","outbounds":[{"tag":"x1","protocol":"freedom","selection":{"balancer":"auto","cost":1}}]}`))
+			first, err := parseAnswer([]byte(`{"version":"old","outbounds":[{"tag":"x1","protocol":"freedom","selection":{"balancer":"auto","probe":"check","cost":1}}]}`))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -76,7 +76,7 @@ func TestProviderPathStagingRollsBackOnFailure(t *testing.T) {
 				f.o.replaceRules = func(*router.Config, bool) error { t.Fatal("invalid routing reached ReplaceRules"); return nil }
 				routing = `,"routing":{"rules":[],"balancers":[{"tag":"auto","strategy":{"type":"leastCost","settings":{}}},{"tag":"auto","strategy":{"type":"leastCost","settings":{}}}]}`
 			}
-			second, err := parseAnswer([]byte(`{"version":"new","outbounds":[{"tag":"x2","protocol":"freedom","selection":{"balancer":"auto","cost":2}}]` + routing + `}`))
+			second, err := parseAnswer([]byte(`{"version":"new","outbounds":[{"tag":"x2","protocol":"freedom","selection":{"balancer":"auto","probe":"check","cost":2}}]` + routing + `}`))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -104,7 +104,7 @@ func TestProviderGroupCannotJoinBaseGroup(t *testing.T) {
 		t.Fatal(err)
 	}
 	old := f.m.GetHandler("p-x1")
-	a, err := parseAnswer([]byte(`{"outbounds":[{"tag":"x2","protocol":"vless","v":1,"selection":{"balancer":"auto","group":"relay"}}],"groups":[{"name":"relay","cost":2}]}`))
+	a, err := parseAnswer([]byte(`{"outbounds":[{"tag":"x2","protocol":"vless","v":1,"selection":{"balancer":"auto","group":"relay"}}],"groups":[{"name":"relay","probe":"check","cost":2}]}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -122,7 +122,7 @@ func TestProviderGroupCannotJoinBaseGroup(t *testing.T) {
 func TestProviderRefreshKeepsOwnGroupName(t *testing.T) {
 	f := newApplyFixture(t, time.Minute)
 	for _, tag := range []string{"x1", "x2"} {
-		a, err := parseAnswer([]byte(`{"outbounds":[{"tag":"` + tag + `","protocol":"vless","v":1,"selection":{"balancer":"auto","group":"relay"}}],"groups":[{"name":"relay","cost":2}]}`))
+		a, err := parseAnswer([]byte(`{"outbounds":[{"tag":"` + tag + `","protocol":"vless","v":1,"selection":{"balancer":"auto","group":"relay"}}],"groups":[{"name":"relay","probe":"check","cost":2}]}`))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -142,13 +142,13 @@ func TestProviderPathValidationLeavesPreviousSet(t *testing.T) {
 		{"wrong balancer", `,"selection":{"balancer":"other","cost":1}`, ``, "balancer must be auto"},
 		{"no cost", `,"selection":{"balancer":"auto"}`, ``, "needs cost above zero"},
 		{"unknown group", `,"selection":{"balancer":"auto","group":"missing"}`, ``, "unknown group missing"},
-		{"group cost", `,"selection":{"balancer":"auto","group":"relay","cost":1}`, `,"groups":[{"name":"relay","cost":2}]`, "cost is set by group relay"},
-		{"group false", `,"selection":{"balancer":"auto","group":"relay","probePolicy":"regular"}`, `,"groups":[{"name":"relay","cost":2}]`, "probePolicy is set by group relay"},
-		{"group zero interval", `,"selection":{"balancer":"auto","group":"relay","returnToCheaper":{"isEnabled":false}}`, `,"groups":[{"name":"relay","cost":2}]`, "returnToCheaper is set by group relay"},
-		{"group empty probe", `,"selection":{"balancer":"auto","group":"relay","probe":""}`, `,"groups":[{"name":"relay","cost":2}]`, "probe is set by group relay"},
-		{"group null", `,"selection":{"balancer":"auto","group":"relay","cost":null}`, `,"groups":[{"name":"relay","cost":2}]`, "must not be null"},
+		{"group cost", `,"selection":{"balancer":"auto","group":"relay","cost":1}`, `,"groups":[{"name":"relay","probe":"check","cost":2}]`, "cost is set by group relay"},
+		{"group false", `,"selection":{"balancer":"auto","group":"relay","probePolicy":"regular"}`, `,"groups":[{"name":"relay","probe":"check","cost":2}]`, "probePolicy is set by group relay"},
+		{"group zero interval", `,"selection":{"balancer":"auto","group":"relay","returnToCheaper":{}}`, `,"groups":[{"name":"relay","probe":"check","cost":2}]`, "returnToCheaper is set by group relay"},
+		{"group empty probe", `,"selection":{"balancer":"auto","group":"relay","probe":""}`, `,"groups":[{"name":"relay","probe":"check","cost":2}]`, "probe is set by group relay"},
+		{"group null", `,"selection":{"balancer":"auto","group":"relay","cost":null}`, `,"groups":[{"name":"relay","probe":"check","cost":2}]`, "must not be null"},
 		{"empty group name", `,"selection":{"balancer":"auto","group":"","cost":1}`, ``, "group needs name of at most 128 bytes including its prefix"},
-		{"unknown probe", `,"selection":{"balancer":"auto","cost":1,"probe":"missing"}`, ``, "unknown probe missing"},
+		{"unknown probe", `,"selection":{"balancer":"auto","probe":"check","cost":1,"probe":"missing"}`, ``, "unknown probe missing"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newApplyFixture(t, time.Minute)
@@ -175,7 +175,7 @@ func TestProviderPathValidationLeavesPreviousSet(t *testing.T) {
 
 func TestProviderUnusedGroupDeclarationIsRejected(t *testing.T) {
 	f := newApplyFixture(t, time.Minute)
-	a, err := parseAnswer([]byte(`{"outbounds":[{"tag":"x1","protocol":"vless","v":1,"selection":{"balancer":"auto","cost":1}}],"groups":[{"name":"unused","cost":2}]}`))
+	a, err := parseAnswer([]byte(`{"outbounds":[{"tag":"x1","protocol":"vless","v":1,"selection":{"balancer":"auto","probe":"check","cost":1}}],"groups":[{"name":"unused","probe":"check","cost":2}]}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -198,7 +198,7 @@ func TestProviderReordersOwnGroup(t *testing.T) {
 	first, err := parseAnswer([]byte(`{"version":"first","outbounds":[
 		{"tag":"x1","protocol":"vless","v":1,"selection":{"balancer":"auto","group":"relay"}},
 		{"tag":"x2","protocol":"vless","v":1,"selection":{"balancer":"auto","group":"relay"}}],
-		"groups":[{"name":"relay","cost":1}]}`))
+		"groups":[{"name":"relay","probe":"check","cost":1}]}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -210,7 +210,7 @@ func TestProviderReordersOwnGroup(t *testing.T) {
 	second, err := parseAnswer([]byte(`{"version":"second","outbounds":[
 		{"tag":"x2","protocol":"vless","v":1,"selection":{"balancer":"auto","group":"relay"}},
 		{"tag":"x1","protocol":"vless","v":1,"selection":{"balancer":"auto","group":"relay"}}],
-		"groups":[{"name":"relay","cost":1}]}`))
+		"groups":[{"name":"relay","probe":"check","cost":1}]}`))
 	if err != nil {
 		t.Fatal(err)
 	}

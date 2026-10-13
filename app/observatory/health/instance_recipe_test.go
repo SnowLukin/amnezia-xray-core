@@ -20,10 +20,10 @@ func wireGuardScenarioV2(t *testing.T, passive, probe, more, strategy string) (s
 	if err := json.Unmarshal([]byte(passive), &evidenceRecipe); err != nil {
 		t.Fatal(err)
 	}
-	evidence := map[string]any{"partialStalls": map[string]any{"isEnabled": true}}
+	evidence := map[string]any{"partialStalls": map[string]any{}}
 	for old, name := range map[string]string{"dialTimeout": "dialTimeout", "firstByteTimeout": "firstReply", "stallTimeout": "stalledRequests", "udpReplyTimeout": "udpReplies"} {
 		if v, ok := evidenceRecipe[old]; ok {
-			evidence[name] = map[string]any{"isEnabled": true, "timeout": v}
+			evidence[name] = map[string]any{"timeout": v}
 		}
 	}
 	var step map[string]any
@@ -34,23 +34,23 @@ func wireGuardScenarioV2(t *testing.T, passive, probe, more, strategy string) (s
 	delete(step, "destination")
 	step["name"] = "wg"
 	step["destinations"] = []any{destination}
-	settings := map[string]any{"failover": map[string]any{"downAudit": map[string]any{"isEnabled": true}, "closeSilent": map[string]any{"isEnabled": true}}}
+	settings := map[string]any{"failover": map[string]any{"downAudit": map[string]any{}, "closeSilent": map[string]any{}}}
 	failover := settings["failover"].(map[string]any)
 	if v, ok := evidenceRecipe["stallTimeout"]; ok {
 		failover["closeSilent"].(map[string]any)["after"] = v
 	}
-	if v, ok := evidenceRecipe["shouldKeepPendingOnDown"].(bool); ok {
-		failover["closePending"] = map[string]any{"isEnabled": !v}
+	if v, ok := evidenceRecipe["shouldKeepPendingOnDown"].(bool); ok && v {
+		failover["closePending"] = map[string]any{"isEnabled": false}
 	}
-	if v, ok := evidenceRecipe["shouldKeepSilentOnDown"].(bool); ok {
-		failover["closeSilent"].(map[string]any)["isEnabled"] = !v
+	if v, ok := evidenceRecipe["shouldKeepSilentOnDown"].(bool); ok && v {
+		failover["closeSilent"].(map[string]any)["isEnabled"] = false
 	}
 	observer := map[string]any{
 		"evidence":  evidence,
-		"probes":    map[string]any{"requests": map[string]any{"isEnabled": true}, "profiles": []any{map[string]any{"name": "wg", "steps": []any{step}}}},
-		"host":      map[string]any{"pinning": map[string]any{"isEnabled": true}},
-		"resources": map[string]any{"tunnelSleep": map[string]any{"isEnabled": true}},
-		"telemetry": map[string]any{"events": map[string]any{"isEnabled": true}},
+		"probes":    map[string]any{"requests": map[string]any{}, "profiles": []any{map[string]any{"name": "wg", "steps": []any{step}}}},
+		"host":      map[string]any{"pinning": map[string]any{}},
+		"resources": map[string]any{"tunnelSleep": map[string]any{}},
+		"telemetry": map[string]any{"events": map[string]any{}},
 	}
 	if more != "" {
 		var recipe struct {
@@ -67,7 +67,7 @@ func wireGuardScenarioV2(t *testing.T, passive, probe, more, strategy string) (s
 			resources["tunnelSleep"].(map[string]any)["afterLastUse"] = recipe.Sleep.AfterLastUse
 		}
 		if recipe.Sleep.CloseIdleAfter != "" {
-			resources["closeUnchosenIdle"] = map[string]any{"isEnabled": true, "after": recipe.Sleep.CloseIdleAfter}
+			resources["closeUnchosenIdle"] = map[string]any{"after": recipe.Sleep.CloseIdleAfter}
 		}
 	}
 	if strategy != "" {
@@ -80,7 +80,7 @@ func wireGuardScenarioV2(t *testing.T, passive, probe, more, strategy string) (s
 		if err := json.Unmarshal([]byte("{"+strategy+"}"), &recipe); err != nil {
 			t.Fatal(err)
 		}
-		settings["returnToCheaper"] = map[string]any{"isEnabled": true, "interval": recipe.Return.Interval, "minHoldTime": recipe.MinHoldTime}
+		settings["returnToCheaper"] = map[string]any{"interval": recipe.Return.Interval, "minHoldTime": recipe.MinHoldTime}
 	}
 	rawObserver, err := json.Marshal(observer)
 	if err != nil {

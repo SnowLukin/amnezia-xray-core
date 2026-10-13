@@ -52,20 +52,7 @@ func TestJSONProbeStepsThroughRequestProbe(t *testing.T) {
 				}
 			}))
 			defer srv.Close()
-			config := fmt.Sprintf(`{
-				"log":{"loglevel":"none"},
-				"outbounds":[
-					{"tag":"drop","protocol":"blackhole"},
-					{"tag":"a1","protocol":"freedom","selection":{"balancer":"auto","cost":1,"probe":"full"}}
-				],
-				"routing":{"rules":[{"domain":["full:a.test"],"balancerTag":"auto"}],
-					"balancers":[{"tag":"auto","fallbackTag":"drop","strategy":{"type":"leastCost","settings":{}}}]},
-				"healthObservatory":{"probes":{"requests":{"isEnabled":true},"stepProfiles":{"isEnabled":true},"profiles":[{"name":"full","steps":[
-					{"name":"transport","destinations":[%q],"minBytes":4096,"timeout":"2s","progressTimeout":"500ms"},
-					{"name":"egress","isOptional":true,"destinations":[%q],"timeout":"2s","progressTimeout":"500ms"},
-					{"name":"egress_ip","isOptional":true,"destinations":[%q],"minBytes":4096,"timeout":"2s","progressTimeout":"500ms"}
-				]}]}}
-			}`, srv.URL+"/transport", srv.URL+"/egress", srv.URL+"/egress_ip")
+			config := fmt.Sprintf(`{"log":{"loglevel":"none"},"outbounds":[{"tag":"drop","protocol":"blackhole"},{"tag":"a1","protocol":"freedom","selection":{"balancer":"auto","cost":1,"probe":"full"}}],"routing":{"rules":[{"domain":["full:a.test"],"balancerTag":"auto"}],"balancers":[{"tag":"auto","fallbackTag":"drop","strategy":{"type":"leastCost","settings":{}}}]},"healthObservatory":{"probes":{"requests":{},"stepProfiles":{},"profiles":[{"name":"full","steps":[{"name":"transport","destinations":[%q],"minBytes":4096,"timeout":"2s","progressTimeout":"500ms"},{"name":"egress","isOptional":true,"destinations":[%q],"timeout":"2s","progressTimeout":"500ms"},{"name":"egress_ip","isOptional":true,"destinations":[%q],"minBytes":4096,"timeout":"2s","progressTimeout":"500ms"}]}]}}}`, srv.URL+"/transport", srv.URL+"/egress", srv.URL+"/egress_ip")
 			cfg, err := core.LoadConfig("json", strings.NewReader(config))
 			if err != nil {
 				t.Fatal(err)

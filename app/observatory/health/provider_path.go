@@ -46,7 +46,7 @@ func answerCost(obj map[string]json.RawMessage, where string) (float32, error) {
 	return cost, nil
 }
 
-// ReturnIsEnabled preserves an omitted flag so selection inherits its balancer.
+// A returnToCheaper block enables the override; omission inherits the balancer.
 func answerReturn(obj map[string]json.RawMessage, where string) (int64, *bool, error) {
 	raw := obj["returnToCheaper"]
 	if len(raw) == 0 {
@@ -56,16 +56,14 @@ func answerReturn(obj map[string]json.RawMessage, where string) (int64, *bool, e
 	if err != nil {
 		return 0, nil, err
 	}
-	var enabled *bool
+	enabled := true
 	if v := ret["isEnabled"]; len(v) > 0 {
-		var b bool
-		if json.Unmarshal(v, &b) != nil {
-			return 0, nil, fmt.Errorf("%s.returnToCheaper.isEnabled must be a boolean", where)
+		if json.Unmarshal(v, &enabled) != nil || enabled {
+			return 0, nil, fmt.Errorf("%s.returnToCheaper.isEnabled only accepts false to disable inherited returnToCheaper", where)
 		}
-		enabled = &b
 	}
 	if len(ret["interval"]) == 0 {
-		return 0, enabled, nil
+		return 0, &enabled, nil
 	}
 	value, err := answerString(ret, "interval", where+".returnToCheaper")
 	if err != nil {
@@ -75,7 +73,7 @@ func answerReturn(obj map[string]json.RawMessage, where string) (int64, *bool, e
 	if err != nil || d <= 0 {
 		return 0, nil, fmt.Errorf("%s.returnToCheaper.interval must be a positive duration", where)
 	}
-	return int64(d), enabled, nil
+	return int64(d), &enabled, nil
 }
 
 func answerProbePolicy(obj map[string]json.RawMessage, where string) (bool, error) {
@@ -263,13 +261,19 @@ func validateAnswerProbes(s *settings, a *providerAnswer) error {
 	}
 	for _, p := range a.paths {
 		if p.IsProbeOnly && !s.features.Candidates {
-			return fmt.Errorf("selection isProbeOnly requires probes.candidates.isEnabled")
+			return fmt.Errorf("selection isProbeOnly requires healthObservatory.probes.candidates")
+		}
+		if p.Group == "" && p.Probe == "" {
+			return fmt.Errorf("outbound %s selection requires an explicit probe profile", p.Tag)
 		}
 		if p.Probe != "" && !known[p.Probe] {
 			return fmt.Errorf("outbound %s: unknown probe %s", p.Tag, p.Probe)
 		}
 	}
 	for _, g := range a.groups {
+		if g.Probe == "" {
+			return fmt.Errorf("group %s requires an explicit probe profile", g.Name)
+		}
 		if g.Probe != "" && !known[g.Probe] {
 			return fmt.Errorf("group %s: unknown probe %s", g.Name, g.Probe)
 		}

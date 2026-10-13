@@ -9,14 +9,14 @@ import (
 )
 
 func TestHealthUDPConfigStrict(t *testing.T) {
-	for _, udp := range []string{`null`, `{"isEnabled":true}`, `{"destinations":["stun.test"]}`, `{"destinations":[":3478"]}`, `{"destinations":["stun.test:0"]}`, `{"destinations":["stun.test:65536"]}`, `{"destinations":["stun.test:3478"],"timeout":"0s"}`, `{"interval":"0s"}`, `{"requests":0}`, `{"perHour":-1}`, `{"timeout":2}`, `{"requests":null}`, `{"unknown":1}`} {
+	for _, udp := range []string{`{}`, `{}`, `{"destinations":["stun.test"]}`, `{"destinations":[":3478"]}`, `{"destinations":["stun.test:0"]}`, `{"destinations":["stun.test:65536"]}`, `{"destinations":["stun.test:3478"],"timeout":"0s"}`, `{"interval":"0s"}`, `{"requests":0}`, `{"perHour":-1}`, `{"timeout":2}`, `{"requests":null}`, `{"unknown":1}`} {
 		t.Run(udp, func(t *testing.T) {
 			if _, err := buildUDPHealth(`{"probes":{"udp":` + udp + `}}`); err == nil {
 				t.Fatal("invalid udp accepted")
 			}
 		})
 	}
-	c, err := buildUDPHealth(`{"probes":{"udp":{"isEnabled":true,"destinations":["stun.test:3478","[::1]:19302"],"requests":8,"interval":"250ms","timeout":"3s","perHour":2}},"evidence":{"udpReplies":{"isEnabled":false,"timeout":"5s"}}}`)
+	c, err := buildUDPHealth(`{"probes":{"udp":{"destinations":["stun.test:3478","[::1]:19302"],"requests":8,"interval":"250ms","timeout":"3s","perHour":2}}}`)
 	if err != nil {
 		t.Fatal(err)
 	}

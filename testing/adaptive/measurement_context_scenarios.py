@@ -64,19 +64,19 @@ def checks_main(xray, work):
             strategy={"networkChangeAction": "forget", "minHoldTime": "0s",
                       "returnToCheaper": {"interval": "1s"}}))
         health = cfg["healthObservatory"]
-        health["telemetry"]["probeMeasurements"] = {"isEnabled": True}
+        health["telemetry"]["probeMeasurements"] = {}
         # The same local target serves the three reserve paths. Allow the
         # focused fixture to exercise real returns without spending a minute
         # waiting on the shared SNI quota. Core timing constants stay intact.
         health["probes"]["limits"].update(perServerNamePerMinute=60, perMinute=120)
         if enabled:
             health["network"]["labelRequest"] = {
-                "isEnabled": True, "outbound": "direct", "destination": endpoint, "timeout": "1s",
+                "outbound": "direct", "destinations": [endpoint], "timeout": "1s",
                 "labels": {"asn": "X-Network-Asn", "country": "X-Network-Country", "region": "X-Network-Region"}}
-            health["network"]["hostLabels"] = {"isEnabled": True}
-            health["telemetry"]["pathLabels"] = {"isEnabled": True}
+            health["network"]["hostLabels"] = {}
+            health["telemetry"]["pathLabels"] = {}
             health["telemetry"]["report"]["sessionLabels"] = {
-                "isEnabled": True, "labels": {"cohort": "stand"}}
+                "labels": {"cohort": "stand"}}
             for outbound in cfg["outbounds"]:
                 if "selection" in outbound:
                     outbound["selection"]["labels"] = {"node": outbound["tag"], "location": "NL"}

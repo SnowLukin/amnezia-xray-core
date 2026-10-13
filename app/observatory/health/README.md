@@ -8,25 +8,44 @@
 
 ```jsonc
 {
-  "outbounds": [{
-    "tag": "nl-1", "protocol": "vless", "settings": {},
-    "selection": { "balancer": "auto", "cost": 1, "probe": "full" }
-  }],
-  "routing": { "balancers": [{
-    "tag": "auto", "fallbackTag": "block",
-    "strategy": { "type": "leastCost", "settings": {
-      "failover": {}, "groups": {}, "returnToCheaper": {},
-      "startup": {}, "networkChanges": {}
-    } }
-  }] },
+  "outbounds": [
+    {
+      "tag": "nl-1",
+      "protocol": "vless",
+      "settings": {},
+      "selection": {
+        "balancer": "auto",
+        "cost": 1,
+        "probe": "full"
+      }
+    }
+  ],
+  "routing": {
+    "balancers": [
+      {
+        "tag": "auto",
+        "fallbackTag": "block",
+        "strategy": {
+          "type": "leastCost",
+          "settings": {
+            "failover": {},
+            "groups": [],
+            "returnToCheaper": {},
+            "startup": {},
+            "networkChanges": {}
+          }
+        }
+      }
+    ]
+  },
   "healthObservatory": {
-    "evidence": {},     // Каждый вид улик — отдельный isEnabled
-    "probes": {},       // Профили, лимиты, шаги, кандидаты, UDP, запросы хоста
-    "network": {},      // Проверка интернета, свидетели, память, метки
-    "host": {},         // Пины, UserPresent, сигнал нехватки памяти
-    "resources": {},    // Сон туннеля и закрытие невыбранных тихих соединений
-    "telemetry": {},    // Журнал, отчёт, качество, метрики, метки путей
-    "providers": []     // Каждый источник включается отдельно
+    "evidence": {},
+    "probes": {},
+    "network": {},
+    "host": {},
+    "resources": {},
+    "telemetry": {},
+    "providers": []
   }
 }
 ```
@@ -36,70 +55,112 @@
 ## Правила конфигурации
 
 1. Конфиг, команды хоста и протокол провайдера — camelCase; события, Status и отчёт — snake_case. Измеренные длительности — целые `…Ms` / `…_ms`.
-2. Фича включается `isEnabled: true` либо положительным `should…`. Признаки состояния (`isProbeOnly`, `isPassed`, `is_expired`) не являются флагами отключения.
-3. Нет блока/поля — его документированное умолчание. Оно одинаково при JSON и прямом protobuf-конфиге; нужны поля с присутствием, а не инверсия bool ради нулевого protobuf.
-4. `"0s"` не выключает фичу. Периоды и таймауты включённых механизмов должны быть положительными. Ноль допустим для настоящей немедленной задержки (`whenCostAbove.after`, `nextRefreshIn`, `returnToCheaper.minHoldTime`, `networkChange.settleDelay`) и бессрочного пина; отсутствие пина — `isEnabled: false`.
-5. Неизвестные новые ключи и запрещённые сочетания отвергаются с полным путём. Неизвестные upstream-ключи обрабатываются штатно Xray. Старых adaptive-имён и алиасов в новом конфиге нет.
-6. Выключенный механизм не создаёт свои горутины, таймеры, очереди, трекеры, гистограммы или сетевые запросы. Если соседняя включённая фича использует общий трекер, его стоимость относится к ней. Одной проверки bool недостаточно для заявления «нулевой overhead»: это отдельный критерий ревью и бенчмарка.
-7. Нельзя принять зависимость молча. Ошибка называет требуемый флаг. Общая инфраструктура проб/очереди не считается пользовательской фичей и доступна самому failover.
-8. Заданные настройки выключенного блока валидируются, но не запускаются. Конфликтующие активные связи отвергаются. Это позволяет хранить подготовленный профиль фичи и переключать один bool.
-9. Ограничения безопасности не отключаются флагами: проверка схемы, ceilings, лимиты запроса провайдера, Retry-After, контроль stale результата и защита тегов всегда обязательны.
-
-Поправка [naming.md](naming-current.md): заменить правило об «отключении периода нулём» правилом выше; для конфиг-флагов важнее положительное действие, чем формальное начало с любого предиката. `shouldKeepPendingOnDown` формально предикат, но по смыслу отключает действие.
+2. Дополнительная фича включается наличием блока. Нет блока — фича выключена; `{}` включает прежние умолчания. Это относится к конфигу ядра и ответу провайдера.
+3. `isEnabled` допускается только как `false`, чтобы выключить механизм с умолчанием true: базовые TCP-улики, `closePending`, `closeSilent`, `triggers.exhausted`, `leaseRenewal`, `backendSchedule`, `expiredLeaseFallback`. Override `returnToCheaper` пути/группы может выключить унаследованную политику. `isEnabled:true` и флаги у дополнительных блоков отвергаются.
+4. Фичи с обязательными значениями задаются прямо: `groups: []`, `providers: []`, `startup.pin: {outbound,…}`, `probes.udp: {destinations,…}`, `network.connectivity: {destinations,outbound,…}`. `probePolicy`, `confirmWithProbe`, `networkChanges.action` остаются режимами.
+5. Периоды и таймауты положительные. `0s` допускается только для немедленных задержек и бессрочного пина; отсутствующий `startup.pin` не закрепляет путь.
+6. Неизвестные ключи, старые внешние имена и нарушенные зависимости отвергаются с полным путём. JSON и прямой protobuf-конфиг имеют одинаковые умолчания.
+7. Отсутствующая дополнительная фича не создаёт свою фоновую работу, трекеры, очереди или запросы. Общие структуры принадлежат включённому потребителю.
+8. Каждый путь имеет явный профиль `selection.probe` либо наследует `groups[].probe`. Адреса пробы задаёт backend, молчаливого встроенного Google URL нет.
+9. Защитные потолки, quota/backoff, Retry-After и stale-result проверки обязательны. Присутствие блока не отменяет эти ограничения.
 
 ## Outbound и leastCost
 
 ```jsonc
 {
   "outbounds": [
-    { "tag": "nl-1", "protocol": "vless", "settings": {},
+    {
+      "tag": "nl-1",
+      "protocol": "vless",
+      "settings": {},
       "selection": {
-        "balancer": "auto", "cost": 1, "probe": "full",
+        "balancer": "auto",
+        "cost": 1,
+        "probe": "full",
         "probePolicy": "regular",
-        "returnToCheaper": { "isEnabled": true, "interval": "10m" },
-        "labels": { "node": "nl-ams-12", "location": "NL" }
-      } },
-    { "tag": "pool-a", "protocol": "vless", "settings": {},
-      "selection": { "balancer": "auto", "group": "pool" } },
-    { "tag": "pool-probe", "protocol": "vless", "settings": {},
-      "selection": { "balancer": "auto", "group": "pool", "isProbeOnly": true } },
-    { "tag": "direct", "protocol": "freedom" },
-    { "tag": "block", "protocol": "blackhole" }
+        "returnToCheaper": {
+          "interval": "10m"
+        },
+        "labels": {
+          "node": "nl-ams-12",
+          "location": "NL"
+        }
+      }
+    },
+    {
+      "tag": "pool-a",
+      "protocol": "vless",
+      "settings": {},
+      "selection": {
+        "balancer": "auto",
+        "group": "pool"
+      }
+    },
+    {
+      "tag": "pool-probe",
+      "protocol": "vless",
+      "settings": {},
+      "selection": {
+        "balancer": "auto",
+        "group": "pool",
+        "isProbeOnly": true
+      }
+    },
+    {
+      "tag": "direct",
+      "protocol": "freedom"
+    },
+    {
+      "tag": "block",
+      "protocol": "blackhole"
+    }
   ],
-  "routing": { "balancers": [{
-    "tag": "auto", "fallbackTag": "block",
-    "strategy": { "type": "leastCost", "settings": {
-      "failover": {
-        "shouldProbeBeforeSwitch": true,
-        "confirmWithProbe": "auto",
-        "downAudit": { "isEnabled": false },
-        "closePending": { "isEnabled": true },
-        "closeSilent": { "isEnabled": true, "after": "8s" }
-      },
-      "groups": { "isEnabled": true, "items": [
-        { "name": "pool", "cost": 1, "probe": "full", "failedInRowToLeave": 3 }
-      ] },
-      "returnToCheaper": {
-        "isEnabled": true, "interval": "30m", "minHoldTime": "2m",
-        "onNetworkChange": { "isEnabled": false, "scope": "unknown" }
-      },
-      "startup": {
-        "outbound": "nl-1",
-        "pin": { "isEnabled": false, "outbound": "nl-1", "timeout": "0s" }
-      },
-      "networkChanges": { "isEnabled": false, "action": "recheck" }
-    } }
-  }] }
+  "routing": {
+    "balancers": [
+      {
+        "tag": "auto",
+        "fallbackTag": "block",
+        "strategy": {
+          "type": "leastCost",
+          "settings": {
+            "failover": {
+              "shouldProbeBeforeSwitch": true,
+              "confirmWithProbe": "auto",
+              "closePending": {},
+              "closeSilent": {
+                "after": "8s"
+              }
+            },
+            "groups": [
+              {
+                "name": "pool",
+                "cost": 1,
+                "probe": "full",
+                "failedInRowToLeave": 3
+              }
+            ],
+            "returnToCheaper": {
+              "interval": "30m",
+              "minHoldTime": "2m"
+            },
+            "startup": {
+              "outbound": "nl-1"
+            }
+          }
+        }
+      }
+    ]
+  }
 }
 ```
 
 `selection` описывает участие в балансировщике; `path` звучит как сетевой маршрут и не объясняет, почему без него адрес не наблюдается. Концепция «путь» остаётся в Status, событиях и документации: это выбранный туннель. Отдельный объект на outbound сохраняю: исключаем списки regex и дублирование свойств адреса в наблюдателе.
 
-Цена, проба, резерв и интервал возврата остаются у одиночного участника или группы; член группы их не переопределяет. `isProbeOnly` и метки — свойства самого адреса. Ссылка selection.group требует groups.isEnabled=true и объявленного item; prepared items при groups=false допустимы, пока нет активных ссылок. Одна группа и один balancer на участника; принадлежность к нескольким балансировщикам пока не нужна и умножила бы состояния и неоднозначные пины.
+Цена, проба, резерв и интервал возврата остаются у одиночного участника или группы; член группы их не переопределяет. `isProbeOnly` и метки — свойства самого адреса. Ссылка selection.group требует объявленного элемента groups[]. Выключенные подготовленные группы не хранятся в конфиге. Одна группа и один balancer на участника; принадлежность к нескольким балансировщикам пока не нужна и умножила бы состояния и неоднозначные пины.
 
 Порядок при равной цене, случайная стартовая позиция группы, её карантин и `failedInRowToLeave` сохраняются. `up` остаётся предпочтительнее `degraded` до сравнения цены. Пин не считает `down` рабочим: возвращает сигнал хосту по действующему контракту. `fallbackTag` остаётся upstream-ключом; для leastCost обязателен явный fallback, чтобы исчерпание не отправило трафик в первый outbound конфигурации.
 
-`probePolicy` выбирает политику проб: `regular` (умолчание) или `onDemand` (нынешний isLazy). Это режим планирования, а не отрицательный bool. On-demand не означает probe-only и не исключает самый дешёвый неизвестный путь из начального выбора. Он сохраняет нынешние пропуски периодического возврата/автоматического плана host probes; explicit host request, initial choice и failover сохраняются. Включение нового режима не меняет цену и право передавать user traffic. Возвратный override у адреса/группы задаёт isEnabled и период именно для периодических попыток, сохраняя ручную пробу и failover. При отсутствии override наследуется balancer. Для override с `isEnabled: true` требуется включённый `returnToCheaper` балансировщика.
+`probePolicy` выбирает политику проб: `regular` (умолчание) или `onDemand` (нынешний isLazy). Это режим планирования, а не отрицательный bool. On-demand не означает probe-only и не исключает самый дешёвый неизвестный путь из начального выбора. Он сохраняет нынешние пропуски периодического возврата/автоматического плана host probes; explicit host request, initial choice и failover сохраняются. Включение нового режима не меняет цену и право передавать user traffic. Возвратный override у адреса/группы задаёт период именно для периодических попыток, сохраняя ручную пробу и failover. При отсутствии override наследуется balancer; `isEnabled:false` выключает унаследованный возврат. Для включённого override требуется блок `returnToCheaper` балансировщика.
 
 ## Наблюдение, сеть, ресурсы и телеметрия
 
@@ -107,51 +168,121 @@
 {
   "healthObservatory": {
     "evidence": {
-      "dialFailures": { "isEnabled": true },
-      "dialTimeout": { "isEnabled": true, "timeout": "6s" },
-      "serverUnverified": { "isEnabled": true },
-      "firstReply": { "isEnabled": true, "timeout": "5s" },
-      "earlyClose": { "isEnabled": true },
-      "stalledRequests": { "isEnabled": true, "timeout": "8s" },
-      "partialStalls": { "isEnabled": false, "maxAge": "30s" },
-      "udpReplies": { "isEnabled": false, "timeout": "5s" },
-      "loneFailureProbe": { "isEnabled": false, "after": "2m" }
+      "dialFailures": {},
+      "dialTimeout": {
+        "timeout": "6s"
+      },
+      "serverUnverified": {},
+      "firstReply": {
+        "timeout": "5s"
+      },
+      "earlyClose": {},
+      "stalledRequests": {
+        "timeout": "8s"
+      },
+      "partialStalls": {
+        "maxAge": "30s"
+      },
+      "udpReplies": {
+        "timeout": "5s"
+      },
+      "loneFailureProbe": {
+        "after": "2m"
+      }
     },
     "probes": {
       "profiles": [],
-      "stepProfiles": { "isEnabled": false },
-      "limits": { "maxConcurrent": 1, "perMinute": 12, "perServerNamePerMinute": 3, "hostPerMinute": 4 },
-      "candidates": { "isEnabled": false, "keepVerified": 1, "recheckInterval": "15m" },
-      "requests": { "isEnabled": false, "maxOutbounds": 8, "timeout": "2m" },
-      "udp": { "isEnabled": false, "destinations": ["stun.example.test:3478"],
-               "requests": 5, "interval": "200ms", "timeout": "2s", "perHour": 6 }
+      "stepProfiles": {},
+      "limits": {
+        "maxConcurrent": 1,
+        "perMinute": 12,
+        "perServerNamePerMinute": 3,
+        "hostPerMinute": 4
+      },
+      "candidates": {
+        "keepVerified": 1,
+        "recheckInterval": "15m"
+      },
+      "requests": {
+        "maxOutbounds": 8,
+        "timeout": "2m"
+      },
+      "udp": {
+        "destinations": [
+          "stun.example.test:3478"
+        ],
+        "requests": 5,
+        "interval": "200ms",
+        "timeout": "2s",
+        "perHour": 6
+      }
     },
     "network": {
-      "connectivity": { "isEnabled": false, "outbound": "direct", "destination": "https://edge.example/204", "timeout": "4s" },
-      "witnesses": { "isEnabled": false, "outbounds": ["direct"] },
-      "memory": { "isEnabled": false, "maxNetworks": 16 },
-      "hostLabels": { "isEnabled": false },
-      "labelRequest": { "isEnabled": false, "outbound": "direct", "destination": "https://edge.example/whoami",
-                        "labels": { "asn": "X-Network-Asn", "country": "X-Network-Country" },
-                        "timeout": "4s", "requestsPerHour": 6 }
+      "connectivity": {
+        "outbound": "direct",
+        "destinations": [
+          "https://edge.example/204",
+          "https://backup.example/204"
+        ],
+        "timeout": "4s"
+      },
+      "witnesses": {
+        "outbounds": [
+          "direct"
+        ]
+      },
+      "memory": {
+        "maxNetworks": 16
+      },
+      "hostLabels": {},
+      "labelRequest": {
+        "outbound": "direct",
+        "destinations": [
+          "https://edge.example/whoami",
+          "https://backup.example/whoami"
+        ],
+        "labels": {
+          "asn": "X-Network-Asn",
+          "country": "X-Network-Country"
+        },
+        "timeout": "4s",
+        "requestsPerHour": 6
+      }
     },
     "host": {
-      "pinning": { "isEnabled": false },
-      "userPresent": { "isEnabled": false, "freshness": "60s", "minInterval": "3h" },
-      "memoryPressure": { "isEnabled": false }
+      "pinning": {},
+      "userPresent": {
+        "freshness": "60s",
+        "minInterval": "3h"
+      },
+      "memoryPressure": {}
     },
     "resources": {
-      "tunnelSleep": { "isEnabled": false, "afterLastUse": "5m" },
-      "closeUnchosenIdle": { "isEnabled": false, "after": "15s" }
+      "tunnelSleep": {
+        "afterLastUse": "5m"
+      },
+      "closeUnchosenIdle": {
+        "after": "15s"
+      }
     },
     "telemetry": {
-      "events": { "isEnabled": false, "maxEvents": 1000, "maxBytes": 65536 },
-      "report": { "isEnabled": false, "interval": "24h", "quietSampleFraction": 0,
-                  "sessionLabels": { "isEnabled": false, "labels": { "cohort": "adaptive-a" } } },
-      "quality": { "isEnabled": false },
-      "pathLabels": { "isEnabled": false },
-      "probeMeasurements": { "isEnabled": false },
-      "metrics": { "isEnabled": false }
+      "events": {
+        "maxEvents": 1000,
+        "maxBytes": 65536
+      },
+      "report": {
+        "interval": "24h",
+        "quietSampleFraction": 0,
+        "sessionLabels": {
+          "labels": {
+            "cohort": "adaptive-a"
+          }
+        }
+      },
+      "quality": {},
+      "pathLabels": {},
+      "probeMeasurements": {},
+      "metrics": {}
     },
     "providers": []
   }
@@ -174,26 +305,60 @@ Status доступен по запросу без отдельного collecto
 
 ```jsonc
 {
-  "healthObservatory": { "probes": {
-    "stepProfiles": { "isEnabled": true },
-    "profiles": [
-      { "name": "large", "steps": [
-        { "name": "transport", "destinations": ["https://edge.example/bytes/32768"],
-          "method": "GET", "expectedStatuses": [200], "minBytes": 32768,
-          "timeout": "8s", "progressTimeout": "4s", "isOptional": false }
-      ] },
-      { "name": "full", "steps": [
-        { "name": "transport", "destinations": ["https://a.example/bytes/32768", "https://b.example/bytes/32768"],
-          "minBytes": 32768, "timeout": "8s", "progressTimeout": "4s", "isOptional": false },
-        { "name": "egress", "destinations": ["https://edge.example/204"],
-          "timeout": "5s", "isOptional": true }
-      ] }
-    ]
-  } }
+  "healthObservatory": {
+    "probes": {
+      "stepProfiles": {},
+      "profiles": [
+        {
+          "name": "large",
+          "steps": [
+            {
+              "name": "transport",
+              "destinations": [
+                "https://edge.example/bytes/32768"
+              ],
+              "method": "GET",
+              "expectedStatuses": [
+                200
+              ],
+              "minBytes": 32768,
+              "timeout": "8s",
+              "progressTimeout": "4s",
+              "isOptional": false
+            }
+          ]
+        },
+        {
+          "name": "full",
+          "steps": [
+            {
+              "name": "transport",
+              "destinations": [
+                "https://a.example/bytes/32768",
+                "https://b.example/bytes/32768"
+              ],
+              "minBytes": 32768,
+              "timeout": "8s",
+              "progressTimeout": "4s",
+              "isOptional": false
+            },
+            {
+              "name": "egress",
+              "destinations": [
+                "https://edge.example/204"
+              ],
+              "timeout": "5s",
+              "isOptional": true
+            }
+          ]
+        }
+      ]
+    }
+  }
 }
 ```
 
-Одношаговый профиль не требует `stepProfiles.isEnabled`. Два и более шага либо optional-шаг требуют его; 1–4 шага и 1–4 адреса на шаг, обязательные сначала. Пропадает двусмысленность двух форм `destination` и `steps` в одном профиле. Это преобразование формы, не сетевого поведения: один шаг остаётся одной пробой, required/optional, fallback-адреса и отдельный mux-worker сохраняются. Без профиля остаётся нынешняя встроенная generate_204; для продукта разумно явно задать свой профиль.
+Одношаговый профиль не требует `stepProfiles`. Два и более шага либо optional-шаг требуют его; 1–4 шага и 1–4 адреса на шаг, обязательные сначала. Пропадает двусмысленность двух форм `destination` и `steps` в одном профиле. Это преобразование формы, не сетевого поведения: один шаг остаётся одной пробой, required/optional, fallback-адреса и отдельный mux-worker сохраняются. У каждого пути обязателен явный профиль, собственный или у группы. Встроенного адреса проверки нет.
 
 `probeReason`, имя профиля, исходы шагов и UDP-оценка продолжают описывать фактическую работу. Совмещать TCP, HTTP и UDP в один «общий timeout» не используем: они измеряют разные вещи.
 
@@ -221,7 +386,7 @@ Status доступен по запросу без отдельного collecto
 В gRPC отдельные `NetworkLost` и `Release`, а не перегрузка `NetworkChanged.lost` и `Pin.outbound=""`. Отдельные PeekReport и TakeReport вместо комбинаций двух bool `take/final`. `NetworkChangedWithLabels` остаётся отдельной операцией ради существующего вызова без меток; это принятая совместимость входа из measurement-context, не алиас запрещённого config-имени.
 
 `NetworkChangedWithLabels` всегда передаёт базовый сигнал смены сети. При
-`network.hostLabels.isEnabled: false` аргумент меток игнорируется целиком; при
+`network.hostLabels: false` аргумент меток игнорируется целиком; при
 включённом флаге ошибочный JSON возвращает ошибку без смены сети. Валидный объект
 содержит строковые значения: не более восьми допустимых меток, имя 1–24 символа
 `a-z0-9_`, значение 1–32 символа `A-Za-z0-9._:-`; неверные записи отбрасываются.
@@ -240,32 +405,68 @@ UDP-пробы и отменённые результаты исключаютс
 API использует единый Result для операций, уже отдающих JSON: Go возвращает типизированные data/error, gRPC передаёт ту же DTO и транспортный error отдельно, libXray сохраняет внешний base64 контейнер, C — JSON-строку, Swift декодирует DTO. CLI показывает decoded JSON. У существующих signal-функций сохраняется ABI bool/void (в частности NetworkChanged без меток); false означает, что сигнал не принят. Подробное effective состояние читается через Status. Это осознанное исключение к унификации ради старого хоста, а не два алиаса операции. Функции запуска/остановки libXray и кита не меняются.
 
 ```jsonc
-// Успех. data типизирован конкретной операцией; run присутствует у рабочего наблюдателя
-{ "success": true, "run": "232c4c611bfbaee9", "data": { "is_queued": true, "retry_in_ms": 0 } }
+{
+  "success": true,
+  "run": "232c4c611bfbaee9",
+  "data": {
+    "is_queued": true,
+    "retry_in_ms": 0
+  }
+}
 ```
 
 ```jsonc
-// Ошибка: один code, сообщение без адресов, headers и credentials
-{ "success": false, "error": { "code": "feature_disabled", "message": "probes.requests.isEnabled is false" } }
+{
+  "success": false,
+  "error": {
+    "code": "feature_disabled",
+    "message": "requires healthObservatory.probes.requests"
+  }
+}
 ```
 
 Коды: `not_running`, `feature_disabled`, `invalid_argument`, `unknown_balancer`, `unknown_outbound`, `unknown_provider`, `stale_run`, `not_found`, `rate_limited`, `busy`. JSON не содержит bool с другим типом в другой функции. JSON-команды выключенной фиче возвращают `feature_disabled`; legacy bool-сигналы возвращают false. Хост может посылать их без предварительного Status.
 
 ```jsonc
-// RequestProbe: isUdp проходит через ВСЕ мосты. wait — транспортное удобство, не новая работа
-{ "balancer": "auto", "outbounds": ["a1", "b1"], "isUdp": true }
+{
+  "balancer": "auto",
+  "outbounds": [
+    "a1",
+    "b1"
+  ],
+  "isUdp": true
+}
 ```
 
 ```jsonc
-// Тикет. Result.data; любые будущие результаты сверяются и по run, и по id
-{ "id": 3, "run": "232c4c611bfbaee9", "outbounds": ["a1", "b1"] }
+{
+  "id": 3,
+  "run": "232c4c611bfbaee9",
+  "outbounds": [
+    "a1",
+    "b1"
+  ]
+}
 ```
 
 ```jsonc
-// ProbeResult(run,id): data
-{ "id": 3, "run": "232c4c611bfbaee9", "balancer": "auto", "is_udp": true,
-  "age_ms": 2100, "is_done": true, "end": "done",
-  "outbounds": [{ "outbound": "a1", "result": "ok", "source": "probe", "rtt_ms": 113 }] }
+{
+  "id": 3,
+  "run": "232c4c611bfbaee9",
+  "balancer": "auto",
+  "is_udp": true,
+  "age_ms": 2100,
+  "is_done": true,
+  "end": "done",
+  "outbounds": [
+    {
+      "outbound": "a1",
+      "result": "ok",
+      "source": "probe",
+      "rtt_ms": 113
+    }
+  ]
+}
 ```
 
 `ExportProviderSet` отдаёт прежний `{seq,set}`, включая credentials: только защищённое локальное хранилище. Смена названия не делает набор аналитикой. Между запусками хост сохраняет сам set, не runtime ticket/run. Пины и их release сохраняют существующую защиту run. Расширение run на ProbeResult закрывает совпадение числового id после перезапуска; это новая проверка команды, для неё нужен собственный тест.
@@ -275,43 +476,157 @@ API использует единый Result для операций, уже о�
 Status — **только локальная диагностика**, не разрешённая аналитическая DTO. API использует явный `is_local_only: true`; это предупреждение в данных, а защита — в коде хоста, принимающем только тип Summary. `server_name`, raw `network_id`, `last_error`, состав providers/probe_requests/groups сохраняются локально. Журнал также локальный. Credentials есть только в ExportProviderSet, не в Status.
 
 ```jsonc
-// Status.data; пример сокращён до одного пути, остальные текущие поля сохраняются
 {
-  "is_local_only": true, "run": "232c4c611bfbaee9",
-  "network_id": "opaque-local-network", "network": { "host": { "type": "wifi" }, "ip": { "asn": "12345" } },
-  "is_network_up": true, "connectivity": "ok", "generation": 1, "is_idle": false, "is_memory_low": false,
-  "features": { "quality": false, "events": false, "report": true, "udp_probe": false },
-  "probes_queued": 0, "probes_running": 0,
-  "paths": [{ "outbound": "b1", "state": "up", "reason": "probe", "for_ms": 4072,
-              "is_probe_only": false, "server_name": "node.example", "labels": { "node": "nl-ams-12" } }],
-  "balancers": [{ "balancer": "auto", "active": "b1", "is_exhausted": false, "active_for_ms": 4072, "candidates": ["a1", "b1"] }]
+  "is_local_only": true,
+  "run": "232c4c611bfbaee9",
+  "network_id": "opaque-local-network",
+  "network": {
+    "host": {
+      "type": "wifi"
+    },
+    "ip": {
+      "asn": "12345"
+    }
+  },
+  "is_network_up": true,
+  "connectivity": "ok",
+  "generation": 1,
+  "is_idle": false,
+  "is_memory_low": false,
+  "features": {
+    "quality": false,
+    "events": false,
+    "report": true,
+    "udp_probe": false
+  },
+  "probes_queued": 0,
+  "probes_running": 0,
+  "paths": [
+    {
+      "outbound": "b1",
+      "state": "up",
+      "reason": "probe",
+      "for_ms": 4072,
+      "is_probe_only": false,
+      "server_name": "node.example",
+      "labels": {
+        "node": "nl-ams-12"
+      }
+    }
+  ],
+  "balancers": [
+    {
+      "balancer": "auto",
+      "active": "b1",
+      "is_exhausted": false,
+      "active_for_ms": 4072,
+      "candidates": [
+        "a1",
+        "b1"
+      ]
+    }
+  ]
 }
 ```
 
 `features` в полном Status — карта всех effective флагов, не только четырёх в примере; её сборка только при вызове Status. Поля ресурсов/health/probes/group/provider сохраняют нынешние имена, кроме названий, явно перечисленных в миграции. Недоступное измерение отсутствует, измеренный ноль остаётся.
 
 ```jsonc
-// DrainEvents.data. Конверт и названия событий сохраняются
-{ "events": [{ "seq": 27, "ts": 1791896412345, "type": "path_state",
-               "fields": { "outbound": "b1", "state": "suspect", "reason": "traffic", "is_strong": false } }], "dropped": 0 }
+{
+  "events": [
+    {
+      "seq": 27,
+      "ts": 1791896412345,
+      "type": "path_state",
+      "fields": {
+        "outbound": "b1",
+        "state": "suspect",
+        "reason": "traffic",
+        "is_strong": false
+      }
+    }
+  ],
+  "dropped": 0
+}
 ```
 
 ```jsonc
-// PeekReport / TakeReport.data — только агрегаты и разрешённые метки
 {
-  "health_run": "232c4c611bfbaee9", "report_reason": "snapshot", "report_index": 1,
-  "is_quiet_sample": false, "window_ms": 88523, "session_ms": 88523,
-  "switches": 2, "switch_reasons": { "start": 1, "failover": 1 },
-  "switch_history": [{ "from": "a1", "to": "b1", "reason": "failover" }],
-  "path_down_count": 1, "probes": 3, "probes_failed": 1, "probe_bytes": 68082,
-  "active": { "auto": "b1" }, "is_balancer_exhausted": false, "is_network_up": true,
-  "labels": { "cohort": "adaptive-a" }, "path_labels": { "b1": { "node": "nl-ams-12" } },
-  "paths": { "b1": { "state": "up", "active_ms": 4134, "bytes_up": 130, "bytes_down": 4237,
-                     "conns_ok": 1, "conns_failed": 0, "probes": 1, "probe_bytes": 33590 } },
-  "quality": [{ "is_network_known": false, "duration_ms": 87407,
-                "network": { "host": { "type": "wifi" }, "ip": { "asn": "12345" } },
-                "paths": { "b1": { "ttfb_count": 1, "ttfb_p50_ms": 60, "tcp_count": 1, "tcp_rtt_p50_ms": 20,
-                                     "probe_count": 1, "probe_failed_count": 0, "probe_connect_p50_ms": 104, "probe_reasons": { "failover": 1 } } } }]
+  "health_run": "232c4c611bfbaee9",
+  "report_reason": "snapshot",
+  "report_index": 1,
+  "is_quiet_sample": false,
+  "window_ms": 88523,
+  "session_ms": 88523,
+  "switches": 2,
+  "switch_reasons": {
+    "start": 1,
+    "failover": 1
+  },
+  "switch_history": [
+    {
+      "from": "a1",
+      "to": "b1",
+      "reason": "failover"
+    }
+  ],
+  "path_down_count": 1,
+  "probes": 3,
+  "probes_failed": 1,
+  "probe_bytes": 68082,
+  "active": {
+    "auto": "b1"
+  },
+  "is_balancer_exhausted": false,
+  "is_network_up": true,
+  "labels": {
+    "cohort": "adaptive-a"
+  },
+  "path_labels": {
+    "b1": {
+      "node": "nl-ams-12"
+    }
+  },
+  "paths": {
+    "b1": {
+      "state": "up",
+      "active_ms": 4134,
+      "bytes_up": 130,
+      "bytes_down": 4237,
+      "conns_ok": 1,
+      "conns_failed": 0,
+      "probes": 1,
+      "probe_bytes": 33590
+    }
+  },
+  "quality": [
+    {
+      "is_network_known": false,
+      "duration_ms": 87407,
+      "network": {
+        "host": {
+          "type": "wifi"
+        },
+        "ip": {
+          "asn": "12345"
+        }
+      },
+      "paths": {
+        "b1": {
+          "ttfb_count": 1,
+          "ttfb_p50_ms": 60,
+          "tcp_count": 1,
+          "tcp_rtt_p50_ms": 20,
+          "probe_count": 1,
+          "probe_failed_count": 0,
+          "probe_connect_p50_ms": 104,
+          "probe_reasons": {
+            "failover": 1
+          }
+        }
+      }
+    }
+  ]
 }
 ```
 
@@ -334,52 +649,52 @@ Status — **только локальная диагностика**, не ра
 | Нет первого ответа | `evidence.firstReply.isEnabled` | true | Blackhole после успешного dial |
 | Закрылось до ответа | `evidence.earlyClose.isEnabled` | true | Lazy transport показывает отказ при закрытии |
 | Запрос без прогресса | `evidence.stalledRequests.isEnabled` | true | Зависший путь с существующими соединениями |
-| Частичный stall | `evidence.partialStalls.isEnabled` | false | Дополнительная эвристика; включается самостоятельно |
-| UDP-улики | `evidence.udpReplies.isEnabled` | false | Отдельный тип traffic tracking |
-| Lone-проба | `evidence.loneFailureProbe.isEnabled` | false | Дополнительный запрос; требует хотя бы одного path-level источника: dialFailures, dialTimeout или serverUnverified |
+| Частичный stall | `evidence.partialStalls` | false | Дополнительная эвристика; включается самостоятельно |
+| UDP-улики | `evidence.udpReplies` | false | Отдельный тип traffic tracking |
+| Lone-проба | `evidence.loneFailureProbe` | false | Дополнительный запрос; требует хотя бы одного path-level источника: dialFailures, dialTimeout или serverUnverified |
 | Проба перед switch | `failover.shouldProbeBeforeSwitch` | true | Не переводить на непроверенный туннель |
 | Подтверждение suspect | `failover.confirmWithProbe` | auto | Это политика основного failover, не выключающий флаг |
-| Down audit | `failover.downAudit.isEnabled` | false | Дополнительная проверка после strong passive down; требует confirmWithProbe:auto и хотя бы одного path-level detector |
+| Down audit | `failover.downAudit` | false | Дополнительная проверка после strong passive down; требует confirmWithProbe:auto и хотя бы одного path-level detector |
 | Закрыть ждущие соединения down | `failover.closePending.isEnabled` | true | Даёт приложению возможность повторить на новом пути |
 | Закрыть замолчавшие соединения down | `failover.closeSilent.isEnabled` | true | Не держать реально зависший запрос; active не закрывается |
-| Возврат дешевле по таймеру | `returnToCheaper.isEnabled` | false | Экономия поверх основного failover |
-| Возврат на смене сети | `returnToCheaper.onNetworkChange.isEnabled` | false | Требует returnToCheaper и networkChanges этого balancer |
-| Группы | `groups.isEnabled` | false | Требует items/ссылки group только при включении |
+| Возврат дешевле по таймеру | `returnToCheaper` | false | Экономия поверх основного failover |
+| Возврат на смене сети | `returnToCheaper.onNetworkChange` | false | Требует returnToCheaper и networkChanges этого balancer |
+| Группы | `groups[]` | false | Массив объявленных групп; ссылки group должны разрешаться |
 | Политика проб по потребности | `selection.probePolicy` / группа | regular | onDemand выбирает режим бывшего isLazy; initial/failover/explicit host probe не блокирует |
 | Стартовать на знакомом пути | `startup.outbound` | Пусто | Явный тег включает предпочтение, не новый timer |
-| Пины хоста | `host.pinning.isEnabled` | false | Ручная политика продукта |
-| Стартовый pin | `startup.pin.isEnabled` | false | Требует host.pinning, чтобы хост мог Release |
-| Реакция выбора на смену сети | `networkChanges.isEnabled` | false | Дополнительный reset/recheck; measurement epochs по NetworkChanged не зависят от него |
-| Память сетей | `network.memory.isEnabled` | false | Дополнительный bounded LRU решений |
-| Проверка интернета | `network.connectivity.isEnabled` | false | Отдельные прямые запросы; destination/outbound обязательны |
-| Свидетели наличия сети | `network.witnesses.isEnabled` | false | Непустой список; работают без active connectivity check, в том числе после Host NetworkLost; failure witness не роняет сеть |
-| UserPresent | `host.userPresent.isEnabled` | false | Дополнительные пробы по сигналу ОС; 3h — только интервал включённого механизма |
-| Сигнал памяти | `host.memoryPressure.isEnabled` | false | Дополнительные ограничители/освобождение; поддержка сигнала без sleep/quality допустима |
-| Сон AWG | `resources.tunnelSleep.isEnabled` | false | Меняет lifecycle туннеля |
-| Тихие невыбранные соединения | `resources.closeUnchosenIdle.isEnabled` | false | Независимо от tunnelSleep; только способные outbound |
-| Многошаговые пробы | `probes.stepProfiles.isEnabled` | false | Single mandatory step допустим без фичи |
-| Probe-only кандидаты | `probes.candidates.isEnabled` + `selection.isProbeOnly` | false | Источник не обязателен; кандидат не получает user traffic |
-| UDP-проба | `probes.udp.isEnabled` | false | Адреса обязательны; измеряет, не меняет TCP health/выбор |
-| Пробы хоста | `probes.requests.isEnabled` | false | UDP request дополнительно требует probes.udp |
-| TCP quality | `telemetry.quality.isEnabled` | false | Измеряет, не выбирает |
-| Журнал событий | `telemetry.events.isEnabled` | false | Локальная диагностика; report не зависит |
-| Отчёт окна | `telemetry.report.isEnabled` | false | Аналитика, хост сам забирает без core report timer |
+| Пины хоста | `host.pinning` | false | Ручная политика продукта |
+| Стартовый pin | `startup.pin` | false | Требует host.pinning, чтобы хост мог Release |
+| Реакция выбора на смену сети | `networkChanges` | false | Дополнительный reset/recheck; measurement epochs по NetworkChanged не зависят от него |
+| Память сетей | `network.memory` | false | Дополнительный bounded LRU решений |
+| Проверка интернета | `network.connectivity` | false | Отдельные прямые запросы; destinations/outbound обязательны |
+| Свидетели наличия сети | `network.witnesses` | false | Непустой список; работают без active connectivity check, в том числе после Host NetworkLost; failure witness не роняет сеть |
+| UserPresent | `host.userPresent` | false | Дополнительные пробы по сигналу ОС; 3h — только интервал включённого механизма |
+| Сигнал памяти | `host.memoryPressure` | false | Дополнительные ограничители/освобождение; поддержка сигнала без sleep/quality допустима |
+| Сон AWG | `resources.tunnelSleep` | false | Меняет lifecycle туннеля |
+| Тихие невыбранные соединения | `resources.closeUnchosenIdle` | false | Независимо от tunnelSleep; только способные outbound |
+| Многошаговые пробы | `probes.stepProfiles` | false | Single mandatory step допустим без фичи |
+| Probe-only кандидаты | `probes.candidates` + `selection.isProbeOnly` | false | Источник не обязателен; кандидат не получает user traffic |
+| UDP-проба | `probes.udp` | false | Адреса обязательны; измеряет, не меняет TCP health/выбор |
+| Пробы хоста | `probes.requests` | false | UDP request дополнительно требует probes.udp |
+| TCP quality | `telemetry.quality` | false | Измеряет, не выбирает |
+| Журнал событий | `telemetry.events` | false | Локальная диагностика; report не зависит |
+| Отчёт окна | `telemetry.report` | false | Аналитика, хост сам забирает без core report timer |
 | Выборка тихих сессий | `telemetry.report.quietSampleFraction` > 0 | 0 | Добавляет долю, не выключающий флаг; требуется report |
-| Метрики | `telemetry.metrics.isEnabled` | false | Экспорт; требует штатный metrics exporter |
+| Метрики | `telemetry.metrics` | false | Экспорт; требует штатный metrics exporter |
 | Status | Вызов `Status()` | Доступен | Read-on-demand, дополнительной фоновой фичи нет |
-| Метки сети хоста | `network.hostLabels.isEnabled` | false | Независимы от качества и сети решений |
-| Метки сети по IP | `network.labelRequest.isEnabled` | false | Собственный ограниченный кеш; IP не хранится; hostLabels-off host не мешает |
-| Метки путей | `telemetry.pathLabels.isEnabled` | false | selection/group.labels валидируются, когда заданы; не меняют выбор |
-| Метки сессии | `telemetry.report.sessionLabels.isEnabled` | false | Требует report |
-| Замеры проб резервов | `telemetry.probeMeasurements.isEnabled` | false | Использует выполненные пробы, не добавляет сетевых запросов |
-| Источник свежих адресов | `providers[i].isEnabled` | false | Базовый набор работает независимо |
+| Метки сети хоста | `network.hostLabels` | false | Независимы от качества и сети решений |
+| Метки сети по IP | `network.labelRequest` | false | Собственный ограниченный кеш; IP не хранится; hostLabels-off host не мешает |
+| Метки путей | `telemetry.pathLabels` | false | selection/group.labels валидируются, когда заданы; не меняют выбор |
+| Метки сессии | `telemetry.report.sessionLabels` | false | Требует report |
+| Замеры проб резервов | `telemetry.probeMeasurements` | false | Использует выполненные пробы, не добавляет сетевых запросов |
+| Источник свежих адресов | `providers[i]` | false | Базовый набор работает независимо |
 | Refresh по exhaustion | `triggers.exhausted.isEnabled` | true у включённого provider | Запрашивает ресурс, который закончился |
-| Periodic/minHealthy/cost/maxAge/network refresh | Собственный `isEnabled` каждого блока | false | Дополнительные поводы; minHealthy считает real usable |
+| Periodic/minHealthy/cost/maxAge/network refresh | Наличие каждого блока | false | Дополнительные поводы; minHealthy считает real usable |
 | Продление аренды | `triggers.leaseRenewal.isEnabled` | true у provider | Сохранить выданный слот |
 | Запрос по nextRefreshIn | `triggers.backendSchedule.isEnabled` | true у provider | Повод задаёт бэк, все лимиты сохраняются |
 | Истёкшая аренда как последний резерв | `apply.expiredLeaseFallback.isEnabled` | true у provider | Текущее сохранение последнего шанса; не гарантирует серверный слот |
 
-Исключения к «любой комбинации»: только явные связи из таблицы. Ошибки, например: `auto.returnToCheaper.onNetworkChange requires auto.returnToCheaper.isEnabled and auto.networkChanges.isEnabled`; `selection pool-probe: isProbeOnly requires healthObservatory.probes.candidates.isEnabled`; `RequestProbe isUdp requires probes.udp.isEnabled`; `evidence.loneFailureProbe requires an enabled path-level detector`; `auto.failover.downAudit requires confirmWithProbe:auto and an enabled path-level detector`; `telemetry.report.sessionLabels requires telemetry.report.isEnabled`. Метрики без exporter — ошибка конфига, а runtime JSON-команда без активной фичи — `feature_disabled` (legacy signal ABI возвращает false).
+Исключения к «любой комбинации»: только явные связи из таблицы. Ошибки, например: `auto.returnToCheaper.onNetworkChange requires auto.returnToCheaper and auto.networkChanges`; `selection pool-probe: isProbeOnly requires healthObservatory.probes.candidates`; `RequestProbe isUdp requires probes.udp`; `evidence.loneFailureProbe requires an enabled path-level detector`; `auto.failover.downAudit requires confirmWithProbe:auto and an enabled path-level detector`; `telemetry.report.sessionLabels requires telemetry.report`. Метрики без exporter — ошибка конфига, а runtime JSON-команда без активной фичи — `feature_disabled` (legacy signal ABI возвращает false).
 
 ## Независимость и стоимость выключения
 

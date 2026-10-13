@@ -5,6 +5,7 @@ properties survive translation and are still rejected by the real v2 loader.
 Retired timing knobs are removed; scenarios run against the core constants.
 """
 import copy
+from presence_recipe import config as presence_config, answer as presence_answer
 
 
 def on(value=True):
@@ -40,7 +41,7 @@ def provider_answer(recipe):
             outbound["selection"] = selection(outbound.pop("path"))
     if isinstance(result.get("groups"), list):
         result["groups"] = [selection(g) for g in result["groups"]]
-    return result
+    return presence_answer(result)
 
 
 def provider(recipe):
@@ -81,7 +82,7 @@ def provider(recipe):
     apply.pop("isRoutingAccepted", None)
     apply["expiredLeaseFallback"] = on()
     if isinstance(result.get("initialAnswer"), dict): result["initialAnswer"] = provider_answer(result["initialAnswer"])
-    return result
+    return presence_config({"providers": [result]})["providers"][0]
 
 
 def strategy(recipe):
@@ -125,7 +126,7 @@ def config(recipe):
     result = copy.deepcopy(recipe)
     if "healthObservatory" not in result: return result
     old = result["healthObservatory"]
-    if not old.pop("_standRecipeV1", False): return result
+    if not old.pop("_standRecipeV1", False): return presence_config(result)
     for outbound in result.get("outbounds", []):
         if "path" in outbound: outbound["selection"] = selection(outbound.pop("path"))
     p = old.pop("passive", {}) or {}
@@ -203,7 +204,7 @@ def config(recipe):
         settings["failover"]["closePending"] = on(pending)
         settings["failover"]["closeSilent"] = {**on(silent), "after": evidence["stalledRequests"]["timeout"]}
         balancer["strategy"]["settings"] = settings
-    return result
+    return presence_config(result)
 
 
 def result_payload(result):

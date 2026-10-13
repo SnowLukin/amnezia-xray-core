@@ -10,13 +10,13 @@ func TestPathProbeSelectionUsesOnlyNamedProfile(t *testing.T) {
 		Paths:  []*PathDefinition{{Tag: "plain"}, {Tag: "named", Probe: "default"}},
 		Probes: []*ProbeProfile{{Name: "default", Destination: "https://example.test/probe"}},
 	})
-	if got := s.probeFor("plain").destination; got != defaultProbeDestination {
+	if got := s.probeFor("plain").destination; got != "" {
 		t.Fatalf("plain probe %s", got)
 	}
 	if got := s.probeFor("named").destination; got != "https://example.test/probe" {
 		t.Fatalf("named probe %s", got)
 	}
-	if got := s.probeFor("unlisted").destination; got != defaultProbeDestination {
+	if got := s.probeFor("unlisted").destination; got != "" {
 		t.Fatalf("unlisted probe %s", got)
 	}
 }
@@ -57,7 +57,7 @@ func TestProbeStepsNormalization(t *testing.T) {
 		t.Fatalf("legacy fields %+v", full)
 	}
 	builtin := s.probeFor("other")
-	if len(builtin.steps) != 1 || builtin.steps[0].isOptional || builtin.steps[0].destinations[0] != defaultProbeDestination {
+	if len(builtin.steps) != 0 || builtin.destination != "" {
 		t.Fatalf("built-in steps %+v", builtin.steps)
 	}
 }
@@ -114,11 +114,14 @@ func TestProbeOnlyLegacyAndBuiltinRemainFullTransportChecks(t *testing.T) {
 		Paths:  []*PathDefinition{{Tag: "builtin", IsProbeOnly: true}, {Tag: "legacy", Probe: "old", IsProbeOnly: true}},
 		Probes: []*ProbeProfile{{Name: "old", Destination: "http://node.test/check", MinBytes: 32768}},
 	})
-	for _, tag := range []string{"builtin", "legacy"} {
+	for _, tag := range []string{"legacy"} {
 		p := s.probeFor(tag)
 		if !p.isProbeOnly || len(p.steps) != 1 || p.steps[0].isOptional || p.steps[0].method != "GET" {
 			t.Fatalf("%s profile %+v", tag, p)
 		}
+	}
+	if p := s.probeFor("builtin"); !p.isProbeOnly || len(p.steps) != 0 || p.destination != "" {
+		t.Fatalf("unconfigured candidate created external probe %+v", p)
 	}
 	if step := s.probeFor("legacy").steps[0]; step.destinations[0] != "http://node.test/check" || step.minBytes != 32768 {
 		t.Fatalf("legacy transport %+v", step)

@@ -649,10 +649,14 @@ func (o *Observer) fetchSet(rt *providerRuntime, j *refreshJob, body []byte) (fe
 	if len(via) == 0 {
 		via = []string{""}
 	}
+	urls := rt.cfg.urls
+	if len(urls) == 0 {
+		urls = []string{rt.cfg.url}
+	}
 	var last fetchResult
 	var lastErr error
-	asked := false
-	for i, v := range via {
+	asked, attempt := false, 0
+	for _, v := range via {
 		o.mu.Lock()
 		tag, skip := o.e.resolveVia(v, o.now())
 		low := o.e.memoryLow
@@ -660,57 +664,53 @@ func (o *Observer) fetchSet(rt *providerRuntime, j *refreshJob, body []byte) (fe
 		if skip == "" && tag != "" && o.ohm.GetHandler(tag) == nil {
 			skip = "no such outbound"
 		}
-		f := map[string]any{"provider": rt.cfg.tag, "trigger": j.trigger.String(), "retry": j.retry,
-			"attempt": i + 1, "via": v, "outbound": tag, "method": rt.cfg.method, "refresh": j.refresh}
 		if skip != "" {
-			f["is_ok"] = false
-			f["error"] = skip
-			o.emit("provider_fetch", f)
-			// What a via that was asked met tells the next request more than
-			// an entry skipped after it.
+			attempt++
+			o.emit("provider_fetch", map[string]any{"provider": rt.cfg.tag, "trigger": j.trigger.String(), "retry": j.retry,
+				"attempt": attempt, "via": v, "outbound": tag, "method": rt.cfg.method, "refresh": j.refresh,
+				"is_ok": false, "error": skip})
 			if !asked {
 				last, lastErr = fetchResult{class: "network"}, errors.New(skip)
 			}
 			continue
 		}
-		asked = true
-		o.fetchingVia(tag, 1)
-		start := time.Now()
-		r, err := o.fetchOnce(rt.cfg, j.headers, tag, body)
-		o.fetchingVia(tag, -1)
-		r.via = v
-		// An answer against the protocol still came from the backend: the
-		// request did its job and the refusal is the apply's, so the report
-		// counts it once, as rejected.
-		refused := isAnswerError(err)
-		f["is_ok"] = err == nil || refused
-		f["status"] = r.status
-		f["ms"] = time.Since(start).Milliseconds()
-		f["bytes"] = r.bytes
-		if r.code != "" {
-			f["code"] = r.code
-		}
-		if r.retryAfter > 0 {
-			f["retry_after_ms"] = r.retryAfter.Milliseconds()
-		}
-		if err != nil && !refused {
-			f["error"] = err.Error()
-		}
-		o.emit("provider_fetch", f)
-		if err == nil {
-			return r, nil
-		}
-		if refused {
-			o.emit("provider_apply", map[string]any{"provider": rt.cfg.tag, "trigger": j.trigger.String(),
-				"is_ok": false, "error": err.Error()})
-		}
-		last, lastErr = r, err
-		if r.backend {
-			break
-		}
-		if low {
-			// One request at a time is enough; the backoff brings the next.
-			break
+		for mirror, destination := range urls {
+			attempt++
+			asked = true
+			o.fetchingVia(tag, 1)
+			start := time.Now()
+			r, err := o.fetchURL(rt.cfg, j.headers, tag, destination, body)
+			o.fetchingVia(tag, -1)
+			r.via = v
+			refused := isAnswerError(err)
+			f := map[string]any{"provider": rt.cfg.tag, "trigger": j.trigger.String(), "retry": j.retry,
+				"attempt": attempt, "mirror": mirror + 1, "via": v, "outbound": tag, "method": rt.cfg.method, "refresh": j.refresh,
+				"is_ok": err == nil || refused, "status": r.status, "ms": time.Since(start).Milliseconds(), "bytes": r.bytes}
+			if r.code != "" {
+				f["code"] = r.code
+			}
+			if r.retryAfter > 0 {
+				f["retry_after_ms"] = r.retryAfter.Milliseconds()
+			}
+			if err != nil && !refused {
+				f["error"] = err.Error()
+			}
+			o.emit("provider_fetch", f)
+			if err == nil {
+				return r, nil
+			}
+			if refused {
+				o.emit("provider_apply", map[string]any{"provider": rt.cfg.tag, "trigger": j.trigger.String(), "is_ok": false, "error": err.Error()})
+			}
+			last, lastErr = r, err
+			// An authoritative rejection or an answer that violates the
+			// protocol must not be bypassed with another mirror or route.
+			if r.backend {
+				return last, lastErr
+			}
+			if low {
+				return last, lastErr
+			}
 		}
 	}
 	return last, lastErr
@@ -729,6 +729,10 @@ func (o *Observer) fetchingVia(tag string, delta int) {
 }
 
 func (o *Observer) fetchOnce(cfg *providerSettings, headers map[string]string, tag string, body []byte) (fetchResult, error) {
+	return o.fetchURL(cfg, headers, tag, cfg.url, body)
+}
+
+func (o *Observer) fetchURL(cfg *providerSettings, headers map[string]string, tag, destination string, body []byte) (fetchResult, error) {
 	r := fetchResult{class: "network"}
 	// Counted like a probe, so the request is not taken for user traffic.
 	var wire atomic.Int64
@@ -758,7 +762,7 @@ func (o *Observer) fetchOnce(cfg *providerSettings, headers map[string]string, t
 	if cfg.method == http.MethodPost {
 		payload = bytes.NewReader(body)
 	}
-	req, err := http.NewRequestWithContext(ctx, cfg.method, cfg.url, payload)
+	req, err := http.NewRequestWithContext(ctx, cfg.method, destination, payload)
 	if err != nil {
 		return r, err
 	}
@@ -1293,16 +1297,16 @@ func (o *Observer) checkGroupOwnership(rt *providerRuntime, a *providerAnswer) e
 		flags = &SelectorFeatureConfig{}
 	}
 	if len(a.groups) > 0 && !featureValue(flags.Groups, false) {
-		return fmt.Errorf("provider groups require groups.isEnabled")
+		return fmt.Errorf("provider groups require balancer groups")
 	}
 	for _, path := range a.paths {
 		if path.ReturnIsEnabled != nil && *path.ReturnIsEnabled && !featureValue(flags.ReturnToCheaper, false) {
-			return fmt.Errorf("selection returnToCheaper requires balancer returnToCheaper.isEnabled")
+			return fmt.Errorf("selection returnToCheaper requires balancer returnToCheaper")
 		}
 	}
 	for _, group := range a.groups {
 		if group.ReturnIsEnabled != nil && *group.ReturnIsEnabled && !featureValue(flags.ReturnToCheaper, false) {
-			return fmt.Errorf("group returnToCheaper requires balancer returnToCheaper.isEnabled")
+			return fmt.Errorf("group returnToCheaper requires balancer returnToCheaper")
 		}
 	}
 	for _, g := range a.groups {

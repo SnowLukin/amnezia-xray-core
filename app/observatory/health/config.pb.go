@@ -824,7 +824,9 @@ type ConnectivityConfig struct {
 	// Outbounds whose working connections prove that the network works, such
 	// as a direct outbound for sites outside the tunnel. A connection counts
 	// once it receives successBytes.
-	Witnesses     []string `protobuf:"bytes,6,rep,name=witnesses,proto3" json:"witnesses,omitempty"`
+	Witnesses []string `protobuf:"bytes,6,rep,name=witnesses,proto3" json:"witnesses,omitempty"`
+	// Tried in order until one check succeeds.
+	Destinations  []string `protobuf:"bytes,7,rep,name=destinations,proto3" json:"destinations,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -897,6 +899,13 @@ func (x *ConnectivityConfig) GetMaxPause() int64 {
 func (x *ConnectivityConfig) GetWitnesses() []string {
 	if x != nil {
 		return x.Witnesses
+	}
+	return nil
+}
+
+func (x *ConnectivityConfig) GetDestinations() []string {
+	if x != nil {
+		return x.Destinations
 	}
 	return nil
 }
@@ -1972,9 +1981,11 @@ type ProviderConfig struct {
 	// Names the config the core was started with, as the backend that
 	// generated it named it. An answer that names another one tells the host
 	// to fetch the config anew. Empty takes the one of a fresh initial.
-	BaseVersion   string                 `protobuf:"bytes,12,opt,name=base_version,json=baseVersion,proto3" json:"base_version,omitempty"`
-	IsEnabled     *bool                  `protobuf:"varint,13,opt,name=is_enabled,json=isEnabled,proto3,oneof" json:"is_enabled,omitempty"`
-	Features      *ProviderFeatureConfig `protobuf:"bytes,14,opt,name=features,proto3" json:"features,omitempty"`
+	BaseVersion string                 `protobuf:"bytes,12,opt,name=base_version,json=baseVersion,proto3" json:"base_version,omitempty"`
+	IsEnabled   *bool                  `protobuf:"varint,13,opt,name=is_enabled,json=isEnabled,proto3,oneof" json:"is_enabled,omitempty"`
+	Features    *ProviderFeatureConfig `protobuf:"bytes,14,opt,name=features,proto3" json:"features,omitempty"`
+	// Mirrors, tried in order through each configured via.
+	Urls          []string `protobuf:"bytes,15,rep,name=urls,proto3" json:"urls,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2103,6 +2114,13 @@ func (x *ProviderConfig) GetIsEnabled() bool {
 func (x *ProviderConfig) GetFeatures() *ProviderFeatureConfig {
 	if x != nil {
 		return x.Features
+	}
+	return nil
+}
+
+func (x *ProviderConfig) GetUrls() []string {
+	if x != nil {
+		return x.Urls
 	}
 	return nil
 }
@@ -2902,8 +2920,10 @@ type LabelRequestConfig struct {
 	Labels          map[string]string      `protobuf:"bytes,3,rep,name=labels,proto3" json:"labels,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	Timeout         int64                  `protobuf:"varint,4,opt,name=timeout,proto3" json:"timeout,omitempty"`
 	RequestsPerHour int32                  `protobuf:"varint,5,opt,name=requests_per_hour,json=requestsPerHour,proto3" json:"requests_per_hour,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	// Tried in order until one endpoint returns valid labels.
+	Destinations  []string `protobuf:"bytes,6,rep,name=destinations,proto3" json:"destinations,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *LabelRequestConfig) Reset() {
@@ -2969,6 +2989,13 @@ func (x *LabelRequestConfig) GetRequestsPerHour() int32 {
 		return x.RequestsPerHour
 	}
 	return 0
+}
+
+func (x *LabelRequestConfig) GetDestinations() []string {
+	if x != nil {
+		return x.Destinations
+	}
+	return nil
 }
 
 type SelectorFeatureConfig struct {
@@ -3255,14 +3282,15 @@ const file_app_observatory_health_config_proto_rawDesc = "" +
 	"\x11expected_statuses\x18\x05 \x03(\x05R\x10expectedStatuses\x12\x1b\n" +
 	"\tmin_bytes\x18\x06 \x01(\x03R\bminBytes\x12\x18\n" +
 	"\atimeout\x18\a \x01(\x03R\atimeout\x12)\n" +
-	"\x10progress_timeout\x18\b \x01(\x03R\x0fprogressTimeout\"\xfb\x01\n" +
+	"\x10progress_timeout\x18\b \x01(\x03R\x0fprogressTimeout\"\x9f\x02\n" +
 	"\x12ConnectivityConfig\x12\x1a\n" +
 	"\boutbound\x18\x01 \x01(\tR\boutbound\x12 \n" +
 	"\vdestination\x18\x02 \x01(\tR\vdestination\x12\x18\n" +
 	"\atimeout\x18\x03 \x01(\x03R\atimeout\x12R\n" +
 	"\x0frecheck_backoff\x18\x04 \x01(\v2).xray.core.app.observatory.health.BackoffR\x0erecheckBackoff\x12\x1b\n" +
 	"\tmax_pause\x18\x05 \x01(\x03R\bmaxPause\x12\x1c\n" +
-	"\twitnesses\x18\x06 \x03(\tR\twitnesses\"\x94\x01\n" +
+	"\twitnesses\x18\x06 \x03(\tR\twitnesses\x12\"\n" +
+	"\fdestinations\x18\a \x03(\tR\fdestinations\"\x94\x01\n" +
 	"\aBackoff\x12#\n" +
 	"\rinitial_delay\x18\x01 \x01(\x03R\finitialDelay\x12\x1e\n" +
 	"\n" +
@@ -3363,7 +3391,7 @@ const file_app_observatory_health_config_proto_rawDesc = "" +
 	"\x12penalty_multiplier\x18\x06 \x01(\x01R\x11penaltyMultiplier\x12*\n" +
 	"\x11max_penalty_delay\x18\a \x01(\x03R\x0fmaxPenaltyDelay\x12:\n" +
 	"\x1askip_try_on_network_change\x18\b \x01(\bR\x16skipTryOnNetworkChange\x12-\n" +
-	"\x13try_on_all_networks\x18\t \x01(\bR\x10tryOnAllNetworks\"\xdd\x05\n" +
+	"\x13try_on_all_networks\x18\t \x01(\bR\x10tryOnAllNetworks\"\xf1\x05\n" +
 	"\x0eProviderConfig\x12\x10\n" +
 	"\x03tag\x18\x01 \x01(\tR\x03tag\x12\x10\n" +
 	"\x03url\x18\x02 \x01(\tR\x03url\x12W\n" +
@@ -3380,7 +3408,8 @@ const file_app_observatory_health_config_proto_rawDesc = "" +
 	"\fbase_version\x18\f \x01(\tR\vbaseVersion\x12\"\n" +
 	"\n" +
 	"is_enabled\x18\r \x01(\bH\x00R\tisEnabled\x88\x01\x01\x12S\n" +
-	"\bfeatures\x18\x0e \x01(\v27.xray.core.app.observatory.health.ProviderFeatureConfigR\bfeatures\x1a:\n" +
+	"\bfeatures\x18\x0e \x01(\v27.xray.core.app.observatory.health.ProviderFeatureConfigR\bfeatures\x12\x12\n" +
+	"\x04urls\x18\x0f \x03(\tR\x04urls\x1a:\n" +
 	"\fHeadersEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01B\r\n" +
@@ -3500,13 +3529,14 @@ const file_app_observatory_health_config_proto_rawDesc = "" +
 	"\x13_probe_measurementsB\n" +
 	"\n" +
 	"\b_metricsB\x11\n" +
-	"\x0f_session_labels\"\xad\x02\n" +
+	"\x0f_session_labels\"\xd1\x02\n" +
 	"\x12LabelRequestConfig\x12\x1a\n" +
 	"\boutbound\x18\x01 \x01(\tR\boutbound\x12 \n" +
 	"\vdestination\x18\x02 \x01(\tR\vdestination\x12X\n" +
 	"\x06labels\x18\x03 \x03(\v2@.xray.core.app.observatory.health.LabelRequestConfig.LabelsEntryR\x06labels\x12\x18\n" +
 	"\atimeout\x18\x04 \x01(\x03R\atimeout\x12*\n" +
-	"\x11requests_per_hour\x18\x05 \x01(\x05R\x0frequestsPerHour\x1a9\n" +
+	"\x11requests_per_hour\x18\x05 \x01(\x05R\x0frequestsPerHour\x12\"\n" +
+	"\fdestinations\x18\x06 \x03(\tR\fdestinations\x1a9\n" +
 	"\vLabelsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xce\x04\n" +

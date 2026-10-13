@@ -64,11 +64,11 @@ func TestProbeOnlyPathJSONAndStartValidation(t *testing.T) {
 		settings := `{}`
 		if group {
 			path = `,"selection":{"balancer":"auto","group":"relay","isProbeOnly":true}`
-			settings = `{"groups":{"isEnabled":true,"items":[{"name":"relay","cost":1}]}}`
+			settings = `{"groups":[{"name":"relay","cost":1}]}`
 		}
 		t.Run(fmt.Sprintf("group=%v", group), func(t *testing.T) {
 			var cfg Config
-			if err := json.Unmarshal([]byte(pathConfig(path, settings, `{"probes":{"candidates":{"isEnabled":true}}}`)), &cfg); err != nil {
+			if err := json.Unmarshal([]byte(pathConfig(path, settings, `{"probes":{"candidates":{}}}`)), &cfg); err != nil {
 				t.Fatal(err)
 			}
 			built, err := cfg.Build()
@@ -84,13 +84,13 @@ func TestProbeOnlyPathJSONAndStartValidation(t *testing.T) {
 			for _, field := range []string{"outbound", "pin"} {
 				startup := `"startup":{"outbound":"a"}`
 				if field == "pin" {
-					startup = `"startup":{"pin":{"isEnabled":true,"outbound":"a","timeout":"0s"}}`
+					startup = `"startup":{"pin":{"outbound":"a","timeout":"0s"}}`
 				}
 				startSettings := `{` + startup + `}`
 				if group {
-					startSettings = `{"groups":{"isEnabled":true,"items":[{"name":"relay","cost":1}]},` + startup + `}`
+					startSettings = `{"groups":[{"name":"relay","cost":1}],` + startup + `}`
 				}
-				observer := `{"probes":{"candidates":{"isEnabled":true}},"host":{"pinning":{"isEnabled":true}}}`
+				observer := `{"probes":{"candidates":{}},"host":{"pinning":{}}}`
 				if err := pathConfigError(pathConfig(path, startSettings, observer)); err == nil || !strings.Contains(err.Error(), "probe-only") {
 					t.Fatalf("%s: %v", field, err)
 				}
@@ -104,7 +104,7 @@ func TestProbeOnlyPathJSONAndStartValidation(t *testing.T) {
 }
 
 func TestProbeOnlyPathJSONRequiresBoolean(t *testing.T) {
-	for _, value := range []string{`null`, `1`, `"true"`, `{}`, `[]`} {
+	for _, value := range []string{`{}`, `1`, `"true"`, `{}`, `[]`} {
 		raw := pathConfig(`,"selection":{"balancer":"auto","cost":1,"isProbeOnly":`+value+`}`, `{}`, `{}`)
 		if err := pathConfigError(raw); err == nil || !strings.Contains(err.Error(), "isProbeOnly") {
 			t.Errorf("%s: error %v must name isProbeOnly", value, err)

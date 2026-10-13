@@ -133,6 +133,8 @@ message ConnectivityConfig {
   // as a direct outbound for sites outside the tunnel. A connection counts
   // once it receives successBytes.
   repeated string witnesses = 6;
+  // Tried in order until one check succeeds.
+  repeated string destinations = 7;
 }
 
 message Backoff {
@@ -353,6 +355,8 @@ message ProviderConfig {
   string base_version = 12;
   optional bool is_enabled = 13;
   ProviderFeatureConfig features = 14;
+  // Mirrors, tried in order through each configured via.
+  repeated string urls = 15;
 }
 
 message ProviderTriggers {
@@ -493,6 +497,8 @@ message LabelRequestConfig {
   map<string, string> labels = 3;
   int64 timeout = 4;
   int32 requests_per_hour = 5;
+  // Tried in order until one endpoint returns valid labels.
+  repeated string destinations = 6;
 }
 
 message SelectorFeatureConfig {

@@ -11,7 +11,7 @@ import (
 )
 
 func TestMeasurementConfigLabels(t *testing.T) {
-	raw := `{"log":{"loglevel":"none"},"outbounds":[{"tag":"a1","protocol":"freedom","selection":{"balancer":"auto","group":"g","labels":{"node":"n1","entry":"own"}}},{"tag":"block","protocol":"blackhole"}],"routing":{"balancers":[{"tag":"auto","fallbackTag":"block","strategy":{"type":"leastCost","settings":{"groups":{"isEnabled":true,"items":[{"name":"g","cost":1,"labels":{"location":"NL","entry":"shared"}}]}}}}]},"healthObservatory":{"telemetry":{"pathLabels":{"isEnabled":true},"report":{"isEnabled":true,"sessionLabels":{"isEnabled":true,"labels":{"cohort":"a"}}}},"network":{"labelRequest":{"isEnabled":true,"outbound":"a1","destination":"http://127.0.0.1/whoami","labels":{"asn":"X-Network-Asn"}}}}}`
+	raw := `{"log":{"loglevel":"none"},"outbounds":[{"tag":"a1","protocol":"freedom","selection":{"balancer":"auto","group":"g","labels":{"node":"n1","entry":"own"}}},{"tag":"block","protocol":"blackhole"}],"routing":{"balancers":[{"tag":"auto","fallbackTag":"block","strategy":{"type":"leastCost","settings":{"groups":[{"name":"g","cost":1,"labels":{"location":"NL","entry":"shared"},"probe":"test"}]}}}]},"healthObservatory":{"telemetry":{"pathLabels":{},"report":{"sessionLabels":{"labels":{"cohort":"a"}}}},"network":{"labelRequest":{"outbound":"a1","labels":{"asn":"X-Network-Asn"},"destinations":["http://127.0.0.1/whoami"]}},"probes":{"profiles":[{"name":"test","steps":[{"name":"test","destinations":["https://example.test/204"]}]}]}}}`
 	var cfg Config
 	if err := json.Unmarshal([]byte(raw), &cfg); err != nil {
 		t.Fatal(err)
@@ -35,8 +35,8 @@ func TestMeasurementConfigLabels(t *testing.T) {
 	for _, tc := range []struct{ old, new string }{
 		{`"node":"n1"`, `"node":"bad value"`}, {`"cohort":"a"`, `"COHORT":"a"`},
 		{`"X-Network-Asn"`, `"bad header"`}, {`"http://127.0.0.1/whoami"`, `"ftp://host/a"`},
-		{`"destination":"http://127.0.0.1/whoami"`, `"destination":"http://127.0.0.1/whoami","timeout":"0s"`},
-		{`"destination":"http://127.0.0.1/whoami"`, `"destination":"http://127.0.0.1/whoami","requestsPerHour":0`},
+		{`"destinations":["http://127.0.0.1/whoami"]`, `"destinations":["http://127.0.0.1/whoami"],"timeout":"0s"`},
+		{`"destinations":["http://127.0.0.1/whoami"]`, `"destinations":["http://127.0.0.1/whoami"],"requestsPerHour":0`},
 		{`"labels":{"cohort":"a"}`, `"labels":{"k0":"v","k1":"v","k2":"v","k3":"v","k4":"v","k5":"v","k6":"v","k7":"v","k8":"v"}`},
 	} {
 		t.Run(fmt.Sprint(tc.new), func(t *testing.T) {

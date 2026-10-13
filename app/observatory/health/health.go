@@ -119,7 +119,7 @@ func New(ctx context.Context, config *Config) (*Observer, error) {
 		return nil, err
 	}
 	if o.s.features.Metrics && core.MustFromContext(ctx).GetFeature((*metrics.MetricsHandler)(nil)) == nil {
-		return nil, errors.New("healthObservatory.telemetry.metrics.isEnabled requires metrics exporter registered before healthObservatory")
+		return nil, errors.New("healthObservatory.telemetry.metrics requires metrics exporter registered before healthObservatory")
 	}
 	return o, nil
 }
@@ -380,9 +380,9 @@ func (o *Observer) runProbe(j *probeJob) {
 	var r probeResult
 	if j.reason == reasonConnectivity {
 		c := o.s.connectivity
-		r = o.probe(c.outbound, &probeSettings{
-			destination: c.destination, method: "GET", timeout: c.timeout, progressTimeout: c.timeout,
-		})
+		r = o.probeWithContext(ctx, c.outbound, &probeSettings{steps: []probeStepSettings{{
+			name: "connectivity", destinations: c.destinations, method: "GET", timeout: c.timeout, progressTimeout: c.timeout,
+		}}})
 	} else {
 		r = o.probeWithContext(ctx, j.tag, j.profile)
 	}

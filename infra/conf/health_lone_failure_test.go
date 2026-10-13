@@ -16,8 +16,8 @@ func TestHealthLoneFailureJSONPresence(t *testing.T) {
 	}{
 		{`{}`, 0},
 		{`{"evidence":{"loneFailureProbe":{}}}`, 0},
-		{`{"evidence":{"loneFailureProbe":{"isEnabled":false}}}`, 0},
-		{`{"evidence":{"loneFailureProbe":{"isEnabled":true,"after":"4m"}}}`, int64(4 * time.Minute)},
+		{`{"evidence":{}}`, 0},
+		{`{"evidence":{"loneFailureProbe":{"after":"4m"}}}`, int64(4 * time.Minute)},
 	} {
 		cfg, err := buildHealth(t, tc.raw)
 		if err != nil || cfg.GetPassive().GetLoneFailureAfter() != tc.want {

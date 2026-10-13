@@ -29,9 +29,8 @@ const (
 	defaultStallMinWrite      = 128
 	defaultPartialMinBytes    = 8 * 1024
 
-	defaultProbeDestination = "https://www.gstatic.com/generate_204"
-	defaultProbeTimeout     = 8 * time.Second
-	defaultProbeProgress    = 4 * time.Second
+	defaultProbeTimeout  = 8 * time.Second
+	defaultProbeProgress = 4 * time.Second
 	// A probe without minBytes still stops reading here.
 	probeReadLimit = 64 * 1024
 
@@ -256,12 +255,13 @@ func probeStatusOK(expected []int32, code int) bool {
 }
 
 type connectivitySettings struct {
-	outbound    string
-	destination string
-	timeout     time.Duration
-	recheck     backoff
-	maxPause    time.Duration
-	witnesses   []string
+	destinations []string
+	outbound     string
+	destination  string
+	timeout      time.Duration
+	recheck      backoff
+	maxPause     time.Duration
+	witnesses    []string
 }
 
 type scheduleSettings struct {
@@ -338,6 +338,7 @@ type providerSettings struct {
 	expiredFallback bool
 	tag             string
 	url             string
+	urls            []string
 	// http.MethodPost or http.MethodGet.
 	method   string
 	headers  map[string]string
@@ -401,6 +402,18 @@ func optionalNum(v int32, def int) int {
 	return num(v, def)
 }
 
+// Singular protobuf carriers are retained for in-process callers; JSON only
+// exposes lists. Copy lists so normalization cannot alias caller-owned slices.
+func configuredAddresses(values []string, legacy string) []string {
+	if len(values) > 0 {
+		return slices.Clone(values)
+	}
+	if legacy != "" {
+		return []string{legacy}
+	}
+	return nil
+}
+
 func newProviderSettings(c *ProviderConfig) *providerSettings {
 	f := c.GetFeatures()
 	if f == nil {
@@ -420,6 +433,7 @@ func newProviderSettings(c *ProviderConfig) *providerSettings {
 		expiredFallback: featureValue(f.ExpiredLeaseFallback, true),
 		tag:             c.GetTag(),
 		url:             c.GetUrl(),
+		urls:            slices.Clone(c.GetUrls()),
 		method:          http.MethodPost,
 		headers:         c.GetHeaders(),
 		via:             c.GetVia(),
@@ -448,6 +462,12 @@ func newProviderSettings(c *ProviderConfig) *providerSettings {
 		maxOutbounds: maxOutbounds,
 		protocols:    stringsOr(a.GetAllowedProtocols(), defaultProviderProtocols),
 		routing:      false,
+	}
+	if len(p.urls) == 0 && p.url != "" {
+		p.urls = []string{p.url}
+	}
+	if len(p.urls) > 0 {
+		p.url = p.urls[0]
 	}
 	if strings.EqualFold(c.GetMethod(), http.MethodGet) {
 		p.method = http.MethodGet
@@ -558,7 +578,7 @@ func newSettings(c *Config) *settings {
 		s.reportLabels = filterLabels(c.GetSessionLabels(), 8)
 	}
 	if lr := c.GetLabelRequest(); s.features.LabelRequest && lr != nil {
-		s.labelRequest = &labelRequestSettings{outbound: lr.Outbound, destination: lr.Destination, labels: maps.Clone(lr.Labels), timeout: dur(lr.Timeout, 4*time.Second), requestsPerHour: num(lr.RequestsPerHour, 6)}
+		s.labelRequest = &labelRequestSettings{outbound: lr.Outbound, destinations: configuredAddresses(lr.GetDestinations(), lr.GetDestination()), labels: maps.Clone(lr.Labels), timeout: dur(lr.Timeout, 4*time.Second), requestsPerHour: num(lr.RequestsPerHour, 6)}
 	}
 	if u := c.GetUdpProbe(); s.features.UdpProbes && u != nil {
 		s.udpProbe = &udpSettings{requests: num(u.Requests, 5), interval: dur(u.Interval, 200*time.Millisecond), timeout: dur(u.Timeout, 2*time.Second), perHour: num(u.PerHour, 6)}
@@ -604,7 +624,7 @@ func newSettings(c *Config) *settings {
 	for _, pp := range c.GetProbes() {
 		profile := probeSettings{
 			name:            pp.GetName(),
-			destination:     stringOr(pp.GetDestination(), defaultProbeDestination),
+			destination:     pp.GetDestination(),
 			method:          strings.ToUpper(stringOr(pp.GetMethod(), "GET")),
 			expectStatus:    pp.GetExpectedStatuses(),
 			minBytes:        pp.GetMinBytes(),
@@ -627,7 +647,7 @@ func newSettings(c *Config) *settings {
 				})
 			}
 			first := profile.steps[0]
-			profile.destination = defaultProbeDestination
+			profile.destination = ""
 			if len(first.destinations) > 0 {
 				profile.destination = first.destinations[0]
 			}
@@ -639,14 +659,15 @@ func newSettings(c *Config) *settings {
 		}
 		s.probes = append(s.probes, profile)
 	}
-	if cc := c.GetConnectivity(); s.features.Connectivity && cc != nil && cc.GetOutbound() != "" && cc.GetDestination() != "" {
+	if cc := c.GetConnectivity(); s.features.Connectivity && cc != nil && cc.GetOutbound() != "" && (len(cc.GetDestinations()) > 0 || cc.GetDestination() != "") {
 		s.connectivity = &connectivitySettings{
-			outbound:    cc.GetOutbound(),
-			destination: cc.GetDestination(),
-			timeout:     min(dur(cc.GetTimeout(), defaultConnectivityTimeout), maxProbeTimeout),
-			recheck:     defaultConnRecheck,
-			maxPause:    defaultMaxPause,
-			witnesses:   cc.GetWitnesses(),
+			outbound:     cc.GetOutbound(),
+			destination:  cc.GetDestination(),
+			destinations: configuredAddresses(cc.GetDestinations(), cc.GetDestination()),
+			timeout:      min(dur(cc.GetTimeout(), defaultConnectivityTimeout), maxProbeTimeout),
+			recheck:      defaultConnRecheck,
+			maxPause:     defaultMaxPause,
+			witnesses:    cc.GetWitnesses(),
 		}
 	}
 	if s.features.Witnesses {
@@ -748,18 +769,10 @@ func (s *settings) probeFor(tag string) *probeSettings {
 			}
 		}
 	}
-	return &probeSettings{
-		isProbeOnly:     path.isProbeOnly,
-		destination:     defaultProbeDestination,
-		method:          "GET",
-		expectStatus:    defaultExpectStatus,
-		timeout:         defaultProbeTimeout,
-		progressTimeout: defaultProbeProgress,
-		steps: []probeStepSettings{{
-			name: "default", destinations: []string{defaultProbeDestination}, method: "GET",
-			expectStatus: defaultExpectStatus, timeout: defaultProbeTimeout, progressTimeout: defaultProbeProgress,
-		}},
-	}
+	// No implicit third-party destination: JSON selections require a profile.
+	// Direct protobuf callers without one receive an inert profile.
+	return &probeSettings{isProbeOnly: path.isProbeOnly, method: "GET",
+		timeout: defaultProbeTimeout, progressTimeout: defaultProbeProgress}
 }
 
 type selectorSettings struct {
