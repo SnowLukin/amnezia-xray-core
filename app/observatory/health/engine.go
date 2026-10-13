@@ -2221,7 +2221,13 @@ func (e *engine) onReturnToCheaperResult(j *probeJob, r probeResult, p *path, no
 }
 
 func (e *engine) onConnectivity(r probeResult, now time.Time) {
-	e.emit(now, "connectivity", map[string]any{"is_ok": r.ok, "rtt_ms": r.rtt.Milliseconds(), "error": r.err})
+	// Like path probe events, publish only the failure class: the error
+	// text can name a probe URL, server address or certificate hostname.
+	eventError := ""
+	if !r.ok {
+		eventError = cmp.Or(r.class, "other")
+	}
+	e.emit(now, "connectivity", map[string]any{"is_ok": r.ok, "rtt_ms": r.rtt.Milliseconds(), "error": eventError})
 	if r.ok {
 		e.lastConnectivityOK = now
 		e.connectivityPassed(now)
@@ -2253,7 +2259,7 @@ func (e *engine) onConnectivity(r probeResult, now time.Time) {
 	if e.networkDown {
 		return
 	}
-	e.emit(now, "network_down", map[string]any{"error": r.err})
+	e.emit(now, "network_down", map[string]any{"error": eventError})
 	e.networkDown = true
 	e.cancelLoneFailures()
 	e.cancelWakeProbes()
