@@ -1181,6 +1181,13 @@ func (o *Observer) applySet(rt *providerRuntime, a *providerAnswer, j *refreshJo
 	for i, c := range added {
 		addedTags[i] = c.tag
 	}
+	// A HandlerService replacement can finish an old drain before this
+	// answer arrives. Every tag included again belongs to the live set.
+	for _, tag := range tags {
+		if o.e.retiring[tag] && !slices.Contains(revive, tag) {
+			revive = append(revive, tag)
+		}
+	}
 	// Before the balancers see the set: an outbound whose lease ended on
 	// arrival is never taken as new.
 	leases, _ := o.e.acceptLeases(rt.p, tags, leasesOf(a, rt.cfg.prefix), now)
@@ -1573,10 +1580,18 @@ func (o *Observer) endDrain(rt *providerRuntime, d *drainingOutbound) {
 	}
 	d.timer.Stop()
 	delete(rt.draining, d.handler)
-	registered := d.registered && o.ohm.GetHandler(d.tag) == d.handler
+	current := o.ohm.GetHandler(d.tag)
+	registered := d.registered && current == d.handler
+	gone := d.registered && (registered || current == nil)
 	if registered {
 		_ = o.ohm.RemoveHandler(o.ctx, d.tag)
+	}
+	if d.registered {
+		// HandlerService may have removed or replaced it before the drain
+		// ended. Its cached config must not survive or describe another handler.
 		delete(rt.built, d.tag)
+	}
+	if gone {
 		// The handler registered its traffic counters by tag; they go with it.
 		if o.stats != nil {
 			for _, dir := range [...]string{"uplink", "downlink"} {
@@ -1585,7 +1600,7 @@ func (o *Observer) endDrain(rt *providerRuntime, d *drainingOutbound) {
 		}
 	}
 	o.mu.Lock()
-	if registered {
+	if gone {
 		o.e.dropProviderOutbound(d.tag, o.now())
 	}
 	rt.p.draining = len(rt.draining)
