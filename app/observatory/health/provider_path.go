@@ -178,7 +178,7 @@ func validateAnswerPaths(cfg *providerSettings, a *providerAnswer) error {
 	a.paths = nil
 	for _, head := range a.heads {
 		where := fmt.Sprintf("outbound %s selection", head.Tag)
-		obj, err := answerObject(head.Selection, where, map[string]bool{"balancer": true, "group": true, "cost": true, "probePolicy": true, "returnToCheaper": true, "probe": true, "isProbeOnly": true, "labels": true})
+		obj, err := answerObject(head.Selection, where, map[string]bool{"balancer": true, "group": true, "cost": true, "probePolicy": true, "returnToCheaper": true, "probe": true, "isProbeOnly": true, "provenBy": true, "labels": true})
 		if err != nil {
 			return err
 		}
@@ -198,6 +198,13 @@ func validateAnswerPaths(cfg *providerSettings, a *providerAnswer) error {
 			if json.Unmarshal(raw, &p.IsProbeOnly) != nil {
 				return fmt.Errorf("%s.isProbeOnly must be a boolean", where)
 			}
+		}
+		if raw := obj["provenBy"]; len(raw) > 0 {
+			by, err := answerString(obj, "provenBy", where)
+			if err != nil || by == "" || len(cfg.prefix)+len(by) > 128 {
+				return fmt.Errorf("%s.provenBy needs a probe-only tag of at most 128 bytes including its prefix", where)
+			}
+			p.ProvenBy = cfg.prefix + by
 		}
 		if group != "" {
 			g := groups[group]
@@ -276,6 +283,29 @@ func validateAnswerProbes(s *settings, a *providerAnswer) error {
 		}
 		if g.Probe != "" && !known[g.Probe] {
 			return fmt.Errorf("group %s: unknown probe %s", g.Name, g.Probe)
+		}
+	}
+	return nil
+}
+
+// References use provider-local tags, like the request inventory. The incoming
+// set determines mode when present; otherwise only this provider's live set
+// (including base-config credentials with its prefix) can supply the proof.
+func (e *engine) validateProvenBy(cfg *providerSettings, a *providerAnswer) error {
+	modes := map[string]bool{}
+	for _, p := range a.paths {
+		modes[p.Tag] = p.IsProbeOnly
+	}
+	for _, p := range a.paths {
+		if p.ProvenBy == "" {
+			continue
+		}
+		probe, present := modes[p.ProvenBy]
+		if !present {
+			probe = e.isProbeOnly(p.ProvenBy) && !e.retiring[p.ProvenBy]
+		}
+		if !probe {
+			return fmt.Errorf("outbound %s selection.provenBy must reference an existing probe-only tag", p.Tag)
 		}
 	}
 	return nil

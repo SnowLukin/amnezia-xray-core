@@ -12,7 +12,8 @@
 Остальные могут служить дорогами к бэку: `via` ссылается на их теги, а
 `selection.balancer` в ответе выбирает любой из перечисленных. `maxOutbounds`
 и число групп считаются по всему набору; probe-only входит в эти ограничения,
-но запрос провайдера через probe-only запрещён. Группа требует включённый
+прямой `via` на probe-only по-прежнему запрещён. Блок `probeOnlyRoads: {}`
+разрешает проверочные дороги исчерпанного балансировщика (см. ниже). Группа требует включённый
 `leastCost.settings.groups` у каждого балансировщика, где есть её члены.
 Один tag outbound принадлежит одному балансировщику; новый ответ может перенести его.
 
@@ -102,6 +103,33 @@ IP входа должен обслуживать или проксироват�
   и телом протокола; повтор того же набора не лечит отказ и включает backoff.
 - Timeout одной попытки 8–10 секунд.
 - SNI и `shortId` одного слота сохранять между выдачами.
+
+## Проверочные дороги и provenBy (14.10.2026)
+
+Необязательный блок провайдера `probeOnlyRoads: {}` включает дороги через
+проверочные учётки. Когда очередной `via` — исчерпанный leastCost, ядро
+перед следующим `via` пробует не более двух его живых probe-only участников.
+Первым идёт участник с самым поздним успешным candidate-пробованием в текущей
+эпохе сети. Проверка должна оставаться свежей по `probes.candidates.recheckInterval`;
+retiring, replacing, expired, down и quarantined участники не подходят.
+Зеркала перебираются внутри каждой дороги. Общие остановки на протокольном
+ответе, `Retry-After`, двух непротокольных HTTP-ответах и низкой памяти сохраняются.
+`lastRefresh.attempts` содержит `via` и `outbound` — тег учётки без tagPrefix.
+Пользовательский выбор всегда исключает probe-only, даже при exhausted.
+
+Outbound ответа может добавить `selection.provenBy: "probe-tag"` — локальный
+тег probe-only учётки этого провайдера, без tagPrefix. Ссылка проверяется до
+изменения набора: неизвестный тег или обычная учётка отклоняют весь ответ,
+включая повтор версии. Учётка может быть в новом наборе либо ещё в текущем;
+новая учётка без ранее выполненной пробы ничего не доказывает.
+Если у источника успешная candidate-проба не старше 60 секунд в текущей эпохе
+сети, новый или заменённый обычный outbound начинает с `up`, reason `proven_by`,
+и доступен выбору сразу без собственной пробы. Изменённая одновременно
+проверочная учётка не даёт переносить старый результат. Старая проба, другая
+сеть или неактуальный источник оставляют обычный запуск с пробой. Та же версия
+и неизменённый слот не восстанавливают здоровье повторным `provenBy`.
+Первые отказы пользовательских соединений обрабатываются обычным механизмом.
+Бэк знает, через какую проверочную учётку пришёл запрос, и ставит `provenBy`.
 
 ## Конфигурация, запрос и ответ
 
@@ -466,7 +494,7 @@ Inside quality, measured zeros remain present; unavailable measurements are omit
 | `refreshNumber` | Always. Grows with every refresh of the run and is the same in every attempt of one refresh: `run` and `refreshNumber` together tell a request sent again through another `via` from a new one. |
 | `trigger` | Always. Why the core asks, see [When the core asks](#when-the-core-asks). |
 | `retryLevel` | Always. The level of the backoff this refresh waited for: refreshes in a row since the last success that failed, brought an answer the core refused, or, for an exhausted balancer, brought the same set again. A pause the backend asked for with `Retry-After` and refused headers leave it as it is; any other applied answer sets it back to 0. |
-| `lastRefresh` | Previous refresh, after success as well as failure: `isOk`, `agoMs`, `trigger`, and up to 16 `attempts` in order. An attempt contains `via` (configured tag), `mirror` (1-based URL index; 0 for a skipped road), `isOk`, `status` (HTTP or 0), optional `code`, and `ms`. Transport codes: `timeout`, `network`, `status`, `too_large`, `broken_json`, `skipped`. A refused protocol answer/set is `invalid_answer`/`invalid_set`. No URL or error text. Omitted before the first refresh; a refresh that could not construct a POST has an empty attempt list. |
+| `lastRefresh` | Previous refresh, after success as well as failure: `isOk`, `agoMs`, `trigger`, and up to 16 `attempts` in order. An attempt contains `via` (configured tag), optional `outbound` (credential tag without this provider’s prefix), `mirror` (1-based URL index; 0 for a skipped road), `isOk`, `status` (HTTP or 0), optional `code`, and `ms`. Transport codes: `timeout`, `network`, `status`, `too_large`, `broken_json`, `skipped`. A refused protocol answer/set is `invalid_answer`/`invalid_set`. No URL or error text. Omitted before the first refresh; a refresh that could not construct a POST has an empty attempt list. |
 | `version` | The set the core applies now, as the answer named it; none before the first set. |
 | `baseVersion` | The base config the core runs with, see [Base config](#base-config); none without one. |
 | `clientTime` | Always. The clock of the device in RFC 3339, UTC: the backend sees how far off it is. |

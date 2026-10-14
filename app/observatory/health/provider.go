@@ -3,6 +3,7 @@ package health
 import (
 	"net/http"
 	"slices"
+	"sort"
 	"time"
 )
 
@@ -660,6 +661,47 @@ func (e *engine) resolveVia(via string, now time.Time) (string, string) {
 	return via, ""
 }
 
+// resolveProviderVia preserves via order while allowing up to two verified
+// candidates of an exhausted balancer. It never changes the user selection.
+func (e *engine) resolveProviderVia(cfg *providerSettings, via string, now time.Time) ([]string, string) {
+	tag, skip := e.resolveVia(via, now)
+	if skip != "balancer exhausted" || !cfg.probeOnlyRoads {
+		return []string{tag}, skip
+	}
+	s := e.selectors[via]
+	var roads []string
+	for _, tag := range e.probeOnlyTags(s) {
+		p := e.paths[tag]
+		if e.candidateVerified(p, now) && !now.Before(p.candidateVerifiedAt) &&
+			!p.lastProbeResult.canceled && p.status == statusUp && !p.quarantined(now) && !e.expired[tag] && !s.groupDown(tag) {
+			roads = append(roads, tag)
+		}
+	}
+	sort.SliceStable(roads, func(i, j int) bool {
+		return e.paths[roads[i]].candidateVerifiedAt.After(e.paths[roads[j]].candidateVerifiedAt)
+	})
+	if len(roads) == 0 {
+		return nil, skip
+	}
+	return roads[:min(len(roads), 2)], ""
+}
+
+const provenByReuse = 60 * time.Second
+
+// provenPath snapshots proof before the new set can replace or retire it.
+func (e *engine) provenPath(tag string, now time.Time) *path {
+	q := e.paths[tag]
+	if !e.isProbeOnly(tag) || e.retiring[tag] || e.replacing[tag] || e.expired[tag] || q == nil ||
+		q.candidateEpoch != e.candidateEpoch || q.candidateVerifiedAt.IsZero() || now.Before(q.candidateVerifiedAt) ||
+		now.Sub(q.candidateVerifiedAt) > provenByReuse || !q.lastProbeResult.ok || q.lastProbeResult.canceled ||
+		q.lastProbeResult.reason != reasonCandidate.String() || q.status != statusUp || q.quarantined(now) {
+		return nil
+	}
+	snapshot := *q
+	snapshot.lastProbeResult = q.lastProbeResult.snapshot()
+	return &snapshot
+}
+
 // providerChange is an applied set as the balancers see it.
 type providerChange struct {
 	// Every outbound of the set, in the order of the answer.
@@ -677,6 +719,13 @@ func (e *engine) applyProviderSet(p *provider, c providerChange, now time.Time) 
 	clear(e.replacing)
 	oldPaths := map[string]pathSettings{}
 	promoted := map[string]*path{}
+	proven := map[string]*path{}
+	for _, path := range c.paths {
+		if path.ProvenBy != "" && (slices.Contains(c.added, path.Tag) || slices.Contains(c.reset, path.Tag)) &&
+			!slices.Contains(c.reset, path.ProvenBy) {
+			proven[path.Tag] = e.provenPath(path.ProvenBy, now)
+		}
+	}
 	for _, tag := range c.tags {
 		if profile, ok := e.s.paths.Load(tag); ok {
 			oldPaths[tag] = profile.(pathSettings)
@@ -762,6 +811,14 @@ func (e *engine) applyProviderSet(p *provider, c providerChange, now time.Time) 
 		} else if slices.Contains(c.added, tag) || reset[tag] {
 			q := e.pathAt(tag, now)
 			q.realSince, q.freshDownReported = now, false
+		}
+		if snapshot := proven[tag]; snapshot != nil && !current.isProbeOnly {
+			q := e.pathAt(tag, now)
+			q.lastSuccess = snapshot.candidateVerifiedAt
+			if q.setStatus(statusUp, "proven_by", now) {
+				e.emitPath(q, now)
+			}
+			e.emit(now, "provider_proven_by", map[string]any{"provider": p.cfg.tag, "tag": tag})
 		}
 		if snapshot := promoted[tag]; snapshot != nil {
 			q := e.pathAt(tag, now)

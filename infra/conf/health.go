@@ -224,6 +224,8 @@ type HealthProviderApplyConfig struct {
 	AcceptedHeaders      *[]string           `json:"acceptedHeaders"`
 	ExpiredLeaseFallback HealthFeatureConfig `json:"expiredLeaseFallback"`
 }
+type HealthProbeOnlyRoadsConfig struct{}
+
 type HealthProviderConfig struct {
 	HealthFeatureConfig
 	Tag                string                       `json:"tag"`
@@ -231,6 +233,7 @@ type HealthProviderConfig struct {
 	Method             string                       `json:"method"`
 	Headers            map[string]string            `json:"headers"`
 	Via                []string                     `json:"via"`
+	ProbeOnlyRoads     *HealthProbeOnlyRoadsConfig  `json:"probeOnlyRoads"`
 	Timeout            *duration.Duration           `json:"timeout"`
 	IsPlainHTTPAllowed bool                         `json:"isPlainHttpAllowed"`
 	Triggers           HealthProviderTriggersConfig `json:"triggers"`
@@ -828,7 +831,7 @@ func (c *HealthProviderConfig) build() (*health.ProviderConfig, error) {
 	default:
 		return nil, errors.New(where, ".triggers.networkChange.mode must be unknownNotCheapest, unknown or any")
 	}
-	out := &health.ProviderConfig{IsEnabled: featurePresence(true), Tag: c.Tag, Urls: c.URLs, Method: method, Headers: c.Headers, Via: c.Via, Timeout: optionalDuration(c.Timeout), BaseVersion: c.BaseVersion,
+	out := &health.ProviderConfig{ProbeOnlyRoads: c.ProbeOnlyRoads != nil, IsEnabled: featurePresence(true), Tag: c.Tag, Urls: c.URLs, Method: method, Headers: c.Headers, Via: c.Via, Timeout: optionalDuration(c.Timeout), BaseVersion: c.BaseVersion,
 		Features: &health.ProviderFeatureConfig{Periodic: t.Periodic.IsEnabled, MinHealthy: t.MinHealthy.IsEnabled, CostAbove: t.WhenCostAbove.IsEnabled, MaxAge: t.MaxAge.IsEnabled, NetworkChange: t.NetworkChange.IsEnabled, Exhausted: t.Exhausted.IsEnabled, LeaseRenewal: t.LeaseRenewal.IsEnabled, BackendSchedule: t.BackendSchedule.IsEnabled, ExpiredLeaseFallback: a.ExpiredLeaseFallback.IsEnabled},
 		Triggers: &health.ProviderTriggers{Interval: rangeMin(t.Periodic.Interval), IntervalMax: rangeMax(t.Periodic.Interval), ExhaustedDelay: rangeProto(t.Exhausted.Delay), MinHealthyDelay: rangeProto(t.MinHealthy.Delay), MinHealthyOutbounds: count(t.MinHealthy.Outbounds), MaxAge: optionalDuration(t.MaxAge.Age), NetworkChangeMode: mode, NetworkSettleDelay: rangeMaxMin(t.NetworkChange.SettleDelay), NetworkSettleMax: rangeMax(t.NetworkChange.SettleDelay), Expiry: &health.ExpiryTrigger{RenewAtFraction: renew, UrgentAtFraction: urgent}},
 		Limits:   &health.ProviderLimits{MinInterval: optionalDuration(l.MinInterval), ExhaustedMinInterval: optionalDuration(l.UrgentMinInterval), MaxRefreshesPerHour: count(l.MaxRefreshesPerHour)},

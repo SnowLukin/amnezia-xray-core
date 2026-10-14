@@ -680,7 +680,7 @@ func (o *Observer) fetchSet(rt *providerRuntime, j *refreshJob, body []byte) (fe
 				candidates = append(candidates, h.Tag())
 			}
 		}
-		var tag string
+		var roads []string
 		var skip string
 		var low bool
 		func() {
@@ -694,75 +694,81 @@ func (o *Observer) fetchSet(rt *providerRuntime, j *refreshJob, body []byte) (fe
 					o.e.updateCandidates(s, candidates, o.now())
 				}
 			}
-			tag, skip = o.e.resolveVia(v, o.now())
+			roads, skip = o.e.resolveProviderVia(rt.cfg, v, o.now())
 			low = o.e.memoryLow
 
 		}()
-		if skip == "" && tag != "" && o.ohm.GetHandler(tag) == nil {
-			skip = "no such outbound"
+		if len(roads) == 0 {
+			roads = []string{""}
 		}
-		if skip != "" {
-			j.recordAttempt(requestAttempt{Via: v, Code: "skipped"})
-			attempt++
-			o.emit("provider_fetch", map[string]any{"provider": rt.cfg.tag, "trigger": j.trigger.String(), "retry": j.retry,
-				"attempt": attempt, "via": v, "outbound": tag, "method": rt.cfg.method, "refresh": j.refresh,
-				"is_ok": false, "error": skip})
-			if !asked {
-				last, lastErr = fetchResult{class: "network"}, errors.New(skip)
+		for _, tag := range roads {
+			roadSkip := skip
+			if roadSkip == "" && tag != "" && o.ohm.GetHandler(tag) == nil {
+				roadSkip = "no such outbound"
 			}
-			continue
-		}
-		for mirror, destination := range urls {
-			attempt++
-			asked = true
-			o.fetchingVia(tag, 1)
-			start := time.Now()
-			r, err := o.fetchURL(rt.cfg, j.headers, tag, destination, body)
-			o.fetchingVia(tag, -1)
-			r.via = v
-			refused := isAnswerError(err)
-			elapsed := time.Since(start).Milliseconds()
-			code := r.class
-			if err == nil {
-				code = ""
+			if roadSkip != "" {
+				j.recordAttempt(requestAttempt{Via: v, Code: "skipped"})
+				attempt++
+				o.emit("provider_fetch", map[string]any{"provider": rt.cfg.tag, "trigger": j.trigger.String(), "retry": j.retry,
+					"attempt": attempt, "via": v, "outbound": tag, "method": rt.cfg.method, "refresh": j.refresh,
+					"is_ok": false, "error": roadSkip})
+				if !asked {
+					last, lastErr = fetchResult{class: "network"}, errors.New(roadSkip)
+				}
+				continue
 			}
-			if refused {
-				code = "invalid_answer"
-			}
-			j.recordAttempt(requestAttempt{Via: v, Mirror: mirror + 1, IsOK: err == nil, Status: r.status, Code: code, Ms: elapsed})
-			f := map[string]any{"provider": rt.cfg.tag, "trigger": j.trigger.String(), "retry": j.retry,
-				"attempt": attempt, "mirror": mirror + 1, "via": v, "outbound": tag, "method": rt.cfg.method, "refresh": j.refresh,
-				"is_ok": err == nil || refused, "status": r.status, "ms": time.Since(start).Milliseconds(), "bytes": r.bytes}
-			if r.code != "" {
-				f["code"] = r.code
-			}
-			if r.retryAfter > 0 {
-				f["retry_after_ms"] = r.retryAfter.Milliseconds()
-			}
-			if err != nil && !refused {
-				f["error"] = err.Error()
-			}
-			o.emit("provider_fetch", f)
-			if err == nil {
-				return r, nil
-			}
-			if refused {
-				o.emit("provider_apply", map[string]any{"provider": rt.cfg.tag, "trigger": j.trigger.String(), "is_ok": false, "error": err.Error()})
-			}
-			last, lastErr = r, err
-			// An authoritative rejection or an answer that violates the
-			// protocol must not be bypassed with another mirror or route.
-			if r.backend {
-				return last, lastErr
-			}
-			if r.status != 0 {
-				nonProtocol++
-			}
-			if nonProtocol >= 2 {
-				return last, lastErr
-			}
-			if low {
-				return last, lastErr
+			for mirror, destination := range urls {
+				attempt++
+				asked = true
+				o.fetchingVia(tag, 1)
+				start := time.Now()
+				r, err := o.fetchURL(rt.cfg, j.headers, tag, destination, body)
+				o.fetchingVia(tag, -1)
+				r.via = v
+				refused := isAnswerError(err)
+				elapsed := time.Since(start).Milliseconds()
+				code := r.class
+				if err == nil {
+					code = ""
+				}
+				if refused {
+					code = "invalid_answer"
+				}
+				j.recordAttempt(requestAttempt{Via: v, Outbound: strings.TrimPrefix(tag, rt.cfg.prefix), Mirror: mirror + 1, IsOK: err == nil, Status: r.status, Code: code, Ms: elapsed})
+				f := map[string]any{"provider": rt.cfg.tag, "trigger": j.trigger.String(), "retry": j.retry,
+					"attempt": attempt, "mirror": mirror + 1, "via": v, "outbound": tag, "method": rt.cfg.method, "refresh": j.refresh,
+					"is_ok": err == nil || refused, "status": r.status, "ms": time.Since(start).Milliseconds(), "bytes": r.bytes}
+				if r.code != "" {
+					f["code"] = r.code
+				}
+				if r.retryAfter > 0 {
+					f["retry_after_ms"] = r.retryAfter.Milliseconds()
+				}
+				if err != nil && !refused {
+					f["error"] = err.Error()
+				}
+				o.emit("provider_fetch", f)
+				if err == nil {
+					return r, nil
+				}
+				if refused {
+					o.emit("provider_apply", map[string]any{"provider": rt.cfg.tag, "trigger": j.trigger.String(), "is_ok": false, "error": err.Error()})
+				}
+				last, lastErr = r, err
+				// An authoritative rejection or an answer that violates the
+				// protocol must not be bypassed with another mirror or route.
+				if r.backend {
+					return last, lastErr
+				}
+				if r.status != 0 {
+					nonProtocol++
+				}
+				if nonProtocol >= 2 {
+					return last, lastErr
+				}
+				if low {
+					return last, lastErr
+				}
 			}
 		}
 	}
@@ -1008,6 +1014,9 @@ func (o *Observer) applySet(rt *providerRuntime, a *providerAnswer, j *refreshJo
 		defer o.mu.Unlock()
 
 		err = o.checkGroupOwnership(rt, a)
+		if err == nil {
+			err = o.e.validateProvenBy(rt.cfg, a)
+		}
 
 	}()
 	if err != nil {

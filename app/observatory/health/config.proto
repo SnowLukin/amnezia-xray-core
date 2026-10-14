@@ -243,6 +243,8 @@ message PathDefinition {
   bool is_probe_only = 8;
   optional bool return_is_enabled = 9;
   map<string, string> labels = 10;
+  // Provider-local probe-only tag proving a newly issued user credential.
+  string proven_by = 11;
 }
 
 message PathGroup {
@@ -361,6 +363,8 @@ message ProviderConfig {
   ProviderFeatureConfig features = 14;
   // Mirrors, tried in order through each configured via.
   repeated string urls = 15;
+  // Allow exhausted via balancers to use verified probe-only roads.
+  bool probe_only_roads = 16;
 }
 
 message ProviderTriggers {

@@ -66,12 +66,13 @@ type requestRefresh struct {
 	Attempts []requestAttempt `json:"attempts"`
 }
 type requestAttempt struct {
-	Via    string `json:"via"`
-	Mirror int    `json:"mirror"`
-	IsOK   bool   `json:"isOk"`
-	Status int    `json:"status"`
-	Code   string `json:"code,omitempty"`
-	Ms     int64  `json:"ms"`
+	Outbound string `json:"outbound,omitempty"`
+	Via      string `json:"via"`
+	Mirror   int    `json:"mirror"`
+	IsOK     bool   `json:"isOk"`
+	Status   int    `json:"status"`
+	Code     string `json:"code,omitempty"`
+	Ms       int64  `json:"ms"`
 }
 
 const maxRefreshAttempts = 16
