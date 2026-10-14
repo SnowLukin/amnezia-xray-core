@@ -25,6 +25,8 @@ and the body of a POST as a JSON line {ts, auth, type, bytes, body} to the bodie
 file; a body that is not JSON is kept as a string.
 """
 import copy
+
+from api_v2_recipe import provider_answer
 import json
 import re
 import sys
@@ -89,7 +91,7 @@ class ProbeOnlySlots:
                     continue
                 real = [o for o in self.answer["outbounds"] if o["path"]["isProbeOnly"] is False]
                 if len(real) >= self.capacity:
-                    retiring = next((o for o in real if inventory.get(o["tag"], {}).get("state") == "down"), None)
+                    retiring = next((o for o in real if inventory.get(o["tag"], {}).get("state") in ("suspect", "down")), None)
                     if retiring is None:
                         break
                     self.held[retiring["tag"]] = now + self.policy.get("drainSeconds", 30)
@@ -179,6 +181,8 @@ class Handler(BaseHTTPRequestHandler):
                 doc = json.loads(answer)
                 doc["headers"] = {"Authorization": "Bearer " + mode.split(":", 1)[1]}
                 answer = json.dumps(doc).encode()
+            if isinstance(doc, dict):
+                answer = json.dumps(provider_answer(doc)).encode()
             self.reply(200, answer)
 
     def do_POST(self):

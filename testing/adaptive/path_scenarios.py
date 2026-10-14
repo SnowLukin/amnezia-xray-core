@@ -120,9 +120,9 @@ def provider_path_rejection(stand, xray, work, name):
     fresh = [("x1", "reality", 2), ("x2", "reality", 3)]
     stand.answer(fresh, {"x1": 1, "x2": 1}, version="valid")
     provider = bench.provider_config(["direct"], limits={
-        "minInterval": "0s", "exhaustedMinInterval": "0s", "maxRefreshesPerHour": 0,
+        "minInterval": "1s", "exhaustedMinInterval": "1s", "maxRefreshesPerHour": 3600,
         "backoff": {"initialDelay": "1s", "maxDelay": "1s", "jitterFraction": 0}})
-    cfg = bench.client_config([], {}, providers=[provider])
+    cfg = bench.client_config([], {}, providers=[provider], strategy={"groups": []})
     marks = {}
 
     def fetch(label):
@@ -137,7 +137,9 @@ def provider_path_rejection(stand, xray, work, name):
         fetch("missing")
 
     def group_override():
-        body = {"version": "override", "groups": [{"name": "relay", "cost": 1}],
+        scenarios.wait_for(lambda: first_event(client.events, "provider_apply",
+                                               marks["missing"], version="missing", is_ok=False), 10)
+        body = {"version": "override", "groups": [{"name": "relay", "cost": 1, "probe": "default"}],
                 "outbounds": bench.path_members(fresh, {"x1": 1, "x2": 1})}
         for item in body["outbounds"]:
             item["path"] = {"balancer": "auto", "group": "relay"}
@@ -149,14 +151,14 @@ def provider_path_rejection(stand, xray, work, name):
     with bench.Client(xray, cfg, work, name) as client:
         traffic = bench.Traffic(rate=2, big=0)
         run_timeline(traffic, [(2, lambda: fetch("valid")), (6, missing_path),
-                               (10, group_override), (14, lambda: fetch("last_failure"))], 18)
+                               (7, group_override), (50, lambda: fetch("last_failure"))], 55)
         status = client.status()
         kept = client.api("set", "fresh").get("set") or {}
     applies = [event for event in client.events if event["type"] == "provider_apply"]
     valid = first_event(client.events, "provider_apply", marks["valid"], version="valid", is_ok=True)
     bad_missing = rejected_apply(applies, "missing", marks["missing"], marks["override"])
     bad_override = rejected_apply(applies, "override", marks["override"], marks["last_failure"])
-    bodies = [entry.get("body", {}) for entry in stand.provider_bodies(marks["last_failure"])]
+    bodies = [entry.get("body", {}) for entry in stand.provider_bodies(bad_missing["ts"] / 1000 if bad_missing else marks["missing"])]
     next_body = bodies[0] if bodies else {}
     members = status["providers"][0]["members"]
     active = status["balancers"][0]["active"]
@@ -164,7 +166,7 @@ def provider_path_rejection(stand, xray, work, name):
     kept_tags = [item.get("tag") for item in kept.get("outbounds", [])]
     return [check("valid set applied", bool(valid), bool(valid), "True"),
             check("missing provider path rejected", bad_missing and bad_missing["fields"].get("error"),
-                  bool(bad_missing) and "path" in (bad_missing["fields"].get("error") or "").lower(), "path error"),
+                  bool(bad_missing) and "selection" in (bad_missing["fields"].get("error") or "").lower(), "path error"),
             check("group property override rejected", bad_override and bad_override["fields"].get("error"),
                   bool(bad_override) and (not bad_missing or bad_override["seq"] != bad_missing["seq"])
                   and "x1" in (bad_override["fields"].get("error") or ""), "separate outbound error"),
@@ -174,7 +176,9 @@ def provider_path_rejection(stand, xray, work, name):
             check("old set keeps answering traffic", f"{sum(record[1] for record in served)}/{len(served)}",
                   bool(served) and all(record[1] for record in served), "all requests after first rejection"),
             check("next request reports last failure", next_body.get("lastFailure"),
-                  bool(next_body.get("lastFailure", {}).get("error")), "lastFailure.error"),
+                  next_body.get("lastFailure", {}).get("code") == "invalid_set"
+                  and next_body.get("lastFailure", {}).get("status") == 200
+                  and next_body.get("lastFailure", {}).get("agoMs", -1) >= 0, "status=200, code=invalid_set, agoMs>=0"),
             check("invalid sets never applied", [event["fields"].get("version") for event in applies
                                                  if event["fields"].get("is_ok")],
                   all(event["fields"].get("version") == "valid" for event in applies
@@ -190,11 +194,12 @@ def provider_group_names(stand, xray, work, name):
     with open(stand.provider_answer) as stream:
         body = json.load(stream)
     for item in body["outbounds"]:
+        item.pop("selection", None)
         item["path"] = {"balancer": "auto", "group": "relay"}
     with open(stand.provider_answer, "w") as stream:
         json.dump(body, stream)
     provider = bench.provider_config(["direct"])
-    cfg = bench.client_config([], {}, providers=[provider])
+    cfg = bench.client_config([], {}, providers=[provider], strategy={"groups": []})
     with bench.Client(xray, cfg, work, name) as client:
         client.api("refresh", "fresh")
         traffic = bench.Traffic(rate=2, big=0)

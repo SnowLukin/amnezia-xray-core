@@ -94,8 +94,9 @@ def strategy(recipe):
     }
     if failover["confirmWithProbe"] != "auto": failover["downAudit"] = on(False)
     result["failover"] = failover
+    groups_present = "groups" in result
     groups = result.pop("groups", [])
-    result["groups"] = {"isEnabled": bool(groups), "items": [selection(g) for g in groups]}
+    result["groups"] = {"isEnabled": groups_present, "items": [selection(g) for g in groups]}
     old_return = result.pop("returnToCheaper", {})
     returns = on(True)
     returns["interval"] = old_return.pop("interval", "30m")

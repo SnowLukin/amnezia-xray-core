@@ -16,6 +16,7 @@ import (
 
 	"github.com/amnezia-vpn/amneziawg-go/v3/device"
 	"github.com/xtls/xray-core/app/dispatcher"
+	"github.com/xtls/xray-core/app/metrics"
 	"github.com/xtls/xray-core/app/observatory"
 	"github.com/xtls/xray-core/app/observatory/health"
 	"github.com/xtls/xray-core/app/policy"
@@ -24,6 +25,7 @@ import (
 	"github.com/xtls/xray-core/common/serial"
 	"github.com/xtls/xray-core/core"
 	"github.com/xtls/xray-core/features/stats"
+	"google.golang.org/protobuf/proto"
 )
 
 // testRelay stands between a client and its server, as the network does,
@@ -163,7 +165,8 @@ func testPassive() *health.PassiveConfig {
 	}
 }
 
-const testSuccessBytes = 4000
+// API v2 fixes the traffic proof threshold at 24 KiB.
+const testSuccessBytes = 24 * 1024
 
 // newObservedInstance runs a core whose health observatory follows the
 // outbound tagged wg.
@@ -172,7 +175,8 @@ func newObservedInstance(t testing.TB, passive *health.PassiveConfig, apps ...*s
 	inst, err := core.New(&core.Config{App: append([]*serial.TypedMessage{
 		serial.ToTypedMessage(&dispatcher.Config{}),
 		serial.ToTypedMessage(&proxyman.OutboundConfig{}),
-		serial.ToTypedMessage(&health.Config{Paths: []*health.PathDefinition{{Tag: "wg", Cost: 1}}, Passive: passive}),
+		serial.ToTypedMessage(&metrics.Config{Tag: "test-metrics"}),
+		serial.ToTypedMessage(&health.Config{Paths: []*health.PathDefinition{{Tag: "wg", Cost: 1}}, Passive: passive, Features: &health.FeatureConfig{Metrics: proto.Bool(true)}}),
 	}, apps...)})
 	if err != nil {
 		t.Fatal(err)
@@ -380,7 +384,7 @@ func TestObservedTunnelProvesItself(t *testing.T) {
 	inst, o := newObservedInstance(t, testPassive())
 	oh, _ := addTestClient(t, inst, "wg", s, priv, addr, testParams)
 
-	chunk := make([]byte, 1000)
+	chunk := make([]byte, 1024)
 	for _, dest := range []net.Destination{tcpTo(testServerAddr, 7), udpTo(testServerAddr, 7)} {
 		c := dial(oh, dest)
 		for range testSuccessBytes / len(chunk) {

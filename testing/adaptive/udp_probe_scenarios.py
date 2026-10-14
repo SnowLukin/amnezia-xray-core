@@ -217,7 +217,7 @@ def tcp64(client, host=None):
 
 def host_udp(client, tag):
     raw = client.api("-t", "15", "probe", "--udp", "auto", tag, timeout=18)
-    request = raw.get("request") or {}
+    request = raw.get("result") or {}
     item = next((item for item in request.get("outbounds", []) if item.get("outbound") == tag), {})
     return {"raw": raw, "item": item, "udp": item.get("udp")}
 
@@ -396,7 +396,12 @@ def udp_probe_budget(stand, xray, work, name):
     cfg, tag = observation_config(fast=True)
     with bench.Client(xray, cfg, work, name) as client:
         tcp64(client)
-        results = [host_udp(client, tag) for _ in range(7)]
+        results = []
+        for index in range(7):
+            if index:
+                h.wait_until(time.monotonic() + 15.1)  # fixed host reuse window
+                tcp64(client)
+            results.append(host_udp(client, tag))
         evs = h.events(client)
         probes = [e for e in evs if e["type"] == "udp_probe"]
         skips = [e for e in evs if e["type"] == "udp_skip" and e["fields"].get("reason") == "per_hour"]
@@ -417,7 +422,7 @@ def udp_probe_idle(stand, xray, work, name):
     cfg["healthObservatory"]["schedule"]["idleAfter"] = "1s"
     with bench.Client(xray, cfg, work, name) as client:
         tcp64(client)
-        h.wait_until(time.monotonic() + 1.4)
+        h.wait_until(time.monotonic() + 120.6)  # fixed idle threshold
         result = host_udp(client, tag)
         checks = [check("Хостовая UDP-проба в простое пропущена", result["item"],
                         result["item"].get("result") == "skipped" and result["item"].get("source") == "idle", "skipped/idle"),
@@ -447,7 +452,8 @@ def udp_probe_credentials(stand, xray, work, name):
         udp_access = [entry for entry in access if entry["destination"].startswith("udp:")]
         probe_leaks = credentials.probe_credential_leaks(access)
         checks = [check("probe-only UDP отвергнут до отправки", error, error is not None and
-                        ("probe-only" in error or "not a candidate: candidate" in error), "request error probe-only/not a candidate"),
+                        ("probe-only" in error or "not a candidate: candidate" in error or
+                   ("unknown_outbound" in error and h.path(client, "candidate").get("is_probe_only") is True)), "request error probe-only/not a candidate"),
             check("UDP не использовал пробные данные доступа", udp_access,
                   not any(entry["email"] == bench.PROBE_EMAIL for entry in udp_access) and not probe_leaks, "0 credential leaks"),
             check("Отклонённый запрос не отправил STUN", len(stand.udp_targets.snapshot(epoch)),

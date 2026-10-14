@@ -102,12 +102,12 @@ class UDPScenarioFixtureTest(unittest.TestCase):
 
     def test_host_uses_production_cli_bool_and_returns_udp_only(self):
         client = mock.Mock()
-        client.api.return_value = {"request": {"is_udp": True, "outbounds": [{"outbound": "tested",
+        client.api.return_value = {"result": {"is_udp": True, "outbounds": [{"outbound": "tested",
             "result": "lossy", "udp": {"state": "lossy", "answered": 2, "sent": 5}}]}}
         result = udp.host_udp(client, "tested")
         client.api.assert_called_once_with("-t", "15", "probe", "--udp", "auto", "tested", timeout=18)
         self.assertEqual(result["udp"]["answered"], 2)
-        client.api.return_value = {"request": {"outbounds": [{"outbound": "tested", "result": "ok", "rtt_ms": 1}]}}
+        client.api.return_value = {"result": {"outbounds": [{"outbound": "tested", "result": "ok", "rtt_ms": 1}]}}
         self.assertIsNone(udp.host_udp(client, "tested")["udp"])
 
     def test_all_functional_scenes_registered_once(self):

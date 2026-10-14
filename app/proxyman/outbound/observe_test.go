@@ -141,9 +141,9 @@ func TestMuxConnectionsAreObserved(t *testing.T) {
 			"log": {"loglevel": "none"},
 			"outbounds": [{"tag": "t1", "protocol": "trojan",
 				"settings": {"servers": [{"address": "127.0.0.1", "port": `+strconv.Itoa(deadPort(t))+`, "password": "x"}]}`+muxJSON+`,
-				"selection": {"balancer": "auto", "cost": 1}}],
+				"selection": {"balancer": "auto", "cost": 1, "probe": "default"}}],
 			"routing": {"balancers": [{"tag": "auto", "fallbackTag": "t1", "strategy": {"type": "leastCost"}}]},
-			"healthObservatory": {}
+			"healthObservatory": {"probes": {"profiles": [{"name": "default", "steps": [{"name": "http", "destinations": ["http://example.test/"], "timeout": "1s"}]}]}}
 		}`)
 		c := observe(t, inst, "t1")
 		for i := 0; i < 3; i++ {
@@ -162,9 +162,9 @@ func TestRetriesOfOneConnectionShareAnID(t *testing.T) {
 		"log": {"loglevel": "none"},
 		"outbounds": [{"tag": "t1", "protocol": "trojan",
 			"settings": {"servers": [{"address": "127.0.0.1", "port": `+strconv.Itoa(deadPort(t))+`, "password": "x"}]},
-			"selection": {"balancer": "auto", "cost": 1}}],
+			"selection": {"balancer": "auto", "cost": 1, "probe": "default"}}],
 		"routing": {"balancers": [{"tag": "auto", "fallbackTag": "t1", "strategy": {"type": "leastCost"}}]},
-		"healthObservatory": {}
+		"healthObservatory": {"probes": {"profiles": [{"name": "default", "steps": [{"name": "http", "destinations": ["http://example.test/"], "timeout": "1s"}]}]}}
 	}`)
 	defer inst.Close()
 	c := observe(t, inst, "t1")
@@ -206,9 +206,9 @@ func TestAbortEndsAConnectionWaitingForAnAnswer(t *testing.T) {
 		"outbounds": [{"tag": "v1", "protocol": "vless",
 			"settings": {"address": "127.0.0.1", "port": `+strconv.Itoa(ln.Addr().(*gonet.TCPAddr).Port)+`,
 				"id": "27848739-7e62-4138-9fd3-098a63964b6b", "encryption": "none"},
-			"selection": {"balancer": "auto", "cost": 1}}],
+			"selection": {"balancer": "auto", "cost": 1, "probe": "default"}}],
 		"routing": {"balancers": [{"tag": "auto", "fallbackTag": "t1", "strategy": {"type": "leastCost"}}]},
-		"healthObservatory": {}
+		"healthObservatory": {"probes": {"profiles": [{"name": "default", "steps": [{"name": "http", "destinations": ["http://example.test/"], "timeout": "1s"}]}]}}
 	}`)
 	defer inst.Close()
 	c := observe(t, inst, "v1")
@@ -254,15 +254,15 @@ func TestOnlyWatchedOutboundsAreHooked(t *testing.T) {
 	inst := startInstance(t, `{
 		"log": {"loglevel": "none"},
 		"outbounds": [
-			{"tag": "a1", "protocol": "freedom", "selection": {"balancer": "auto", "cost": 1}},
+			{"tag": "a1", "protocol": "freedom", "selection": {"balancer": "auto", "cost": 1, "probe": "default"}},
 			{"tag": "direct", "protocol": "freedom"},
 			{"tag": "check", "protocol": "freedom"},
 			{"tag": "dns-out", "protocol": "dns"},
 			{"tag": "block", "protocol": "blackhole"}],
 		"routing": {"balancers": [{"tag": "auto", "fallbackTag": "a1", "strategy": {"type": "leastCost"}}]},
-		"healthObservatory": {"network": {
-			"connectivity": {"isEnabled": true, "outbound": "check", "destination": "https://check.test/"},
-			"witnesses": {"isEnabled": true, "outbounds": ["direct"]}}}
+		"healthObservatory": {"probes": {"profiles": [{"name": "default", "steps": [{"name": "http", "destinations": ["http://example.test/"], "timeout": "1s"}]}]}, "network": {
+			"connectivity": {"outbound": "check", "destinations": ["https://check.test/"]},
+			"witnesses": {"outbounds": ["direct"]}}}
 	}`)
 	defer inst.Close()
 	ohm := inst.GetFeature(obs.ManagerType()).(obs.Manager)
@@ -305,9 +305,9 @@ func TestPreconnectionsAreFinished(t *testing.T) {
 		"outbounds": [{"tag": "v1", "protocol": "vless",
 			"settings": {"address": "127.0.0.1", "port": `+strconv.Itoa(ln.Addr().(*gonet.TCPAddr).Port)+`,
 				"id": "27848739-7e62-4138-9fd3-098a63964b6b", "encryption": "none", "testpre": 1},
-			"selection": {"balancer": "auto", "cost": 1}}],
+			"selection": {"balancer": "auto", "cost": 1, "probe": "default"}}],
 		"routing": {"balancers": [{"tag": "auto", "fallbackTag": "t1", "strategy": {"type": "leastCost"}}]},
-		"healthObservatory": {}
+		"healthObservatory": {"probes": {"profiles": [{"name": "default", "steps": [{"name": "http", "destinations": ["http://example.test/"], "timeout": "1s"}]}]}}
 	}`)
 	// The instance stays open: closing the VLESS outbound closes the channel
 	// its pre-connection goroutines still send to, which the race detector
@@ -348,11 +348,11 @@ func BenchmarkConnection(b *testing.B) {
 		}
 	}()
 	dest := net.TCPDestination(net.LocalHostIP, net.Port(ln.Addr().(*gonet.TCPAddr).Port))
-	health := `, "routing": {"balancers": [{"tag": "auto", "fallbackTag": "a1", "strategy": {"type": "leastCost"}}]}, "healthObservatory": {}`
+	health := `, "routing": {"balancers": [{"tag": "auto", "fallbackTag": "a1", "strategy": {"type": "leastCost"}}]}, "healthObservatory": {"probes": {"profiles": [{"name": "default", "steps": [{"name": "http", "destinations": ["http://example.test/"], "timeout": "1s"}]}]}}`
 	for _, tc := range []struct{ name, path, extra, health string }{
 		{"plain", "", "", ""},
-		{"observed", `, "selection": {"balancer": "auto", "cost": 1}`, "", health},
-		{"unobserved", "", `, {"tag": "b1", "protocol": "blackhole", "selection": {"balancer": "auto", "cost": 1}}`, health},
+		{"observed", `, "selection": {"balancer": "auto", "cost": 1, "probe": "default"}`, "", health},
+		{"unobserved", "", `, {"tag": "b1", "protocol": "blackhole", "selection": {"balancer": "auto", "cost": 1, "probe": "default"}}`, health},
 	} {
 		inst := startInstance(b, `{"log": {"loglevel": "none"},
 			"outbounds": [{"tag": "a1", "protocol": "freedom", "settings": {"finalRules": [{"action": "allow"}]}`+tc.path+`}`+tc.extra+`]`+tc.health+`}`)

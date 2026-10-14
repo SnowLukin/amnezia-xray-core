@@ -572,6 +572,10 @@ def chaos(ports, mode):
     return urllib.request.urlopen(f"http://127.0.0.1:{CHAOS_CONTROL}/set?port={ports}&mode={mode}", timeout=3).read()
 
 
+def chaos_connections():
+    return json.load(urllib.request.urlopen(f"http://127.0.0.1:{CHAOS_CONTROL}/connections", timeout=3))
+
+
 def chaos_stats():
     """Per chaos port: (connections accepted, bytes the client sent, bytes that reached it,
     datagrams the client sent, datagrams that reached it). A UDP port counts client
@@ -1069,6 +1073,7 @@ class ConnSampler:
     def __init__(self, period=0.25):
         self.period = period
         self.samples = []
+        self.connection_history = None
         self._stop = threading.Event()
 
     def __enter__(self):
@@ -1079,6 +1084,7 @@ class ConnSampler:
     def __exit__(self, *exc):
         self._stop.set()
         self.thread.join(timeout=5)
+        self.connection_history = chaos_connections()
 
     def _run(self):
         while not self._stop.is_set():
@@ -1089,17 +1095,24 @@ class ConnSampler:
             self._stop.wait(self.period)
 
     def _delta(self, ports, t1, t2, field):
-        before = [c for t, c in self.samples if t <= t1]
-        after = [c for t, c in self.samples if t <= t2]
+        # Use samples inside the requested window. A floor sample before t1
+        # counted late retries that actually preceded the switch boundary.
+        before = [c for t, c in self.samples if t1 <= t <= t2]
+        after = [c for t, c in self.samples if t1 <= t <= t2]
         if not before or not after:
             return None
         ports = ports if isinstance(ports, (list, tuple, set)) else [ports]
         none = (0, 0, 0, 0, 0)
-        return sum(after[-1].get(p, none)[field] - before[-1].get(p, none)[field] for p in ports)
+        return sum(after[-1].get(p, none)[field] - before[0].get(p, none)[field] for p in ports)
 
     def between(self, ports, t1, t2):
         """Connections accepted on the port (or ports) between t1 and t2."""
-        return self._delta(ports, t1, t2, 0)
+        history = self.connection_history if self.connection_history is not None else chaos_connections()
+        events = history["events"]
+        if history["dropped"] and (not events or events[0]["at"] >= t1):
+            raise RuntimeError("proxy connection history does not cover the measurement window")
+        ports = ports if isinstance(ports, (list, tuple, set)) else [ports]
+        return sum(e["port"] in ports and t1 <= e["at"] <= t2 for e in events)
 
     def traffic(self, ports, t1, t2):
         """Bytes sent by the client and bytes that reached it, between t1 and t2."""
@@ -1304,7 +1317,6 @@ def fold_report(events):
                 decided = True
             if f.get("is_ok") is True and f.get("renewed", 0) > 0 and f.get("trigger") != "initial":
                 c["provider_renewals"] += 1
-            decided = True
         elif t in ("provider_expired", "provider_auth_failed", "provider_base_changed"):
             c[t] += 1
             decided = decided or f.get("renewal") != "saved"

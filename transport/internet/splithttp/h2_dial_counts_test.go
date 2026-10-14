@@ -36,6 +36,7 @@ func TestXHTTP2TCPDialCounts(t *testing.T) {
 					t.Fatal(err)
 				}
 				var accepts atomic.Int32
+				ready := make(chan struct{})
 				var sockets sync.Map
 				var workers sync.WaitGroup
 				gate := make(chan struct{})
@@ -53,7 +54,9 @@ func TestXHTTP2TCPDialCounts(t *testing.T) {
 							return
 						}
 						sockets.Store(c, true)
-						accepts.Add(1)
+						if accepts.Add(1) == clients {
+							close(ready)
+						}
 						workers.Add(1)
 						go func() {
 							defer workers.Done()
@@ -107,6 +110,12 @@ func TestXHTTP2TCPDialCounts(t *testing.T) {
 					}()
 				}
 				close(start)
+				// Wait for physical dials before measuring the settled count. The
+				// full suite may not schedule the first worker within 300 ms.
+				select {
+				case <-ready:
+				case <-time.After(5 * time.Second):
+				}
 				time.Sleep(300 * time.Millisecond)
 				count := accepts.Load()
 				runtime.ReadMemStats(&after)

@@ -43,6 +43,8 @@ Its status line adds the datagrams: "... pkts_up=P pkts_down=Q", counted as
 the bytes are.
 """
 import asyncio
+from collections import deque
+import json
 import random
 import socket
 import struct
@@ -53,6 +55,16 @@ from urllib.parse import parse_qs, urlparse
 
 MODES = {}
 CONNS = {}
+CONNECTION_EVENTS = deque(maxlen=16384)
+CONNECTION_EVENTS_DROPPED = 0
+
+
+def record_connection(port):
+    global CONNECTION_EVENTS_DROPPED
+    if len(CONNECTION_EVENTS) == CONNECTION_EVENTS.maxlen:
+        CONNECTION_EVENTS_DROPPED += 1
+    CONNECTION_EVENTS.append({"at": time.time(), "port": port})
+
 BYTES = {}
 LISTEN = {}
 SERVERS = {}
@@ -137,6 +149,7 @@ async def pump(port, reader, writer, counter, other_writer, direction):
 
 async def handle(port, upstream, reader, writer):
     CONNS[port] = CONNS.get(port, 0) + 1
+    record_connection(port)
     name, _ = mode_of(port)
     if name in ("reset", "refuse"):
         rst(writer)
@@ -324,6 +337,7 @@ class UdpListener(asyncio.DatagramProtocol):
         if session is None:
             session = self.sessions[addr] = UdpSession(self.port, self, addr)
             CONNS[self.port] = CONNS.get(self.port, 0) + 1
+            record_connection(self.port)
             asyncio.ensure_future(session.open())
         session.forward(0, data)
 
@@ -366,7 +380,14 @@ async def control(reader, writer):
     line = (await reader.readline()).decode()
     while (await reader.readline()) not in (b"\r\n", b"\n", b""):
         pass
-    q = parse_qs(urlparse(line.split(" ")[1]).query)
+    url = urlparse(line.split(" ")[1])
+    if url.path == "/connections":
+        body = json.dumps({"events": list(CONNECTION_EVENTS), "dropped": CONNECTION_EVENTS_DROPPED})
+        writer.write(f"HTTP/1.1 200 OK\r\nContent-Length: {len(body)}\r\nConnection: close\r\n\r\n{body}".encode())
+        await writer.drain()
+        writer.close()
+        return
+    q = parse_qs(url.query)
     body = ""
     status = "200 OK"
     if "port" in q and "mode" in q:

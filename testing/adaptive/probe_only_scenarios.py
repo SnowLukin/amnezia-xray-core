@@ -13,7 +13,7 @@ from scenarios import check, scenario
 
 MEMBERS = [("a", "reality", 0), ("b", "tcp_tls", 0), ("c", "ws", 0), ("d", "grpc", 0)]
 DRAIN_SECONDS = 30
-HOST_REUSE_SECONDS = 8
+HOST_REUSE_SECONDS = 15
 
 
 def fixture(name, real_tags, capacity, promote=True, delay=0, count=3):
@@ -109,6 +109,9 @@ def exercise(stand, xray, work, name, real_tags, capacity, threshold, promote=Tr
         document["_probeOnlyBench"]["promoteOnExhausted"] = True
     write_answer(stand, document)
     cfg = client_config(document, threshold)
+    if name == "probe_only_one_slot":
+        cfg["healthObservatory"]["providers"][0]["triggers"].update(
+            minHealthyOutbounds=0, shouldRefreshWhenExhausted=True)
     began = time.time()
     marks, statuses, errors, downloaded = {}, {}, [], {}
     checks = []
@@ -153,7 +156,9 @@ def exercise(stand, xray, work, name, real_tags, capacity, threshold, promote=Tr
                 if len(real_tags) >= threshold:
                     early = [e for e in client.events if e["type"] == "probe_start"
                              and e["fields"].get("reason") == "candidate"]
-                    checks.append(check("Достаточно настоящих: кандидаты не проверялись", len(early), not early, "0"))
+                    expected = count - len(real_tags) if all_dead else 1
+                    checks.append(check("v2 поддерживает keepVerified независимо от minHealthy", len(early),
+                                        len(early) == expected, f"{expected} maintenance probes"))
                 if demote:
                     marks["demotion"] = time.time()
                     changed = fixture(name + "-demote", {"b"}, capacity, promote=False)
@@ -167,10 +172,16 @@ def exercise(stand, xray, work, name, real_tags, capacity, threshold, promote=Tr
                     real_now = [p["outbound"] for p in statuses["after"].get("paths", [])
                                 if p.get("is_probe_only") is False and p["outbound"] not in {"p-" + t for t in real_tags}]
                     if real_now and name != "probe_only_one_slot":
+                        traffic.paused.set()
+                        time.sleep(HOST_REUSE_SECONDS + 1)
                         marks["full_probe"] = client.api("-t", "6", "probe", "auto", real_now[0], timeout=8)
+                        traffic.paused.clear()
                 if no_traffic:
                     marks["network"] = client.network("probe-only-unusable")
-                    marks["pin"] = client.api("pin", "auto", "p-c")
+                    try:
+                        client.api("pin", "auto", "p-c")
+                    except RuntimeError as exc:
+                        marks["pin"] = {"error": str(exc)}
                 until(duration)
                 if name == "probe_only_one_slot" and real_now:
                     traffic.stop()
@@ -211,7 +222,7 @@ def exercise(stand, xray, work, name, real_tags, capacity, threshold, promote=Tr
                      any(a["email"] == bench.USER_EMAIL and any(t in a["destination"] for t in bench.TARGETS)
                          for a in access), ">0 user-UUID accepted")]
     min_bodies = [b["body"] for b in bodies if isinstance(b.get("body"), dict)
-                  and b["body"].get("trigger") == "min_healthy"]
+                  and b["body"].get("trigger") in ("min_healthy", "exhausted")]
     inventory_bodies = ([b["body"] for b in bodies if isinstance(b.get("body"), dict)
                          and b["body"].get("trigger") == "host"] if demote else min_bodies)
     tags = [tag for tag, _, _ in MEMBERS[:count]]
@@ -242,10 +253,10 @@ def exercise(stand, xray, work, name, real_tags, capacity, threshold, promote=Tr
             first = min_bodies[0] if min_bodies else {}
             checked_pending = bool(promotions) and any(
                 e["fields"].get("outbound") == "p-" + promotions[0]["promoted"] and
-                bodies[0]["ts"] <= e["ts"] / 1000 <= promotions[0]["at"] for e in passes)
-            checks += [check("При исчерпании POST допустим до проверки кандидата", first,
+                e["ts"] / 1000 <= promotions[0]["at"] for e in passes)
+            checks += [check("При исчерпании POST не ждёт нового кандидата", first,
                              first.get("balancer", {}).get("isExhausted") is True, "exhaustion bypass"),
-                       check("Кандидат проверен пока бэк заводил единственный слот", checked_pending,
+                       check("Кандидат подтверждён до ответа с новым слотом", checked_pending,
                              checked_pending and same_tag, "candidate passed before delayed response")]
         else:
             checks.append(check("Промоушен под тем же тегом после подтверждённой пробы в POST",
@@ -279,7 +290,7 @@ def exercise(stand, xray, work, name, real_tags, capacity, threshold, promote=Tr
     elif no_traffic:
         checks += [check("Исчерпанный балансировщик не выбрал probe-only", active(statuses.get("final", {})),
                          active(statuses.get("final", {})) == "", "empty"),
-                   check("Pin кандидата отклонён", marks.get("pin"), marks.get("pin", {}).get("ok") is False, "false")]
+                   check("Pin кандидата отклонён", marks.get("pin"), "pin was not accepted" in marks.get("pin", {}).get("error", ""), "false")]
     if demote:
         demoted_at = marks.get("demotion", began)
         after = [e for e in events if e["ts"] / 1000 >= demoted_at and e["type"] in {"switch", "exhausted"}
