@@ -423,12 +423,16 @@ def udp_probe_idle(stand, xray, work, name):
     with bench.Client(xray, cfg, work, name) as client:
         tcp64(client)
         h.wait_until(time.monotonic() + 120.6)  # fixed idle threshold
+        active_records = stand.udp_targets.snapshot(epoch)
+        # Automatic UDP probes during the preceding active phase are valid.
+        # Measure packets of the idle host request in its own epoch.
+        epoch = stand.udp_targets.reset()
         result = host_udp(client, tag)
         checks = [check("Хостовая UDP-проба в простое пропущена", result["item"],
                         result["item"].get("result") == "skipped" and result["item"].get("source") == "idle", "skipped/idle"),
                   check("Простой не создаёт STUN-пакеты", len(stand.udp_targets.snapshot(epoch)),
                         not stand.udp_targets.snapshot(epoch), 0)]
-        save_scene(work, name, client, stand.udp_targets, result=result)
+        save_scene(work, name, client, stand.udp_targets, result=result, active_stun_records=active_records)
     return checks
 
 
