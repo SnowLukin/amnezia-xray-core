@@ -2347,7 +2347,7 @@ def provider_lease_expiry(stand, xray, work, name):
     size, seconds = 16 << 20, 40
     stand.answer([("x1", "reality", 1), ("x2", "reality", 2)], costs={"x1": 1, "x2": 2},
                  expires={"x1": "@+30s", "x2": "@+300s"}, server_time="@+0s")
-    prov = bench.provider_config(["direct"], limits={"exhaustedMinInterval": "1s",
+    prov = bench.provider_config(["direct"], limits={"minInterval": "1s", "exhaustedMinInterval": "1s",
                                                      "backoff": {"initialDelay": "5s", "maxDelay": "5s"}})
     cfg = bench.client_config([("p-x1", "reality", 1)], {"p-x1": 1}, providers=[prov])
     m = Marks()
@@ -2364,7 +2364,7 @@ def provider_lease_expiry(stand, xray, work, name):
         tr = bench.Traffic(rate=2, big=0.5)
         dl = threading.Thread(target=long_download, daemon=True)
         run_timeline(tr, [(2, m.at("answer", lambda: refresh(c))), (4, dl.start),
-                          (10, m.at("down", lambda: bench.provider_mode("status:500")))], 50)
+                          (10, m.at("down", lambda: bench.provider_mode("status:500")))], 115)
         dl.join(timeout=30)
     applied = [e for e in bench.events_of(c.events, "provider_apply", m["answer"]) if e["fields"].get("is_ok")]
     t_apply = applied[0]["ts"] / 1000 if applied else None
