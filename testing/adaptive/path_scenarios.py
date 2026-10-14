@@ -158,7 +158,12 @@ def provider_path_rejection(stand, xray, work, name):
     valid = first_event(client.events, "provider_apply", marks["valid"], version="valid", is_ok=True)
     bad_missing = rejected_apply(applies, "missing", marks["missing"], marks["override"])
     bad_override = rejected_apply(applies, "override", marks["override"], marks["last_failure"])
-    bodies = [entry.get("body", {}) for entry in stand.provider_bodies(bad_missing["ts"] / 1000 if bad_missing else marks["missing"])]
+    rejected_fetch = next((event for event in reversed(client.events)
+                           if bad_missing and event["seq"] < bad_missing["seq"]
+                           and event["type"] == "provider_fetch"), None)
+    rejected_refresh = rejected_fetch["fields"].get("refresh", 0) if rejected_fetch else 0
+    bodies = [entry.get("body", {}) for entry in stand.provider_bodies(marks["missing"])
+              if entry.get("body", {}).get("refreshNumber", 0) > rejected_refresh]
     next_body = bodies[0] if bodies else {}
     members = status["providers"][0]["members"]
     active = status["balancers"][0]["active"]
