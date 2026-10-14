@@ -243,8 +243,7 @@ message PathDefinition {
   bool is_probe_only = 8;
   optional bool return_is_enabled = 9;
   map<string, string> labels = 10;
-  // Provider-local probe-only tag proving a newly issued user credential.
-  string proven_by = 11;
+  reserved 11;
 }
 
 message PathGroup {

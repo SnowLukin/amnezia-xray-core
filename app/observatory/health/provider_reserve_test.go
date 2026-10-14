@@ -2,8 +2,6 @@ package health
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
 	"slices"
 	"sync/atomic"
 	"testing"
@@ -81,93 +79,6 @@ func TestProviderViaSkipsCurrentOutboundDown(t *testing.T) {
 	cfg.probeOnlyRoads = true
 	if roads, skip := te.resolveProviderVia(cfg, "auto", at(2*time.Second)); skip != "" || !slices.Equal(roads, []string{"p-probe"}) {
 		t.Fatal(roads, skip)
-	}
-}
-
-func reserveAnswer(t *testing.T, source string, by string) *providerAnswer {
-	t.Helper()
-	raw := fmt.Sprintf(`{"outbounds":[{"tag":"slot","protocol":"vless","selection":{"balancer":"auto","probe":"check","cost":1,"provenBy":%s}}%s]}`, by, source)
-	a, err := parseAnswer([]byte(raw))
-	if err != nil {
-		t.Fatal(err)
-	}
-	return a
-}
-
-const reserveProbe = `,{"tag":"probe","protocol":"vless","selection":{"balancer":"auto","probe":"check","cost":2,"isProbeOnly":true}}`
-
-func TestProvenByApplyFreshOldNetworkAndFailure(t *testing.T) {
-	for _, tc := range []struct {
-		name                       string
-		age                        time.Duration
-		changeNetwork, resetSource bool
-		want                       bool
-	}{
-		{name: "fresh", age: time.Second, want: true}, {name: "boundary", age: 60 * time.Second, want: true},
-		{name: "old", age: 60*time.Second + time.Nanosecond}, {name: "other network", age: time.Second, changeNetwork: true},
-		{name: "replaced proof", age: time.Second, resetSource: true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			f := newApplyFixture(t, time.Minute)
-			f.o.clock = func() time.Time { return at(2 * time.Minute) }
-			initial, _ := parseAnswer([]byte(`{"outbounds":[{"tag":"probe","protocol":"vless","v":0,"selection":{"balancer":"auto","probe":"check","cost":2,"isProbeOnly":true}}]}`))
-			if _, err := f.apply(t, initial); err != nil {
-				t.Fatal(err)
-			}
-			reserveProof(f.o.e, "p-probe", f.o.now().Add(-tc.age))
-			if tc.changeNetwork {
-				f.o.e.onNetworkChange("other", f.o.now())
-			}
-			source := reserveProbe
-			if tc.resetSource {
-				source = `,{"tag":"probe","protocol":"vless","v":1,"selection":{"balancer":"auto","probe":"check","cost":2,"isProbeOnly":true}}`
-			}
-			if _, err := f.apply(t, reserveAnswer(t, source, `"probe"`)); err != nil {
-				t.Fatal(err)
-			}
-			p := f.o.e.paths["p-slot"]
-			if (p.status == statusUp) != tc.want {
-				t.Fatalf("state %v want up=%v", p.status, tc.want)
-			}
-			if tc.want {
-				if p.reason != "proven_by" || !p.lastProbe.IsZero() {
-					t.Fatal("new slot probed or wrong reason")
-				}
-				sel := f.o.e.selectors["auto"]
-				f.o.e.updateCandidates(sel, []string{"p-slot", "p-probe"}, f.o.now())
-				if sel.current() != "p-slot" {
-					t.Fatalf("not selected immediately: %s", sel.current())
-				}
-				f.o.e.onFailure("p-slot", failDial, "t.test", 1, f.o.now().Add(time.Second))
-				if len(p.failures) == 0 && p.status == statusUp {
-					t.Fatal("user failure ignored")
-				}
-			}
-		})
-	}
-}
-
-func TestProvenByRejectsBadReferencesBeforeMutation(t *testing.T) {
-	for _, by := range []string{`"missing"`, `"real"`, `"p-probe"`, `""`, `null`, `12`, `{}`} {
-		t.Run(by, func(t *testing.T) {
-			f := newApplyFixture(t, time.Minute)
-			initial, _ := parseAnswer([]byte(`{"outbounds":[{"tag":"real","protocol":"vless","selection":{"balancer":"auto","probe":"check","cost":1}}` + reserveProbe + `]}`))
-			if _, err := f.apply(t, initial); err != nil {
-				t.Fatal(err)
-			}
-			before := f.m.GetHandler("p-real")
-			if _, err := f.apply(t, reserveAnswer(t, reserveProbe, by)); err == nil {
-				t.Fatal("bad reference accepted")
-			}
-			if f.m.GetHandler("p-real") != before || f.m.GetHandler("p-slot") != nil {
-				t.Fatal("rejected response mutated handlers")
-			}
-		})
-	}
-	// Metadata is provider-only; it is removed before loading an outbound.
-	raw := json.RawMessage(`[{"tag":"slot","protocol":"freedom","selection":{"provenBy":"probe"}}]`)
-	if _, err := loadOutbounds(raw); err != nil {
-		t.Fatal(err)
 	}
 }
 

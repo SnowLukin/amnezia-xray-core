@@ -1018,9 +1018,6 @@ func (o *Observer) applySet(rt *providerRuntime, a *providerAnswer, j *refreshJo
 		defer o.mu.Unlock()
 
 		err = o.checkGroupOwnership(rt, a)
-		if err == nil {
-			err = o.e.validateProvenBy(rt.cfg, a)
-		}
 
 	}()
 	if err != nil {

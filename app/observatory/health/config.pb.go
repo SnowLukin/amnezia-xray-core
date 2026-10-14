@@ -1484,10 +1484,8 @@ type PathDefinition struct {
 	IsProbeOnly     bool                   `protobuf:"varint,8,opt,name=is_probe_only,json=isProbeOnly,proto3" json:"is_probe_only,omitempty"`
 	ReturnIsEnabled *bool                  `protobuf:"varint,9,opt,name=return_is_enabled,json=returnIsEnabled,proto3,oneof" json:"return_is_enabled,omitempty"`
 	Labels          map[string]string      `protobuf:"bytes,10,rep,name=labels,proto3" json:"labels,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
-	// Provider-local probe-only tag proving a newly issued user credential.
-	ProvenBy      string `protobuf:"bytes,11,opt,name=proven_by,json=provenBy,proto3" json:"proven_by,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *PathDefinition) Reset() {
@@ -1588,13 +1586,6 @@ func (x *PathDefinition) GetLabels() map[string]string {
 		return x.Labels
 	}
 	return nil
-}
-
-func (x *PathDefinition) GetProvenBy() string {
-	if x != nil {
-		return x.ProvenBy
-	}
-	return ""
 }
 
 type PathGroup struct {
@@ -3532,7 +3523,7 @@ const file_app_observatory_health_config_proto_rawDesc = "" +
 	"\x10close_idle_after\x18\x02 \x01(\x03R\x0ecloseIdleAfter\"O\n" +
 	"\rNetworkConfig\x12\x1b\n" +
 	"\tno_memory\x18\x01 \x01(\bR\bnoMemory\x12!\n" +
-	"\fmax_networks\x18\x02 \x01(\x05R\vmaxNetworks\"\xd9\x03\n" +
+	"\fmax_networks\x18\x02 \x01(\x05R\vmaxNetworks\"\xc2\x03\n" +
 	"\x0ePathDefinition\x12\x10\n" +
 	"\x03tag\x18\x01 \x01(\tR\x03tag\x12\x1a\n" +
 	"\bbalancer\x18\x02 \x01(\tR\bbalancer\x12\x14\n" +
@@ -3544,12 +3535,11 @@ const file_app_observatory_health_config_proto_rawDesc = "" +
 	"\ris_probe_only\x18\b \x01(\bR\visProbeOnly\x12/\n" +
 	"\x11return_is_enabled\x18\t \x01(\bH\x00R\x0freturnIsEnabled\x88\x01\x01\x12T\n" +
 	"\x06labels\x18\n" +
-	" \x03(\v2<.xray.core.app.observatory.health.PathDefinition.LabelsEntryR\x06labels\x12\x1b\n" +
-	"\tproven_by\x18\v \x01(\tR\bprovenBy\x1a9\n" +
+	" \x03(\v2<.xray.core.app.observatory.health.PathDefinition.LabelsEntryR\x06labels\x1a9\n" +
 	"\vLabelsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01B\x14\n" +
-	"\x12_return_is_enabled\"\x92\x03\n" +
+	"\x12_return_is_enabledJ\x04\b\v\x10\f\"\x92\x03\n" +
 	"\tPathGroup\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x12\n" +
 	"\x04cost\x18\x02 \x01(\x02R\x04cost\x12\x17\n" +
