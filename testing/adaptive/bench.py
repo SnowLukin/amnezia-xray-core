@@ -1095,15 +1095,15 @@ class ConnSampler:
             self._stop.wait(self.period)
 
     def _delta(self, ports, t1, t2, field):
-        # Use samples inside the requested window. A floor sample before t1
-        # counted late retries that actually preceded the switch boundary.
-        before = [c for t, c in self.samples if t1 <= t <= t2]
-        after = [c for t, c in self.samples if t1 <= t <= t2]
+        # Bytes and packets conservatively include the lower boundary.
+        # Connections use exact timestamps in between() instead.
+        before = [c for t, c in self.samples if t <= t1]
+        after = [c for t, c in self.samples if t <= t2]
         if not before or not after:
             return None
         ports = ports if isinstance(ports, (list, tuple, set)) else [ports]
         none = (0, 0, 0, 0, 0)
-        return sum(after[-1].get(p, none)[field] - before[0].get(p, none)[field] for p in ports)
+        return sum(after[-1].get(p, none)[field] - before[-1].get(p, none)[field] for p in ports)
 
     def between(self, ports, t1, t2):
         """Connections accepted on the port (or ports) between t1 and t2."""

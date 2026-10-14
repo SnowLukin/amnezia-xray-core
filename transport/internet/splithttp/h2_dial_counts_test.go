@@ -139,8 +139,10 @@ func TestXHTTP2TCPDialCounts(t *testing.T) {
 					client.Close()
 					client.client.CloseIdleConnections()
 				}
-				if os.Getenv("XRAY_RECORD_DIAL_COUNTS") != "1" && count != int32(clients) {
-					t.Errorf("physical dials=%d, want %d", count, clients)
+				finalCount := accepts.Load()
+				t.Logf("physical_dials_after_all_requests=%d", finalCount)
+				if os.Getenv("XRAY_RECORD_DIAL_COUNTS") != "1" && (count != clients || finalCount != clients) {
+					t.Errorf("physical dials before gate=%d, after all requests=%d, want %d", count, finalCount, clients)
 				}
 			})
 		}

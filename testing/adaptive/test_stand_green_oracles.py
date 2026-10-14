@@ -4,6 +4,7 @@ import api_v2_recipe
 import bench
 import probe_only_scenarios
 import provider
+import scenarios
 
 
 class StandGreenOraclesTest(unittest.TestCase):
@@ -17,6 +18,28 @@ class StandGreenOraclesTest(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             sampler.between(7, 2.0, 4.0)
 
+
+    def test_quiet_packet_and_byte_checks_include_the_boundary_bucket(self):
+        sampler = bench.ConnSampler()
+        sampler.samples = [(2.75, {7: (0, 0, 0, 0, 0)}),
+                           (3.01, {7: (1, 99, 0, 1, 0)}),
+                           (4.0, {7: (1, 99, 0, 1, 0)})]
+        self.assertEqual(sampler.traffic(7, 3.0, 4.0), (99, 0))
+        self.assertEqual(sampler.packets(7, 3.0, 4.0), (1, 0))
+
+    def test_return_oracle_rejects_three_instant_successes(self):
+        def history(spacing):
+            events = []
+            for index in range(3):
+                for kind, extra in [("probe_start", 0), ("probe_result", 10)]:
+                    events.append({"type": kind, "ts": 1000 + index * spacing + extra,
+                                   "fields": {"outbound": "v1", "reason": "return", "is_ok": True}})
+            return events, {"ts": events[-1]["ts"] + 1}
+        events, away = history(20000)
+        self.assertTrue(all(row["ok"] for row in scenarios.return_sequence_checks(events, 0, away)))
+        events, away = history(20)
+        checks = scenarios.return_sequence_checks(events, 0, away)
+        self.assertFalse(next(row["ok"] for row in checks if "spacing" in row["check"]))
 
     def test_local_initial_set_does_not_make_a_quiet_session_reportable(self):
         events = [{"type": "provider_apply", "fields": {"is_ok": True,

@@ -2918,6 +2918,25 @@ def requests_ok(tr, since, until):
     return sum(1 for r in rs if r[1]), len(rs)
 
 
+def return_sequence_checks(events, since, away):
+    checks = []
+    returns = [e for e in events if e["type"] == "probe_result"
+               and e["fields"].get("outbound") == "v1" and e["fields"].get("reason") == "return"
+               and e["ts"] / 1000 >= since and (not away or e["ts"] <= away["ts"])]
+    checks.append(check("v2 return requires three successful probes", len(returns),
+                        len(returns) == 3 and all(e["fields"].get("is_ok") for e in returns), "3 successful"))
+    latency = (away["ts"] - returns[-1]["ts"]) / 1000 if away and returns else None
+    checks.append(check("switch after final return proof, s", latency,
+                        latency is not None and 0 <= latency <= 1, "0 .. 1"))
+    starts = [e for e in events if e["type"] == "probe_start"
+              and e["fields"].get("outbound") == "v1" and e["fields"].get("reason") == "return"
+              and e["ts"] / 1000 >= since and (not away or e["ts"] <= away["ts"])]
+    waits = [(starts[i + 1]["ts"] - returns[i]["ts"]) / 1000 for i in range(2)] if len(starts) == len(returns) == 3 else []
+    checks.append(check("v2 return probe spacing after the previous result, s", waits,
+                        len(waits) == 2 and all(13.999 <= gap <= 26.5 for gap in waits), "14 .. 26 + 0.5 scheduler"))
+    return checks
+
+
 def awg_away_checks(c, tr, m, away):
     """Traffic went through w1 under the pin, and the release moved the balancer to v1."""
     ok, n = requests_ok(tr, m["start"], m["release"])
@@ -2931,14 +2950,7 @@ def awg_away_checks(c, tr, m, away):
                         away and f"{away['fields']['to']} ({away['fields']['reason']}) {took}",
                         bool(away) and away["fields"]["to"] == "v1" and away["fields"]["reason"] == "return"
                         and took <= AWG_RETURN_WAIT, f"v1 (return) <= {AWG_RETURN_WAIT} (3 probes, 20s spacing)"))
-    returns = [e for e in c.events if e["type"] == "probe_result"
-               and e["fields"].get("outbound") == "v1" and e["fields"].get("reason") == "return"
-               and e["ts"] / 1000 >= m["release"] and (not away or e["ts"] <= away["ts"])]
-    checks.append(check("v2 return requires three successful probes", len(returns),
-                        len(returns) == 3 and all(e["fields"].get("is_ok") for e in returns), "3 successful"))
-    latency = (away["ts"] - returns[-1]["ts"]) / 1000 if away and returns else None
-    checks.append(check("switch after final return proof, s", latency,
-                        latency is not None and 0 <= latency <= 1, "0 .. 1"))
+    checks += return_sequence_checks(c.events, m["release"], away)
     return checks
 
 
