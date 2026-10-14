@@ -342,7 +342,7 @@ func (e *engine) wantedRefresh(p *provider, now time.Time) ([triggerCount]bool, 
 		if p.cfg.minHealthy > 0 {
 			if e.healthy(s) >= p.cfg.minHealthy {
 				p.minHealthyArmed = true
-			} else if p.minHealthyArmed && (s.exhausted || e.probeOnlyRefreshReady(s, now)) {
+			} else if p.minHealthyArmed && !e.failingOver(s) && (s.exhausted || e.probeOnlyRefreshReady(s, now)) {
 				want[triggerMinHealthy] = true
 			}
 		}
@@ -636,6 +636,15 @@ func (e *engine) providersOnNetworkChange(known bool, now time.Time) {
 	}
 }
 
+// failingOver tells whether the balancer still names an outbound it found in
+// doubt or dead: a failover is under way and decides where it goes. A
+// refresh that is no emergency waits for it, so it goes through the outbound
+// the balancer settles on and not through the one it is leaving.
+func (e *engine) failingOver(s *selector) bool {
+	p := e.paths[s.current()]
+	return p != nil && (p.status == statusSuspect || p.status == statusDown)
+}
+
 // resolveVia returns the outbound to send a provider request through: the
 // choice of a leastCost balancer or the outbound itself. It returns a reason
 // instead when there is no point in trying.
@@ -647,6 +656,12 @@ func (e *engine) resolveVia(via string, now time.Time) (string, string) {
 		if cur := s.current(); cur != "" {
 			if e.isProbeOnly(cur) {
 				return "", "probe-only outbound"
+			}
+			// The balancer still names an outbound it found dead and is
+			// failing over from: a request through it would wait out its
+			// timeout on a dead road.
+			if p := e.paths[cur]; p != nil && (p.status == statusDown || p.quarantined(now)) {
+				return "", "current outbound down"
 			}
 			return cur, ""
 		}
@@ -665,7 +680,7 @@ func (e *engine) resolveVia(via string, now time.Time) (string, string) {
 // candidates of an exhausted balancer. It never changes the user selection.
 func (e *engine) resolveProviderVia(cfg *providerSettings, via string, now time.Time) ([]string, string) {
 	tag, skip := e.resolveVia(via, now)
-	if skip != "balancer exhausted" || !cfg.probeOnlyRoads {
+	if (skip != "balancer exhausted" && skip != "current outbound down") || !cfg.probeOnlyRoads {
 		return []string{tag}, skip
 	}
 	s := e.selectors[via]

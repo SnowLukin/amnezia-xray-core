@@ -647,6 +647,12 @@ func withProbe(ctx context.Context, bytes *atomic.Int64) context.Context {
 	return context.WithValue(ctx, probeContextKey{}, &probeState{bytes: bytes})
 }
 
+// withProviderRoad marks a provider request through a probe-only outbound:
+// counted like a probe, and let through the guard of that outbound alone.
+func withProviderRoad(ctx context.Context, bytes *atomic.Int64, tag string) context.Context {
+	return context.WithValue(ctx, probeContextKey{}, &probeState{bytes: bytes, road: tag})
+}
+
 func probeStateFrom(ctx context.Context) *probeState {
 	v, _ := ctx.Value(probeContextKey{}).(*probeState)
 	return v

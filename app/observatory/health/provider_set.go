@@ -800,7 +800,11 @@ func (o *Observer) fetchURL(cfg *providerSettings, headers map[string]string, ta
 	r := fetchResult{class: "network"}
 	// Counted like a probe, so the request is not taken for user traffic.
 	var wire atomic.Int64
-	ctx, cancel := context.WithTimeout(withProbe(o.runCtx, &wire), cfg.timeout)
+	probeCtx := withProbe(o.runCtx, &wire)
+	if cfg.probeOnlyRoads && tag != "" && o.s.isProbeOnly(tag) {
+		probeCtx = withProviderRoad(o.runCtx, &wire, tag)
+	}
+	ctx, cancel := context.WithTimeout(probeCtx, cfg.timeout)
 	defer cancel()
 	// Keep-alive stays on: a server told to close the connection after the
 	// answer may lose its last bytes on some transports. The connection is

@@ -467,6 +467,9 @@ func (o *Observer) AllowDispatch(ctx context.Context, tag string, handlerProbeOn
 		return true
 	}
 	state := probeStateFrom(ctx)
+	if state != nil && state.road != "" {
+		return handlerProbeOnly && state.road == tag && o.s.isProbeOnly(tag)
+	}
 	if state == nil || state.credential == nil {
 		return false
 	}

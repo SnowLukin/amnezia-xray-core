@@ -28,6 +28,9 @@ type probeState struct {
 	bytes      *atomic.Int64
 	credential *probeCredential
 	udpDial    func(error)
+	// A provider request through this probe-only outbound, which
+	// probeOnlyRoads lets reach the backend.
+	road string
 
 	mu              sync.Mutex
 	started         time.Time
