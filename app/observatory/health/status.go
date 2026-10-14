@@ -357,7 +357,7 @@ func (e *engine) effectiveFeatures() map[string]bool {
 	for _, p := range e.providers {
 		prefix := "providers." + p.cfg.tag + "."
 		flags[prefix+"is_enabled"] = true
-		flags[prefix+"periodic"] = p.cfg.interval > 0
+		flags[prefix+"periodic"] = p.cfg.periodic
 		flags[prefix+"min_healthy"] = p.cfg.minHealthy > 0
 		flags[prefix+"cost_above"] = p.cfg.costAbove
 		flags[prefix+"max_age"] = p.cfg.maxAge > 0

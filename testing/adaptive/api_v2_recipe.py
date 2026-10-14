@@ -50,10 +50,14 @@ def provider(recipe):
     old = result.pop("triggers", {})
     fresh = {}
     fresh["exhausted"] = on(old.pop("shouldRefreshWhenExhausted", True))
+    # Historical timelines explicitly retain their immediate event triggers.
+    fresh["exhausted"]["delay"] = "0s"
     fresh["periodic"] = period(old.pop("interval", "2h"))
     threshold = old.pop("minHealthyOutbounds", 2)
     fresh["minHealthy"] = on(bool(threshold))
-    if threshold: fresh["minHealthy"]["outbounds"] = threshold
+    if threshold:
+        fresh["minHealthy"]["outbounds"] = threshold
+        fresh["minHealthy"]["delay"] = "0s"
     fresh["maxAge"] = on(nonzero(old.get("maxAge", "6h")))
     age = old.pop("maxAge", "6h")
     if nonzero(age): fresh["maxAge"]["age"] = age
@@ -79,6 +83,7 @@ def provider(recipe):
     for key in ("backoff", "authRetryDelay"): limits.pop(key, None)
     result.pop("maxBytes", None)
     apply = result.setdefault("apply", {})
+    if "balancer" in apply: apply["balancers"] = [apply.pop("balancer")]
     apply.pop("isRoutingAccepted", None)
     apply["expiredLeaseFallback"] = on()
     if isinstance(result.get("initialAnswer"), dict): result["initialAnswer"] = provider_answer(result["initialAnswer"])

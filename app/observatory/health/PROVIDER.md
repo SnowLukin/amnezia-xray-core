@@ -5,6 +5,104 @@
 
 Протокол HTTP остаётся `1`; внешняя конфигурация источника и `selection` в ответах следуют API v2. Переименования выполнены на месте: старый `path` и изменение `routing` в ответе отклоняются. Backend не управляет полной конфигурацией VPN через динамический источник.
 
+## Дороги, задержки и версии (14.10.2026)
+
+`apply.balancers` — от 1 до 4 различных непустых тегов `leastCost`, первый основной.
+Поводы `exhausted`, `minHealthy`, `whenCostAbove` смотрят только на основной.
+Остальные могут служить дорогами к бэку: `via` ссылается на их теги, а
+`selection.balancer` в ответе выбирает любой из перечисленных. `maxOutbounds`
+и число групп считаются по всему набору; probe-only входит в эти ограничения,
+но запрос провайдера через probe-only запрещён. Группа требует включённый
+`leastCost.settings.groups` у каждого балансировщика, где есть её члены.
+Один tag outbound принадлежит одному балансировщику; новый ответ может перенести его.
+
+В конфиге дороги к бэку оставляют без routing-правил для пользовательского трафика.
+Ядро не проверяет отсутствие таких правил: это ответственность автора конфига.
+При первом `via` ядро само передаёт кандидатам дороги текущий состав handlers,
+поэтому пользовательский запрос для запуска такой дороги не требуется.
+`apply.balancer` и `lastFailure` удалены из публичных форм API v2.
+
+Задержка — строка Go duration (`"30s"`) или равномерный включительный промежуток
+(`"20s..60s"`, `"500ms..1h30m"`). Обе границы неотрицательные,
+левая не больше правой; случайное значение выбирается один раз на случай,
+а не на каждом tick. У фиксированного значения дополнительного jitter нет.
+
+| Поле | Умолчание при включённом поводе |
+| --- | --- |
+| `triggers.exhausted.delay` | `0s..10s` |
+| `triggers.minHealthy.delay` | `0s..30s` |
+| `triggers.networkChange.settleDelay` | `30s..90s` |
+| `triggers.whenCostAbove.after` | `15m..25m` |
+| `triggers.periodic.interval` | `1h36m..2h24m` (прежние 2 h ±20%) |
+
+Повод измеряется от его возникновения и перепроверяется перед запросом:
+если балансировщик ожил или здоровых путей достаточно, запрос отменяется.
+Network change при `unknownNotCheapest` также отменяется, если основной сел на
+самый дешёвый путь. Ручной `RequestProviderRefresh` и продление аренды этих
+задержек не имеют; у аренды остаётся собственный разброс долей.
+Флаги включения и прежние gates/лимиты сохраняются. Поля доли разброса для
+этих задержек не принимаются; backoff и прибавка к `Retry-After` не меняются.
+Подсказка бэка `nextRefreshIn` сохраняет свой внутренний ±20% разброс.
+
+Каждый POST/GET несёт принадлежащий ядру словарь RFC 8941:
+
+```http
+Xray-Adaptive: xray="26.10.10", api=2, provider=1
+```
+
+`xray` берётся из `core.Version()`, `api` из `health.APIVersion`, `provider`
+из версии протокола. Заголовок запрещён в config/answer/host `headers` и в
+`acceptedHeaders` независимо от регистра. `baseVersion` остаётся в теле.
+`health.AdaptiveHeader()` отдаёт `(name, value)` без запущенного экземпляра;
+libXray `HealthAdaptiveHeader()` отдаёт base64-обёртку общего JSON Result:
+`{"success":true,"data":{"name":"Xray-Adaptive","value":"xray=\"26.10.10\", api=2, provider=1"}}`.
+Приложение берёт эту пару до connect и ставит её в запрос к бэку.
+Версию Go и дополнительные поля в тело не добавляем.
+
+За один refresh получаем не больше двух HTTP-ответов не по протоколу
+(включая 502 от nginx и сломанный JSON 200). Второй завершает весь перебор;
+сетевые ошибки/таймауты до HTTP-ответа продолжают обход всех дорог.
+Авторитетное тело протокола или принятый `Retry-After` останавливает его сразу.
+При перегрузе бэк отвечает `503` со случайным целым `Retry-After` на клиента
+и телом `{"protocol":1,"code":"unavailable"}`.
+
+### Обычный HTTPS к бэку через IP входа
+
+```json
+{
+  "tag": "backend-entry",
+  "protocol": "freedom",
+  "settings": {"redirect": "203.0.113.10:443"},
+  "streamSettings": {
+    "network": "raw",
+    "security": "tls",
+    "tlsSettings": {
+      "serverName": "api.example",
+      "fingerprint": "chrome",
+      "alpn": ["http/1.1"]
+    }
+  }
+}
+```
+
+У провайдера `urls: ["http://api.example/set"]`, `isPlainHttpAllowed: true`,
+`via: ["backend-entry"]`. Схема `http://` относится к HTTP-клиенту ядра:
+TLS уже добавляет outbound, на проводе обычный проверяемый HTTPS с SNI бэка,
+Chrome ClientHello и ALPN `http/1.1`. `https://` добавил бы второй TLS-слой.
+IP входа должен обслуживать или проксировать такой TLS для SNI бэка.
+Чужой сертификат отклоняется; `allowInsecure` не требуется.
+Такой же outbound можно выдать динамически с `selection.balancer` дороги,
+разрешив `freedom` в `allowedProtocols`; в `via` тогда указывают тег дороги.
+
+### Рекомендации бэку
+
+- Один основной и один тёплый резерв на Xray; `minHealthy.outbounds: 2`.
+- Общая probe-only учётка на вход для контрольных проб.
+- При «всё мертво» выдать новый слот либо `503` со случайным целым `Retry-After`
+  и телом протокола; повтор того же набора не лечит отказ и включает backoff.
+- Timeout одной попытки 8–10 секунд.
+- SNI и `shortId` одного слота сохранять между выдачами.
+
 ## Конфигурация, запрос и ответ
 
 ```jsonc
@@ -41,7 +139,6 @@
           "maxRefreshesPerHour": 6
         },
         "apply": {
-          "balancer": "auto",
           "tagPrefix": "p-",
           "drainTimeout": "5m",
           "maxOutbounds": 64,
@@ -58,7 +155,10 @@
           "acceptedHeaders": [
             "Authorization"
           ],
-          "expiredLeaseFallback": {}
+          "expiredLeaseFallback": {},
+          "balancers": [
+            "auto"
+          ]
         },
         "baseVersion": "cfg-12",
         "initialAnswer": null
@@ -85,11 +185,6 @@
   "version": "slots-7",
   "baseVersion": "cfg-12",
   "clientTime": "2026-10-13T13:00:00Z",
-  "lastFailure": {
-    "status": 503,
-    "code": "status",
-    "agoMs": 61000
-  },
   "network": {
     "id": "provider-scoped-network-hash",
     "isKnown": false,
@@ -102,15 +197,6 @@
     }
   },
   "isMemoryLow": false,
-  "balancer": {
-    "tag": "auto",
-    "current": "x2",
-    "isOwn": true,
-    "cost": 3,
-    "isExhausted": false,
-    "isPinned": false,
-    "heldMs": 840000
-  },
   "outbounds": [
     {
       "tag": "x2",
@@ -162,6 +248,32 @@
   "witnessQuality": {
     "dialCount": 20,
     "dialP50Ms": 40
+  },
+  "balancers": [
+    {
+      "tag": "auto",
+      "current": "x2",
+      "isOwn": true,
+      "cost": 3,
+      "isExhausted": false,
+      "isPinned": false,
+      "heldMs": 840000
+    }
+  ],
+  "lastRefresh": {
+    "isOk": false,
+    "agoMs": 61000,
+    "trigger": "exhausted",
+    "attempts": [
+      {
+        "via": "auto",
+        "mirror": 1,
+        "isOk": false,
+        "status": 503,
+        "code": "status",
+        "ms": 120
+      }
+    ]
   }
 }
 ```
@@ -229,11 +341,6 @@
   "refreshNumber": 7,
   "trigger": "expiry",
   "retryLevel": 1,
-  "lastFailure": {
-    "status": 503,
-    "code": "status",
-    "agoMs": 61000
-  },
   "version": "slots-7781",
   "baseVersion": "cfg-12",
   "clientTime": "2026-10-08T12:00:03Z",
@@ -243,15 +350,6 @@
     "isUp": true
   },
   "isMemoryLow": false,
-  "balancer": {
-    "tag": "auto",
-    "current": "x2",
-    "isOwn": true,
-    "cost": 3,
-    "isExhausted": false,
-    "isPinned": false,
-    "heldMs": 840000
-  },
   "outbounds": [
     {
       "tag": "x1",
@@ -327,7 +425,33 @@
       "state": "unknown",
       "expiresInMs": -5000
     }
-  ]
+  ],
+  "balancers": [
+    {
+      "tag": "auto",
+      "current": "x2",
+      "isOwn": true,
+      "cost": 3,
+      "isExhausted": false,
+      "isPinned": false,
+      "heldMs": 840000
+    }
+  ],
+  "lastRefresh": {
+    "isOk": false,
+    "agoMs": 61000,
+    "trigger": "exhausted",
+    "attempts": [
+      {
+        "via": "auto",
+        "mirror": 1,
+        "isOk": false,
+        "status": 503,
+        "code": "status",
+        "ms": 120
+      }
+    ]
+  }
 }
 ```
 
@@ -342,15 +466,15 @@ Inside quality, measured zeros remain present; unavailable measurements are omit
 | `refreshNumber` | Always. Grows with every refresh of the run and is the same in every attempt of one refresh: `run` and `refreshNumber` together tell a request sent again through another `via` from a new one. |
 | `trigger` | Always. Why the core asks, see [When the core asks](#when-the-core-asks). |
 | `retryLevel` | Always. The level of the backoff this refresh waited for: refreshes in a row since the last success that failed, brought an answer the core refused, or, for an exhausted balancer, brought the same set again. A pause the backend asked for with `Retry-After` and refused headers leave it as it is; any other applied answer sets it back to 0. |
-| `lastFailure` | Only when the previous refresh failed: `status`, the HTTP status or 0; `agoMs`, how long ago; `code`, a bounded rejection or transport classification: `timeout`, `network`, `status`, `too_large` or `broken_json`. It is what the last `via` that was asked met. |
+| `lastRefresh` | Previous refresh, after success as well as failure: `isOk`, `agoMs`, `trigger`, and up to 16 `attempts` in order. An attempt contains `via` (configured tag), `mirror` (1-based URL index; 0 for a skipped road), `isOk`, `status` (HTTP or 0), optional `code`, and `ms`. Transport codes: `timeout`, `network`, `status`, `too_large`, `broken_json`, `skipped`. A refused protocol answer/set is `invalid_answer`/`invalid_set`. No URL or error text. Omitted before the first refresh; a refresh that could not construct a POST has an empty attempt list. |
 | `version` | The set the core applies now, as the answer named it; none before the first set. |
 | `baseVersion` | The base config the core runs with, see [Base config](#base-config); none without one. |
 | `clientTime` | Always. The clock of the device in RFC 3339, UTC: the backend sees how far off it is. |
 | `network` | Always. `id` names the network the host reported, hashed for this provider like `run` and left out when the host cannot tell networks apart; `isKnown`, always, whether the core remembers an outbound that worked in this network; `isUp`, always, whether the network works. |
 | `isMemoryLow` | Always. The host reported that memory is short: the core asks only when it must. |
-| `balancer` | Always. The balancer the provider feeds: `tag`, always; `current`, the outbound it chose without the prefix of the provider and only when it is one of this provider, which `isOwn`, always, tells; `cost`, the cost of the chosen outbound; `isExhausted` and `isPinned`, always; `heldMs`, how long it has held the chosen outbound. |
+| `balancers` | Always. Array in `apply.balancers` order. Each balancer: `tag`, always; `current`, the outbound it chose without the prefix of the provider and only when it is one of this provider, which `isOwn`, always, tells; `cost`, the cost of the chosen outbound; `isExhausted` and `isPinned`, always; `heldMs`, how long it has held the chosen outbound. |
 | `outbounds` | Always, maybe empty. The set of the provider in the order of the answer, by tag without the prefix; before the first answer the outbounds of the config with the prefix of the provider. Outbounds that left the set are not listed, ones whose lease ended are. |
-| `groups` | Present for explicit groups with members owned by this provider. Each summary has `group`, `state` (`up` or `down`), `members`, `healthy`, `quarantined`, `clientPosition`, `failed`, `quarantineMs` and optional `lastFailure`. Counts cover only this provider's members; `healthy` counts proven working members with live leases and is zero while the group is down. `clientPosition` is the zero-based position in the full group. A down group contributes no usable members to `triggers.minHealthy.outbounds`; it introduces no new provider trigger. |
+| `groups` | Present for explicit groups with members owned by this provider. Each summary has `balancer`, `group`, `state` (`up` or `down`), `members`, `healthy`, `quarantined`, `clientPosition`, `failed`, `quarantineMs` and optional `lastFailure`. Counts cover only this provider's members; `healthy` counts proven working members with live leases and is zero while the group is down. `clientPosition` is the zero-based position in the full group. A down group contributes no usable members to `triggers.minHealthy.outbounds`; it introduces no new provider trigger. |
 
 Per outbound:
 
@@ -384,7 +508,7 @@ arbitrary values.
 
 ## Ограничения и применение
 
-В ответе допускаются только protocol/version/baseVersion/serverTime/outbounds/groups/expiresAt/headers/nextRefreshIn/receivedAt. Набор — целиком, а не patch. У каждого outbound уникальный tag, разрешённый protocol и `selection.balancer`, равный `apply.balancer`; membership задаёт cost или объявленную group. Groups требуют включённый `leastCost.settings.groups`, а probe-only — `probes.candidates`. Profile override должен ссылаться на известный профиль. Объект `routing`, неизвестный ключ, неиспользуемая группа и превышение bounds отклоняют ответ целиком.
+В ответе допускаются только protocol/version/baseVersion/serverTime/outbounds/groups/expiresAt/headers/nextRefreshIn/receivedAt. Набор — целиком, а не patch. У каждого outbound уникальный tag, разрешённый protocol и `selection.balancer` из списка `apply.balancers`; membership задаёт cost или объявленную group. Groups требуют включённый `leastCost.settings.groups` у своего балансировщика у своего балансировщика, а probe-only — `probes.candidates`. Profile override должен ссылаться на известный профиль. Объект `routing`, неизвестный ключ, неиспользуемая группа и превышение bounds отклоняют ответ целиком.
 
 Полный tag после `apply.tagPrefix` и group name ограничены 128 байтами; version/baseVersion — 256. Число групп не превышает maxOutbounds. Ответ ограничен 4 KiB × maxOutbounds, максимум 1 MiB. POST запроса — максимум 256 KiB: сначала убираются optional quality details с `isTruncated: true`; если essential identity/state/lease превышает потолок, fetch не начинается (`request_too_large`). При отказе текущий VPN-набор сохраняется.
 
@@ -409,19 +533,20 @@ waiting at most 2 seconds after the status, and keeps only the code;
 
 The attempts end when the backend itself answered, readably or against the
 schema; an answer that a firewall, a portal or a server on the way may have
-sent goes on to the next `via`:
+sent goes on to the next mirror/`via`, subject to a shared ceiling of two non-protocol HTTP replies per refresh:
 
 | Answer | Next `via` | Then |
 | --- | --- | --- |
 | 200 with a valid answer | no | Applied; the backoff starts over, unless an exhausted balancer got the same set again. |
-| 200 that is no JSON object, is cut short or too large | yes | A failure; the backoff grows. |
+| 200 that is no JSON object, is cut short or too large | if fewer than two non-protocol HTTP replies | A failure; the backoff grows. |
 | 200 with a JSON object against the protocol, or a set that does not build | no | Refused, see [Answer](#answer); the backoff grows. |
 | 401 or 403 with the code `unauthorized` or `forbidden` | no | The headers are refused, see [Token](#token). |
 | 429 or 503 with `Retry-After` | no | Every trigger waits as asked; no failure, the backoff does not grow. |
 | Any other status with an error body | no | A failure; the backoff grows. |
-| 401 or 403 without an error body; 429 or 503 without `Retry-After` and body; 3xx; any other status; a timeout or a broken connection | yes | A failure; the backoff grows. |
+| Bare status, including 401/403, 429/503, 3xx, 502 from a proxy | if fewer than two non-protocol HTTP replies | Failure; one spare attempt can bypass a portal. |
+| Timeout or network failure before an HTTP reply | yes | All configured roads/mirrors remain available for bypassing blocks. |
 
-**Retry-After** counts only with 429 and 503: in seconds, or as an HTTP
+**Retry-After** counts only with 429 and 503: in whole seconds (no ranges), or as an HTTP
 date counted from the `Date` of the same answer, so a wrong clock of the
 device neither stretches nor cuts the pause, or from the clock of the
 device without `Date`. Zero, a date gone by and anything unreadable count
@@ -429,7 +554,7 @@ as none. The core waits at most the internal 30-minute cap,
 then spreads the pause by up to the internal 30% jitter, upward only: no
 client comes back sooner than asked, and clients told the same pause come
 back apart. The pause holds every trigger, the host and an exhausted
-balancer too.
+balancer too. Under overload the backend should return `503` with `Retry-After` and a protocol error body (`code: "unavailable"`), choosing a fresh random integer delay per client. The core keeps its upward-only addition; it does not extend HTTP syntax.
 
 ## Leases
 

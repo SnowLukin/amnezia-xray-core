@@ -124,7 +124,7 @@ func TestProviderRefreshInRunningCore(t *testing.T) {
 	      "triggers":{"exhausted":{"isEnabled":false},"leaseRenewal":{},"backendSchedule":{"isEnabled":false}},
 	      "limits": {"urgentMinInterval": "10ms"},
 	      "isPlainHttpAllowed": true,
-	      "apply": {"balancer": "auto", "tagPrefix": "p-", "drainTimeout": "300ms", "allowedProtocols": ["freedom", "blackhole", "vless", "nosuch"]}
+	      "apply": {"balancers":["auto"], "tagPrefix": "p-", "drainTimeout": "300ms", "allowedProtocols": ["freedom", "blackhole", "vless", "nosuch"]}
 	    }]
 	  }
 	}`
@@ -247,7 +247,7 @@ func TestRefreshUnderLowMemoryTriesOneVia(t *testing.T) {
 	      "via": ["missing", "dead", "direct"], "timeout": "500ms",
 	      "triggers":{"exhausted":{},"leaseRenewal":{},"backendSchedule":{"isEnabled":false}},
 	      "limits": {},
-	      "apply": {"balancer": "auto", "tagPrefix": "p-", "allowedProtocols": ["freedom"]}
+	      "apply": {"balancers":["auto"], "tagPrefix": "p-", "allowedProtocols": ["freedom"]}
 	    }]
 	  }
 	}`))
@@ -319,7 +319,7 @@ func twoViaCore(t *testing.T, url string, more ...string) *health.Observer {
 	      "tag":"fresh","urls": ["`+url+`"], "isPlainHttpAllowed": true, "via": ["direct", "direct2"], "timeout": "3s",
 	      "triggers":{"exhausted":{"isEnabled":false},"leaseRenewal":{},"backendSchedule":{"isEnabled":false}},
 	      "limits": {},
-	      "apply": {"balancer": "auto", "tagPrefix": "p-", "allowedProtocols": ["freedom"]}`+strings.Join(more, "")+`
+	      "apply": {"balancers":["auto"], "tagPrefix": "p-", "allowedProtocols": ["freedom"]}`+strings.Join(more, "")+`
 	    }]
 	  }
 	}`))
@@ -567,15 +567,18 @@ func TestSkippedViaKeepsTheFailureBeforeIt(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 	var body struct {
-		LastFailure *struct {
-			Status int    `json:"status"`
-			Code   string `json:"code"`
-		} `json:"lastFailure"`
+		LastRefresh *struct {
+			IsOK     bool `json:"isOk"`
+			Attempts []struct {
+				Status int    `json:"status"`
+				Code   string `json:"code"`
+			} `json:"attempts"`
+		} `json:"lastRefresh"`
 	}
-	if err := json.Unmarshal(bodies[1], &body); err != nil || body.LastFailure == nil ||
-		body.LastFailure.Status != 502 || body.LastFailure.Code != "status" {
+	if err := json.Unmarshal(bodies[1], &body); err != nil || body.LastRefresh == nil || body.LastRefresh.IsOK || len(body.LastRefresh.Attempts) != 2 || body.LastRefresh.Attempts[0].Status != 502 || body.LastRefresh.Attempts[0].Code != "status" || body.LastRefresh.Attempts[1].Code != "skipped" {
 		t.Fatalf("the retry tells %s: %v", bodies[1], err)
 	}
+
 }
 
 // Every via of one refresh sends the same body: the backend tells a request
@@ -881,7 +884,7 @@ func TestInitialAppliedBeforeTheFirstConnection(t *testing.T) {
 	    "providers": [{
 	      "tag":"fresh","urls": ["`+ts.URL+`/set"], "isPlainHttpAllowed": true, "via": ["direct"],
 	      "triggers":{"exhausted":{"isEnabled":false},"leaseRenewal":{},"backendSchedule":{"isEnabled":false}},
-	      "apply": {"balancer": "auto", "tagPrefix": "p-", "allowedProtocols": ["freedom"]},
+	      "apply": {"balancers":["auto"], "tagPrefix": "p-", "allowedProtocols": ["freedom"]},
 	      "initialAnswer": {"protocol": 1, "version": "v1", "outbounds": [{"tag": "x1", "selection": {"balancer": "auto", "probe": "check", "cost": 1}, "protocol": "freedom"},
 	        {"tag": "x2", "selection": {"balancer": "auto", "probe": "check", "cost": 1}, "protocol": "freedom"}], "headers": {"Authorization": "Bearer saved"}}
 	    }]

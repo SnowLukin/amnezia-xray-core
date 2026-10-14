@@ -162,7 +162,7 @@ func TestReportAndProviderExportObject(t *testing.T) {
 		w.Write([]byte(`{"protocol":1,"version":"v1","outbounds":[{"tag":"x1","protocol":"freedom","selection":{"balancer":"auto","cost":1,"probe":"check"}}],"headers":{"Authorization":"Bearer secret"}}`))
 	}))
 	defer ts.Close()
-	s, inst := service(t, `{"log":{"loglevel":"none"},"outbounds":[{"tag":"direct","protocol":"freedom"},{"tag":"drop","protocol":"blackhole"}],"routing":{"balancers":[{"tag":"auto","strategy":{"type":"leastCost"},"fallbackTag":"drop"}]},"healthObservatory":{"probes":{"profiles":[{"name":"check","steps":[{"name":"transport","destinations":["http://127.0.0.1:1/check"]}]}]},"telemetry":{"report":{}},"providers":[{"tag":"fresh","urls":["`+ts.URL+`"],"isPlainHttpAllowed":true,"via":["direct"],"triggers":{"exhausted":{"isEnabled":false},"leaseRenewal":{"isEnabled":false},"backendSchedule":{"isEnabled":false}},"apply":{"balancer":"auto","tagPrefix":"p-","allowedProtocols":["freedom"]}}]}}`)
+	s, inst := service(t, `{"log":{"loglevel":"none"},"outbounds":[{"tag":"direct","protocol":"freedom"},{"tag":"drop","protocol":"blackhole"}],"routing":{"balancers":[{"tag":"auto","strategy":{"type":"leastCost"},"fallbackTag":"drop"}]},"healthObservatory":{"probes":{"profiles":[{"name":"check","steps":[{"name":"transport","destinations":["http://127.0.0.1:1/check"]}]}]},"telemetry":{"report":{}},"providers":[{"tag":"fresh","urls":["`+ts.URL+`"],"isPlainHttpAllowed":true,"via":["direct"],"triggers":{"exhausted":{"isEnabled":false},"leaseRenewal":{"isEnabled":false},"backendSchedule":{"isEnabled":false}},"apply":{"balancers":["auto"],"tagPrefix":"p-","allowedProtocols":["freedom"]}}]}}`)
 	selector, selectErr := health.FromInstance(inst).OutboundSelector("auto", nil)
 	if selectErr != nil {
 		t.Fatal(selectErr)
@@ -230,7 +230,7 @@ func TestDirectProviderLimitsCannotDisableAdmission(t *testing.T) {
 		return cfg
 	}
 	for _, field := range []string{"minInterval", "urgentMinInterval", "maxRefreshesPerHour"} {
-		pc := &health.ProviderConfig{IsEnabled: proto.Bool(true), Tag: "fresh", Url: "https://provider.test/set", Apply: &health.ProviderApply{Balancer: "auto", TagPrefix: "p-"}, Limits: &health.ProviderLimits{}}
+		pc := &health.ProviderConfig{IsEnabled: proto.Bool(true), Tag: "fresh", Url: "https://provider.test/set", Apply: &health.ProviderApply{Balancers: []string{"auto"}, TagPrefix: "p-"}, Limits: &health.ProviderLimits{}}
 		switch field {
 		case "minInterval":
 			pc.Limits.MinInterval = -1
@@ -247,7 +247,7 @@ func TestDirectProviderLimitsCannotDisableAdmission(t *testing.T) {
 			t.Fatalf("direct protobuf %s=-1: %v", field, err)
 		}
 	}
-	pc := &health.ProviderConfig{IsEnabled: proto.Bool(true), Tag: "fresh", Url: "https://provider.test/set", Apply: &health.ProviderApply{Balancer: "auto", TagPrefix: "p-"}, Limits: &health.ProviderLimits{}}
+	pc := &health.ProviderConfig{IsEnabled: proto.Bool(true), Tag: "fresh", Url: "https://provider.test/set", Apply: &health.ProviderApply{Balancers: []string{"auto"}, TagPrefix: "p-"}, Limits: &health.ProviderLimits{}}
 	inst, err := core.New(config(pc))
 	if err != nil {
 		t.Fatal(err)

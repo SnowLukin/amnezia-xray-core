@@ -139,7 +139,7 @@ func TestProviderRefreshKeepsOwnGroupName(t *testing.T) {
 func TestProviderPathValidationLeavesPreviousSet(t *testing.T) {
 	for _, tc := range []struct{ name, path, groups, want string }{
 		{"missing path", "", ``, "selection must be an object"},
-		{"wrong balancer", `,"selection":{"balancer":"other","cost":1}`, ``, "balancer must be auto"},
+		{"wrong balancer", `,"selection":{"balancer":"other","cost":1}`, ``, "balancer must be in apply.balancers [auto]"},
 		{"no cost", `,"selection":{"balancer":"auto"}`, ``, "needs cost above zero"},
 		{"unknown group", `,"selection":{"balancer":"auto","group":"missing"}`, ``, "unknown group missing"},
 		{"group cost", `,"selection":{"balancer":"auto","group":"relay","cost":1}`, `,"groups":[{"name":"relay","probe":"check","cost":2}]`, "cost is set by group relay"},

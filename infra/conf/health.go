@@ -170,16 +170,17 @@ type HealthTelemetryConfig struct {
 }
 type HealthPeriodicConfig struct {
 	HealthFeatureConfig
-	Interval *duration.Duration `json:"interval"`
+	Interval *HealthDelayRange `json:"interval"`
 }
 type HealthMinHealthyConfig struct {
 	HealthFeatureConfig
-	Outbounds *int32 `json:"outbounds"`
+	Outbounds *int32            `json:"outbounds"`
+	Delay     *HealthDelayRange `json:"delay"`
 }
 type HealthCostTriggerConfig struct {
 	HealthFeatureConfig
-	Cost  *float32           `json:"cost"`
-	After *duration.Duration `json:"after"`
+	Cost  *float32          `json:"cost"`
+	After *HealthDelayRange `json:"after"`
 }
 type HealthMaxAgeConfig struct {
 	HealthFeatureConfig
@@ -187,16 +188,20 @@ type HealthMaxAgeConfig struct {
 }
 type HealthProviderNetworkChangeConfig struct {
 	HealthFeatureConfig
-	Mode        string             `json:"mode"`
-	SettleDelay *duration.Duration `json:"settleDelay"`
+	Mode        string            `json:"mode"`
+	SettleDelay *HealthDelayRange `json:"settleDelay"`
 }
 type HealthExpiryConfig struct {
 	HealthFeatureConfig
 	RenewAtFraction  *float64 `json:"renewAtFraction"`
 	UrgentAtFraction *float64 `json:"urgentAtFraction"`
 }
+type HealthExhaustedConfig struct {
+	HealthFeatureConfig
+	Delay *HealthDelayRange `json:"delay"`
+}
 type HealthProviderTriggersConfig struct {
-	Exhausted       HealthFeatureConfig               `json:"exhausted"`
+	Exhausted       HealthExhaustedConfig             `json:"exhausted"`
 	Periodic        HealthPeriodicConfig              `json:"periodic"`
 	MinHealthy      HealthMinHealthyConfig            `json:"minHealthy"`
 	WhenCostAbove   HealthCostTriggerConfig           `json:"whenCostAbove"`
@@ -211,7 +216,7 @@ type HealthProviderLimitsConfig struct {
 	MaxRefreshesPerHour *int32             `json:"maxRefreshesPerHour"`
 }
 type HealthProviderApplyConfig struct {
-	Balancer             string              `json:"balancer"`
+	Balancers            []string            `json:"balancers"`
 	TagPrefix            string              `json:"tagPrefix"`
 	DrainTimeout         *duration.Duration  `json:"drainTimeout"`
 	MaxOutbounds         *int32              `json:"maxOutbounds"`
@@ -731,8 +736,18 @@ func (c *HealthProviderConfig) build() (*health.ProviderConfig, error) {
 	if len(c.Tag) > 128 {
 		return nil, errors.New(where, ".tag must not exceed 128 bytes")
 	}
-	if c.Tag == "" || c.Apply.Balancer == "" || c.Apply.TagPrefix == "" {
-		return nil, errors.New(where, " requires tag, urls, apply.balancer and apply.tagPrefix")
+	if c.Tag == "" || len(c.Apply.Balancers) == 0 || c.Apply.TagPrefix == "" {
+		return nil, errors.New(where, " requires tag, urls, apply.balancers and apply.tagPrefix")
+	}
+	if len(c.Apply.Balancers) > 4 {
+		return nil, errors.New(where, ".apply.balancers must contain 1 to 4 tags")
+	}
+	seen := map[string]bool{}
+	for _, tag := range c.Apply.Balancers {
+		if tag == "" || seen[tag] {
+			return nil, errors.New(where, ".apply.balancers must contain distinct nonempty tags")
+		}
+		seen[tag] = true
 	}
 	if err := checkURLs(where+".urls", c.URLs); err != nil {
 		return nil, err
@@ -767,7 +782,7 @@ func (c *HealthProviderConfig) build() (*health.ProviderConfig, error) {
 	for _, f := range []struct {
 		name  string
 		value *duration.Duration
-	}{{"timeout", c.Timeout}, {"triggers.periodic.interval", t.Periodic.Interval}, {"triggers.maxAge.age", t.MaxAge.Age}, {"limits.minInterval", l.MinInterval}, {"limits.urgentMinInterval", l.UrgentMinInterval}, {"apply.drainTimeout", a.DrainTimeout}} {
+	}{{"timeout", c.Timeout}, {"triggers.maxAge.age", t.MaxAge.Age}, {"limits.minInterval", l.MinInterval}, {"limits.urgentMinInterval", l.UrgentMinInterval}, {"apply.drainTimeout", a.DrainTimeout}} {
 		if err := requirePositiveDuration(where+"."+f.name, f.value); err != nil {
 			return nil, err
 		}
@@ -781,7 +796,7 @@ func (c *HealthProviderConfig) build() (*health.ProviderConfig, error) {
 			return nil, err
 		}
 	}
-	if t.NetworkChange.SettleDelay != nil && *t.NetworkChange.SettleDelay < 0 {
+	if t.NetworkChange.SettleDelay != nil && !t.NetworkChange.SettleDelay.valid() {
 		return nil, errors.New(where, ".triggers.networkChange.settleDelay must be nonnegative")
 	}
 	if t.WhenCostAbove.Cost != nil && (math.IsNaN(float64(*t.WhenCostAbove.Cost)) || math.IsInf(float64(*t.WhenCostAbove.Cost), 0) || *t.WhenCostAbove.Cost <= 0) {
@@ -790,8 +805,13 @@ func (c *HealthProviderConfig) build() (*health.ProviderConfig, error) {
 	if enabled(t.WhenCostAbove.IsEnabled, false) && t.WhenCostAbove.Cost == nil {
 		return nil, errors.New(where, ".triggers.whenCostAbove.cost is required")
 	}
-	if t.WhenCostAbove.After != nil && *t.WhenCostAbove.After < 0 {
+	if t.WhenCostAbove.After != nil && !t.WhenCostAbove.After.valid() {
 		return nil, errors.New(where, ".triggers.whenCostAbove.after must be nonnegative")
+	}
+	for _, d := range []*HealthDelayRange{t.Periodic.Interval, t.Exhausted.Delay, t.MinHealthy.Delay} {
+		if d != nil && !d.valid() {
+			return nil, errors.New(where, ": invalid delay range")
+		}
 	}
 	renew := fraction(t.LeaseRenewal.RenewAtFraction, .5)
 	urgent := fraction(t.LeaseRenewal.UrgentAtFraction, max(.8, renew))
@@ -810,14 +830,14 @@ func (c *HealthProviderConfig) build() (*health.ProviderConfig, error) {
 	}
 	out := &health.ProviderConfig{IsEnabled: featurePresence(true), Tag: c.Tag, Urls: c.URLs, Method: method, Headers: c.Headers, Via: c.Via, Timeout: optionalDuration(c.Timeout), BaseVersion: c.BaseVersion,
 		Features: &health.ProviderFeatureConfig{Periodic: t.Periodic.IsEnabled, MinHealthy: t.MinHealthy.IsEnabled, CostAbove: t.WhenCostAbove.IsEnabled, MaxAge: t.MaxAge.IsEnabled, NetworkChange: t.NetworkChange.IsEnabled, Exhausted: t.Exhausted.IsEnabled, LeaseRenewal: t.LeaseRenewal.IsEnabled, BackendSchedule: t.BackendSchedule.IsEnabled, ExpiredLeaseFallback: a.ExpiredLeaseFallback.IsEnabled},
-		Triggers: &health.ProviderTriggers{Interval: optionalDuration(t.Periodic.Interval), MinHealthyOutbounds: count(t.MinHealthy.Outbounds), MaxAge: optionalDuration(t.MaxAge.Age), NetworkChangeMode: mode, NetworkSettleDelay: durationPresence(t.NetworkChange.SettleDelay), Expiry: &health.ExpiryTrigger{RenewAtFraction: renew, UrgentAtFraction: urgent}},
+		Triggers: &health.ProviderTriggers{Interval: rangeMin(t.Periodic.Interval), IntervalMax: rangeMax(t.Periodic.Interval), ExhaustedDelay: rangeProto(t.Exhausted.Delay), MinHealthyDelay: rangeProto(t.MinHealthy.Delay), MinHealthyOutbounds: count(t.MinHealthy.Outbounds), MaxAge: optionalDuration(t.MaxAge.Age), NetworkChangeMode: mode, NetworkSettleDelay: rangeMaxMin(t.NetworkChange.SettleDelay), NetworkSettleMax: rangeMax(t.NetworkChange.SettleDelay), Expiry: &health.ExpiryTrigger{RenewAtFraction: renew, UrgentAtFraction: urgent}},
 		Limits:   &health.ProviderLimits{MinInterval: optionalDuration(l.MinInterval), ExhaustedMinInterval: optionalDuration(l.UrgentMinInterval), MaxRefreshesPerHour: count(l.MaxRefreshesPerHour)},
-		Apply:    &health.ProviderApply{Balancer: a.Balancer, TagPrefix: a.TagPrefix, DrainTimeout: optionalDuration(a.DrainTimeout), MaxOutbounds: count(a.MaxOutbounds), AllowedProtocols: a.AllowedProtocols}}
+		Apply:    &health.ProviderApply{Balancers: a.Balancers, TagPrefix: a.TagPrefix, DrainTimeout: optionalDuration(a.DrainTimeout), MaxOutbounds: count(a.MaxOutbounds), AllowedProtocols: a.AllowedProtocols}}
 	if t.WhenCostAbove.Cost != nil || enabled(t.WhenCostAbove.IsEnabled, false) {
 		out.Triggers.WhenCostAbove = &health.CostTrigger{Cost: floatValue(t.WhenCostAbove.Cost)}
 		if t.WhenCostAbove.After != nil {
-			after := int64(*t.WhenCostAbove.After)
-			out.Triggers.WhenCostAbove.After = &after
+			out.Triggers.WhenCostAbove.After = rangeMaxMin(t.WhenCostAbove.After)
+			out.Triggers.WhenCostAbove.AfterMax = rangeMax(t.WhenCostAbove.After)
 		}
 	}
 	if a.AcceptedHeaders != nil {
@@ -1106,7 +1126,9 @@ func checkLeastCost(c *Config) error {
 	if c.HealthObservatory != nil {
 		for _, p := range c.HealthObservatory.Providers {
 			if p != nil && enabled(p.IsEnabled, false) {
-				providers[p.Apply.Balancer] = append(providers[p.Apply.Balancer], p)
+				for _, tag := range p.Apply.Balancers {
+					providers[tag] = append(providers[tag], p)
+				}
 			}
 		}
 	}
@@ -1298,7 +1320,7 @@ func checkLeastCost(c *Config) error {
 	}
 	for tag, ps := range providers {
 		if parsed[tag] == nil {
-			return errors.New("healthObservatory.providers[", ps[0].Tag, "].apply.balancer ", tag, " must use leastCost")
+			return errors.New("healthObservatory.providers[", ps[0].Tag, "].apply.balancers ", tag, " must use leastCost")
 		}
 	}
 	if c.HealthObservatory != nil && c.HealthObservatory.Telemetry.Census != nil {

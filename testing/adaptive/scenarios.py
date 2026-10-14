@@ -2033,7 +2033,7 @@ def provider_post_state(stand, xray, work, name):
     first = bodies[0] if bodies else {}
     body = first.get("body") if isinstance(first.get("body"), dict) else {}
     outs = {o.get("tag"): o for o in body.get("outbounds", [])}
-    bal = body.get("balancer", {})
+    bal = next(iter(body.get("balancers", [])), {})
     raw = json.dumps([b.get("body") for b in bodies])
     leaks = [s for s in bench.TARGETS + ["probe.test", bench.HOST, "dead.test"] if s in raw]
     pair = [(b["body"].get("run"), b["body"].get("refreshNumber")) for b in bodies[:2] if isinstance(b.get("body"), dict)]

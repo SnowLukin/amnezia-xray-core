@@ -9,13 +9,13 @@ import (
 func providerProbeEngine(t *testing.T) *testEngine {
 	t.Helper()
 	return newProviderEngine(t, quietProvider(nil), &SelectorConfig{Paths: []*PathDefinition{
-		{Tag: "p-x", Cost: 1, Probe: "light"},
-		{Tag: "p-y", Cost: 2, Probe: "light"},
+		{Tag: "p-x", Balancer: "auto", Cost: 1, Probe: "light"},
+		{Tag: "p-y", Balancer: "auto", Cost: 2, Probe: "light"},
 	}}, "p-x", "p-y")
 }
 
 func providerPaths(profile string) []*PathDefinition {
-	return []*PathDefinition{{Tag: "p-x", Cost: 1, Probe: profile}, {Tag: "p-y", Cost: 2, Probe: "light"}}
+	return []*PathDefinition{{Tag: "p-x", Balancer: "auto", Cost: 1, Probe: profile}, {Tag: "p-y", Balancer: "auto", Cost: 2, Probe: "light"}}
 }
 
 func TestReplacedHandlerInvalidatesOldProbe(t *testing.T) {

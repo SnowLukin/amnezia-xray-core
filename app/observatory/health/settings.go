@@ -360,16 +360,22 @@ type providerSettings struct {
 	baseVersion string
 
 	// Zero durations and counts below mean the trigger or limit is off.
-	interval       time.Duration
-	jitter         float64
-	minHealthy     int
-	whenExhausted  bool
-	costAbove      bool
-	costThreshold  float64
-	costAboveAfter time.Duration
-	maxAge         time.Duration
-	onNetwork      RefreshOnNetwork
-	networkSettle  time.Duration
+	periodic          bool
+	intervalMax       time.Duration
+	networkSettleMax  time.Duration
+	costAboveAfterMax time.Duration
+	exhaustedDelay    durationRange
+	minHealthyDelay   durationRange
+	interval          time.Duration
+	jitter            float64
+	minHealthy        int
+	whenExhausted     bool
+	costAbove         bool
+	costThreshold     float64
+	costAboveAfter    time.Duration
+	maxAge            time.Duration
+	onNetwork         RefreshOnNetwork
+	networkSettle     time.Duration
 	// Shares of a lease at which it is renewed and the renewal is urgent;
 	// renewAt zero turns renewal off, the lease still ends.
 	renewAt     float64
@@ -384,6 +390,7 @@ type providerSettings struct {
 	// the headers; zero waits until they change.
 	authRetry time.Duration
 
+	balancers    []string
 	balancer     string
 	prefix       string
 	drain        time.Duration
@@ -436,6 +443,7 @@ func newProviderSettings(c *ProviderConfig) *providerSettings {
 	maxOutbounds := min(num(a.GetMaxOutbounds(), defaultMaxOutbounds), maxProviderOutbounds)
 	p := &providerSettings{
 		enabled:         featureValue(c.IsEnabled, false),
+		periodic:        featureValue(f.Periodic, false),
 		backendSchedule: featureValue(f.BackendSchedule, true),
 		leaseRenewal:    featureValue(f.LeaseRenewal, true),
 		expiredFallback: featureValue(f.ExpiredLeaseFallback, true),
@@ -464,13 +472,24 @@ func newProviderSettings(c *ProviderConfig) *providerSettings {
 		backoff:              defaultRefreshRetry,
 		authRetry:            defaultAuthRetry,
 
-		balancer:     a.GetBalancer(),
+		balancers:    slices.Clone(a.GetBalancers()),
 		prefix:       a.GetTagPrefix(),
 		drain:        min(dur(a.GetDrainTimeout(), defaultDrain), maxDrain),
 		maxOutbounds: maxOutbounds,
 		protocols:    stringsOr(a.GetAllowedProtocols(), defaultProviderProtocols),
 		routing:      false,
 	}
+	if len(p.balancers) > 0 {
+		p.balancer = p.balancers[0]
+	}
+	p.interval, p.intervalMax = configuredRange(t.GetInterval(), t.IntervalMax, durationRange{96 * time.Minute, 144 * time.Minute})
+	p.networkSettle, p.networkSettleMax = configuredRange(t.GetNetworkSettleDelay(), t.NetworkSettleMax, durationRange{30 * time.Second, 90 * time.Second})
+	if t.NetworkSettleDelay != nil && t.NetworkSettleMax == nil {
+		p.networkSettle = time.Duration(*t.NetworkSettleDelay)
+		p.networkSettleMax = p.networkSettle
+	}
+	p.exhaustedDelay = protoRange(t.GetExhaustedDelay(), durationRange{0, 10 * time.Second})
+	p.minHealthyDelay = protoRange(t.GetMinHealthyDelay(), durationRange{0, 30 * time.Second})
 	if len(p.urls) == 0 && p.url != "" {
 		p.urls = []string{p.url}
 	}
@@ -493,9 +512,12 @@ func newProviderSettings(c *ProviderConfig) *providerSettings {
 	if ca := t.GetWhenCostAbove(); ca != nil {
 		p.costAbove = true
 		p.costThreshold = float64(ca.GetCost())
-		p.costAboveAfter = defaultCostAboveAfter
+		p.costAboveAfter, p.costAboveAfterMax = configuredRange(ca.GetAfter(), ca.AfterMax, durationRange{15 * time.Minute, 25 * time.Minute})
 		if ca.After != nil {
 			p.costAboveAfter = time.Duration(max(ca.GetAfter(), 0))
+			if ca.AfterMax == nil {
+				p.costAboveAfterMax = p.costAboveAfter
+			}
 		}
 	}
 	if ex := t.GetExpiry(); ex.GetRenewAtFraction() >= 0 {
@@ -503,8 +525,9 @@ func newProviderSettings(c *ProviderConfig) *providerSettings {
 		p.urgentAt = min(max(fnum(ex.GetUrgentAtFraction(), defaultUrgentAt), p.renewAt), maxRenewAt)
 		p.renewJitter = defaultRenewJitter
 	}
-	if !featureValue(f.Periodic, false) {
-		p.interval = 0
+	if !featureValue(f.Periodic, false) || (t.GetInterval() < 0 && t.IntervalMax == nil) {
+		p.periodic = false
+		p.interval, p.intervalMax = 0, 0
 	}
 	if !featureValue(f.MinHealthy, false) {
 		p.minHealthy = 0

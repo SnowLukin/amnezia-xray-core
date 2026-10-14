@@ -80,6 +80,9 @@ type provider struct {
 	// threshold and again only after it got back above it.
 	minHealthyArmed bool
 	aboveSince      time.Time
+	aboveDelay      time.Duration
+	networkDelay    time.Duration
+	delayed         [triggerCount]time.Time
 	// A host or network refresh that failed is retried with the backoff.
 	retrying bool
 	retry    refreshTrigger
@@ -114,9 +117,11 @@ type provider struct {
 	// The previous refresh failed: when, with which HTTP status or 0, and its
 	// class, or the reason a well-formed answer was refused. A success
 	// clears them.
-	lastFailedAt time.Time
-	lastStatus   int
-	lastClass    string
+	lastRefreshAt time.Time
+	lastRefresh   *requestRefresh
+	lastFailedAt  time.Time
+	lastStatus    int
+	lastClass     string
 
 	// Leases of the outbounds of the set by full tag; an outbound without
 	// one has no end. At most one per outbound of the set.
@@ -166,7 +171,9 @@ type refreshJob struct {
 	retry   int
 	refresh uint64
 	// The body of a POST, gathered when the refresh starts.
-	request *providerRequest
+	request         *providerRequest
+	attempts        []requestAttempt
+	lastAttemptKept bool
 	// Leases the refresh asks about, whatever its trigger.
 	asked []askedLease
 	// The headers every via sends, and their generation.
@@ -244,7 +251,7 @@ func (e *engine) tickProviders(now time.Time) ([]*refreshJob, time.Time) {
 				continue
 			}
 			shortInterval := t.urgent() || (t == triggerExpiry && expiry.urgent) ||
-				(t == triggerCostAbove && p.cfg.costAboveAfter == 0)
+				(t == triggerCostAbove && p.cfg.costAboveAfterMax == 0)
 			if at, why := p.allowedAt(shortInterval, now); now.Before(at) {
 				e.skipRefresh(p, t, why, at.Sub(now), now)
 				soonest(at)
@@ -342,8 +349,9 @@ func (e *engine) wantedRefresh(p *provider, now time.Time) ([triggerCount]bool, 
 			if cur := s.current(); cur != "" && e.cost(s, cur) >= p.cfg.costThreshold {
 				if p.aboveSince.IsZero() {
 					p.aboveSince = maxTime(s.activeSince, p.setAt)
+					p.aboveDelay = e.randomDelay(p.cfg.costAboveAfter, p.cfg.costAboveAfterMax)
 				}
-				if due := p.aboveSince.Add(p.cfg.costAboveAfter); now.Before(due) {
+				if due := p.aboveSince.Add(p.aboveDelay); now.Before(due) {
 					soonest(due)
 				} else {
 					want[triggerCostAbove] = true
@@ -354,7 +362,7 @@ func (e *engine) wantedRefresh(p *provider, now time.Time) ([triggerCount]bool, 
 		}
 	}
 	if p.networkPending {
-		switch due := p.networkAt.Add(p.cfg.networkSettle); {
+		switch due := p.networkAt.Add(p.networkDelay); {
 		case now.Before(due):
 			soonest(due)
 		case p.cfg.onNetwork != RefreshOnNetwork_REFRESH_UNKNOWN_NOT_CHEAPEST || (s != nil && (s.pinned != "" || e.notCheapest(s))):
@@ -388,6 +396,23 @@ func (e *engine) wantedRefresh(p *provider, now time.Time) ([triggerCount]bool, 
 	}
 	expiry := p.expiryWant(now)
 	want[triggerExpiry] = expiry.want
+	for _, t := range []refreshTrigger{triggerExhausted, triggerMinHealthy} {
+		if !want[t] {
+			p.delayed[t] = time.Time{}
+			continue
+		}
+		if p.delayed[t].IsZero() {
+			d := p.cfg.exhaustedDelay
+			if t == triggerMinHealthy {
+				d = p.cfg.minHealthyDelay
+			}
+			p.delayed[t] = now.Add(e.randomDelay(d.min, d.max))
+		}
+		if now.Before(p.delayed[t]) {
+			want[t] = false
+			soonest(p.delayed[t])
+		}
+	}
 	return want, expiry, wake
 }
 
@@ -513,8 +538,8 @@ func (e *engine) scheduleRefresh(p *provider, hint time.Duration, hasHint bool, 
 	case p.cfg.backendSchedule && (hasHint || hint > 0):
 		p.nextAt = now.Add(e.jitter(hint, p.cfg.jitter))
 		p.nextTrigger = triggerNextRefresh
-	case p.cfg.interval > 0:
-		p.nextAt = now.Add(e.jitter(p.cfg.interval, p.cfg.jitter))
+	case p.cfg.periodic:
+		p.nextAt = now.Add(e.randomDelay(p.cfg.interval, p.cfg.intervalMax))
 		p.nextTrigger = triggerInterval
 	}
 }
@@ -523,6 +548,8 @@ func (e *engine) onRefreshDone(j *refreshJob, r refreshOutcome, now time.Time) {
 	p := j.p
 	p.fetching = false
 	p.refreshes++
+	p.lastRefreshAt = now
+	p.lastRefresh = &requestRefresh{IsOK: r.ok, Trigger: j.trigger.String(), Attempts: append([]requestAttempt{}, j.attempts...)}
 	p.answeredLeases(j.asked, r.ok)
 	if r.ok {
 		p.setAt = now
@@ -533,6 +560,7 @@ func (e *engine) onRefreshDone(j *refreshJob, r refreshOutcome, now time.Time) {
 		p.lastFailedAt, p.lastStatus, p.lastClass = time.Time{}, 0, ""
 		if !p.aboveSince.IsZero() {
 			p.aboveSince = now
+			p.aboveDelay = e.randomDelay(p.cfg.costAboveAfter, p.cfg.costAboveAfterMax)
 		}
 		e.scheduleRefresh(p, r.nextRefreshIn, r.hasNextRefreshIn, now)
 		// The same dead set again: back off as after a failure, so an
@@ -603,6 +631,7 @@ func (e *engine) providersOnNetworkChange(known bool, now time.Time) {
 		}
 		p.networkPending = true
 		p.networkAt = now
+		p.networkDelay = e.randomDelay(p.cfg.networkSettle, p.cfg.networkSettleMax)
 	}
 }
 
@@ -615,9 +644,15 @@ func (e *engine) resolveVia(via string, now time.Time) (string, string) {
 	}
 	if s := e.selectors[via]; s != nil {
 		if cur := s.current(); cur != "" {
+			if e.isProbeOnly(cur) {
+				return "", "probe-only outbound"
+			}
 			return cur, ""
 		}
 		return "", "balancer exhausted"
+	}
+	if e.isProbeOnly(via) {
+		return "", "probe-only outbound"
 	}
 	if p := e.paths[via]; p != nil && p.quarantined(now) {
 		return "", "outbound down"
@@ -647,7 +682,11 @@ func (e *engine) applyProviderSet(p *provider, c providerChange, now time.Time) 
 			oldPaths[tag] = profile.(pathSettings)
 		}
 	}
-	if s := e.selectors[p.cfg.balancer]; s != nil {
+	for _, balancer := range p.cfg.balancers {
+		s := e.selectors[balancer]
+		if s == nil {
+			continue
+		}
 		newTags := map[string]bool{}
 		for _, tag := range c.tags {
 			newTags[tag] = true
@@ -657,7 +696,7 @@ func (e *engine) applyProviderSet(p *provider, c providerChange, now time.Time) 
 				delete(s.cfg.paths, tag)
 			}
 		}
-		providerCfg := newSelectorSettings(&SelectorConfig{Paths: c.paths, Groups: c.groups})
+		providerCfg := newSelectorSettings(&SelectorConfig{Paths: pathsForBalancer(c.paths, balancer), Groups: c.groups})
 		for tag, path := range providerCfg.paths {
 			s.cfg.paths[tag] = path
 		}
@@ -738,7 +777,7 @@ func (e *engine) applyProviderSet(p *provider, c providerChange, now time.Time) 
 	}
 	p.expect = ""
 	for _, tag := range c.added {
-		if !e.isProbeOnly(tag) {
+		if !e.isProbeOnly(tag) && slices.ContainsFunc(c.paths, func(path *PathDefinition) bool { return path.Tag == tag && path.Balancer == p.cfg.balancer }) {
 			p.expect = tag
 			break
 		}

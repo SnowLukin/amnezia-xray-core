@@ -183,8 +183,8 @@ func validateAnswerPaths(cfg *providerSettings, a *providerAnswer) error {
 			return err
 		}
 		balancer, err := answerString(obj, "balancer", where)
-		if err != nil || balancer != cfg.balancer {
-			return fmt.Errorf("%s.balancer must be %s", where, cfg.balancer)
+		if err != nil || !cfg.feeds(balancer) {
+			return fmt.Errorf("%s.balancer must be in apply.balancers %v", where, cfg.balancers)
 		}
 		group, err := answerString(obj, "group", where)
 		if err != nil {

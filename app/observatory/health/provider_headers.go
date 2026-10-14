@@ -21,7 +21,7 @@ import (
 // elsewhere, so neither may set them.
 var transportHeaders = map[string]bool{"Host": true, "Content-Length": true, "Content-Type": true,
 	"Transfer-Encoding": true, "Connection": true, "Keep-Alive": true, "Te": true, "Trailer": true,
-	"Upgrade": true, "Accept": true}
+	"Upgrade": true, "Accept": true, "Xray-Adaptive": true}
 
 // CheckHeaderName tells why an answer, the initial set or the host may not
 // set a provider header of this name, or nil when it may.

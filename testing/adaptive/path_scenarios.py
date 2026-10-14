@@ -180,10 +180,12 @@ def provider_path_rejection(stand, xray, work, name):
                   and kept_tags == ["x1", "x2"], "valid version, two raw tags, active old member"),
             check("old set keeps answering traffic", f"{sum(record[1] for record in served)}/{len(served)}",
                   bool(served) and all(record[1] for record in served), "all requests after first rejection"),
-            check("next request reports last failure", next_body.get("lastFailure"),
-                  next_body.get("lastFailure", {}).get("code") == "invalid_set"
-                  and next_body.get("lastFailure", {}).get("status") == 200
-                  and next_body.get("lastFailure", {}).get("agoMs", -1) >= 0, "status=200, code=invalid_set, agoMs>=0"),
+            check("next request reports last refresh", next_body.get("lastRefresh"),
+                  next_body.get("lastRefresh", {}).get("isOk") is False
+                  and next_body.get("lastRefresh", {}).get("agoMs", -1) >= 0
+                  and any(attempt.get("status") == 200 and attempt.get("code") == "invalid_set"
+                          for attempt in next_body.get("lastRefresh", {}).get("attempts", [])),
+                  "isOk=false, attempt status=200, code=invalid_set, agoMs>=0"),
             check("invalid sets never applied", [event["fields"].get("version") for event in applies
                                                  if event["fields"].get("is_ok")],
                   all(event["fields"].get("version") == "valid" for event in applies

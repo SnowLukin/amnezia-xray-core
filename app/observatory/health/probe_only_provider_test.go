@@ -53,7 +53,7 @@ func TestProviderProbeOnlyPathBoolean(t *testing.T) {
 
 func TestProviderRequestHasEveryProbeOnlyFlag(t *testing.T) {
 	te := newProviderEngine(t, quietProvider(nil), &SelectorConfig{Paths: []*PathDefinition{
-		{Tag: "p-real", Cost: 1}, {Tag: "p-probe", Cost: 2, IsProbeOnly: true},
+		{Tag: "p-real", Balancer: "auto", Cost: 1}, {Tag: "p-probe", Balancer: "auto", Cost: 2, IsProbeOnly: true},
 	}}, "p-real", "p-probe")
 	te.prov().tags = []string{"p-real", "p-probe"}
 	p := te.path("p-probe")
@@ -80,7 +80,7 @@ func TestMinHealthyWaitsForCandidateOutcome(t *testing.T) {
 				p.Triggers.MinHealthyOutbounds = 2
 				p.Limits.MinInterval = -1
 			}), &SelectorConfig{Paths: []*PathDefinition{
-				{Tag: "p-real", Cost: 1}, {Tag: "p-a", Cost: 2, IsProbeOnly: true}, {Tag: "p-b", Cost: 3, IsProbeOnly: true},
+				{Tag: "p-real", Balancer: "auto", Cost: 1}, {Tag: "p-a", Balancer: "auto", Cost: 2, IsProbeOnly: true}, {Tag: "p-b", Balancer: "auto", Cost: 3, IsProbeOnly: true},
 			}}, "p-real", "p-a", "p-b")
 			te.prov().tags = []string{"p-real", "p-a", "p-b"}
 			expectNoRefresh(t, te, t0)
@@ -109,7 +109,7 @@ func TestMinHealthyExhaustedDoesNotWaitForCandidates(t *testing.T) {
 	te := newProviderEngine(t, quietProvider(func(p *ProviderConfig) {
 		p.Triggers.MinHealthyOutbounds = 2
 	}), &SelectorConfig{Paths: []*PathDefinition{
-		{Tag: "p-real", Cost: 1}, {Tag: "p-probe", Cost: 2, IsProbeOnly: true},
+		{Tag: "p-real", Balancer: "auto", Cost: 1}, {Tag: "p-probe", Balancer: "auto", Cost: 2, IsProbeOnly: true},
 	}}, "p-real", "p-probe")
 	te.exhaust(te.sel, t0)
 	expectRefresh(t, te, t0, "min_healthy")
@@ -171,7 +171,7 @@ func TestProviderPromotionReusesOnlyFreshCandidateProof(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			te := newProviderEngine(t, quietProvider(nil), &SelectorConfig{Paths: []*PathDefinition{
-				{Tag: "p-real", Cost: 1}, {Tag: "p-probe", Cost: 2, IsProbeOnly: true},
+				{Tag: "p-real", Balancer: "auto", Cost: 1}, {Tag: "p-probe", Balancer: "auto", Cost: 2, IsProbeOnly: true},
 			}}, "p-real", "p-probe")
 			te.prov().tags = []string{"p-real", "p-probe"}
 			q := te.path("p-probe")
@@ -192,7 +192,7 @@ func TestProviderPromotionReusesOnlyFreshCandidateProof(t *testing.T) {
 			te.exhaust(te.sel, now)
 			te.applyProviderSet(te.prov(), providerChange{
 				tags:  []string{"p-real", "p-probe"},
-				paths: []*PathDefinition{{Tag: "p-real", Cost: 1}, {Tag: "p-probe", Cost: 2, Probe: probe}},
+				paths: []*PathDefinition{{Tag: "p-real", Balancer: "auto", Cost: 1}, {Tag: "p-probe", Balancer: "auto", Cost: 2, Probe: probe}},
 				reset: []string{"p-probe"},
 			}, now)
 			if !q.realSince.Equal(now) || q.freshDownReported || len(q.failures) != 0 || q.quarantineLevel != 0 || q.serverName != "" || !q.candidateVerifiedAt.IsZero() {
@@ -291,8 +291,8 @@ func TestProviderDemotionRegistrationFailureRestoresMode(t *testing.T) {
 
 func TestProviderFreshPromotionRestoresDownGroup(t *testing.T) {
 	paths := []*PathDefinition{
-		{Tag: "p-real", Group: "p-relay"},
-		{Tag: "p-probe", Group: "p-relay", IsProbeOnly: true},
+		{Tag: "p-real", Balancer: "auto", Group: "p-relay"},
+		{Tag: "p-probe", Balancer: "auto", Group: "p-relay", IsProbeOnly: true},
 	}
 	groups := []*PathGroup{{Name: "p-relay", Cost: 1, FailedInRowToLeave: 3}}
 	te := newProviderEngine(t, quietProvider(nil), &SelectorConfig{Paths: paths, Groups: groups}, "p-real", "p-probe")
@@ -313,7 +313,7 @@ func TestProviderFreshPromotionRestoresDownGroup(t *testing.T) {
 	}
 	te.applyProviderSet(te.prov(), providerChange{
 		tags:   []string{"p-real", "p-probe"},
-		paths:  []*PathDefinition{{Tag: "p-real", Group: "p-relay"}, {Tag: "p-probe", Group: "p-relay"}},
+		paths:  []*PathDefinition{{Tag: "p-real", Balancer: "auto", Group: "p-relay"}, {Tag: "p-probe", Balancer: "auto", Group: "p-relay"}},
 		groups: groups,
 		reset:  []string{"p-probe"},
 	}, now)

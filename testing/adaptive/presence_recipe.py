@@ -41,6 +41,9 @@ def migrate(value, parent=''):
             if enabled is False and key not in DEFAULT_ON and not override:
                 continue
             item = {k: v for k, v in item.items() if k != 'isEnabled' or enabled is False}
+        if key == 'balancer' and parent == 'apply':
+            result['balancers'] = [item]
+            continue
         if key == 'url' and parent == 'provider':
             result['urls'] = [item]
             continue

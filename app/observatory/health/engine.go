@@ -861,13 +861,13 @@ func (e *engine) addSelector(tag string, cfg *selectorSettings) *selector {
 func (e *engine) addSelectorAt(tag string, cfg *selectorSettings, now time.Time) *selector {
 	providerTags := map[string]bool{}
 	for _, p := range e.providers {
-		if p.cfg.balancer != tag {
+		if !p.cfg.feeds(tag) {
 			continue
 		}
-		for _, path := range p.pathDefs {
+		for _, path := range pathsForBalancer(p.pathDefs, tag) {
 			providerTags[path.Tag] = true
 		}
-		providerCfg := newSelectorSettings(&SelectorConfig{Paths: p.pathDefs, Groups: p.groupDefs})
+		providerCfg := newSelectorSettings(&SelectorConfig{Paths: pathsForBalancer(p.pathDefs, tag), Groups: p.groupDefs})
 		for pathTag, path := range providerCfg.paths {
 			cfg.paths[pathTag] = path
 		}
@@ -1007,7 +1007,7 @@ func (e *engine) updateCandidates(s *selector, candidates []string, now time.Tim
 		}
 	}
 	for _, p := range e.providers {
-		if p.cfg.balancer != s.tag {
+		if !p.cfg.feeds(s.tag) {
 			continue
 		}
 		for _, c := range p.tags {

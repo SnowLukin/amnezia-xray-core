@@ -34,7 +34,7 @@ func qualityProviderRichStringBytes(t *testing.T, value string) int {
 func qualityProviderRichFixedBytes(t *testing.T, body []byte, r providerRequest) int {
 	t.Helper()
 	chosen := qualityProviderRichStringBytes(t, r.Version)
-	chosen += qualityProviderRichStringBytes(t, r.Balancer.Current)
+	chosen += qualityProviderRichStringBytes(t, r.Balancers[0].Current)
 	for _, outbound := range r.Outbounds {
 		chosen += qualityProviderRichStringBytes(t, outbound.Tag)
 		chosen += qualityProviderRichStringBytes(t, outbound.Reason)
@@ -191,10 +191,10 @@ func TestQualityProviderRichCombinedBodyBudget(t *testing.T) {
 				te.quality.current.tagBytes > qualityCollectionTagBytes || te.quality.current.samplesDropped != 0 {
 				t.Fatal("fixture lost required 128 raw snapshots or 64 admitted quality histories")
 			}
-			if decoded.Version != te.prov().version || !decoded.Balancer.IsOwn {
+			if decoded.Version != te.prov().version || !decoded.Balancers[0].IsOwn {
 				t.Fatal("fixture lost caller-chosen version or own active tag")
 			}
-			if _, own := ownTags[decoded.Balancer.Current]; !own {
+			if _, own := ownTags[decoded.Balancers[0].Current]; !own {
 				t.Fatal("fixture active tag is not the provider's full displayed tag")
 			}
 			if decoded.Network.ID != providerHash(te.prov().cfg.url, networkID) || !decoded.Network.IsKnown || !decoded.Network.IsUp ||

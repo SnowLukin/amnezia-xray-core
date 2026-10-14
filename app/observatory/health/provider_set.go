@@ -501,14 +501,14 @@ func (o *Observer) checkRouting(rt *providerRuntime, a *providerAnswer, rc *rout
 			settings.Groups = append(settings.Groups, base.Groups...)
 		}
 		for _, p := range o.e.providers {
-			if p.cfg.balancer != b.Tag {
+			if !p.cfg.feeds(b.Tag) {
 				continue
 			}
 			if p == rt.p {
-				settings.Paths = append(settings.Paths, a.paths...)
+				settings.Paths = append(settings.Paths, pathsForBalancer(a.paths, b.Tag)...)
 				settings.Groups = append(settings.Groups, a.groups...)
 			} else {
-				settings.Paths = append(settings.Paths, p.pathDefs...)
+				settings.Paths = append(settings.Paths, pathsForBalancer(p.pathDefs, b.Tag)...)
 				settings.Groups = append(settings.Groups, p.groupDefs...)
 			}
 			b.OutboundSelector = append(b.OutboundSelector, p.cfg.prefix)
@@ -523,8 +523,10 @@ func (o *Observer) checkRouting(rt *providerRuntime, a *providerAnswer, rc *rout
 		}
 		b.StrategySettings = serial.ToTypedMessage(settings)
 	}
-	if b := balancers[rt.cfg.balancer]; b == nil || !strings.EqualFold(b.Strategy, "leastcost") {
-		return fmt.Errorf("routing drops the leastCost balancer %s the provider feeds", rt.cfg.balancer)
+	for _, tag := range rt.cfg.balancers {
+		if b := balancers[tag]; b == nil || !strings.EqualFold(b.Strategy, "leastcost") {
+			return fmt.Errorf("routing drops the leastCost balancer %s the provider feeds", tag)
+		}
 	}
 	ruleTags := map[string]bool{}
 	for i, r := range rc.Rule {
@@ -614,6 +616,7 @@ func (o *Observer) runRefresh(j *refreshJob) {
 		r.err = err.Error()
 		r.status = res.status
 		r.class = "invalid_set"
+		j.rejectLastAttempt("invalid_set")
 	} else {
 		r.ok = true
 		r.changed = changed
@@ -669,8 +672,14 @@ func (o *Observer) fetchSet(rt *providerRuntime, j *refreshJob, body []byte) (fe
 	}
 	var last fetchResult
 	var lastErr error
-	asked, attempt := false, 0
+	asked, attempt, nonProtocol := false, 0, 0
 	for _, v := range via {
+		var candidates []string
+		if o.ohm != nil {
+			for _, h := range o.ohm.ListHandlers(o.runCtx) {
+				candidates = append(candidates, h.Tag())
+			}
+		}
 		var tag string
 		var skip string
 		var low bool
@@ -678,6 +687,13 @@ func (o *Observer) fetchSet(rt *providerRuntime, j *refreshJob, body []byte) (fe
 			o.mu.Lock()
 			defer o.mu.Unlock()
 
+			// Via-only balancers have no user routing rule to hand them a
+			// candidate snapshot. Do it here without recording user demand.
+			if s := o.e.selectors[v]; s != nil {
+				if snap := s.snapshot.Load(); snap == nil || !equalStrings(*snap, candidates) {
+					o.e.updateCandidates(s, candidates, o.now())
+				}
+			}
 			tag, skip = o.e.resolveVia(v, o.now())
 			low = o.e.memoryLow
 
@@ -686,6 +702,7 @@ func (o *Observer) fetchSet(rt *providerRuntime, j *refreshJob, body []byte) (fe
 			skip = "no such outbound"
 		}
 		if skip != "" {
+			j.recordAttempt(requestAttempt{Via: v, Code: "skipped"})
 			attempt++
 			o.emit("provider_fetch", map[string]any{"provider": rt.cfg.tag, "trigger": j.trigger.String(), "retry": j.retry,
 				"attempt": attempt, "via": v, "outbound": tag, "method": rt.cfg.method, "refresh": j.refresh,
@@ -704,6 +721,15 @@ func (o *Observer) fetchSet(rt *providerRuntime, j *refreshJob, body []byte) (fe
 			o.fetchingVia(tag, -1)
 			r.via = v
 			refused := isAnswerError(err)
+			elapsed := time.Since(start).Milliseconds()
+			code := r.class
+			if err == nil {
+				code = ""
+			}
+			if refused {
+				code = "invalid_answer"
+			}
+			j.recordAttempt(requestAttempt{Via: v, Mirror: mirror + 1, IsOK: err == nil, Status: r.status, Code: code, Ms: elapsed})
 			f := map[string]any{"provider": rt.cfg.tag, "trigger": j.trigger.String(), "retry": j.retry,
 				"attempt": attempt, "mirror": mirror + 1, "via": v, "outbound": tag, "method": rt.cfg.method, "refresh": j.refresh,
 				"is_ok": err == nil || refused, "status": r.status, "ms": time.Since(start).Milliseconds(), "bytes": r.bytes}
@@ -727,6 +753,12 @@ func (o *Observer) fetchSet(rt *providerRuntime, j *refreshJob, body []byte) (fe
 			// An authoritative rejection or an answer that violates the
 			// protocol must not be bypassed with another mirror or route.
 			if r.backend {
+				return last, lastErr
+			}
+			if r.status != 0 {
+				nonProtocol++
+			}
+			if nonProtocol >= 2 {
 				return last, lastErr
 			}
 			if low {
@@ -795,6 +827,8 @@ func (o *Observer) fetchURL(cfg *providerSettings, headers map[string]string, ta
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
+	name, value := AdaptiveHeader()
+	req.Header.Set(name, value)
 	if req.Header.Get("Accept") == "" {
 		req.Header.Set("Accept", "application/json")
 	}
@@ -1377,46 +1411,54 @@ func checkHeads(cfg *providerSettings, a *providerAnswer) ([]string, error) {
 }
 
 func (o *Observer) checkGroupOwnership(rt *providerRuntime, a *providerAnswer) error {
-	target := o.e.selectors[rt.cfg.balancer]
-	if target == nil {
-		return fmt.Errorf("unknown provider balancer")
-	}
-	flags := target.cfg.raw.GetFeatures()
-	if flags == nil {
-		flags = &SelectorFeatureConfig{}
-	}
-	if len(a.groups) > 0 && !featureValue(flags.Groups, false) {
-		return fmt.Errorf("provider groups require balancer groups")
-	}
-	for _, path := range a.paths {
-		if path.ReturnIsEnabled != nil && *path.ReturnIsEnabled && !featureValue(flags.ReturnToCheaper, false) {
-			return fmt.Errorf("selection returnToCheaper requires balancer returnToCheaper")
+	for _, tag := range rt.cfg.balancers {
+		target := o.e.selectors[tag]
+		if target == nil {
+			return fmt.Errorf("unknown provider balancer %s", tag)
 		}
-	}
-	for _, group := range a.groups {
-		if group.ReturnIsEnabled != nil && *group.ReturnIsEnabled && !featureValue(flags.ReturnToCheaper, false) {
-			return fmt.Errorf("group returnToCheaper requires balancer returnToCheaper")
+		flags := target.cfg.raw.GetFeatures()
+		if flags == nil {
+			flags = &SelectorFeatureConfig{}
 		}
-	}
-	for _, g := range a.groups {
-		if s := o.e.selectors[rt.cfg.balancer]; s != nil && s.baseRaw != nil {
-			for _, base := range s.baseRaw.Groups {
-				if base.Name == g.Name {
-					return fmt.Errorf("group %s belongs to the base config", g.Name)
-				}
+		groups := map[string]bool{}
+		for _, path := range pathsForBalancer(a.paths, tag) {
+			if path.ReturnIsEnabled != nil && *path.ReturnIsEnabled && !featureValue(flags.ReturnToCheaper, false) {
+				return fmt.Errorf("selection returnToCheaper requires balancer returnToCheaper")
+			}
+			if path.Group != "" {
+				groups[path.Group] = true
 			}
 		}
-		for _, other := range o.e.providers {
-			if other == rt.p || other.cfg.balancer != rt.cfg.balancer {
+		if len(groups) > 0 && !featureValue(flags.Groups, false) {
+			return fmt.Errorf("provider groups require balancer groups")
+		}
+		for _, g := range a.groups {
+			if !groups[g.Name] {
 				continue
 			}
-			for _, owned := range other.groupDefs {
-				if owned.Name == g.Name {
-					return fmt.Errorf("group %s belongs to provider %s", g.Name, other.cfg.tag)
+			if g.ReturnIsEnabled != nil && *g.ReturnIsEnabled && !featureValue(flags.ReturnToCheaper, false) {
+				return fmt.Errorf("group returnToCheaper requires balancer returnToCheaper")
+			}
+			if target.baseRaw != nil {
+				for _, base := range target.baseRaw.Groups {
+					if base.Name == g.Name {
+						return fmt.Errorf("group %s belongs to the base config", g.Name)
+					}
+				}
+			}
+			for _, other := range o.e.providers {
+				if other == rt.p || !other.cfg.feeds(tag) {
+					continue
+				}
+				for _, owned := range other.groupDefs {
+					if owned.Name == g.Name {
+						return fmt.Errorf("group %s belongs to provider %s", g.Name, other.cfg.tag)
+					}
 				}
 			}
 		}
 	}
+
 	return nil
 }
 

@@ -13,7 +13,7 @@ import (
 )
 
 func v2ProviderConfig() *ProviderConfig {
-	return &ProviderConfig{IsEnabled: proto.Bool(true), Tag: "fresh", Url: "https://provider.test/set", Apply: &ProviderApply{Balancer: "auto", TagPrefix: "p-"}, Features: &ProviderFeatureConfig{Exhausted: proto.Bool(false), LeaseRenewal: proto.Bool(false), BackendSchedule: proto.Bool(false)}}
+	return &ProviderConfig{IsEnabled: proto.Bool(true), Tag: "fresh", Url: "https://provider.test/set", Apply: &ProviderApply{Balancers: []string{"auto"}, TagPrefix: "p-"}, Features: &ProviderFeatureConfig{Exhausted: proto.Bool(false), LeaseRenewal: proto.Bool(false), BackendSchedule: proto.Bool(false)}}
 }
 func TestProviderV2DisabledHasNoRuntimeOrBackgroundWork(t *testing.T) {
 	for _, flag := range []*bool{nil, proto.Bool(false)} {
@@ -183,7 +183,7 @@ func TestProviderV2PostTruncatesOnlyOptionalDetails(t *testing.T) {
 	q := &requestQuality{BytesDown: &max, TTFBCount: u, TTFBP50Ms: &max, TTFBP90Ms: &max, DialCount: u, DialP50Ms: &max, DialP90Ms: &max, TCPCount: u, TCPRTTP50Ms: &max, TCPRTTP90Ms: &max, TCPRTTMinMs: &max, BulkCount: u, BulkKbpsP50: &max, BulkKbpsP90: &max, BulkKbpsMax: &max, BulkRTTP50Ms: &max, BulkSplicedCount: &u, RXOutOfOrderFraction: &fraction, TXRetransmitFraction: &fraction}
 	profile := strings.Repeat("p", 64)
 	steps := []requestProbeStep{{Name: strings.Repeat("n", 64), IsPassed: true}, {Name: strings.Repeat("m", 64), IsPassed: true}, {Name: strings.Repeat("o", 64), IsPassed: true}, {Name: strings.Repeat("q", 64), IsPassed: true}}
-	r := &providerRequest{Protocol: 1, Provider: "fresh", Version: "v1", BaseVersion: "base", ClientTime: t0, Network: requestNetwork{IsUp: true}, WitnessQuality: q, Balancer: requestBalancer{Tag: "auto", Current: "x", IsOwn: true}, Outbounds: []requestOutbound{}}
+	r := &providerRequest{Protocol: 1, Provider: "fresh", Version: "v1", BaseVersion: "base", ClientTime: t0, Network: requestNetwork{IsUp: true}, WitnessQuality: q, Balancers: []requestBalancer{{Tag: "auto", Current: "x", IsOwn: true}}, Outbounds: []requestOutbound{}}
 	for i := 0; i < 128; i++ {
 		tag := fmt.Sprintf("%03d%s", i, strings.Repeat("\x00", 123))
 		r.Groups = append(r.Groups, requestGroup{Group: tag, State: "up", Members: 1, Healthy: 1})
@@ -358,7 +358,7 @@ func TestProviderV2EachRefreshTriggerHasAnEffectiveGate(t *testing.T) {
 				if enabled {
 					tc.enable(pc.Features)
 				}
-				pc.Triggers = &ProviderTriggers{Interval: int64(time.Minute), MinHealthyOutbounds: 2, MaxAge: int64(time.Minute), WhenCostAbove: &CostTrigger{Cost: 1, After: proto.Int64(0)}, NetworkChangeMode: RefreshOnNetwork_REFRESH_ANY, NetworkSettleDelay: proto.Int64(0)}
+				pc.Triggers = &ProviderTriggers{Interval: int64(time.Minute), MinHealthyOutbounds: 2, MaxAge: int64(time.Minute), WhenCostAbove: &CostTrigger{Cost: 1, After: proto.Int64(0)}, NetworkChangeMode: RefreshOnNetwork_REFRESH_ANY, NetworkSettleDelay: proto.Int64(0), ExhaustedDelay: &DurationRange{}, MinHealthyDelay: &DurationRange{}}
 				e := newEngine(newSettings(&Config{Providers: []*ProviderConfig{pc}}), 1)
 				p := e.providers[0]
 				p.started = true

@@ -18,7 +18,7 @@ func TestProviderMirrorsTryInOrderBeforeNextVia(t *testing.T) {
 	working := &setServer{body: `{"outbounds":[{"tag":"x1","protocol":"freedom","selection":{"balancer":"auto","probe":"check","cost":1}}]}`}
 	second := httptest.NewServer(working)
 	defer second.Close()
-	obs := twoViaCore(t, first.URL, fmt.Sprintf(`,"urls":[%q,%q,%q,%q]`, first.URL+"/one", first.URL+"/two", first.URL+"/three", second.URL))
+	obs := twoViaCore(t, first.URL, fmt.Sprintf(`,"urls":[%q,%q,%q,%q]`, first.URL+"/one", second.URL, first.URL+"/three", first.URL+"/four"))
 	w := &eventWaiter{t: t, o: obs}
 	if !obs.RequestProviderRefresh("fresh") {
 		t.Fatal("manual refresh refused")
@@ -26,7 +26,7 @@ func TestProviderMirrorsTryInOrderBeforeNextVia(t *testing.T) {
 	w.until("provider_apply", func(e health.Event) bool { return e.Fields["is_ok"] == true })
 	waitRefreshed(t, obs)
 	fetches := w.since(0, "provider_fetch")
-	if broken.requests() != 3 || working.requests() != 1 || len(fetches) != 4 {
+	if broken.requests() != 1 || working.requests() != 1 || len(fetches) != 2 {
 		t.Fatalf("requests first=%d second=%d, events=%+v", broken.requests(), working.requests(), fetches)
 	}
 	for i, event := range fetches {
@@ -83,7 +83,7 @@ func TestProviderMirrorsLowMemoryMakesOnlyOneAttempt(t *testing.T) {
 		"routing":{"balancers":[{"tag":"auto","fallbackTag":"direct","strategy":{"type":"leastCost"}}]},
 		"healthObservatory":{"host":{"memoryPressure":{}},"telemetry":{"events":{}},
 		"providers":[{"tag":"fresh","urls":[%q,%q],"isPlainHttpAllowed":true,"via":["direct","direct"],
-		"apply":{"balancer":"auto","tagPrefix":"p-","allowedProtocols":["freedom"]}}]}}`, first.URL, second.URL)))
+		"apply":{"balancers":["auto"],"tagPrefix":"p-","allowedProtocols":["freedom"]}}]}}`, first.URL, second.URL)))
 	if err != nil {
 		t.Fatal(err)
 	}

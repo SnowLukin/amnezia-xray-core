@@ -367,8 +367,8 @@ message ProviderTriggers {
   // Refresh this long after the previous successful refresh. Negative
   // disables.
   int64 interval = 1;
-  // Random spread of interval and of nextRefreshIn, 0.2 means +-20%.
-  double jitter_fraction = 2;
+  // Historical in-process test carrier; not a public JSON field.
+  double jitter_fraction = 2 [deprecated = true];
   // Refresh when the balancer has fewer usable candidates than this.
   // Negative disables.
   int32 min_healthy_outbounds = 3;
@@ -383,6 +383,10 @@ message ProviderTriggers {
   optional int64 network_settle_delay = 8;
   // Renewal of the leases an answer gives its outbounds.
   ExpiryTrigger expiry = 9;
+  optional int64 interval_max = 10;
+  optional int64 network_settle_max = 11;
+  DurationRange exhausted_delay = 12;
+  DurationRange min_healthy_delay = 13;
 }
 
 // ExpiryTrigger renews a lease before it ends. Zero takes the default, a
@@ -397,10 +401,17 @@ message ExpiryTrigger {
   double jitter_fraction = 3;
 }
 
+// Inclusive nonnegative bounds, in nanoseconds.
+message DurationRange {
+  int64 min = 1;
+  int64 max = 2;
+}
+
 message CostTrigger {
   float cost = 1;
   // Absence uses the default; an explicit zero is immediate.
   optional int64 after = 2;
+  optional int64 after_max = 3;
 }
 
 enum RefreshOnNetwork {
@@ -428,9 +439,8 @@ message ProviderLimits {
 }
 
 message ProviderApply {
-  // Balancer whose candidates the set feeds. Its selector has to match
-  // tag_prefix.
-  string balancer = 1;
+  // One to four leastCost balancers, primary first.
+  repeated string balancers = 1;
   // Prefix added to every outbound tag of the set. The provider owns every
   // outbound whose tag starts with it, including ones from the config.
   string tag_prefix = 2;

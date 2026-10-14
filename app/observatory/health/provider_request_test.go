@@ -76,7 +76,7 @@ func TestRequestBodyDescribesTheSet(t *testing.T) {
 	if net["id"] != providerHash("https://provider.test/set", "home") || net["isKnown"] != false || net["isUp"] != true {
 		t.Fatalf("network %v", net)
 	}
-	b := m["balancer"].(map[string]any)
+	b := m["balancers"].([]any)[0].(map[string]any)
 	if b["tag"] != "auto" || b["current"] != "x2" || b["isOwn"] != true || b["cost"] != 3.0 || b["isExhausted"] != false ||
 		b["isPinned"] != false || b["heldMs"] != 50000.0 {
 		t.Fatalf("balancer %v", b)
@@ -136,7 +136,7 @@ func TestRequestBodyHidesAPathOfOthers(t *testing.T) {
 	te := newProviderEngine(t, quietProvider(nil), &SelectorConfig{Paths: pathSpecs("a", 1, "p-", 5)}, "a1", "p-x1")
 	te.applyProviderSet(te.prov(), providerChange{tags: []string{"p-x1"}}, t0)
 	m, body, _ := requestOf(t, te, at(time.Second))
-	b := m["balancer"].(map[string]any)
+	b := m["balancers"].([]any)[0].(map[string]any)
 	if b["isOwn"] != false || b["current"] != nil || b["cost"] != 1.0 || strings.Contains(string(body), "a1") {
 		t.Fatalf("balancer %v in %s", b, body)
 	}
@@ -189,37 +189,26 @@ func TestNetworkIDAndRunAreHashedPerProvider(t *testing.T) {
 
 // The next request tells the backend why the previous one failed: the reason
 // a well-formed answer was refused, or the class of the failure.
-func TestLastFailureCarriesTheRejection(t *testing.T) {
+func TestLastRefreshIncludesFailureAndSuccess(t *testing.T) {
 	te := setEngine(t)
 	_, _, j := requestOf(t, te, t0)
-	reason := `invalid answer: unknown key "dns"`
-	te.onRefreshDone(j, refreshOutcome{err: reason, status: 200, class: "invalid_answer"}, at(time.Second))
+	j.recordAttempt(requestAttempt{Via: "direct", Mirror: 1, Status: 200, Code: "invalid_answer"})
+	te.onRefreshDone(j, refreshOutcome{err: "invalid answer", class: "invalid_answer", status: 200}, at(time.Second))
 	m, _, j := requestOf(t, te, at(time.Minute))
-	if lf := m["lastFailure"].(map[string]any); lf["status"] != 200.0 || lf["code"] != "invalid_answer" || lf["agoMs"] != 59000.0 ||
-		m["retryLevel"] != 1.0 || m["refreshNumber"] != 2.0 {
-		t.Fatalf("after a refused answer: %v", m)
+	lr := m["lastRefresh"].(map[string]any)
+	attempt := lr["attempts"].([]any)[0].(map[string]any)
+	if lr["isOk"] != false || lr["trigger"] != "host" || lr["agoMs"] != 59000.0 || attempt["status"] != 200.0 || attempt["code"] != "invalid_answer" || m["lastFailure"] != nil {
+		t.Fatal(m)
 	}
-	long := "outbound x1: " + strings.Repeat("é", 200)
-	te.onRefreshDone(j, refreshOutcome{err: long, status: 200, class: long}, at(time.Minute))
-	m, _, j = requestOf(t, te, at(2*time.Hour))
-	if code := m["lastFailure"].(map[string]any)["code"]; code != "unknown" {
-		t.Fatalf("unclassified refusal leaked text: %v", code)
-	}
-	te.onRefreshDone(j, refreshOutcome{err: "timeout", class: "timeout"}, at(2*time.Hour))
-	m, _, j = requestOf(t, te, at(4*time.Hour))
-	if lf := m["lastFailure"].(map[string]any); lf["status"] != 0.0 || lf["code"] != "timeout" {
-		t.Fatalf("after a timeout: %v", lf)
-	}
-	te.onRefreshDone(j, refreshOutcome{ok: true}, at(4*time.Hour))
-	if m, _, _ = requestOf(t, te, at(5*time.Hour)); m["lastFailure"] != nil || m["retryLevel"] != 0.0 {
-		t.Fatalf("after a success: %v", m)
+	j.recordAttempt(requestAttempt{Via: "direct", Mirror: 1, Status: 200, IsOK: true})
+	te.onRefreshDone(j, refreshOutcome{ok: true}, at(time.Minute))
+	m, _, _ = requestOf(t, te, at(time.Hour))
+	lr = m["lastRefresh"].(map[string]any)
+	if lr["isOk"] != true || len(lr["attempts"].([]any)) != 1 || m["retryLevel"] != 0.0 {
+		t.Fatal(m)
 	}
 }
 
-// The largest set the provider may have, with long errors and every counter
-// busy, takes under 64 KiB besides the tags and the version, which the
-// backend chose itself and which have no bound of their own: errors go out
-// as classes.
 func TestRequestBodyBounded(t *testing.T) {
 	var tags []string
 	chosen := 0

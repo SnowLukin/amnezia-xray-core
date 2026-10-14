@@ -186,9 +186,10 @@ func TestFallbackBalancerDemandKeepsQuarantineRecheckAndProviderExhaustion(t *te
 	f.o.s.schedule.spacing = 0
 	f.exhaust()
 	pc := quietProvider(nil)
-	pc.Apply.Balancer = "ai"
+	pc.Apply.Balancers = []string{"ai"}
 	pc.Features.Exhausted = proto.Bool(true)
 	p := newProvider(newProviderSettings(pc))
+	p.cfg.exhaustedDelay = durationRange{}
 	f.o.e.providers = []*provider{p}
 	f.now = at(3 * time.Minute)
 	if !f.o.e.idle(f.now) {

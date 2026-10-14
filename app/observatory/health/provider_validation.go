@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"net/url"
+	"slices"
 )
 
 // Direct protobuf entry points must not revive negative sentinel switches that
@@ -26,6 +27,40 @@ func validateProviderConfigurations(c *Config) error {
 			}
 		}
 		l, a, t := p.GetLimits(), p.GetApply(), p.GetTriggers()
+		if t == nil {
+			t = &ProviderTriggers{}
+		}
+		if len(a.GetBalancers()) < 1 || len(a.GetBalancers()) > 4 {
+			return fmt.Errorf("%s.apply.balancers requires 1 to 4 tags", where)
+		}
+		for i, tag := range a.GetBalancers() {
+			if tag == "" || slices.Contains(a.GetBalancers()[:i], tag) {
+				return fmt.Errorf("%s.apply.balancers requires distinct nonempty tags", where)
+			}
+		}
+		for name := range p.GetHeaders() {
+			if err := CheckHeaderName(name); err != nil {
+				return fmt.Errorf("%s.headers: %w", where, err)
+			}
+		}
+		for _, name := range a.GetAcceptedHeaders() {
+			if err := CheckHeaderName(name); err != nil {
+				return fmt.Errorf("%s.apply.acceptedHeaders: %w", where, err)
+			}
+		}
+		for _, r := range []*DurationRange{t.GetExhaustedDelay(), t.GetMinHealthyDelay()} {
+			if r != nil && (r.Min < 0 || r.Max < r.Min) {
+				return fmt.Errorf("%s: invalid delay range", where)
+			}
+		}
+		for _, r := range []struct {
+			low  int64
+			high *int64
+		}{{t.GetInterval(), t.IntervalMax}, {t.GetNetworkSettleDelay(), t.NetworkSettleMax}, {t.GetWhenCostAbove().GetAfter(), costAfterMax(t.GetWhenCostAbove())}} {
+			if r.high != nil && (r.low < 0 || *r.high < r.low) {
+				return fmt.Errorf("%s: invalid delay range", where)
+			}
+		}
 		for name, value := range map[string]int64{"timeout": p.GetTimeout(), "limits.minInterval": l.GetMinInterval(), "limits.urgentMinInterval": l.GetExhaustedMinInterval(), "limits.maxRefreshesPerHour": int64(l.GetMaxRefreshesPerHour()), "apply.drainTimeout": a.GetDrainTimeout(), "apply.maxOutbounds": int64(a.GetMaxOutbounds())} {
 			if value < 0 {
 				return fmt.Errorf("%s.%s must be positive or omitted", where, name)
@@ -62,4 +97,11 @@ func validateProviderConfigurations(c *Config) error {
 		}
 	}
 	return nil
+}
+
+func costAfterMax(c *CostTrigger) *int64 {
+	if c == nil {
+		return nil
+	}
+	return c.AfterMax
 }

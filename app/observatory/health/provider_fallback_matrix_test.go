@@ -57,7 +57,7 @@ func TestProviderFailuresKeepBaseUserRoute(t *testing.T) {
 				providers = fmt.Sprintf(`[{"tag":"fresh","urls":[%q],"isPlainHttpAllowed":true,"via":["direct"],"timeout":"100ms",
 				  "triggers":{"exhausted":{"isEnabled":false},"leaseRenewal":{},"backendSchedule":{"isEnabled":false}},
 				  "limits":{"minInterval":"10ms","urgentMinInterval":"10ms","maxRefreshesPerHour":2},
-				  "apply":{"balancer":"auto","tagPrefix":"p-","allowedProtocols":["freedom"],"maxOutbounds":1}}]`, url)
+				  "apply":{"balancers":["auto"],"tagPrefix":"p-","allowedProtocols":["freedom"],"maxOutbounds":1}}]`, url)
 			}
 			document := fmt.Sprintf(`{
 			  "log":{"loglevel":"none"},

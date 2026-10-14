@@ -122,7 +122,7 @@ func TestSelectionDeclarationsKeepOrderAndDurationPrecision(t *testing.T) {
 	}
 }
 func TestProviderOnlyLeastCostAllowsNoBaseSelections(t *testing.T) {
-	if err := pathConfigError(pathConfig("", `{}`, `{"providers":[{"tag":"fresh","apply":{"balancer":"auto","tagPrefix":"p-"},"urls":["https://x.test/set"]}]}`)); err != nil {
+	if err := pathConfigError(pathConfig("", `{}`, `{"providers":[{"tag":"fresh","apply":{"balancers":["auto"],"tagPrefix":"p-"},"urls":["https://x.test/set"]}]}`)); err != nil {
 		t.Fatal(err)
 	}
 	if err := pathConfigError(pathConfig("", `{}`, `{}`)); err == nil {

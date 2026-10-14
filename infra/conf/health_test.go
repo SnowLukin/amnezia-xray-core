@@ -86,8 +86,8 @@ func buildHealthProvider(t *testing.T, raw string) (*health.Config, error) {
 			a = map[string]any{}
 			p["apply"] = a
 		}
-		if a["balancer"] == nil {
-			a["balancer"] = "auto"
+		if a["balancers"] == nil {
+			a["balancers"] = []string{"auto"}
 		}
 		if a["tagPrefix"] == nil {
 			a["tagPrefix"] = "p-"
@@ -204,7 +204,7 @@ func TestHealthV2FeatureLoadMatrix(t *testing.T) {
 		`"network":{"connectivity":{"outbound":"a1","destinations":["https://x.test/204"]}}`, `"network":{"witnesses":{"outbounds":["a1"]}}`, `"network":{"memory":{}}`, `"network":{"hostLabels":{}}`, `"network":{"labelRequest":{"outbound":"a1","labels":{"asn":"X-Asn"},"destinations":["https://x.test/labels"]}}`,
 		`"host":{"pinning":{}}`, `"host":{"userPresent":{}}`, `"host":{"memoryPressure":{}}`, `"resources":{"tunnelSleep":{}}`, `"resources":{"closeUnchosenIdle":{}}`,
 		`"telemetry":{"events":{}}`, `"telemetry":{"report":{}}`, `"telemetry":{"quality":{}}`, `"telemetry":{"pathLabels":{}}`, `"telemetry":{"probeMeasurements":{}}`,
-		`"providers":[{"tag":"p","apply":{"balancer":"auto","tagPrefix":"p-"},"urls":["https://x.test/set"]}]`,
+		`"providers":[{"tag":"p","apply":{"balancers":["auto"],"tagPrefix":"p-"},"urls":["https://x.test/set"]}]`,
 	}
 	bodies := []map[string]any{}
 	for _, feature := range features {
@@ -268,7 +268,7 @@ func TestHealthV2StockConfigStillLoads(t *testing.T) {
 	}
 }
 func TestHealthProvidersBuild(t *testing.T) {
-	c, err := buildHealth(t, `{"providers":[{"tag":"fresh","headers":{"Authorization":"Bearer x"},"via":["auto","direct"],"timeout":"5s","triggers":{"minHealthy":{"outbounds":3},"exhausted":{"isEnabled":false},"whenCostAbove":{"cost":10,"after":"15m"},"networkChange":{"mode":"unknown"}},"limits":{"minInterval":"1m","urgentMinInterval":"30s","maxRefreshesPerHour":2},"apply":{"balancer":"auto","tagPrefix":"p-","drainTimeout":"1m"},"urls":["https://api.test/set"]}]}`)
+	c, err := buildHealth(t, `{"providers":[{"tag":"fresh","headers":{"Authorization":"Bearer x"},"via":["auto","direct"],"timeout":"5s","triggers":{"minHealthy":{"outbounds":3},"exhausted":{"isEnabled":false},"whenCostAbove":{"cost":10,"after":"15m"},"networkChange":{"mode":"unknown"}},"limits":{"minInterval":"1m","urgentMinInterval":"30s","maxRefreshesPerHour":2},"apply":{"balancers":["auto"],"tagPrefix":"p-","drainTimeout":"1m"},"urls":["https://api.test/set"]}]}`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -282,7 +282,7 @@ func TestHealthProvidersBuild(t *testing.T) {
 }
 func TestHealthProviderInitial(t *testing.T) {
 	for _, initial := range []string{`null`, `{}`, `{"x":[1]}`, `[]`, `"{}"`, `1`, `{"outbounds":[{"protocol":"nosuch"}],"dns":{}}`, `{"v":"` + strings.Repeat("x", 1<<20) + `"}`} {
-		raw := fmt.Sprintf(`{"providers":[{"tag":"a","urls":["https://x.test"],"apply":{"balancer":"auto","tagPrefix":"p-"},"initialAnswer":%s}]}`, initial)
+		raw := fmt.Sprintf(`{"providers":[{"tag":"a","urls":["https://x.test"],"apply":{"balancers":["auto"],"tagPrefix":"p-"},"initialAnswer":%s}]}`, initial)
 		c, err := buildHealth(t, raw)
 		if err != nil {
 			t.Fatal(err)
@@ -422,7 +422,7 @@ func TestHealthProviderImmediateCostDelayPresence(t *testing.T) {
 }
 
 func TestHealthV2CompleteProfileLoads(t *testing.T) {
-	observer := `{"evidence":{"partialStalls":{},"udpReplies":{},"loneFailureProbe":{}},"probes":{"stepProfiles":{},"profiles":[{"name":"full","steps":[{"name":"transport","destinations":["https://x.test/bytes"],"minBytes":32768},{"name":"egress","destinations":["https://x.test/204"],"isOptional":true}]}],"candidates":{},"requests":{},"udp":{"destinations":["stun.test:3478"]}},"network":{"connectivity":{"outbound":"b1","destinations":["https://x.test/204"]},"witnesses":{"outbounds":["b1"]},"memory":{},"hostLabels":{},"labelRequest":{"outbound":"b1","labels":{"asn":"X-Asn"},"destinations":["https://x.test/labels"]}},"host":{"pinning":{},"userPresent":{},"memoryPressure":{}},"resources":{"tunnelSleep":{},"closeUnchosenIdle":{}},"telemetry":{"events":{},"report":{"quietSampleFraction":0.05,"sessionLabels":{"labels":{"cohort":"v2"}}},"quality":{},"pathLabels":{},"probeMeasurements":{},"metrics":{}},"providers":[{"tag":"p","triggers":{"periodic":{},"minHealthy":{},"whenCostAbove":{"cost":2,"after":"0s"},"maxAge":{},"networkChange":{}},"apply":{"balancer":"auto","tagPrefix":"p-"},"urls":["https://x.test/set"]}]}`
+	observer := `{"evidence":{"partialStalls":{},"udpReplies":{},"loneFailureProbe":{}},"probes":{"stepProfiles":{},"profiles":[{"name":"full","steps":[{"name":"transport","destinations":["https://x.test/bytes"],"minBytes":32768},{"name":"egress","destinations":["https://x.test/204"],"isOptional":true}]}],"candidates":{},"requests":{},"udp":{"destinations":["stun.test:3478"]}},"network":{"connectivity":{"outbound":"b1","destinations":["https://x.test/204"]},"witnesses":{"outbounds":["b1"]},"memory":{},"hostLabels":{},"labelRequest":{"outbound":"b1","labels":{"asn":"X-Asn"},"destinations":["https://x.test/labels"]}},"host":{"pinning":{},"userPresent":{},"memoryPressure":{}},"resources":{"tunnelSleep":{},"closeUnchosenIdle":{}},"telemetry":{"events":{},"report":{"quietSampleFraction":0.05,"sessionLabels":{"labels":{"cohort":"v2"}}},"quality":{},"pathLabels":{},"probeMeasurements":{},"metrics":{}},"providers":[{"tag":"p","triggers":{"periodic":{},"minHealthy":{},"whenCostAbove":{"cost":2,"after":"0s"},"maxAge":{},"networkChange":{}},"apply":{"balancers":["auto"],"tagPrefix":"p-"},"urls":["https://x.test/set"]}]}`
 	settings := `{"failover":{"downAudit":{}},"groups":[{"name":"relay","cost":1,"probe":"full","probePolicy":"onDemand","returnToCheaper":{"interval":"10m"},"labels":{"location":"NL"}}],"returnToCheaper":{"onNetworkChange":{"scope":"all"}},"startup":{"pin":{"outbound":"a1","timeout":"0s"}},"networkChanges":{}}`
 	raw := leastCostConfig(`,"metrics":{"tag":"metrics"},"healthObservatory":`+observer, settings)
 	raw = strings.Replace(raw, `"selection":{"balancer":"auto","cost":1,"probe":"test"}`, `"selection":{"balancer":"auto","group":"relay","labels":{"node":"n1"}}`, 1)

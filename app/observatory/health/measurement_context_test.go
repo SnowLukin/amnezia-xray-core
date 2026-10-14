@@ -254,7 +254,7 @@ func TestMeasurementPathsReportsProbeSegments(t *testing.T) {
 }
 
 func TestMeasurementProviderLabelsAndIsolation(t *testing.T) {
-	cfg := &providerSettings{prefix: "p-", balancer: "auto", maxOutbounds: 8}
+	cfg := &providerSettings{prefix: "p-", balancer: "auto", balancers: []string{"auto"}, maxOutbounds: 8}
 	a := &providerAnswer{groupsRaw: json.RawMessage(`[{"name":"g","cost":1,"labels":{"location":"NL","entry":"group"}}]`), heads: []outboundHead{{Tag: "n1", Selection: json.RawMessage(`{"balancer":"auto","group":"g","labels":{"node":"n1","entry":"own"}}`)}}}
 	if err := validateAnswerPaths(cfg, a); err != nil {
 		t.Fatal(err)

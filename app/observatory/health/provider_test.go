@@ -26,7 +26,7 @@ func quietProvider(mod func(*ProviderConfig)) *ProviderConfig {
 			NetworkChangeMode:        RefreshOnNetwork_REFRESH_NEVER,
 		},
 		Limits: &ProviderLimits{},
-		Apply:  &ProviderApply{Balancer: "auto", TagPrefix: "p-"},
+		Apply:  &ProviderApply{Balancers: []string{"auto"}, TagPrefix: "p-"},
 	}
 	if mod != nil {
 		mod(pc)
@@ -974,8 +974,8 @@ func TestRefreshWhileFetchingWaits(t *testing.T) {
 func TestRefreshesOfManyClientsSpreadOut(t *testing.T) {
 	const clients = 1000
 	pc := quietProvider(func(p *ProviderConfig) {
-		p.Triggers.Interval = int64(2 * time.Hour)
-		p.Triggers.JitterFraction = 0.2
+		p.Triggers.Interval = int64(96 * time.Minute)
+		p.Triggers.IntervalMax = proto.Int64(int64(144 * time.Minute))
 	})
 	byMinute := map[int]int{}
 	waves := 0
@@ -1016,7 +1016,7 @@ func TestProviderCostsRankCandidates(t *testing.T) {
 	if !te.sel.exhausted {
 		t.Fatalf("setup: want exhausted, active %q", te.sel.current())
 	}
-	te.applyProviderSet(te.prov(), providerChange{tags: []string{"p-x", "p-y"}, paths: []*PathDefinition{{Tag: "p-x", Cost: 5}, {Tag: "p-y", Cost: 2}},
+	te.applyProviderSet(te.prov(), providerChange{tags: []string{"p-x", "p-y"}, paths: []*PathDefinition{{Tag: "p-x", Balancer: "auto", Cost: 5}, {Tag: "p-y", Balancer: "auto", Cost: 2}},
 		added: []string{"p-x", "p-y"}}, at(2*time.Second))
 	te.updateCandidates(te.sel, []string{"a1", "p-x", "p-y"}, at(2*time.Second))
 	if te.sel.current() != "p-y" {
@@ -1190,7 +1190,7 @@ func TestResolveVia(t *testing.T) {
 }
 
 func TestProviderDefaultsAndOff(t *testing.T) {
-	p := newProviderSettings(&ProviderConfig{Apply: &ProviderApply{Balancer: "auto", TagPrefix: "p-"}})
+	p := newProviderSettings(&ProviderConfig{Apply: &ProviderApply{Balancers: []string{"auto"}, TagPrefix: "p-"}})
 	if p.enabled || p.interval != 0 || p.jitter != 0.2 || p.minHealthy != 0 || !p.whenExhausted || p.costAbove ||
 		p.maxAge != 0 || p.onNetwork != RefreshOnNetwork_REFRESH_NEVER {
 		t.Fatalf("trigger defaults %+v", p)
@@ -1314,10 +1314,18 @@ func TestRetryAfterOfManyClientsSpreadOut(t *testing.T) {
 }
 
 func applyLegacyProviderTimings(p *providerSettings, c *ProviderConfig) {
+	p.exhaustedDelay, p.minHealthyDelay = durationRange{}, durationRange{}
+	p.interval = optional(c.GetTriggers().GetInterval(), defaultRefreshInterval)
+	p.periodic = p.interval > 0
+	p.networkSettle = presentDelay(c.GetTriggers().NetworkSettleDelay, defaultNetworkSettle)
+	p.networkSettleMax = p.networkSettle
+	p.costAboveAfterMax = p.costAboveAfter
 	p.jitter = 0
 	if c.GetTriggers().GetJitterFraction() >= 0 {
 		p.jitter = jitter(c.GetTriggers().GetJitterFraction(), defaultRefreshJitter)
 	}
+	p.intervalMax = time.Duration(float64(p.interval) * (1 + p.jitter))
+	p.interval = time.Duration(float64(p.interval) * (1 - p.jitter))
 	p.renewJitter = 0
 	if c.GetTriggers().GetExpiry().GetJitterFraction() >= 0 {
 		p.renewJitter = min(fnum(c.GetTriggers().GetExpiry().GetJitterFraction(), defaultRenewJitter), maxRenewJitter)
@@ -1337,6 +1345,7 @@ func ConfigureProviderScenarioForTest(o *Observer) {
 		p.cfg.backoff = backoff{initial: 50 * time.Millisecond, multiplier: 2, max: 30 * time.Minute}
 		p.cfg.authRetry = time.Hour
 		p.cfg.jitter = 0
+		p.cfg.exhaustedDelay, p.cfg.minHealthyDelay = durationRange{}, durationRange{}
 		p.cfg.renewJitter = 0
 	}
 }

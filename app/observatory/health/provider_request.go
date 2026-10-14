@@ -32,13 +32,13 @@ type providerRequest struct {
 	RefreshNumber         uint64            `json:"refreshNumber"`
 	Trigger               string            `json:"trigger"`
 	RetryLevel            int               `json:"retryLevel"`
-	LastFailure           *requestFailure   `json:"lastFailure,omitempty"`
+	LastRefresh           *requestRefresh   `json:"lastRefresh,omitempty"`
 	Version               string            `json:"version,omitempty"`
 	BaseVersion           string            `json:"baseVersion,omitempty"`
 	ClientTime            time.Time         `json:"clientTime"`
 	Network               requestNetwork    `json:"network"`
 	IsMemoryLow           bool              `json:"isMemoryLow"`
-	Balancer              requestBalancer   `json:"balancer"`
+	Balancers             []requestBalancer `json:"balancers"`
 	Outbounds             []requestOutbound `json:"outbounds"`
 	Groups                []requestGroup    `json:"groups,omitempty"`
 
@@ -47,6 +47,7 @@ type providerRequest struct {
 }
 
 type requestGroup struct {
+	Balancer       string `json:"balancer"`
 	Group          string `json:"group"`
 	State          string `json:"state"`
 	Members        int    `json:"members"`
@@ -58,10 +59,38 @@ type requestGroup struct {
 	LastFailure    string `json:"lastFailure,omitempty"`
 }
 
-type requestFailure struct {
+type requestRefresh struct {
+	IsOK     bool             `json:"isOk"`
+	AgoMs    int64            `json:"agoMs"`
+	Trigger  string           `json:"trigger"`
+	Attempts []requestAttempt `json:"attempts"`
+}
+type requestAttempt struct {
+	Via    string `json:"via"`
+	Mirror int    `json:"mirror"`
+	IsOK   bool   `json:"isOk"`
 	Status int    `json:"status"`
 	Code   string `json:"code,omitempty"`
-	AgoMs  int64  `json:"agoMs"`
+	Ms     int64  `json:"ms"`
+}
+
+const maxRefreshAttempts = 16
+
+func (j *refreshJob) recordAttempt(a requestAttempt) {
+	j.lastAttemptKept = len(j.attempts) < maxRefreshAttempts
+	if j.lastAttemptKept {
+		j.attempts = append(j.attempts, a)
+	}
+}
+
+// Only the actual final attempt can receive an apply rejection. Once the
+// bounded trace fills, a later road must not overwrite an earlier road's result.
+func (j *refreshJob) rejectLastAttempt(code string) {
+	if j.lastAttemptKept && len(j.attempts) > 0 {
+		last := &j.attempts[len(j.attempts)-1]
+		last.IsOK = false
+		last.Code = code
+	}
 }
 
 type requestNetwork struct {
@@ -141,7 +170,7 @@ func (e *engine) providerRequest(p *provider, j *refreshJob, now time.Time) *pro
 		ClientTime:            now.Round(0).UTC(),
 		Network:               requestNetwork{IsKnown: e.networks[e.networkID] != nil, IsUp: !e.networkDown},
 		IsMemoryLow:           e.memoryLow,
-		Balancer:              requestBalancer{Tag: p.cfg.balancer},
+		Balancers:             make([]requestBalancer, 0, len(p.cfg.balancers)),
 		Outbounds:             make([]requestOutbound, 0, len(p.tags)),
 		networkID:             e.networkID,
 	}
@@ -151,9 +180,11 @@ func (e *engine) providerRequest(p *provider, j *refreshJob, now time.Time) *pro
 	if quality.Witness != nil {
 		r.WitnessQuality = requestQualityOf(*quality.Witness)
 	}
-	if !p.lastFailedAt.IsZero() {
-		r.LastFailure = &requestFailure{Status: p.lastStatus, Code: providerFailureCode(p.lastClass),
-			AgoMs: now.Sub(p.lastFailedAt).Milliseconds()}
+	if p.lastRefresh != nil {
+		copy := *p.lastRefresh
+		copy.AgoMs = max(now.Sub(p.lastRefreshAt).Milliseconds(), 0)
+		copy.Attempts = append([]requestAttempt{}, copy.Attempts...)
+		r.LastRefresh = &copy
 	}
 	active := map[string]time.Duration{}
 	for _, s := range e.selectors {
@@ -161,28 +192,31 @@ func (e *engine) providerRequest(p *provider, j *refreshJob, now time.Time) *pro
 			active[s.current()] += now.Sub(s.activeSince)
 		}
 	}
-	if s := e.selectors[p.cfg.balancer]; s != nil {
-		b := &r.Balancer
-		cur := s.current()
-		// Another path of the balancer is no business of this backend: it
-		// sees only that its own outbounds are not in use.
-		if cur != "" && strings.HasPrefix(cur, p.cfg.prefix) {
-			b.IsOwn = true
-			b.Current = strings.TrimPrefix(cur, p.cfg.prefix)
-		}
-		if cur != "" {
-			if c := e.cost(s, cur); !math.IsInf(c, 0) && !math.IsNaN(c) {
-				b.Cost = c
+	for _, tag := range p.cfg.balancers {
+		r.Balancers = append(r.Balancers, requestBalancer{Tag: tag})
+		if s := e.selectors[tag]; s != nil {
+			b := &r.Balancers[len(r.Balancers)-1]
+			cur := s.current()
+			// Another path of the balancer is no business of this backend: it
+			// sees only that its own outbounds are not in use.
+			if cur != "" && strings.HasPrefix(cur, p.cfg.prefix) {
+				b.IsOwn = true
+				b.Current = strings.TrimPrefix(cur, p.cfg.prefix)
 			}
-		}
-		b.IsExhausted = s.exhausted
-		b.IsPinned = s.pinned != ""
-		if !s.activeSince.IsZero() {
-			b.HeldMs = now.Sub(s.activeSince).Milliseconds()
+			if cur != "" {
+				if c := e.cost(s, cur); !math.IsInf(c, 0) && !math.IsNaN(c) {
+					b.Cost = c
+				}
+			}
+			b.IsExhausted = s.exhausted
+			b.IsPinned = s.pinned != ""
+			if !s.activeSince.IsZero() {
+				b.HeldMs = now.Sub(s.activeSince).Milliseconds()
+			}
 		}
 	}
 	for _, v := range e.groupViews(now) {
-		if v.Balancer != p.cfg.balancer {
+		if !p.cfg.feeds(v.Balancer) {
 			continue
 		}
 		g := e.selectors[v.Balancer].groups[v.Group]
@@ -204,7 +238,7 @@ func (e *engine) providerRequest(p *provider, j *refreshJob, now time.Time) *pro
 			}
 		}
 		if own > 0 {
-			r.Groups = append(r.Groups, requestGroup{Group: v.Group, State: v.State, Members: own, Healthy: healthy, Quarantined: quarantined, ClientPosition: v.ClientPosition, Failed: v.Failed, QuarantineMs: v.QuarantineMs, LastFailure: v.LastFailure})
+			r.Groups = append(r.Groups, requestGroup{Balancer: v.Balancer, Group: v.Group, State: v.State, Members: own, Healthy: healthy, Quarantined: quarantined, ClientPosition: v.ClientPosition, Failed: v.Failed, QuarantineMs: v.QuarantineMs, LastFailure: v.LastFailure})
 		}
 	}
 	for _, tag := range p.tags {

@@ -255,7 +255,7 @@ def exercise(stand, xray, work, name, real_tags, capacity, threshold, promote=Tr
                 e["fields"].get("outbound") == "p-" + promotions[0]["promoted"] and
                 e["ts"] / 1000 <= promotions[0]["at"] for e in passes)
             checks += [check("При исчерпании POST не ждёт нового кандидата", first,
-                             first.get("balancer", {}).get("isExhausted") is True, "exhaustion bypass"),
+                             next(iter(first.get("balancers", [])), {}).get("isExhausted") is True, "exhaustion bypass"),
                        check("Кандидат подтверждён до ответа с новым слотом", checked_pending,
                              checked_pending and same_tag, "candidate passed before delayed response")]
         else:
