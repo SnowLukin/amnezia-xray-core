@@ -42,15 +42,15 @@ require (
 )
 
 require (
-	github.com/andybalholm/brotli v1.0.6 // indirect
 	github.com/google/btree v1.1.3 // indirect
 	github.com/google/gopacket v1.1.19 // indirect
 	github.com/huin/goupnp v1.2.0 // indirect
 	github.com/jackpal/go-nat-pmp v1.0.2 // indirect
 	github.com/juju/ratelimit v1.0.2 // indirect
-	github.com/klauspost/compress v1.17.4 // indirect
+	github.com/klauspost/compress v1.20.1 // indirect
 	github.com/koron/go-ssdp v0.0.4 // indirect
 	github.com/libp2p/go-netroute v0.2.1 // indirect
+	github.com/molecule-man/go-brrr v1.2.0 // indirect
 	github.com/pion/dtls/v3 v3.1.5 // indirect
 	github.com/pion/logging v0.2.4 // indirect
 	github.com/pion/transport/v4 v4.1.0 // indirect
@@ -60,7 +60,7 @@ require (
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
 	golang.org/x/text v0.42.0 // indirect
 	golang.org/x/time v0.14.0 // indirect
-	golang.org/x/tools v0.49.0 // indirect
+	golang.org/x/tools v0.51.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260706201446-f0a921348800 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 )
@@ -68,5 +68,5 @@ require (
 // Fix for the Timer.duration data race (amnezia-vpn/amneziawg-go#204) until upstream releases it.
 replace github.com/amnezia-vpn/amneziawg-go/v3 => github.com/StarProxima/amneziawg-go/v3 v3.1.20260829-0.20261009183831-0421ab3db604
 
-// uTLS QUIC compatibility for the cloned presets and Go 1.27 handshake channels.
-replace github.com/refraction-networking/utls => ./third_party/utls
+// uTLS QUIC fixes for canceled handshakes and preset transport parameters (refraction-networking/utls#425) until upstream releases them.
+replace github.com/refraction-networking/utls => github.com/StarProxima/utls v1.8.3-0.20261014003643-b2e5ff8060be
