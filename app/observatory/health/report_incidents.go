@@ -1,6 +1,7 @@
 package health
 
 import (
+	"maps"
 	"slices"
 	"time"
 )
@@ -36,6 +37,9 @@ type reportIncident struct {
 	BackendMs *int64 `json:"backend_ms,omitempty"`
 	// recovered, or open when the run ended before it did.
 	Outcome string `json:"outcome"`
+	// The labels of the network the host reported when the outage began:
+	// the network may change before it ends.
+	Network map[string]string `json:"network,omitempty"`
 }
 
 // reportRefresh is one provider refresh, as lastRefresh tells the backend,
@@ -62,6 +66,7 @@ type reportRefreshAttempt struct {
 type openIncident struct {
 	kind, from, to                string
 	first, down, switched, backed time.Time
+	labels                        map[string]string
 }
 
 // incidentTracker follows the outages of every balancer through the events
@@ -74,6 +79,8 @@ type incidentTracker struct {
 	refreshStart time.Time
 	// The start of the core waits for its first user connection.
 	startPending bool
+	// The labels of the current network, as the host reported them.
+	labels map[string]string
 }
 
 func (r *report) track(now time.Time, typ string, f map[string]any) {
@@ -108,7 +115,7 @@ func (r *report) track(now time.Time, typ string, f map[string]any) {
 					first = now.Add(-time.Duration(evidence) * time.Millisecond)
 				}
 				if in == nil {
-					in = &openIncident{kind: "failover", from: tag, first: first}
+					in = &openIncident{kind: "failover", from: tag, first: first, labels: maps.Clone(t.labels)}
 					t.open[b] = in
 				}
 				if first.Before(in.first) {
@@ -129,7 +136,7 @@ func (r *report) track(now time.Time, typ string, f map[string]any) {
 		from, _ := f["from"].(string)
 		in := t.open[balancer]
 		if in == nil {
-			in = &openIncident{from: from, first: now}
+			in = &openIncident{from: from, first: now, labels: maps.Clone(t.labels)}
 			t.open[balancer] = in
 		}
 		in.kind = "exhausted"
@@ -167,7 +174,7 @@ func (r *report) track(now time.Time, typ string, f map[string]any) {
 
 func (r *report) closeIncident(in *openIncident, balancer string, now time.Time, outcome string) {
 	v := reportIncident{Balancer: balancer, Kind: in.kind, From: in.from, To: in.to, Outcome: outcome,
-		TotalMs: wholeMilliseconds(now.Sub(in.first))}
+		TotalMs: wholeMilliseconds(now.Sub(in.first)), Network: in.labels}
 	if !in.down.IsZero() {
 		v.DetectMs = wholeMilliseconds(in.down.Sub(in.first))
 	}

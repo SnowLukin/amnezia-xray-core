@@ -350,6 +350,7 @@ func (e *engine) emit(now time.Time, typ string, fields map[string]any) {
 	e.events.add(now, typ, fields)
 	if e.s.features.Report {
 		e.report.count(typ, fields)
+		e.report.incidents.labels = e.hostLabels
 		e.report.track(now, typ, fields)
 	}
 }

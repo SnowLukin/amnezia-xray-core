@@ -171,3 +171,19 @@ func TestPathStateTellsEvidenceStart(t *testing.T) {
 		t.Fatal("evidence start survived a success")
 	}
 }
+
+// An outage keeps the labels of the network where it began, even when the
+// network changes before it ends.
+func TestReportIncidentKeepsNetworkOfItsStart(t *testing.T) {
+	te := newReportEngine(t, &Config{}, nil, "a1", "b1")
+	te.hostLabels = map[string]string{"type": "cellular"}
+	te.emit(at(0), "switch", map[string]any{"balancer": "auto", "from": "", "to": "a1", "reason": "start"})
+	te.emit(at(time.Second), "path_state", map[string]any{"outbound": "a1", "state": "down", "reason": "traffic"})
+	te.hostLabels = map[string]string{"type": "wifi"}
+	te.emit(at(2*time.Second), "switch", map[string]any{"balancer": "auto", "from": "a1", "to": "b1", "reason": "failover"})
+	te.emit(at(3*time.Second), "first_success", map[string]any{"balancer": "auto", "outbound": "b1", "after": "failover"})
+	got := incidentsOf(t, te.takeReport(true, at(4*time.Second)))
+	if len(got) != 1 || got[0].Network["type"] != "cellular" {
+		t.Fatalf("incidents %+v", got)
+	}
+}
