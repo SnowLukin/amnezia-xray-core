@@ -787,6 +787,7 @@ func (o *Observer) failure(t *connTracker, kind failureKind) {
 				(p != nil && t.started < p.lastAnsweredStart)
 		}
 		if p := o.e.paths[t.tag]; p != nil && t.network == p.controllerEpoch && !stale {
+			o.e.noteFailStart(t.tag, o.base.Add(time.Duration(t.waitedSince(kind))))
 			o.e.onFailure(t.tag, kind, t.target, t.conn, o.now())
 		}
 

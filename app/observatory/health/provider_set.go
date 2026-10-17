@@ -666,7 +666,7 @@ func (o *Observer) fetchSet(rt *providerRuntime, j *refreshJob, body []byte) (fe
 	if len(via) == 0 {
 		via = []string{""}
 	}
-	urls := rt.cfg.urls
+	urls := o.providerURLs(rt)
 	if len(urls) == 0 {
 		urls = []string{rt.cfg.url}
 	}

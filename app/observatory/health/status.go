@@ -115,6 +115,10 @@ type providerStatusView struct {
 	BaseVersion       string `json:"base_version,omitempty"`
 	AnswerBaseVersion string `json:"answer_base_version,omitempty"`
 	IsBaseChanged     bool   `json:"is_base_changed,omitempty"`
+	// How many mirrors the provider tries and how many times the host
+	// replaced them; never the addresses.
+	URLsCount      int    `json:"urls_count"`
+	URLsGeneration uint64 `json:"urls_generation"`
 }
 
 type statusView struct {
@@ -305,6 +309,7 @@ func (e *engine) status(now time.Time) statusView {
 		pv.IsAuthRefused = p.authFailed
 		pv.AnswerSeq = p.seq
 		pv.BaseVersion, pv.AnswerBaseVersion, pv.IsBaseChanged = p.base, p.answerBase, p.baseReported != ""
+		pv.URLsCount, pv.URLsGeneration = len(p.urls), p.urlsGen
 		if p.authFailed && !p.authRetryAt.IsZero() {
 			in := p.authRetryAt.Sub(now).Milliseconds()
 			pv.AuthRetryInMs = &in

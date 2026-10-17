@@ -350,6 +350,7 @@ func (e *engine) emit(now time.Time, typ string, fields map[string]any) {
 	e.events.add(now, typ, fields)
 	if e.s.features.Report {
 		e.report.count(typ, fields)
+		e.report.track(now, typ, fields)
 	}
 }
 
@@ -435,11 +436,27 @@ func (e *engine) awaiting(tag string) bool {
 	return e.queued(tag, reasonConfirm)
 }
 
+// noteFailStart keeps the earliest moment a user began waiting on a
+// connection that then failed: path_state tells it as evidence_ms, and the
+// outage of the report counts from it.
+func (e *engine) noteFailStart(tag string, started time.Time) {
+	if p := e.paths[tag]; p != nil && (p.failStart.IsZero() || started.Before(p.failStart)) {
+		p.failStart = started
+	}
+}
+
 func (e *engine) onSuccess(tag string, now time.Time) {
 	if e.isProbeOnly(tag) {
 		return
 	}
 	p := e.pathAt(tag, now)
+	p.failStart = time.Time{}
+	for _, s := range e.selectors {
+		if s.awaitSuccess && s.current() == tag {
+			s.awaitSuccess = false
+			e.emit(now, "first_success", map[string]any{"balancer": s.tag, "outbound": tag, "after": s.awaitReason})
+		}
+	}
 	e.cancelLoneFailure(tag)
 	e.cancelWakeProbe(tag)
 	e.used(tag, now)
@@ -475,6 +492,9 @@ func (e *engine) emitPath(p *path, now time.Time) {
 	f := map[string]any{"outbound": p.tag, "state": p.status.String(), "reason": p.reason}
 	if p.reason == "rescued" {
 		f["by"] = p.rescuedBy
+	}
+	if (p.status == statusSuspect || p.status == statusDown) && !p.failStart.IsZero() && p.failStart.Before(now) {
+		f["evidence_ms"] = now.Sub(p.failStart).Milliseconds()
 	}
 	if p.status == statusDown {
 		f["quarantine_ms"] = p.quarantineUntil.Sub(now).Milliseconds()
@@ -802,8 +822,13 @@ type selector struct {
 	// The pin is startPinned, not one of the host.
 	startPin bool
 	// The start pin releases itself at this time; zero waits for the host.
-	pinnedUntil   time.Time
-	exhausted     bool
+	pinnedUntil time.Time
+	exhausted   bool
+	// The first user connection that succeeds through the outbound chosen
+	// last is told as first_success, with the reason of that choice: the
+	// end of an outage, or of the start.
+	awaitSuccess  bool
+	awaitReason   string
 	fallingBack   bool
 	fallbackSince time.Time
 	// The network changed while pinned; the release rechecks the choice.
@@ -1148,6 +1173,7 @@ func (e *engine) switchTo(s *selector, tag string, reason string, now time.Time)
 	s.setActive(tag)
 	e.noteUDPSwitch(e.path(tag))
 	s.activeSince = now
+	s.awaitSuccess, s.awaitReason = true, reason
 	s.exhausted = false
 	s.failoverTried = nil
 	s.failoverProbing = nil

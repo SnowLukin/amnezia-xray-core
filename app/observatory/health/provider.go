@@ -133,6 +133,12 @@ type provider struct {
 	skew  time.Duration
 	clock string
 
+	// The mirrors of the backend in the order of attempts: those of the
+	// config, or the last list the host set; urlsGen counts the host's
+	// replacements.
+	urls    []string
+	urlsGen uint64
+
 	// Headers an answer or the host put over those of the config, by
 	// canonical name. Their generation grows with every change, so that an
 	// answer or a refusal a request with older headers brought is told
@@ -160,7 +166,8 @@ type provider struct {
 }
 
 func newProvider(cfg *providerSettings) *provider {
-	return &provider{cfg: cfg, minHealthyArmed: true, skipped: map[refreshTrigger]string{}, base: cfg.baseVersion}
+	return &provider{cfg: cfg, minHealthyArmed: true, skipped: map[refreshTrigger]string{}, base: cfg.baseVersion,
+		urls: slices.Clone(cfg.urls)}
 }
 
 // refreshJob is one refresh: requests through the via outbounds in turn and
@@ -551,6 +558,9 @@ func (e *engine) onRefreshDone(j *refreshJob, r refreshOutcome, now time.Time) {
 	p.refreshes++
 	p.lastRefreshAt = now
 	p.lastRefresh = &requestRefresh{IsOK: r.ok, Trigger: j.trigger.String(), Attempts: append([]requestAttempt{}, j.attempts...)}
+	if e.s.features.Report {
+		e.report.countRefresh(p.cfg.tag, p.lastRefresh)
+	}
 	p.answeredLeases(j.asked, r.ok)
 	if r.ok {
 		p.setAt = now

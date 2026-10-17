@@ -364,6 +364,8 @@ message ProviderConfig {
   repeated string urls = 15;
   // Allow exhausted via balancers to use verified probe-only roads.
   bool probe_only_roads = 16;
+  // Plain http mirrors are allowed, here and from SetProviderURLs.
+  bool is_plain_http_allowed = 17;
 }
 
 message ProviderTriggers {

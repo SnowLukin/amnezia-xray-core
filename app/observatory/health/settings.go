@@ -341,6 +341,7 @@ type settings struct {
 
 type providerSettings struct {
 	probeOnlyRoads  bool
+	plainHTTP       bool
 	leaseRenewal    bool
 	enabled         bool
 	backendSchedule bool
@@ -444,6 +445,7 @@ func newProviderSettings(c *ProviderConfig) *providerSettings {
 	maxOutbounds := min(num(a.GetMaxOutbounds(), defaultMaxOutbounds), maxProviderOutbounds)
 	p := &providerSettings{
 		probeOnlyRoads:  c.GetProbeOnlyRoads(),
+		plainHTTP:       c.GetIsPlainHttpAllowed(),
 		enabled:         featureValue(c.IsEnabled, false),
 		periodic:        featureValue(f.Periodic, false),
 		backendSchedule: featureValue(f.BackendSchedule, true),

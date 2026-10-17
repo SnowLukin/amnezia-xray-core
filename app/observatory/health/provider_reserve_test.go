@@ -127,3 +127,26 @@ func TestMinHealthyWaitsForFailover(t *testing.T) {
 		t.Fatal("minHealthy did not refresh after the failover")
 	}
 }
+
+// Plain http needs the consent of the config; new mirrors end the backoff of
+// failures on the old ones, but not a pause the backend asked for.
+func TestSetProviderURLsPlainHTTPAndPauses(t *testing.T) {
+	te := newProviderEngine(t, quietProvider(nil), &SelectorConfig{Paths: []*PathDefinition{{Tag: "p-a", Cost: 1}}}, "p-a")
+	p := te.prov()
+	p.cfg.plainHTTP = false
+	if err := te.setProviderURLs(p.cfg.tag, []string{"http://a.test/set"}, at(0)); err == nil {
+		t.Fatal("plain http accepted without consent")
+	}
+	p.failures, p.backoffUntil, p.lastClass = 3, at(time.Hour), "timeout"
+	p.retryAfterUntil = at(time.Minute)
+	if err := te.setProviderURLs(p.cfg.tag, []string{"https://b.test/set"}, at(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if p.failures != 0 || !p.backoffUntil.IsZero() || !p.retryAfterUntil.Equal(at(time.Minute)) || p.urlsGen != 1 {
+		t.Fatalf("failures %d backoff %v retryAfter %v gen %d", p.failures, p.backoffUntil, p.retryAfterUntil, p.urlsGen)
+	}
+	p.cfg.plainHTTP = true
+	if err := te.setProviderURLs(p.cfg.tag, []string{"http://a.test/set"}, at(2*time.Second)); err != nil || p.urlsGen != 2 {
+		t.Fatal(err, p.urlsGen)
+	}
+}

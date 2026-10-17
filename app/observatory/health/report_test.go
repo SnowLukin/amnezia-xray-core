@@ -178,6 +178,8 @@ func foldReport(t *testing.T, raw []byte) (reportCounts, bool) {
 		case "provider_auth_failed":
 			c.ProviderAuthFailed++
 			decided = true
+		case "provider_urls":
+			c.ProviderURLsSet++
 		case "provider_base_changed":
 			c.ProviderBaseChanged++
 			decided = true
@@ -214,12 +216,17 @@ func reportJSON(t *testing.T, v *reportView) reportView {
 
 // Skip counters and fallback duration are state-derived; their windows are checked
 // through actual actions, including TestFallbackBalancerReportWindowsAndSnapshots.
+// Incidents, refreshes and the start time follow the timeline, not a count
+// of events: report_incidents_test.go checks them.
+var timingFields = map[string]bool{"Incidents": true, "IncidentsDropped": true, "ProviderRefreshes": true,
+	"ProviderRefreshesDropped": true, "StartMs": true}
+
 func eventReportCounts(counts reportCounts) map[string]any {
 	values := reflect.ValueOf(counts)
 	out := make(map[string]any, values.NumField()-2)
 	for i := 0; i < values.NumField(); i++ {
 		name := values.Type().Field(i).Name
-		if name != "AuditSkipped" && name != "WakeSkipped" && name != "FallbackBalancerMs" {
+		if name != "AuditSkipped" && name != "WakeSkipped" && name != "FallbackBalancerMs" && !timingFields[name] {
 			out[name] = values.Field(i).Interface()
 		}
 	}
@@ -270,6 +277,7 @@ func TestReportAddsUpTheEvents(t *testing.T) {
 	te.emit(now, "provider_auth_failed", map[string]any{"provider": "p", "trigger": "host", "status": 401, "via": "direct",
 		"code": "unauthorized"})
 	te.emit(now, "provider_base_changed", map[string]any{"provider": "p", "from": "b1", "to": "b2"})
+	te.emit(now, "provider_urls", map[string]any{"provider": "p", "count": 2, "generation": 1})
 	te.emit(now, "idle_closed", map[string]any{"outbound": "b1", "connections": 2})
 	te.emit(now, "outbound_sleep", map[string]any{"outbound": "b1", "idle_ms": int64(300_000), "reason": "idle"})
 	te.emit(now, "path_state", map[string]any{"outbound": "a1", "state": "up", "reason": "rescued"})
@@ -306,7 +314,7 @@ func TestReportAddsUpTheEvents(t *testing.T) {
 	// Census budget/byte counters are charged directly and verified separately.
 	rv := reflect.ValueOf(want)
 	for i := 0; i < rv.NumField(); i++ {
-		if name := rv.Type().Field(i).Name; name != "EventsDropped" && name != "AuditSkipped" && name != "WakeSkipped" && name != "FallbackBalancerMs" && name != "CensusProbes" && name != "CensusProbeBytes" && rv.Field(i).IsZero() {
+		if name := rv.Type().Field(i).Name; name != "EventsDropped" && name != "AuditSkipped" && name != "WakeSkipped" && name != "FallbackBalancerMs" && name != "CensusProbes" && name != "CensusProbeBytes" && !timingFields[name] && rv.Field(i).IsZero() {
 			t.Errorf("the scenario leaves %s at zero", name)
 		}
 	}

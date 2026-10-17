@@ -334,6 +334,8 @@ func (o *Observer) requestBody(rt *providerRuntime, j *refreshJob) ([]byte, erro
 	if r == nil {
 		return nil, nil
 	}
+	// Keyed by the first address of the config, so the backend sees the same
+	// run whatever mirrors the host set since.
 	r.Run = providerHash(rt.cfg.url, o.run)
 	if r.networkID != "" {
 		r.Network.ID = providerHash(rt.cfg.url, r.networkID)

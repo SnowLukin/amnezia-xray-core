@@ -90,10 +90,18 @@ type reportCounts struct {
 	ProviderRenewals               int64            `json:"provider_renewals"`
 	ProviderAuthFailed             int64            `json:"provider_auth_failed"`
 	ProviderBaseChanged            int64            `json:"provider_base_changed"`
-	Pins                           int64            `json:"pins"`
-	Releases                       int64            `json:"releases"`
-	MemoryLow                      int64            `json:"memory_low_count"`
-	OutboundSleeps                 int64            `json:"outbound_sleeps"`
+	ProviderURLsSet                int64            `json:"provider_urls_set"`
+	ProviderRefreshes              []reportRefresh  `json:"provider_refreshes"`
+	ProviderRefreshesDropped       int64            `json:"provider_refreshes_dropped"`
+	Incidents                      []reportIncident `json:"incidents"`
+	IncidentsDropped               int64            `json:"incidents_dropped"`
+	// From the start of the core to the first user connection that went
+	// through, in the window where it did.
+	StartMs        *int64 `json:"start_ms,omitempty"`
+	Pins           int64  `json:"pins"`
+	Releases       int64  `json:"releases"`
+	MemoryLow      int64  `json:"memory_low_count"`
+	OutboundSleeps int64  `json:"outbound_sleeps"`
 }
 
 type reportPath struct {
@@ -205,11 +213,13 @@ type report struct {
 	quietSample bool
 	// Events the log had dropped when the window started.
 	droppedBefore uint64
+	incidents     incidentTracker
 }
 
 func (r *report) begin(now time.Time) {
 	r.started = now.Round(0)
 	r.windowStart = r.started
+	r.incidents.startPending = true
 }
 
 func (r *report) count(typ string, f map[string]any) {
@@ -392,6 +402,8 @@ func (r *report) count(typ string, f map[string]any) {
 		// The provider stops refreshing until the host brings new headers.
 		c.ProviderAuthFailed++
 		r.decide()
+	case "provider_urls":
+		c.ProviderURLsSet++
 	case "provider_base_changed":
 		// The host is to fetch the config anew and restart the core.
 		c.ProviderBaseChanged++
@@ -498,6 +510,7 @@ func (e *engine) takeReport(final bool, now time.Time) *reportView {
 	switch {
 	case final:
 		r.final = true
+		r.closeOpenIncidents(now)
 		if r.decided || r.quietSample {
 			reason = reportStop
 		}
@@ -584,6 +597,14 @@ func (e *engine) reportView(reason string, now time.Time, take bool) *reportView
 		v.SwitchReasons = maps.Clone(v.SwitchReasons)
 		v.SwitchHistory = slices.Clone(v.SwitchHistory)
 		v.ProviderTriggers = maps.Clone(v.ProviderTriggers)
+		v.Incidents = slices.Clone(v.Incidents)
+		v.ProviderRefreshes = slices.Clone(v.ProviderRefreshes)
+	}
+	if v.Incidents == nil {
+		v.Incidents = []reportIncident{}
+	}
+	if v.ProviderRefreshes == nil {
+		v.ProviderRefreshes = []reportRefresh{}
 	}
 	if v.SwitchReasons == nil {
 		v.SwitchReasons = map[string]int64{}

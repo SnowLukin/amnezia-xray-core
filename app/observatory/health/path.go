@@ -83,6 +83,9 @@ const maxFailures = 64
 // path is everything known about one outbound.
 type path struct {
 	tag string
+	// The earliest moment a user began waiting on a connection that then
+	// failed, since the outbound last worked; zero when none did.
+	failStart time.Time
 	// Controller epoch changes only when a selector using this physical path reacts.
 	controllerEpoch uint64
 	// When the outbound first showed up as a candidate or with a connection:
@@ -224,6 +227,9 @@ func (p *path) setStatus(s pathStatus, reason string, now time.Time) bool {
 	p.reason = reason
 	if changed {
 		p.statusSince = now
+	}
+	if s == statusUp {
+		p.failStart = time.Time{}
 	}
 	return changed
 }

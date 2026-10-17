@@ -643,6 +643,23 @@ func (c *witnessWriteCounter) Spliced() {}
 
 type probeContextKey struct{}
 
+// waitedSince is when the user began waiting on a connection that failed this
+// way: its start when it never got an answer, its last write when a request
+// went unanswered, its last read when it froze in the middle of an answer.
+func (t *connTracker) waitedSince(kind failureKind) int64 {
+	switch kind {
+	case failStall:
+		if w := t.lastWrite.Load(); w > 0 {
+			return w
+		}
+	case failPartialStall:
+		if r := t.lastRead.Load(); r > 0 {
+			return r
+		}
+	}
+	return t.started
+}
+
 func withProbe(ctx context.Context, bytes *atomic.Int64) context.Context {
 	return context.WithValue(ctx, probeContextKey{}, &probeState{bytes: bytes})
 }
