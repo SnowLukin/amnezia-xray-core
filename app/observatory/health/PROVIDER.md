@@ -48,7 +48,7 @@ Network change при `unknownNotCheapest` также отменяется, ес
 Каждый POST/GET несёт принадлежащий ядру словарь RFC 8941:
 
 ```http
-Xray-Adaptive: xray="26.10.10", api=2, rev=1, provider=1
+Xray-Adaptive: xray="26.10.10", api=2, rev=2, provider=1
 ```
 
 `xray` берётся из `core.Version()`, `api` из `health.APIVersion`, `rev` из
@@ -65,12 +65,13 @@ Xray-Adaptive: xray="26.10.10", api=2, rev=1, provider=1
 | `rev` | Ядро | Что в конфиге |
 |---|---|---|
 | 1 | первая сборка с `rev`, 18.10.2026 | всё API v2 на 18.10.2026: `apply.balancers`, `probeOnlyRoads`, промежутки задержек, `lastRefresh`, `SetProviderURLs`, провалы в отчёте; упавшие проверочные учётки перепроверяются с растущей паузой |
+| 2 | 18.10.2026 | `leastCost.settings.startup.outbound` и `startup.pin.outbound` могут назвать outbound провайдера этого балансировщика (с его `tagPrefix`): хост стартует с пути, который работал последним, из сохранённого набора; нет такого в наборе - старт как без него |
 
 Заголовок запрещён в config/answer/host `headers` и в
 `acceptedHeaders` независимо от регистра. `baseVersion` остаётся в теле.
 `health.AdaptiveHeader()` отдаёт `(name, value)` без запущенного экземпляра;
 libXray `HealthAdaptiveHeader()` отдаёт base64-обёртку общего JSON Result:
-`{"success":true,"data":{"name":"Xray-Adaptive","value":"xray=\"26.10.10\", api=2, rev=1, provider=1"}}`.
+`{"success":true,"data":{"name":"Xray-Adaptive","value":"xray=\"26.10.10\", api=2, rev=2, provider=1"}}`.
 Приложение берёт эту пару до connect и ставит её в запрос к бэку.
 Версию Go и дополнительные поля в тело не добавляем.
 

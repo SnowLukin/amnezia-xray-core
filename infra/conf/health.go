@@ -1315,6 +1315,15 @@ func checkLeastCost(c *Config) error {
 						break
 					}
 				}
+				// An outbound of a provider that feeds the balancer: the host
+				// starts with the one that worked last, from the set it kept and
+				// gives as initialAnswer. The core takes it if the set has it
+				// and starts as without it otherwise.
+				for _, p := range providers[tag] {
+					if p.Apply.TagPrefix != "" && strings.HasPrefix(start, p.Apply.TagPrefix) && len(start) > len(p.Apply.TagPrefix) {
+						found = true
+					}
+				}
 				if !found {
 					return errors.New("balancer ", tag, ".startup: unknown outbound ", start)
 				}
