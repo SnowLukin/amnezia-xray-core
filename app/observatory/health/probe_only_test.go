@@ -262,3 +262,57 @@ func TestProbeOnlyDispatchGuardRejectsUserContexts(t *testing.T) {
 		t.Fatal("dispatch guard allowed a user or a generic probe context")
 	}
 }
+
+func candidateJobsOf(jobs []*probeJob) []*probeJob {
+	var out []*probeJob
+	for _, j := range jobs {
+		if j.reason == reasonCandidate {
+			out = append(out, j)
+		}
+	}
+	return out
+}
+
+// A credential that failed its check comes back after a pause that grows
+// like a quarantine instead of waiting for a network change: the backend
+// keeps a burned entry in the set to see it recover.
+func TestProbeOnlyFailedRechecksWithGrowingPause(t *testing.T) {
+	te := probeOnlyTestEngine(t, 2,
+		&PathDefinition{Tag: "real", Cost: 1},
+		&PathDefinition{Tag: "live", Cost: 2, IsProbeOnly: true},
+		&PathDefinition{Tag: "burned", Cost: 3, IsProbeOnly: true})
+	check := func(now time.Time, ok bool) {
+		t.Helper()
+		j, _ := te.tick(now)
+		jobs := candidateJobsOf(j)
+		if len(jobs) != 1 {
+			t.Fatalf("at %v: %+v", now.Sub(t0), jobs)
+		}
+		r := probeResult{state: statusDown, class: "timeout"}
+		if ok {
+			r = probeResult{ok: true, state: statusUp}
+		}
+		te.onProbeResult(jobs[0], r, now)
+	}
+	check(t0, true)
+	check(at(time.Second), false)
+	burned := te.paths["burned"]
+	first := burned.candidateRetryAt.Sub(at(time.Second))
+	if first < 84*time.Second || first > 156*time.Second {
+		t.Fatalf("first pause %v", first)
+	}
+	if j, _ := te.tick(burned.candidateRetryAt.Add(-time.Second)); len(candidateJobsOf(j)) != 0 {
+		t.Fatalf("rechecked before the pause: %+v", j)
+	}
+	at1 := burned.candidateRetryAt
+	check(at1, false)
+	second := burned.candidateRetryAt.Sub(at1)
+	if second < 168*time.Second || second > 312*time.Second {
+		t.Fatalf("second pause %v", second)
+	}
+	at2 := burned.candidateRetryAt
+	check(at2, true)
+	if burned.candidateVerifiedAt != at2 || burned.candidateFailures != 0 || !burned.candidateRetryAt.IsZero() {
+		t.Fatalf("recovery kept the pause: %v", burned.candidateRetryAt)
+	}
+}

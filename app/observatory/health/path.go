@@ -133,6 +133,11 @@ type path struct {
 	candidateChecked    bool
 	candidateVerifiedAt time.Time
 	candidateEpoch      uint64
+	// A credential that failed its check is checked again after a pause
+	// that grows like a quarantine, so the core sees an entry come back
+	// without a network change; failures in a row in this epoch.
+	candidateFailures int
+	candidateRetryAt  time.Time
 
 	realSince         time.Time
 	freshDownReported bool

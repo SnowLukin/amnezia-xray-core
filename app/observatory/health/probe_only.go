@@ -69,6 +69,7 @@ func (e *engine) resetProbeOnly(tag string) {
 		p.candidateChecked = false
 		p.candidateVerifiedAt = time.Time{}
 		p.candidateEpoch = e.candidateEpoch
+		p.candidateFailures, p.candidateRetryAt = 0, time.Time{}
 	}
 }
 
@@ -145,6 +146,20 @@ func (e *engine) updateProbeOnly(s *selector, now time.Time) time.Time {
 		}
 		wake = soonestOf(wake, due)
 	}
+	// A failed credential is checked again after its pause whatever the
+	// count of verified ones: the backend may keep a burned entry in the
+	// set exactly to see it come back.
+	for _, tag := range tags {
+		p := e.pathAt(tag, now)
+		if p.candidateEpoch != e.candidateEpoch || !p.candidateChecked || !p.candidateVerifiedAt.IsZero() || p.candidateRetryAt.IsZero() {
+			continue
+		}
+		if !now.Before(p.candidateRetryAt) {
+			e.enqueue(tag, reasonCandidate, s.tag, now)
+			return time.Time{}
+		}
+		wake = soonestOf(wake, p.candidateRetryAt)
+	}
 	if e.probeOnlyVerified(s, now) >= e.s.schedule.probeOnly.keepVerified {
 		return wake
 	}
@@ -159,13 +174,22 @@ func (e *engine) updateProbeOnly(s *selector, now time.Time) time.Time {
 }
 
 func (e *engine) onCandidateResult(j *probeJob, r probeResult, p *path, now time.Time) {
+	if p.candidateEpoch != e.candidateEpoch {
+		p.candidateFailures = 0
+	}
 	p.candidateChecked = true
 	p.candidateEpoch = e.candidateEpoch
 	p.candidateVerifiedAt = time.Time{}
+	p.candidateRetryAt = time.Time{}
 	state := statusDown
 	if r.ok {
 		state = statusUp
 		p.candidateVerifiedAt = now
+		p.candidateFailures = 0
+	} else {
+		q := e.s.schedule.quarantine
+		p.candidateRetryAt = now.Add(e.jitter(q.delay(p.candidateFailures), q.jitter))
+		p.candidateFailures++
 	}
 	if p.setStatus(state, reasonCandidate.String(), now) {
 		e.emitPath(p, now)
