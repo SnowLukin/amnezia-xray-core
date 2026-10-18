@@ -223,9 +223,12 @@ type engine struct {
 
 	report report
 	// Measurements have their own epoch even when routing ignores a change.
-	quality       *qualitySummary
-	qualityEpoch  uint64
-	hostLabels    map[string]string
+	quality      *qualitySummary
+	qualityEpoch uint64
+	hostLabels   map[string]string
+	// The trace of raw evidence; nil without telemetry.trace. It has a lock
+	// of its own: connection records come without the observer lock.
+	trace         *traceRing
 	labelNetwork  *labelNetwork
 	labelCache    map[string]*labelNetwork
 	labelOrder    []string
@@ -348,6 +351,9 @@ func (e *engine) emit(now time.Time, typ string, fields map[string]any) {
 		fields["labels"] = maps.Clone(e.hostLabels)
 	}
 	e.events.add(now, typ, fields)
+	if e.trace != nil {
+		e.trace.event(now, typ, fields)
+	}
 	if e.s.features.Report {
 		e.report.count(typ, fields)
 		e.report.incidents.labels = e.hostLabels

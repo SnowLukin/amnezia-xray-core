@@ -16,6 +16,7 @@ func featureValue(value *bool, fallback bool) bool {
 
 type featureSettings struct {
 	Census            bool
+	Trace             bool
 	DialFailures      bool
 	DialTimeout       bool
 	ServerUnverified  bool
@@ -112,6 +113,7 @@ func (f featureSettings) failure(kind failureKind) bool {
 func (f featureSettings) status() map[string]bool {
 	return map[string]bool{
 		"census":              f.Census,
+		"trace":               f.Trace,
 		"dial_failures":       f.DialFailures,
 		"dial_timeout":        f.DialTimeout,
 		"server_unverified":   f.ServerUnverified,

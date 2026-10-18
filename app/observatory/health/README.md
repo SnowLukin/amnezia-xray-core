@@ -753,6 +753,21 @@ changed its settings), `probe_changed` (a provider changed the profile of an unc
 | `outbound_sleep` | `outbound`, `idle_ms`, `reason` | An outbound released what it held, see resource controls above. `idle_ms` is the time since its last use; `reason` is `idle` (after `resources.tunnelSleep.afterLastUse`, or 10 s after the last connection ended once `idle_closed` ended its idle ones), `down` (sooner, while it rests in quarantine) or `memory` (sooner, while memory is low). |
 | `idle_closed` | `outbound`, `connections` | Connections of an outbound that can sleep, which no balancer has chosen for `resources.tunnelSleep.afterLastUse`, were ended after they received nothing for `resources.closeUnchosenIdle.after`, see resource controls above. The path works: unlike `pending_closed`, no failure is behind it. |
 
+## Trace
+
+`telemetry.trace` keeps raw evidence of the session for diagnostics and for replaying it with other settings. The block present turns it on.
+
+```json
+"telemetry": {"trace": {"maxBytes": 2097152, "connections": {}}}
+```
+
+- **What it keeps.** Every event of the core, and a record per user connection through an observed outbound: path tag, `tcp`/`udp`, `dial_ms`, `first_byte_ms`, `ms`, bytes up and down in buckets (`0`, `<1k`, `1-64k`, `64k-1m`, `>1m`), `outcome` (`ok`, a failure kind, `closed`, `user_closed`, `empty`), port class (`443`, `80`, `other`) and `target`.
+- **What it never keeps.** Where the user went: `target` is a hash with a random salt of this trace that is kept nowhere. Within a trace it tells the same site from another, never which one, and two traces cannot be matched. The network id the host reported is hashed the same way. Error texts, which may name a server, become `other`; short classes stay. No domains, addresses, SNI, URLs, traffic or DNS.
+- **Network labels.** The trace keeps the labels the host reports, operator and ASN included when the host passes them.
+- **Connection records** are on with the block; `"connections": {"isEnabled": false}` keeps the events only.
+- **Size.** `maxBytes` from 64 KiB to 2 MiB, 2 MiB by default. The ring drops its oldest lines.
+- **Export.** `ExportTrace(after)` (libXray `HealthExportTrace(after)`) returns `{seq, dropped, started, records}`: the records after the number the host has, as a JSON array, the number of the last one, the lines dropped since the start, and the start by the wall clock. The core keeps the ring; the host appends what it got to its own trace file and asks again with `seq`.
+
 ## Report: словарь полей
 
 | Field | Meaning |

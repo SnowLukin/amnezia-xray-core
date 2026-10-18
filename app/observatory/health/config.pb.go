@@ -198,7 +198,9 @@ type Config struct {
 	SessionLabels map[string]string   `protobuf:"bytes,15,rep,name=session_labels,json=sessionLabels,proto3" json:"session_labels,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	LabelRequest  *LabelRequestConfig `protobuf:"bytes,16,opt,name=label_request,json=labelRequest,proto3" json:"label_request,omitempty"`
 	// Presence enables a sampled, observational census of leastCost paths.
-	Census        *CensusConfig `protobuf:"bytes,17,opt,name=census,proto3" json:"census,omitempty"`
+	Census *CensusConfig `protobuf:"bytes,17,opt,name=census,proto3" json:"census,omitempty"`
+	// Presence keeps a trace of raw evidence for diagnostics.
+	Trace         *TraceConfig `protobuf:"bytes,18,opt,name=trace,proto3" json:"trace,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -341,6 +343,13 @@ func (x *Config) GetLabelRequest() *LabelRequestConfig {
 func (x *Config) GetCensus() *CensusConfig {
 	if x != nil {
 		return x.Census
+	}
+	return nil
+}
+
+func (x *Config) GetTrace() *TraceConfig {
+	if x != nil {
+		return x.Trace
 	}
 	return nil
 }
@@ -3346,6 +3355,60 @@ func (x *ProviderFeatureConfig) GetExpiredLeaseFallback() bool {
 }
 
 // A run is sampled once; each active network may produce one census.
+type TraceConfig struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Zero uses 2 MiB, the most allowed.
+	MaxBytes int64 `protobuf:"varint,1,opt,name=max_bytes,json=maxBytes,proto3" json:"max_bytes,omitempty"`
+	// Records of user connections; absent keeps them.
+	ConnectionsEnabled *bool `protobuf:"varint,2,opt,name=connections_enabled,json=connectionsEnabled,proto3,oneof" json:"connections_enabled,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
+}
+
+func (x *TraceConfig) Reset() {
+	*x = TraceConfig{}
+	mi := &file_app_observatory_health_config_proto_msgTypes[30]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TraceConfig) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TraceConfig) ProtoMessage() {}
+
+func (x *TraceConfig) ProtoReflect() protoreflect.Message {
+	mi := &file_app_observatory_health_config_proto_msgTypes[30]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TraceConfig.ProtoReflect.Descriptor instead.
+func (*TraceConfig) Descriptor() ([]byte, []int) {
+	return file_app_observatory_health_config_proto_rawDescGZIP(), []int{30}
+}
+
+func (x *TraceConfig) GetMaxBytes() int64 {
+	if x != nil {
+		return x.MaxBytes
+	}
+	return 0
+}
+
+func (x *TraceConfig) GetConnectionsEnabled() bool {
+	if x != nil && x.ConnectionsEnabled != nil {
+		return *x.ConnectionsEnabled
+	}
+	return false
+}
+
 type CensusConfig struct {
 	state          protoimpl.MessageState `protogen:"open.v1"`
 	SampleFraction float64                `protobuf:"fixed64,1,opt,name=sample_fraction,json=sampleFraction,proto3" json:"sample_fraction,omitempty"`
@@ -3359,7 +3422,7 @@ type CensusConfig struct {
 
 func (x *CensusConfig) Reset() {
 	*x = CensusConfig{}
-	mi := &file_app_observatory_health_config_proto_msgTypes[30]
+	mi := &file_app_observatory_health_config_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3371,7 +3434,7 @@ func (x *CensusConfig) String() string {
 func (*CensusConfig) ProtoMessage() {}
 
 func (x *CensusConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_app_observatory_health_config_proto_msgTypes[30]
+	mi := &file_app_observatory_health_config_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3384,7 +3447,7 @@ func (x *CensusConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CensusConfig.ProtoReflect.Descriptor instead.
 func (*CensusConfig) Descriptor() ([]byte, []int) {
-	return file_app_observatory_health_config_proto_rawDescGZIP(), []int{30}
+	return file_app_observatory_health_config_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *CensusConfig) GetSampleFraction() float64 {
@@ -3412,7 +3475,7 @@ var File_app_observatory_health_config_proto protoreflect.FileDescriptor
 
 const file_app_observatory_health_config_proto_rawDesc = "" +
 	"\n" +
-	"#app/observatory/health/config.proto\x12 xray.core.app.observatory.health\"\xa8\n" +
+	"#app/observatory/health/config.proto\x12 xray.core.app.observatory.health\"\xed\n" +
 	"\n" +
 	"\x06Config\x12I\n" +
 	"\apassive\x18\x02 \x01(\v2/.xray.core.app.observatory.health.PassiveConfigR\apassive\x12F\n" +
@@ -3431,7 +3494,8 @@ const file_app_observatory_health_config_proto_rawDesc = "" +
 	"\bfeatures\x18\x0e \x01(\v2/.xray.core.app.observatory.health.FeatureConfigR\bfeatures\x12b\n" +
 	"\x0esession_labels\x18\x0f \x03(\v2;.xray.core.app.observatory.health.Config.SessionLabelsEntryR\rsessionLabels\x12Y\n" +
 	"\rlabel_request\x18\x10 \x01(\v24.xray.core.app.observatory.health.LabelRequestConfigR\flabelRequest\x12F\n" +
-	"\x06census\x18\x11 \x01(\v2..xray.core.app.observatory.health.CensusConfigR\x06census\x1a@\n" +
+	"\x06census\x18\x11 \x01(\v2..xray.core.app.observatory.health.CensusConfigR\x06census\x12C\n" +
+	"\x05trace\x18\x12 \x01(\v2-.xray.core.app.observatory.health.TraceConfigR\x05trace\x1a@\n" +
 	"\x12SessionLabelsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01J\x04\b\x01\x10\x02\"M\n" +
@@ -3795,7 +3859,11 @@ const file_app_observatory_health_config_proto_rawDesc = "" +
 	"_exhaustedB\x10\n" +
 	"\x0e_lease_renewalB\x13\n" +
 	"\x11_backend_scheduleB\x19\n" +
-	"\x17_expired_lease_fallback\"u\n" +
+	"\x17_expired_lease_fallback\"x\n" +
+	"\vTraceConfig\x12\x1b\n" +
+	"\tmax_bytes\x18\x01 \x01(\x03R\bmaxBytes\x124\n" +
+	"\x13connections_enabled\x18\x02 \x01(\bH\x00R\x12connectionsEnabled\x88\x01\x01B\x16\n" +
+	"\x14_connections_enabled\"u\n" +
 	"\fCensusConfig\x12'\n" +
 	"\x0fsample_fraction\x18\x01 \x01(\x01R\x0esampleFraction\x12\x1f\n" +
 	"\vstart_after\x18\x02 \x01(\x03R\n" +
@@ -3832,7 +3900,7 @@ func file_app_observatory_health_config_proto_rawDescGZIP() []byte {
 }
 
 var file_app_observatory_health_config_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
-var file_app_observatory_health_config_proto_msgTypes = make([]protoimpl.MessageInfo, 36)
+var file_app_observatory_health_config_proto_msgTypes = make([]protoimpl.MessageInfo, 37)
 var file_app_observatory_health_config_proto_goTypes = []any{
 	(ConfirmMode)(0),              // 0: xray.core.app.observatory.health.ConfirmMode
 	(NetworkChangeMode)(0),        // 1: xray.core.app.observatory.health.NetworkChangeMode
@@ -3867,12 +3935,13 @@ var file_app_observatory_health_config_proto_goTypes = []any{
 	(*LabelRequestConfig)(nil),    // 30: xray.core.app.observatory.health.LabelRequestConfig
 	(*SelectorFeatureConfig)(nil), // 31: xray.core.app.observatory.health.SelectorFeatureConfig
 	(*ProviderFeatureConfig)(nil), // 32: xray.core.app.observatory.health.ProviderFeatureConfig
-	(*CensusConfig)(nil),          // 33: xray.core.app.observatory.health.CensusConfig
-	nil,                           // 34: xray.core.app.observatory.health.Config.SessionLabelsEntry
-	nil,                           // 35: xray.core.app.observatory.health.PathDefinition.LabelsEntry
-	nil,                           // 36: xray.core.app.observatory.health.PathGroup.LabelsEntry
-	nil,                           // 37: xray.core.app.observatory.health.ProviderConfig.HeadersEntry
-	nil,                           // 38: xray.core.app.observatory.health.LabelRequestConfig.LabelsEntry
+	(*TraceConfig)(nil),           // 33: xray.core.app.observatory.health.TraceConfig
+	(*CensusConfig)(nil),          // 34: xray.core.app.observatory.health.CensusConfig
+	nil,                           // 35: xray.core.app.observatory.health.Config.SessionLabelsEntry
+	nil,                           // 36: xray.core.app.observatory.health.PathDefinition.LabelsEntry
+	nil,                           // 37: xray.core.app.observatory.health.PathGroup.LabelsEntry
+	nil,                           // 38: xray.core.app.observatory.health.ProviderConfig.HeadersEntry
+	nil,                           // 39: xray.core.app.observatory.health.LabelRequestConfig.LabelsEntry
 }
 var file_app_observatory_health_config_proto_depIdxs = []int32{
 	5,  // 0: xray.core.app.observatory.health.Config.passive:type_name -> xray.core.app.observatory.health.PassiveConfig
@@ -3888,39 +3957,40 @@ var file_app_observatory_health_config_proto_depIdxs = []int32{
 	4,  // 10: xray.core.app.observatory.health.Config.wake:type_name -> xray.core.app.observatory.health.WakeConfig
 	28, // 11: xray.core.app.observatory.health.Config.udp_probe:type_name -> xray.core.app.observatory.health.UDPProbeConfig
 	29, // 12: xray.core.app.observatory.health.Config.features:type_name -> xray.core.app.observatory.health.FeatureConfig
-	34, // 13: xray.core.app.observatory.health.Config.session_labels:type_name -> xray.core.app.observatory.health.Config.SessionLabelsEntry
+	35, // 13: xray.core.app.observatory.health.Config.session_labels:type_name -> xray.core.app.observatory.health.Config.SessionLabelsEntry
 	30, // 14: xray.core.app.observatory.health.Config.label_request:type_name -> xray.core.app.observatory.health.LabelRequestConfig
-	33, // 15: xray.core.app.observatory.health.Config.census:type_name -> xray.core.app.observatory.health.CensusConfig
-	7,  // 16: xray.core.app.observatory.health.ProbeProfile.steps:type_name -> xray.core.app.observatory.health.ProbeStep
-	9,  // 17: xray.core.app.observatory.health.ConnectivityConfig.recheck_backoff:type_name -> xray.core.app.observatory.health.Backoff
-	9,  // 18: xray.core.app.observatory.health.ScheduleConfig.quarantine:type_name -> xray.core.app.observatory.health.Backoff
-	12, // 19: xray.core.app.observatory.health.ScheduleConfig.host_probes:type_name -> xray.core.app.observatory.health.HostProbesConfig
-	11, // 20: xray.core.app.observatory.health.ScheduleConfig.probe_only:type_name -> xray.core.app.observatory.health.ProbeOnlyConfig
-	35, // 21: xray.core.app.observatory.health.PathDefinition.labels:type_name -> xray.core.app.observatory.health.PathDefinition.LabelsEntry
-	36, // 22: xray.core.app.observatory.health.PathGroup.labels:type_name -> xray.core.app.observatory.health.PathGroup.LabelsEntry
-	17, // 23: xray.core.app.observatory.health.SelectorConfig.paths:type_name -> xray.core.app.observatory.health.PathDefinition
-	18, // 24: xray.core.app.observatory.health.SelectorConfig.groups:type_name -> xray.core.app.observatory.health.PathGroup
-	0,  // 25: xray.core.app.observatory.health.SelectorConfig.confirm_with_probe:type_name -> xray.core.app.observatory.health.ConfirmMode
-	20, // 26: xray.core.app.observatory.health.SelectorConfig.return_to_cheaper:type_name -> xray.core.app.observatory.health.ReturnToCheaperConfig
-	1,  // 27: xray.core.app.observatory.health.SelectorConfig.network_change_action:type_name -> xray.core.app.observatory.health.NetworkChangeMode
-	31, // 28: xray.core.app.observatory.health.SelectorConfig.features:type_name -> xray.core.app.observatory.health.SelectorFeatureConfig
-	37, // 29: xray.core.app.observatory.health.ProviderConfig.headers:type_name -> xray.core.app.observatory.health.ProviderConfig.HeadersEntry
-	22, // 30: xray.core.app.observatory.health.ProviderConfig.triggers:type_name -> xray.core.app.observatory.health.ProviderTriggers
-	26, // 31: xray.core.app.observatory.health.ProviderConfig.limits:type_name -> xray.core.app.observatory.health.ProviderLimits
-	27, // 32: xray.core.app.observatory.health.ProviderConfig.apply:type_name -> xray.core.app.observatory.health.ProviderApply
-	32, // 33: xray.core.app.observatory.health.ProviderConfig.features:type_name -> xray.core.app.observatory.health.ProviderFeatureConfig
-	25, // 34: xray.core.app.observatory.health.ProviderTriggers.when_cost_above:type_name -> xray.core.app.observatory.health.CostTrigger
-	2,  // 35: xray.core.app.observatory.health.ProviderTriggers.network_change_mode:type_name -> xray.core.app.observatory.health.RefreshOnNetwork
-	23, // 36: xray.core.app.observatory.health.ProviderTriggers.expiry:type_name -> xray.core.app.observatory.health.ExpiryTrigger
-	24, // 37: xray.core.app.observatory.health.ProviderTriggers.exhausted_delay:type_name -> xray.core.app.observatory.health.DurationRange
-	24, // 38: xray.core.app.observatory.health.ProviderTriggers.min_healthy_delay:type_name -> xray.core.app.observatory.health.DurationRange
-	9,  // 39: xray.core.app.observatory.health.ProviderLimits.backoff:type_name -> xray.core.app.observatory.health.Backoff
-	38, // 40: xray.core.app.observatory.health.LabelRequestConfig.labels:type_name -> xray.core.app.observatory.health.LabelRequestConfig.LabelsEntry
-	41, // [41:41] is the sub-list for method output_type
-	41, // [41:41] is the sub-list for method input_type
-	41, // [41:41] is the sub-list for extension type_name
-	41, // [41:41] is the sub-list for extension extendee
-	0,  // [0:41] is the sub-list for field type_name
+	34, // 15: xray.core.app.observatory.health.Config.census:type_name -> xray.core.app.observatory.health.CensusConfig
+	33, // 16: xray.core.app.observatory.health.Config.trace:type_name -> xray.core.app.observatory.health.TraceConfig
+	7,  // 17: xray.core.app.observatory.health.ProbeProfile.steps:type_name -> xray.core.app.observatory.health.ProbeStep
+	9,  // 18: xray.core.app.observatory.health.ConnectivityConfig.recheck_backoff:type_name -> xray.core.app.observatory.health.Backoff
+	9,  // 19: xray.core.app.observatory.health.ScheduleConfig.quarantine:type_name -> xray.core.app.observatory.health.Backoff
+	12, // 20: xray.core.app.observatory.health.ScheduleConfig.host_probes:type_name -> xray.core.app.observatory.health.HostProbesConfig
+	11, // 21: xray.core.app.observatory.health.ScheduleConfig.probe_only:type_name -> xray.core.app.observatory.health.ProbeOnlyConfig
+	36, // 22: xray.core.app.observatory.health.PathDefinition.labels:type_name -> xray.core.app.observatory.health.PathDefinition.LabelsEntry
+	37, // 23: xray.core.app.observatory.health.PathGroup.labels:type_name -> xray.core.app.observatory.health.PathGroup.LabelsEntry
+	17, // 24: xray.core.app.observatory.health.SelectorConfig.paths:type_name -> xray.core.app.observatory.health.PathDefinition
+	18, // 25: xray.core.app.observatory.health.SelectorConfig.groups:type_name -> xray.core.app.observatory.health.PathGroup
+	0,  // 26: xray.core.app.observatory.health.SelectorConfig.confirm_with_probe:type_name -> xray.core.app.observatory.health.ConfirmMode
+	20, // 27: xray.core.app.observatory.health.SelectorConfig.return_to_cheaper:type_name -> xray.core.app.observatory.health.ReturnToCheaperConfig
+	1,  // 28: xray.core.app.observatory.health.SelectorConfig.network_change_action:type_name -> xray.core.app.observatory.health.NetworkChangeMode
+	31, // 29: xray.core.app.observatory.health.SelectorConfig.features:type_name -> xray.core.app.observatory.health.SelectorFeatureConfig
+	38, // 30: xray.core.app.observatory.health.ProviderConfig.headers:type_name -> xray.core.app.observatory.health.ProviderConfig.HeadersEntry
+	22, // 31: xray.core.app.observatory.health.ProviderConfig.triggers:type_name -> xray.core.app.observatory.health.ProviderTriggers
+	26, // 32: xray.core.app.observatory.health.ProviderConfig.limits:type_name -> xray.core.app.observatory.health.ProviderLimits
+	27, // 33: xray.core.app.observatory.health.ProviderConfig.apply:type_name -> xray.core.app.observatory.health.ProviderApply
+	32, // 34: xray.core.app.observatory.health.ProviderConfig.features:type_name -> xray.core.app.observatory.health.ProviderFeatureConfig
+	25, // 35: xray.core.app.observatory.health.ProviderTriggers.when_cost_above:type_name -> xray.core.app.observatory.health.CostTrigger
+	2,  // 36: xray.core.app.observatory.health.ProviderTriggers.network_change_mode:type_name -> xray.core.app.observatory.health.RefreshOnNetwork
+	23, // 37: xray.core.app.observatory.health.ProviderTriggers.expiry:type_name -> xray.core.app.observatory.health.ExpiryTrigger
+	24, // 38: xray.core.app.observatory.health.ProviderTriggers.exhausted_delay:type_name -> xray.core.app.observatory.health.DurationRange
+	24, // 39: xray.core.app.observatory.health.ProviderTriggers.min_healthy_delay:type_name -> xray.core.app.observatory.health.DurationRange
+	9,  // 40: xray.core.app.observatory.health.ProviderLimits.backoff:type_name -> xray.core.app.observatory.health.Backoff
+	39, // 41: xray.core.app.observatory.health.LabelRequestConfig.labels:type_name -> xray.core.app.observatory.health.LabelRequestConfig.LabelsEntry
+	42, // [42:42] is the sub-list for method output_type
+	42, // [42:42] is the sub-list for method input_type
+	42, // [42:42] is the sub-list for extension type_name
+	42, // [42:42] is the sub-list for extension extendee
+	0,  // [0:42] is the sub-list for field type_name
 }
 
 func init() { file_app_observatory_health_config_proto_init() }
@@ -3937,13 +4007,14 @@ func file_app_observatory_health_config_proto_init() {
 	file_app_observatory_health_config_proto_msgTypes[26].OneofWrappers = []any{}
 	file_app_observatory_health_config_proto_msgTypes[28].OneofWrappers = []any{}
 	file_app_observatory_health_config_proto_msgTypes[29].OneofWrappers = []any{}
+	file_app_observatory_health_config_proto_msgTypes[30].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_app_observatory_health_config_proto_rawDesc), len(file_app_observatory_health_config_proto_rawDesc)),
 			NumEnums:      3,
-			NumMessages:   36,
+			NumMessages:   37,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

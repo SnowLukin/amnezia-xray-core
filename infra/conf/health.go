@@ -159,8 +159,16 @@ type HealthCensusConfig struct {
 	OnDemand       []string           `json:"onDemand"`
 }
 
+// HealthTraceConfig keeps raw evidence for diagnostics: every event of the
+// core and, unless turned off, every user connection without its destination.
+type HealthTraceConfig struct {
+	MaxBytes    *int64              `json:"maxBytes"`
+	Connections HealthFeatureConfig `json:"connections"`
+}
+
 type HealthTelemetryConfig struct {
 	Census            *HealthCensusConfig `json:"census"`
+	Trace             *HealthTraceConfig  `json:"trace"`
 	Events            HealthEventsConfig  `json:"events"`
 	Report            HealthReportConfig  `json:"report"`
 	Quality           HealthFeatureConfig `json:"quality"`
@@ -372,7 +380,7 @@ func defaultOnFeature(where string) bool {
 		return true
 	}
 	switch where {
-	case "healthObservatory.evidence.dialFailures", "healthObservatory.evidence.dialTimeout", "healthObservatory.evidence.serverUnverified", "healthObservatory.evidence.firstReply", "healthObservatory.evidence.earlyClose", "healthObservatory.evidence.stalledRequests", "leastCost.settings.failover.closePending", "leastCost.settings.failover.closeSilent":
+	case "healthObservatory.evidence.dialFailures", "healthObservatory.evidence.dialTimeout", "healthObservatory.evidence.serverUnverified", "healthObservatory.evidence.firstReply", "healthObservatory.evidence.earlyClose", "healthObservatory.evidence.stalledRequests", "leastCost.settings.failover.closePending", "leastCost.settings.failover.closeSilent", "healthObservatory.telemetry.trace.connections":
 		return true
 	}
 	if strings.HasPrefix(where, "healthObservatory.providers[") {
@@ -691,6 +699,15 @@ func (c *HealthObservatoryConfig) Build() (proto.Message, error) {
 	}
 	if err := validateLabels("healthObservatory.telemetry.report.sessionLabels.labels", t.Report.SessionLabels.Labels, 8); err != nil {
 		return nil, err
+	}
+	if trace := t.Trace; trace != nil {
+		if trace.MaxBytes != nil && (*trace.MaxBytes < 64<<10 || *trace.MaxBytes > 2<<20) {
+			return nil, errors.New("healthObservatory.telemetry.trace.maxBytes must be from 65536 to 2097152")
+		}
+		out.Trace = &health.TraceConfig{ConnectionsEnabled: trace.Connections.IsEnabled}
+		if trace.MaxBytes != nil {
+			out.Trace.MaxBytes = *trace.MaxBytes
+		}
 	}
 	if census := t.Census; census != nil {
 		if !enabled(t.Report.IsEnabled, false) {

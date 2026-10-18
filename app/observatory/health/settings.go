@@ -313,6 +313,7 @@ type settings struct {
 	reportLabels      map[string]string
 	disabledProviders map[string]bool
 	features          featureSettings
+	trace             *traceSettings
 	witnesses         []string
 	udpProbe          *udpSettings
 	wake              wakeSettings
@@ -609,6 +610,14 @@ func toBackoff(b *Backoff, def backoff) backoff {
 
 func newSettings(c *Config) *settings {
 	s := &settings{baseOrder: map[string][]string{}, features: newFeatureSettings(c.GetFeatures())}
+	if tc := c.GetTrace(); tc != nil {
+		s.features.Trace = true
+		size := int(tc.GetMaxBytes())
+		if size <= 0 {
+			size = defaultTraceBytes
+		}
+		s.trace = &traceSettings{maxBytes: min(max(size, minTraceBytes), maxTraceBytes), connections: featureValue(tc.ConnectionsEnabled, true)}
+	}
 	if cc := c.GetCensus(); cc != nil {
 		s.features.Census = true
 		s.census = &censusSettings{sampleFraction: cc.SampleFraction, startAfter: dur(cc.StartAfter, defaultCensusStartAfter), onDemand: make(map[string]bool, len(cc.OnDemand))}

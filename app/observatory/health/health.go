@@ -143,6 +143,9 @@ func newObserver(ctx context.Context, config *Config) *Observer {
 	}
 	// A second back, so that zero stays free to mean "not yet".
 	o.base = o.clock().Add(-time.Second)
+	if s.trace != nil {
+		o.e.trace = newTraceRing(s.trace, o.clock())
+	}
 	var id [8]byte
 	_, _ = rand.Read(id[:])
 	o.run = hex.EncodeToString(id[:])
@@ -771,6 +774,7 @@ func (o *Observer) sweepLoop(done chan struct{}) {
 // change, and failure skips dials that waited through a network pause:
 // neither tells anything about outbounds now.
 func (o *Observer) failure(t *connTracker, kind failureKind) {
+	t.failKind.CompareAndSwap(0, int32(kind)+1)
 	if !o.s.features.failure(kind) {
 		return
 	}
