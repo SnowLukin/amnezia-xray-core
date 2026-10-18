@@ -97,11 +97,13 @@ type reportCounts struct {
 	IncidentsDropped               int64            `json:"incidents_dropped"`
 	// From the start of the core to the first user connection that went
 	// through, in the window where it did.
-	StartMs        *int64 `json:"start_ms,omitempty"`
-	Pins           int64  `json:"pins"`
-	Releases       int64  `json:"releases"`
-	MemoryLow      int64  `json:"memory_low_count"`
-	OutboundSleeps int64  `json:"outbound_sleeps"`
+	StartMs *int64 `json:"start_ms,omitempty"`
+	// How often each kind of passive evidence was right, by kind.
+	Evidence       map[string]*reportEvidence `json:"evidence,omitempty"`
+	Pins           int64                      `json:"pins"`
+	Releases       int64                      `json:"releases"`
+	MemoryLow      int64                      `json:"memory_low_count"`
+	OutboundSleeps int64                      `json:"outbound_sleeps"`
 }
 
 type reportPath struct {
@@ -162,6 +164,8 @@ type reportView struct {
 	Index      int                          `json:"report_index"`
 	WindowMs   int64                        `json:"window_ms"`
 	SessionMs  int64                        `json:"session_ms"`
+	// The user connections of the last minute before the report.
+	Recent *recentView `json:"recent,omitempty"`
 	reportCounts
 	Active                 map[string]string     `json:"active"`
 	IsBalancerExhausted    bool                  `json:"is_balancer_exhausted"`
@@ -214,6 +218,7 @@ type report struct {
 	// Events the log had dropped when the window started.
 	droppedBefore uint64
 	incidents     incidentTracker
+	evidenceState evidenceTracker
 }
 
 func (r *report) begin(now time.Time) {
@@ -556,6 +561,7 @@ func (e *engine) reportView(reason string, now time.Time, take bool) *reportView
 		reportCounts:  r.counts,
 		Active:        map[string]string{},
 		IsNetworkUp:   !e.networkDown,
+		Recent:        r.recentView(now),
 		IsQuietSample: r.quietSample,
 		Connectivity:  e.connectivityState(),
 		Paths:         map[string]reportPath{},
@@ -598,6 +604,14 @@ func (e *engine) reportView(reason string, now time.Time, take bool) *reportView
 		v.SwitchHistory = slices.Clone(v.SwitchHistory)
 		v.ProviderTriggers = maps.Clone(v.ProviderTriggers)
 		v.Incidents = slices.Clone(v.Incidents)
+		if v.Evidence != nil {
+			evidence := make(map[string]*reportEvidence, len(v.Evidence))
+			for kind, e := range v.Evidence {
+				copied := *e
+				evidence[kind] = &copied
+			}
+			v.Evidence = evidence
+		}
 		v.ProviderRefreshes = slices.Clone(v.ProviderRefreshes)
 	}
 	if v.Incidents == nil {

@@ -219,7 +219,7 @@ func reportJSON(t *testing.T, v *reportView) reportView {
 // Incidents, refreshes and the start time follow the timeline, not a count
 // of events: report_incidents_test.go checks them.
 var timingFields = map[string]bool{"Incidents": true, "IncidentsDropped": true, "ProviderRefreshes": true,
-	"ProviderRefreshesDropped": true, "StartMs": true}
+	"ProviderRefreshesDropped": true, "StartMs": true, "Evidence": true}
 
 func eventReportCounts(counts reportCounts) map[string]any {
 	values := reflect.ValueOf(counts)

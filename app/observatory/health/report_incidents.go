@@ -89,6 +89,9 @@ func (r *report) track(now time.Time, typ string, f map[string]any) {
 		t.active, t.open = map[string]string{}, map[string]*openIncident{}
 	}
 	balancer, _ := f["balancer"].(string)
+	if typ == "path_state" {
+		r.trackEvidence(f)
+	}
 	switch typ {
 	case "switch":
 		to, _ := f["to"].(string)

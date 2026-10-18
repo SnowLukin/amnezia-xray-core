@@ -391,6 +391,9 @@ func (e *engine) onFailure(tag string, kind failureKind, target string, conn uin
 		return
 	}
 	p := e.pathAt(tag, now)
+	if e.s.features.Report {
+		e.report.countFailure(kind, now)
+	}
 	if p.status == statusDown && p.quarantined(now) {
 		return
 	}
@@ -452,6 +455,9 @@ func (e *engine) onSuccess(tag string, now time.Time) {
 	}
 	p := e.pathAt(tag, now)
 	p.failStart = time.Time{}
+	if e.s.features.Report {
+		e.report.noteOutcome(true, now)
+	}
 	for _, s := range e.selectors {
 		if s.awaitSuccess && s.current() == tag {
 			s.awaitSuccess = false
