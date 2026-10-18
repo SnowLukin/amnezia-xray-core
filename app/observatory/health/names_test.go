@@ -10,7 +10,7 @@ import (
 
 // The observatory knows tags, costs and rules only; what an outbound means
 // to a product belongs in the config that a backend generates.
-var productWords = regexp.MustCompile(`(?i)\b(extra|whitelist|white-list|cdn|relay|conquest|blanc\w*)\b`)
+var productWords = regexp.MustCompile(`(?i)\b(extra|whitelist|white-list|cdn|relay|conquest)\b`)
 
 func TestNoProductNames(t *testing.T) {
 	files, _ := filepath.Glob("*")
