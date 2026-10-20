@@ -505,6 +505,7 @@ func Dial(ctx context.Context, dest net.Destination, streamSettings *internet.Me
 
 		dynamicHTTPClient := httpClient
 		dynamicXmuxClient := xmuxClient
+		window := make([]chan struct{}, max(1, min(16, transportConfiguration.GetNormalizedScMaxBufferedPosts()/2)))
 		for {
 			// by offloading the uploads into a buffered pipe, multiple conn.Write
 			// calls get automatically batched together into larger POST requests.
@@ -544,14 +545,76 @@ func Dial(ctx context.Context, dest net.Destination, streamSettings *internet.Me
 					dynamicHTTPClient, dynamicXmuxClient = getHTTPClient(ctx, dest, streamSettings)
 				}
 
+				// The server keeps at most scMaxBufferedPosts packets past a missing seq
+				// and drops the session beyond that. Seq N waits until seq N-window is
+				// delivered, so a stalled packet can be retried before the server gives up.
+				slot := seq % int64(len(window))
+				if window[slot] != nil {
+					<-window[slot]
+				}
+				delivered := make(chan struct{})
+				window[slot] = delivered
 				go func(hClient DialerClient) {
-					err := hClient.PostPacket(
-						ctx,
-						requestURL.String(),
-						sessionId,
-						seqStr,
-						chunk,
-					)
+					defer close(delivered)
+					// CDN in front of the server sometimes answers 502/504 without
+					// reaching it. The server drops a seq it has already consumed,
+					// so resending the same packet is safe and keeps the connection.
+					data := make([]byte, chunk.Len())
+					chunk.Copy(data)
+					buf.ReleaseMulti(chunk)
+					// A CDN answers 504 only after waiting several seconds for the server,
+					// and the window above stalls for that long. A copy sent hedgeAfter after
+					// the previous one was fully written usually lands first; the server drops
+					// duplicates by seq. Attempts run detached from the connection, and
+					// cancelAttempts stops the ones left once a copy succeeded or giveUp passed.
+					const attempts, hedgeAfter, giveUp = 3, 2 * time.Second, 30 * time.Second
+					attemptsCtx, cancelAttempts := context.WithCancel(context.WithoutCancel(ctx))
+					defer cancelAttempts()
+					results := make(chan error, attempts)
+					written := make(chan struct{}, attempts)
+					send := func() {
+						traced := httptrace.WithClientTrace(attemptsCtx, &httptrace.ClientTrace{
+							WroteRequest: func(httptrace.WroteRequestInfo) {
+								select {
+								case written <- struct{}{}:
+								default:
+								}
+							},
+						})
+						results <- hClient.PostPacket(traced, requestURL.String(), sessionId, seqStr, buf.MergeBytes(nil, data))
+					}
+					go send()
+					started, finished := 1, 0
+					hedge := time.NewTimer(hedgeAfter)
+					hedge.Stop()
+					deadline := time.NewTimer(giveUp)
+					defer deadline.Stop()
+					var err error
+					for finished < started {
+						select {
+						case <-deadline.C:
+							err = errors.New("no answer to upload seq ", seqStr, " in ", giveUp)
+							finished = started
+						case err = <-results:
+							finished++
+							if err == nil {
+								finished = started
+							} else if started < attempts {
+								errors.LogInfoInner(ctx, err, "retrying upload seq ", seqStr)
+								started++
+								go send()
+							}
+						case <-written:
+							hedge.Reset(hedgeAfter)
+						case <-hedge.C:
+							if started < attempts {
+								errors.LogInfo(ctx, "retrying upload seq ", seqStr, ": no answer in ", hedgeAfter)
+								started++
+								go send()
+							}
+						}
+					}
+					hedge.Stop()
 					wroteRequest.Close()
 					if err != nil {
 						errors.LogInfoInner(ctx, err, "failed to send upload")
