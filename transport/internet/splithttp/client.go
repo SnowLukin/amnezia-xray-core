@@ -98,9 +98,11 @@ func (c *DefaultDialerClient) OpenStream(ctx context.Context, url string, sessio
 	return
 }
 
+// PostPacket runs on ctx as given: the caller detaches it from the connection and
+// cancels it only to stop a copy of the packet that is no longer needed.
 func (c *DefaultDialerClient) PostPacket(ctx context.Context, url string, sessionId string, seqStr string, payload buf.MultiBuffer) error {
 	method := c.transportConfig.GetNormalizedUplinkHTTPMethod()
-	req, err := http.NewRequestWithContext(context.WithoutCancel(ctx), method, url, nil)
+	req, err := http.NewRequestWithContext(ctx, method, url, nil)
 	if err != nil {
 		return err
 	}
