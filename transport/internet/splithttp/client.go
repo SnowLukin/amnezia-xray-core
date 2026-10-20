@@ -111,7 +111,10 @@ func (c *DefaultDialerClient) PostPacket(ctx context.Context, url string, sessio
 	if c.httpVersion != "1.1" {
 		resp, err := c.client.Do(req)
 		if err != nil {
-			c.closed.Store(true)
+			// A cancelled spare copy of the packet says nothing about the connection.
+			if ctx.Err() == nil {
+				c.closed.Store(true)
+			}
 			return err
 		}
 
