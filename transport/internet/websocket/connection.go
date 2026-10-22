@@ -3,6 +3,7 @@ package websocket
 import (
 	"io"
 	"net"
+	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -20,24 +21,36 @@ type connection struct {
 	conn       *websocket.Conn
 	reader     io.Reader
 	remoteAddr net.Addr
+	done       chan struct{}
+	closeOnce  sync.Once
 }
 
 func NewConnection(conn *websocket.Conn, remoteAddr net.Addr, extraReader io.Reader, heartbeatPeriod uint32) *connection {
-	if heartbeatPeriod != 0 {
-		go func() {
-			for {
-				time.Sleep(time.Duration(heartbeatPeriod) * time.Second)
-				if err := conn.WriteControl(websocket.PingMessage, []byte{}, time.Time{}); err != nil {
-					break
-				}
-			}
-		}()
-	}
-
-	return &connection{
+	c := &connection{
 		conn:       conn,
 		remoteAddr: remoteAddr,
 		reader:     extraReader,
+		done:       make(chan struct{}),
+	}
+	if heartbeatPeriod != 0 {
+		go c.heartbeat(time.Duration(heartbeatPeriod) * time.Second)
+	}
+	return c
+}
+
+// heartbeat exits on Close, otherwise a closed connection stays referenced until the next ping.
+func (c *connection) heartbeat(period time.Duration) {
+	ticker := time.NewTicker(period)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-c.done:
+			return
+		case <-ticker.C:
+			if err := c.conn.WriteControl(websocket.PingMessage, []byte{}, time.Time{}); err != nil {
+				return
+			}
+		}
 	}
 }
 
@@ -87,6 +100,7 @@ func (c *connection) WriteMultiBuffer(mb buf.MultiBuffer) error {
 }
 
 func (c *connection) Close() error {
+	c.closeOnce.Do(func() { close(c.done) })
 	var errs []interface{}
 	if err := c.conn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""), time.Now().Add(time.Second*5)); err != nil {
 		errs = append(errs, err)
