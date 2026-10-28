@@ -3,6 +3,7 @@ package conf
 import (
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"strconv"
 	"strings"
 
@@ -56,6 +57,70 @@ func (c *WireGuardPeerConfig) Build() (*wireguard.PeerConfig, error) {
 	return config, nil
 }
 
+// awgParam accepts both a JSON number and a string: h1-h4 may be ranges
+// ("123-456") and i1-i5 use a tag language.
+type awgParam string
+
+func (p *awgParam) UnmarshalJSON(data []byte) error {
+	var s string
+	if err := json.Unmarshal(data, &s); err == nil {
+		*p = awgParam(s)
+		return nil
+	}
+
+	var n json.Number
+	if err := json.Unmarshal(data, &n); err != nil {
+		return errors.New("AmneziaWG parameter must be a number or a string")
+	}
+	*p = awgParam(n.String())
+
+	return nil
+}
+
+type AmneziaParameters struct {
+	Jc   awgParam `json:"jc"`
+	Jmin awgParam `json:"jmin"`
+	Jmax awgParam `json:"jmax"`
+	S1   awgParam `json:"s1"`
+	S2   awgParam `json:"s2"`
+	S3   awgParam `json:"s3"`
+	S4   awgParam `json:"s4"`
+	H1   awgParam `json:"h1"`
+	H2   awgParam `json:"h2"`
+	H3   awgParam `json:"h3"`
+	H4   awgParam `json:"h4"`
+	I1   awgParam `json:"i1"`
+	I2   awgParam `json:"i2"`
+	I3   awgParam `json:"i3"`
+	I4   awgParam `json:"i4"`
+	I5   awgParam `json:"i5"`
+}
+
+func (c *AmneziaParameters) Build() *wireguard.AmneziaParameters {
+	if c == nil {
+		return nil
+	}
+
+	return &wireguard.AmneziaParameters{
+		Jc:   string(c.Jc),
+		Jmin: string(c.Jmin),
+		Jmax: string(c.Jmax),
+		S1:   string(c.S1),
+		S2:   string(c.S2),
+		S3:   string(c.S3),
+		S4:   string(c.S4),
+		H1:   string(c.H1),
+		H2:   string(c.H2),
+		H3:   string(c.H3),
+		H4:   string(c.H4),
+		I1:   string(c.I1),
+		I2:   string(c.I2),
+		I3:   string(c.I3),
+		I4:   string(c.I4),
+		I5:   string(c.I5),
+	}
+}
+
 type WireGuardConfig struct {
 	IsClient bool `json:""`
 
@@ -66,6 +131,7 @@ type WireGuardConfig struct {
 	MTU            int32                  `json:"mtu"`
 	Reserved       []byte                 `json:"reserved"`
 	DomainStrategy string                 `json:"domainStrategy"`
+	Parameters     *AmneziaParameters     `json:"awg"`
 }
 
 func (c *WireGuardConfig) Build() (proto.Message, error) {
@@ -141,6 +207,7 @@ func (c *WireGuardConfig) Build() (proto.Message, error) {
 
 	config.IsClient = c.IsClient
 	config.NoKernelTun = c.NoKernelTun
+	config.Parameters = c.Parameters.Build()
 
 	return config, nil
 }

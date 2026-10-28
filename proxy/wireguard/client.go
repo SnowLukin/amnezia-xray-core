@@ -57,7 +57,7 @@ func NewClient(ctx context.Context, conf *DeviceConfig) (*Handler, error) {
 	if len(tag) > 0 && p.ForSystem().Stats.OutboundUplink {
 		statsManager := v.GetFeature(stats.ManagerType()).(stats.Manager)
 		name := "outbound>>>" + tag + ">>>traffic>>>uplink"
-		c, _ := stats.GetOrRegisterCounter(statsManager, name)
+		c, _ := statsManager.GetOrRegisterCounter(name)
 		if c != nil {
 			uplinkCounter = c
 		}
@@ -65,7 +65,7 @@ func NewClient(ctx context.Context, conf *DeviceConfig) (*Handler, error) {
 	if len(tag) > 0 && p.ForSystem().Stats.OutboundDownlink {
 		statsManager := v.GetFeature(stats.ManagerType()).(stats.Manager)
 		name := "outbound>>>" + tag + ">>>traffic>>>downlink"
-		c, _ := stats.GetOrRegisterCounter(statsManager, name)
+		c, _ := statsManager.GetOrRegisterCounter(name)
 		if c != nil {
 			downlinkCounter = c
 		}
@@ -139,13 +139,7 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
 	ob.Name = "wireguard"
 	ob.CanSpliceCopy = 3
 
-	if h.dev == nil {
-		if err := h.init(ctx); err != nil {
-			return err
-		}
-	}
-
-	if err := h.dev.Up(); err != nil {
+	if err := h.init(ctx); err != nil {
 		return err
 	}
 
@@ -258,8 +252,11 @@ func (h *Handler) Close() (err error) {
 func (h *Handler) init(ctx context.Context) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if h.tun == nil {
+		return errors.New("closed")
+	}
 	if h.dev != nil {
-		return nil
+		return h.dev.Up()
 	}
 	resolveFunc := h.resolveLocal
 	listenFunc := func() (net.PacketConn, error) {
@@ -319,6 +316,7 @@ func (h *Handler) init(ctx context.Context) error {
 	bind.reserved = h.conf.Reserved
 	var cfg strings.Builder
 	cfg.WriteString("private_key=" + h.conf.SecretKey + "\n")
+	writeAmneziaParams(&cfg, h.conf.Parameters)
 	for _, peer := range h.conf.Peers {
 		cfg.WriteString("public_key=" + peer.PublicKey + "\n")
 		if peer.PreSharedKey != "" {
@@ -342,6 +340,25 @@ func (h *Handler) init(ctx context.Context) error {
 	}
 	h.dev = dev
 	return nil
+}
+
+// writeAmneziaParams appends AmneziaWG parameters to the device IPC config.
+// Must run before the first public_key: the device section ends at the first peer.
+func writeAmneziaParams(cfg *strings.Builder, p *AmneziaParameters) {
+	if p == nil {
+		return
+	}
+
+	for _, param := range []struct{ key, value string }{
+		{"jc", p.Jc}, {"jmin", p.Jmin}, {"jmax", p.Jmax},
+		{"s1", p.S1}, {"s2", p.S2}, {"s3", p.S3}, {"s4", p.S4},
+		{"h1", p.H1}, {"h2", p.H2}, {"h3", p.H3}, {"h4", p.H4},
+		{"i1", p.I1}, {"i2", p.I2}, {"i3", p.I3}, {"i4", p.I4}, {"i5", p.I5},
+	} {
+		if param.value != "" {
+			cfg.WriteString(param.key + "=" + param.value + "\n")
+		}
+	}
 }
 
 func (h *Handler) resolveLocal(host string) (net.IP, error) {
