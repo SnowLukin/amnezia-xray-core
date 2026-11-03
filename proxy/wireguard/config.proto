@@ -37,13 +37,6 @@ message AmneziaParameters {
 }
 
 message DeviceConfig {
-  enum DomainStrategy {
-    FORCE_IP = 0;
-    FORCE_IP4 = 1;
-    FORCE_IP6 = 2;
-    FORCE_IP46 = 3;
-    FORCE_IP64 = 4;
-  }
   string secret_key = 1;
   repeated string endpoint = 2;
   repeated PeerConfig peers = 3;
@@ -51,8 +44,11 @@ message DeviceConfig {
   int32 mtu = 4;
 
   bytes reserved = 6;
-  DomainStrategy domain_strategy = 7;
   bool is_client = 8;
   bool no_kernel_tun = 9;
-  AmneziaParameters parameters = 10;
+  repeated string DNS = 10;
+
+  // Numbered away from the upstream fields so that new XTLS fields do not
+  // take the same number.
+  AmneziaParameters parameters = 1000;
 }
