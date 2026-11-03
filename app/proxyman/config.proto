@@ -61,6 +61,13 @@ message SenderConfig {
   MultiplexingConfig multiplex_settings = 4;
   string via_cidr = 5;
   xray.transport.internet.DomainStrategy target_strategy = 6;
+  SpeedLimit speed_limit = 7;
+}
+
+// Byte budgets shared by all connections of one outbound. Zero is no limit.
+message SpeedLimit {
+  uint64 uplink_bytes_per_second = 1;
+  uint64 downlink_bytes_per_second = 2;
 }
 
 message MultiplexingConfig {

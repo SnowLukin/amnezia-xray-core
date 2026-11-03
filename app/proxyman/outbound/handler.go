@@ -68,6 +68,7 @@ type Handler struct {
 	downlinkCounter stats.Counter
 	observer        outbound.ConnectionObserver
 	isProbeOnly     bool
+	speed           *speedLimits
 }
 
 // NewHandler creates a new Handler based on the given configuration.
@@ -95,6 +96,7 @@ func NewHandler(ctx context.Context, config *core.OutboundHandlerConfig) (outbou
 				return nil, errors.New("failed to parse stream settings").Base(err)
 			}
 			h.streamSettings = mss
+			h.speed = newSpeedLimits(s.SpeedLimit)
 		default:
 			return nil, errors.New("settings is not SenderConfig")
 		}
@@ -229,6 +231,7 @@ func (h *Handler) Dispatch(ctx context.Context, link *transport.Link) {
 			}
 		}
 	}
+	h.speed.limit(ctx, link)
 	if h.mux != nil && shouldDispatchViaMux(outboundSocketMark) {
 		test := func(err error) {
 			if err != nil {

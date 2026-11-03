@@ -227,6 +227,36 @@ type OutboundDetourConfig struct {
 	MuxSettings    *MuxConfig               `json:"mux"`
 	TargetStrategy string                   `json:"targetStrategy"`
 	Selection      *OutboundSelectionConfig `json:"selection"`
+	SpeedLimit     *SpeedLimitConfig        `json:"speedLimit"`
+}
+
+// SpeedLimitConfig caps the payload rate of one outbound, shared by all its
+// connections. An empty direction is not limited.
+type SpeedLimitConfig struct {
+	Uplink   Bandwidth `json:"uplink"`
+	Downlink Bandwidth `json:"downlink"`
+}
+
+// Below this a limited outbound cannot carry a TLS handshake within the
+// usual timeouts, which would look like a dead path to the observer.
+const minSpeedLimitBytesPerSecond = 8 * Kilobyte
+
+func (c *SpeedLimitConfig) Build() (*proxyman.SpeedLimit, error) {
+	up, err := c.Uplink.Bps()
+	if err != nil {
+		return nil, errors.New("invalid speedLimit.uplink").Base(err)
+	}
+	down, err := c.Downlink.Bps()
+	if err != nil {
+		return nil, errors.New("invalid speedLimit.downlink").Base(err)
+	}
+	if up > 0 && up < minSpeedLimitBytesPerSecond || down > 0 && down < minSpeedLimitBytesPerSecond {
+		return nil, errors.New("speedLimit must be at least 64kbps per direction")
+	}
+	if up == 0 && down == 0 {
+		return nil, nil
+	}
+	return &proxyman.SpeedLimit{UplinkBytesPerSecond: up, DownlinkBytesPerSecond: down}, nil
 }
 
 func requiresTransportSecurity(address *Address) bool {
@@ -319,6 +349,14 @@ func (c *OutboundDetourConfig) Build() (*core.OutboundHandlerConfig, error) {
 			return nil, errors.New("failed to build stream settings for outbound detour").Base(err)
 		}
 		senderSettings.StreamSettings = ss
+	}
+
+	if c.SpeedLimit != nil {
+		limit, err := c.SpeedLimit.Build()
+		if err != nil {
+			return nil, err
+		}
+		senderSettings.SpeedLimit = limit
 	}
 
 	if c.MuxSettings != nil {
