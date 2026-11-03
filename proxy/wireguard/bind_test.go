@@ -2,6 +2,7 @@ package wireguard
 
 import (
 	"bytes"
+	"context"
 	"net"
 	"testing"
 
@@ -27,7 +28,7 @@ func receiveOnce(t *testing.T, reserved []byte, packet []byte) []byte {
 
 	b := &bind{
 		reserved:   reserved,
-		listenFunc: func() (net.PacketConn, error) { return local, nil },
+		listenFunc: func(context.Context) (net.PacketConn, error) { return local, nil },
 	}
 	fns, _, err := b.Open(0)
 	if err != nil {

@@ -1,6 +1,7 @@
 package conf
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -16,11 +17,16 @@ import (
 )
 
 type WireGuardPeerConfig struct {
-	PublicKey    string   `json:"publicKey"`
-	PreSharedKey string   `json:"preSharedKey"`
-	Endpoint     string   `json:"endpoint"`
-	KeepAlive    uint32   `json:"keepAlive"`
-	AllowedIPs   []string `json:"allowedIPs,omitempty"`
+	PublicKey    string `json:"publicKey"`
+	PreSharedKey string `json:"preSharedKey"`
+	Endpoint     string `json:"endpoint"`
+	// KeepAlive is the persistent keepalive in seconds: a number, as it
+	// always was, or a range such as "25-35" from which AmneziaWG picks
+	// every interval anew.
+	KeepAlive  awgParam `json:"keepAlive"`
+	AllowedIPs []string `json:"allowedIPs,omitempty"`
+	// ProtocolVersion is protocol_version of UAPI. AmneziaWG accepts only 1.
+	ProtocolVersion awgParam `json:"protocolVersion"`
 
 	Level uint32 `json:"level"`
 	Email string `json:"email"`
@@ -45,16 +51,45 @@ func (c *WireGuardPeerConfig) Build() (*wireguard.PeerConfig, error) {
 	}
 
 	config.Endpoint = c.Endpoint
-	if c.KeepAlive != 0 {
-		config.KeepAlive = strconv.FormatUint(uint64(c.KeepAlive), 10)
+	// 0 turns the keepalive off and writes nothing, as it always did. The
+	// value used to be a JSON number that the type checked, so a range is
+	// checked here rather than by the device of an outbound at its first
+	// connection.
+	if c.KeepAlive != "" && c.KeepAlive != "0" {
+		if err := checkAwgRange(string(c.KeepAlive)); err != nil {
+			return nil, errors.New("invalid WireGuard keepAlive ", strconv.Quote(string(c.KeepAlive))).Base(err)
+		}
+		config.KeepAlive = string(c.KeepAlive)
 	}
 	if c.AllowedIPs == nil {
 		config.AllowedIps = []string{"0.0.0.0/0", "::0/0"}
 	} else {
 		config.AllowedIps = c.AllowedIPs
 	}
+	config.ProtocolVersion = string(c.ProtocolVersion)
 
 	return config, nil
+}
+
+// checkAwgRange checks a number or a range "lo-hi" of uint32 values, the
+// format AmneziaWG reads ranges in.
+func checkAwgRange(s string) error {
+	lo, hi, isRange := strings.Cut(s, "-")
+	l, err := strconv.ParseUint(lo, 10, 32)
+	if err != nil {
+		return err
+	}
+	if !isRange {
+		return nil
+	}
+	h, err := strconv.ParseUint(hi, 10, 32)
+	if err != nil {
+		return err
+	}
+	if h < l {
+		return errors.New("the range ends before it starts")
+	}
+	return nil
 }
 
 // awgParam accepts both a JSON number and a string: h1-h4 may be ranges
@@ -77,6 +112,26 @@ func (p *awgParam) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// awgFlag accepts a JSON boolean, and also 0 or 1 as a number or a string,
+// which is how awg configs and UAPI write flags.
+type awgFlag bool
+
+func (f *awgFlag) UnmarshalJSON(data []byte) error {
+	var b bool
+	if err := json.Unmarshal(data, &b); err == nil {
+		*f = awgFlag(b)
+		return nil
+	}
+	var p awgParam
+	if err := p.UnmarshalJSON(data); err == nil {
+		if b, err := strconv.ParseBool(string(p)); err == nil {
+			*f = awgFlag(b)
+			return nil
+		}
+	}
+	return errors.New("AmneziaWG flag must be a boolean, 0 or 1")
+}
+
 type AmneziaParameters struct {
 	Jc   awgParam `json:"jc"`
 	Jmin awgParam `json:"jmin"`
@@ -94,11 +149,49 @@ type AmneziaParameters struct {
 	I3   awgParam `json:"i3"`
 	I4   awgParam `json:"i4"`
 	I5   awgParam `json:"i5"`
+
+	// AmneziaWG 3.1 flags, named after RandomTrailers and DisableCookies of
+	// awg configs. RandomTrailers must match the server.
+	RandomTrailers awgFlag `json:"randomTrailers"`
+	DisableCookies awgFlag `json:"disableCookies"`
+
+	// AmneziaWG 3.1 keys, named after those of awg configs.
+	// HeaderProtectionKey is a key in base64 or hex, like the others; it must
+	// match the server and needs s1-s4 of at least 12. The rest are numbers
+	// or ranges: of bytes for ContentPaddingAddition, of seconds for the
+	// timings, of attempts for MaxHandshakeAttempts.
+	HeaderProtectionKey    string   `json:"headerProtectionKey"`
+	ContentPaddingAddition awgParam `json:"contentPaddingAddition"`
+	RekeyAfterTime         awgParam `json:"rekeyAfterTime"`
+	RekeyTimeout           awgParam `json:"rekeyTimeout"`
+	RejectAfterTime        awgParam `json:"rejectAfterTime"`
+	KeepaliveTimeout       awgParam `json:"keepaliveTimeout"`
+	MaxHandshakeAttempts   awgParam `json:"maxHandshakeAttempts"`
 }
 
-func (c *AmneziaParameters) Build() *wireguard.AmneziaParameters {
+// awgHeaderNonceSize is the least s1-s4 with header protection: the device
+// takes the nonce of every message from its padding.
+const awgHeaderNonceSize = 12
+
+func (c *AmneziaParameters) Build() (*wireguard.AmneziaParameters, error) {
 	if c == nil {
-		return nil
+		return nil, nil
+	}
+
+	var headerKey string
+	if c.HeaderProtectionKey != "" {
+		var err error
+		if headerKey, err = ParseWireGuardKey(c.HeaderProtectionKey); err != nil {
+			return nil, errors.New("invalid AmneziaWG headerProtectionKey").Base(err)
+		}
+		// The device refuses the key otherwise, and an outbound would find
+		// out only at its first connection.
+		for i, s := range []awgParam{c.S1, c.S2, c.S3, c.S4} {
+			if n, err := strconv.ParseUint(string(s), 10, 16); err != nil || n < awgHeaderNonceSize {
+				return nil, errors.New("AmneziaWG headerProtectionKey needs s", i+1, " of at least ",
+					awgHeaderNonceSize, ", not ", strconv.Quote(string(s)))
+			}
+		}
 	}
 
 	return &wireguard.AmneziaParameters{
@@ -118,20 +211,31 @@ func (c *AmneziaParameters) Build() *wireguard.AmneziaParameters {
 		I3:   string(c.I3),
 		I4:   string(c.I4),
 		I5:   string(c.I5),
-	}
+
+		RandomTrailers: bool(c.RandomTrailers),
+		DisableCookies: bool(c.DisableCookies),
+
+		HeaderProtectionKey:    headerKey,
+		ContentPaddingAddition: string(c.ContentPaddingAddition),
+		RekeyAfterTime:         string(c.RekeyAfterTime),
+		RekeyTimeout:           string(c.RekeyTimeout),
+		RejectAfterTime:        string(c.RejectAfterTime),
+		KeepaliveTimeout:       string(c.KeepaliveTimeout),
+		MaxHandshakeAttempts:   string(c.MaxHandshakeAttempts),
+	}, nil
 }
 
 type WireGuardConfig struct {
 	IsClient bool `json:""`
 
-	NoKernelTun    bool                   `json:"noKernelTun"`
-	SecretKey      string                 `json:"secretKey"`
-	Address        []string               `json:"address"`
-	Peers          []*WireGuardPeerConfig `json:"peers"`
-	MTU            int32                  `json:"mtu"`
-	Reserved       []byte                 `json:"reserved"`
-	DomainStrategy string                 `json:"domainStrategy"`
-	Parameters     *AmneziaParameters     `json:"awg"`
+	NoKernelTun bool                   `json:"noKernelTun"`
+	SecretKey   string                 `json:"secretKey"`
+	Address     []string               `json:"address"`
+	Peers       []*WireGuardPeerConfig `json:"peers"`
+	MTU         int32                  `json:"mtu"`
+	Reserved    []byte                 `json:"reserved"`
+	DNS         []string               `json:"remoteDNS"`
+	Parameters  *AmneziaParameters     `json:"awg"`
 }
 
 func (c *WireGuardConfig) Build() (proto.Message, error) {
@@ -190,24 +294,15 @@ func (c *WireGuardConfig) Build() (proto.Message, error) {
 	}
 	config.Reserved = c.Reserved
 
-	switch strings.ToLower(c.DomainStrategy) {
-	case "forceip", "":
-		config.DomainStrategy = wireguard.DeviceConfig_FORCE_IP
-	case "forceipv4":
-		config.DomainStrategy = wireguard.DeviceConfig_FORCE_IP4
-	case "forceipv6":
-		config.DomainStrategy = wireguard.DeviceConfig_FORCE_IP6
-	case "forceipv4v6":
-		config.DomainStrategy = wireguard.DeviceConfig_FORCE_IP46
-	case "forceipv6v4":
-		config.DomainStrategy = wireguard.DeviceConfig_FORCE_IP64
-	default:
-		return nil, errors.New("unsupported domain strategy: ", c.DomainStrategy)
-	}
-
 	config.IsClient = c.IsClient
 	config.NoKernelTun = c.NoKernelTun
-	config.Parameters = c.Parameters.Build()
+	config.DNS = c.DNS
+	if config.Parameters, err = c.Parameters.Build(); err != nil {
+		return nil, err
+	}
+	if !c.IsClient && c.Parameters != nil {
+		errors.LogWarning(context.Background(), "the WireGuard inbound ignores awg parameters")
+	}
 
 	return config, nil
 }

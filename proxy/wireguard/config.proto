@@ -12,8 +12,14 @@ message PeerConfig {
   string public_key = 1;
   string pre_shared_key = 2;
   string endpoint = 3;
+  // The persistent keepalive in seconds: a number, or a range such as
+  // "25-35" from which AmneziaWG picks every interval anew.
   string keep_alive = 4;
   repeated string allowed_ips = 5;
+  // protocol_version of the peer in UAPI. AmneziaWG accepts only 1, the
+  // version it speaks anyway; the field lets a config copied from UAPI load.
+  // Numbered away from the upstream fields, like DeviceConfig.parameters.
+  string protocol_version = 1000;
 }
 
 // AmneziaWG obfuscation parameters.
@@ -34,16 +40,40 @@ message AmneziaParameters {
   string i3 = 14;
   string i4 = 15;
   string i5 = 16;
+  // AmneziaWG 3.1 flags. Only outbounds apply them: the inbound writes no
+  // AmneziaWG parameters to its device.
+  //
+  // random_trailers appends random bytes to handshake messages and pads
+  // transport packets. Both sides must agree: a peer without it drops every
+  // handshake.
+  bool random_trailers = 17;
+  // disable_cookies stops answering handshakes under load with cookies. That
+  // is the side receiving handshake initiations, a server, so on an outbound
+  // it does next to nothing.
+  bool disable_cookies = 18;
+
+  // AmneziaWG 3.1 device keys. Each is written to the device only when set,
+  // so a config without them configures the device as before.
+  //
+  // header_protection_key, 32 bytes in hex, encrypts the header fields of
+  // every message, with the S1-S4 padding as the nonce: each of S1-S4 must
+  // be at least 12. Both sides must have the same key.
+  string header_protection_key = 19;
+  // content_padding_addition pads every transport packet with a number of
+  // random bytes picked from the range. Only the side that sends uses it.
+  string content_padding_addition = 20;
+  // The timings of the protocol in seconds, and the handshake attempts, each
+  // a number or a range from which the device picks anew every time. They
+  // replace the constants of WireGuard: rekey after 120 s, rekey timeout
+  // 5 s, reject after 180 s, keepalive timeout 10 s and 18 attempts.
+  string rekey_after_time = 21;
+  string rekey_timeout = 22;
+  string reject_after_time = 23;
+  string keepalive_timeout = 24;
+  string max_handshake_attempts = 25;
 }
 
 message DeviceConfig {
-  enum DomainStrategy {
-    FORCE_IP = 0;
-    FORCE_IP4 = 1;
-    FORCE_IP6 = 2;
-    FORCE_IP46 = 3;
-    FORCE_IP64 = 4;
-  }
   string secret_key = 1;
   repeated string endpoint = 2;
   repeated PeerConfig peers = 3;
@@ -51,8 +81,11 @@ message DeviceConfig {
   int32 mtu = 4;
 
   bytes reserved = 6;
-  DomainStrategy domain_strategy = 7;
   bool is_client = 8;
   bool no_kernel_tun = 9;
-  AmneziaParameters parameters = 10;
+  repeated string DNS = 10;
+
+  // Numbered away from the upstream fields so that new XTLS fields do not
+  // take the same number.
+  AmneziaParameters parameters = 1000;
 }
