@@ -49,13 +49,28 @@ type netTun struct {
 // localAddresses. With a handler the stack takes every connection that comes from the device, for any address.
 // Without one it takes none
 func CreateNetTUN(localAddresses, dnsServers []netip.Addr, mtu int, handler xtun.ConnectionHandler) (tun.Device, *Net, error) {
+	return createNetTUN(localAddresses, dnsServers, mtu, handler, false)
+}
+
+// outboundUDPQueue is how many datagrams of a flow of a client outbound wait for their reader. The stack keeps them
+// in the heap of the process, where iOS ends a network extension at 50 MB: the 1024 of the stack held 2.2 MiB for
+// every flow that was not read, these 0.35 MiB
+const outboundUDPQueue = 128
+
+// createNetTUN is CreateNetTUN, and with outbound the stack of a client outbound: its TCP windows grow with what is
+// read instead of every connection taking 1 MiB that is not read, and its flows queue outboundUDPQueue datagrams
+func createNetTUN(localAddresses, dnsServers []netip.Addr, mtu int, handler xtun.ConnectionHandler, outbound bool) (tun.Device, *Net, error) {
 	dev := &netTun{
 		events:  make(chan tun.Event, 10),
 		packets: make(chan *buf.Buffer, netTunQueue),
 		closed:  make(chan struct{}),
 		mtu:     mtu,
 	}
-	stack, err := xtun.NewStack(context.Background(), xtun.StackOptions{Tun: dev, MTU: uint32(mtu), Addresses: localAddresses, Remote: true}, handler)
+	options := xtun.StackOptions{Tun: dev, MTU: uint32(mtu), Addresses: localAddresses, Remote: true}
+	if outbound {
+		options.GrowWindow, options.UDPQueue = true, outboundUDPQueue
+	}
+	stack, err := xtun.NewStack(context.Background(), options, handler)
 	if err != nil {
 		return nil, nil, err
 	}

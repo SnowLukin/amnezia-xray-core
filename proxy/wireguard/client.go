@@ -224,7 +224,7 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
 		reader = buf.NewReader(conn)
 		writer = buf.NewWriter(conn)
 	case net.Network_UDP:
-		conn, err := h.tnet.Dial("udp", gonet.UDPAddrFromAddrPort(addrPort).String())
+		conn, err := h.tnet.DialContext(ctx, "udp", gonet.UDPAddrFromAddrPort(addrPort).String())
 		if err != nil {
 			return errors.New("failed to create UDP connection").Base(err)
 		}

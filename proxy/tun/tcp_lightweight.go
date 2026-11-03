@@ -36,6 +36,12 @@ const (
 	tcpLargeWindow = 1 << 20
 	// tcpWindowShift makes them fit the 16 bits of a window
 	tcpWindowShift = 5
+	// tcpGrowFrom is what a connection of a stack that grows its windows starts to take with, about what Linux
+	// starts with, and tcpGrownWindow the most it grows to, the most a window says with tcpWindowShift.
+	// A window takes a round trip to be used: a fixed window of 1 MiB gives 170 Mbit/s over 50 ms and holds 1 MiB
+	// for every connection that is not read
+	tcpGrowFrom    = 128 << 10
+	tcpGrownWindow = math.MaxUint16 << tcpWindowShift
 	// tcpHeld is how many segments wait for one that was lost before them,
 	// and of how many parts what the system says it has is known
 	tcpHeld = 1024
@@ -130,8 +136,9 @@ type tcpConn struct {
 	ipSize int
 	// mss is the largest payload of a segment that is sent
 	mss int
-	// window is tcpWindow or tcpLargeWindow
-	window int32
+	// window is the most of what is sent before it is acknowledged, tcpWindow, tcpLargeWindow or tcpGrownWindow.
+	// rcvWindow is what is taken before the reader has to take it: the window, or less while it grows
+	window, rcvWindow int32
 	// sndShift and rcvShift are the window scale of what the system and we advertise
 	sndShift, rcvShift uint8
 	// sack is set if the system takes selective acknowledgments
@@ -159,9 +166,12 @@ type tcpConn struct {
 	rcvAcked uint32
 	// rcvAdvertised is the last window sent, in bytes
 	rcvAdvertised int32
-	rcvQueue      buf.MultiBuffer
-	rcvLen        int32
-	rcvFin        bool
+	// rcvTaken is what the reader took since rcvSince, to grow rcvWindow by
+	rcvTaken int64
+	rcvSince time.Time
+	rcvQueue buf.MultiBuffer
+	rcvLen   int32
+	rcvFin   bool
 	// rcvEnd is where what the system sends ends, if rcvEnds: its FIN came with a segment that waits in rcvHeld
 	rcvEnd  uint32
 	rcvEnds bool
@@ -222,6 +232,7 @@ func newTCPConn(s *stack, f flow) *tcpConn {
 		src:             net.TCPDestination(net.IPAddress(f.src.Addr().AsSlice()), net.Port(f.src.Port())),
 		dst:             net.TCPDestination(net.IPAddress(f.dst.Addr().AsSlice()), net.Port(f.dst.Port())),
 		window:          s.window,
+		rcvWindow:       s.rcvWindow,
 		ssthresh:        uint32(s.window),
 		timedAt:         time.Now(),
 		retransmitTicks: tcpRetransmitTicks,
@@ -327,7 +338,7 @@ func (c *tcpConn) header(b []byte, seq uint32, flags byte, options []byte, size 
 	binary.BigEndian.PutUint32(t[8:], c.rcvNxt)
 	t[12] = byte(len(t)/4) << 4
 	t[13] = flags
-	window := max(c.window-c.rcvLen, 0)
+	window := max(c.rcvWindow-c.rcvLen, 0)
 	if flags&tcpSyn != 0 {
 		// the window of a SYN is not scaled
 		binary.BigEndian.PutUint16(t[14:], uint16(min(window, math.MaxUint16)))
@@ -480,7 +491,7 @@ func (c *tcpConn) input(s segment) bool {
 	}
 	if s.flags&tcpRst != 0 {
 		// from where the system is, or was before its FIN, not from someone who knows no more than the addresses
-		if s.seq-c.rcvNxt <= uint32(c.window) || c.rcvFin && s.seq+1 == c.rcvNxt {
+		if s.seq-c.rcvNxt <= uint32(c.rcvWindow) || c.rcvFin && s.seq+1 == c.rcvNxt {
 			c.abort(errTCPReset)
 		}
 		return true
@@ -758,7 +769,7 @@ func (c *tcpConn) space() uint32 {
 func (c *tcpConn) receive(s segment) {
 	// what is large, the next and all taken stays in the buffers that it was read into
 	size := len(s.payload) + s.rest
-	keep := c.stack.bufs != nil && size >= tcpKept && s.seq == c.rcvNxt && size <= int(c.window-c.rcvLen)
+	keep := c.stack.bufs != nil && size >= tcpKept && s.seq == c.rcvNxt && size <= int(c.rcvWindow-c.rcvLen)
 	if !keep {
 		s.payload = c.stack.whole(s.payload, s.rest)
 	}
@@ -789,7 +800,7 @@ func (c *tcpConn) receive(s segment) {
 	}
 	// the system is told at once when something is wrong, or it sends more of the same
 	now := len(c.rcvHeld) > 0
-	if room := int(c.window - c.rcvLen - int32(seq-c.rcvNxt)); len(payload) > room {
+	if room := int(c.rcvWindow - c.rcvLen - int32(seq-c.rcvNxt)); len(payload) > room {
 		payload, fin, now = payload[:max(room, 0)], false, true
 	}
 	if seq != c.rcvNxt {
@@ -827,7 +838,7 @@ func (c *tcpConn) receive(s segment) {
 	c.readable.Signal()
 	// the reader acknowledges what it takes, with one segment for all that came by then.
 	// It is not waited for when it does not read for long
-	if fin || now || c.rcvNxt-c.rcvAcked >= uint32(c.window/4) {
+	if fin || now || c.rcvNxt-c.rcvAcked >= uint32(c.rcvWindow/4) {
 		c.sendAck()
 	} else {
 		c.arm(tcpTick)
@@ -1082,10 +1093,33 @@ func (c *tcpConn) wait() error {
 // taken is called when size bytes have been read. c.mu is held
 func (c *tcpConn) taken(size int32) {
 	c.rcvLen -= size
+	c.grow(size)
 	// the system may also have stopped at the window that it was told
-	if c.err == nil && (c.rcvAcked != c.rcvNxt || c.rcvAdvertised < c.window/2) {
+	if c.err == nil && (c.rcvAcked != c.rcvNxt || c.rcvAdvertised < c.rcvWindow/2) {
 		c.sendAck()
 	}
+}
+
+// grow lets rcvWindow take twice what the reader took in the last round trip, up to the window, as Linux grows
+// what it takes (DRS). A reader that keeps up with a sender that the window holds back takes about the whole window
+// every round trip, so its window doubles until the way holds back the sender instead. One that does not read keeps
+// what it started with. c.mu is held
+func (c *tcpConn) grow(size int32) {
+	if c.rcvWindow >= c.window {
+		return
+	}
+	now := time.Now()
+	if c.rcvSince.IsZero() {
+		c.rcvSince = now
+	}
+	c.rcvTaken += int64(size)
+	if now.Sub(c.rcvSince) < max(c.srtt, time.Millisecond) {
+		return
+	}
+	if grown := 2 * c.rcvTaken; grown > int64(c.rcvWindow) {
+		c.rcvWindow = int32(min(grown, int64(c.window)))
+	}
+	c.rcvTaken, c.rcvSince = 0, now
 }
 
 // ReadMultiBuffer implements buf.Reader

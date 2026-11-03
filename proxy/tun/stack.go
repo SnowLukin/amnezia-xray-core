@@ -45,6 +45,13 @@ type StackOptions struct {
 	// has come a long way, so its checksums are looked at, nothing but that way limits the windows, and the
 	// segments of TCP carry the times of both sides if the other side has them
 	Remote bool
+	// GrowWindow starts what every TCP connection takes before its reader has to take it small, and lets that grow
+	// as fast as the reader takes what comes, up to the most a window can say, instead of giving each connection the
+	// window of the stack at once. The stack keeps what it takes in the heap of the process: a connection that is
+	// not read holds the small window, and one that is read is held back by nothing but its round trip
+	GrowWindow bool
+	// UDPQueue is how many packets wait for the reader of a port that DialUDP opened, udpQueueLimit if zero
+	UDPQueue int
 }
 
 // flow is what the packets of one connection have in common, src is the side of the system
@@ -62,8 +69,11 @@ type stack struct {
 	mtu int
 	// segmenter is the tun if it takes segments that are larger than its MTU
 	segmenter segmenter
-	// window is the window of every connection
-	window int32
+	// window is the window of every connection, and the most of what it sends before that is acknowledged.
+	// rcvWindow is what a connection starts to take with, the window if it is not grown, see StackOptions.GrowWindow
+	window, rcvWindow int32
+	// udpQueue is how many packets wait for the reader of a port of DialUDP
+	udpQueue int
 	// verify is set if the checksums of what comes are looked at
 	verify bool
 	// stamps is set if connections carry the times of RFC 7323 when the other side does
@@ -112,6 +122,14 @@ func NewStack(ctx context.Context, options StackOptions, handler ConnectionHandl
 	}
 	if options.Remote {
 		s.window = tcpLargeWindow
+	}
+	s.rcvWindow = s.window
+	if options.GrowWindow {
+		s.window, s.rcvWindow = tcpGrownWindow, tcpGrowFrom
+	}
+	s.udpQueue = udpQueueLimit
+	if options.UDPQueue > 0 {
+		s.udpQueue = options.UDPQueue
 	}
 	for i := range s.identification {
 		s.identification[i].Store(rand.Uint32())
@@ -468,7 +486,7 @@ func (s *stack) write(header, payload []byte) error {
 
 // DialUDP implements Stack
 func (s *stack) DialUDP() (net.PacketConn, error) {
-	u := &udpSocket{stack: s, queue: newPacketQueue(udpQueueLimit)}
+	u := &udpSocket{stack: s, queue: newPacketQueue(s.udpQueue)}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed {
