@@ -4,6 +4,8 @@ import "time"
 
 // requestQuality has the same measured values and presence as qualityPathView,
 // with protocol-1 request names. Each projection owns its scalar pointers.
+// Histogram buckets stay in the report: they serve sums over many reports,
+// and every outbound of a provider request would pay for them.
 type requestQuality struct {
 	BytesDown            *int64   `json:"bytesDown,omitempty"`
 	BytesDownOverflow    bool     `json:"bytesDownOverflow,omitempty"`
@@ -21,10 +23,19 @@ type requestQuality struct {
 	BulkKbpsP50          *int64   `json:"bulkKbpsP50,omitempty"`
 	BulkKbpsP90          *int64   `json:"bulkKbpsP90,omitempty"`
 	BulkKbpsMax          *int64   `json:"bulkKbpsMax,omitempty"`
+	BulkPeakCount        uint64   `json:"bulkPeakCount,omitempty"`
+	BulkPeakKbpsP50      *int64   `json:"bulkPeakKbpsP50,omitempty"`
+	BulkPeakKbpsP90      *int64   `json:"bulkPeakKbpsP90,omitempty"`
+	BulkSaturatedCount   *uint64  `json:"bulkSaturatedCount,omitempty"`
+	BulkUnsaturatedCount *uint64  `json:"bulkUnsaturatedCount,omitempty"`
+	BulkSaturatedKbpsP50 *int64   `json:"bulkSaturatedKbpsP50,omitempty"`
+	BulkSaturatedKbpsP90 *int64   `json:"bulkSaturatedKbpsP90,omitempty"`
 	BulkRTTP50Ms         *int64   `json:"bulkRttP50Ms,omitempty"`
 	BulkSplicedCount     *uint64  `json:"bulkSplicedCount,omitempty"`
 	RXOutOfOrderFraction *float64 `json:"rxOutOfOrderFraction,omitempty"`
 	TXRetransmitFraction *float64 `json:"txRetransmitFraction,omitempty"`
+	SpeedLimitDownKbps   *int64   `json:"speedLimitDownKbps,omitempty"`
+	SpeedLimitUpKbps     *int64   `json:"speedLimitUpKbps,omitempty"`
 }
 
 func requestQualityOf(v qualityPathView) *requestQuality {
@@ -35,8 +46,12 @@ func requestQualityOf(v qualityPathView) *requestQuality {
 		DialCount: v.DialCount, DialP50Ms: v.DialP50Ms, DialP90Ms: v.DialP90Ms,
 		TCPCount: v.TCPCount, TCPRTTP50Ms: v.TCPRTTP50Ms, TCPRTTP90Ms: v.TCPRTTP90Ms, TCPRTTMinMs: v.TCPRTTMinMs,
 		BulkCount: v.BulkCount, BulkKbpsP50: v.BulkKbpsP50, BulkKbpsP90: v.BulkKbpsP90, BulkKbpsMax: v.BulkKbpsMax,
+		BulkPeakCount: v.BulkPeakCount, BulkPeakKbpsP50: v.BulkPeakKbpsP50, BulkPeakKbpsP90: v.BulkPeakKbpsP90,
+		BulkSaturatedCount: v.BulkSaturatedCount, BulkUnsaturatedCount: v.BulkUnsaturatedCount,
+		BulkSaturatedKbpsP50: v.BulkSaturatedKbpsP50, BulkSaturatedKbpsP90: v.BulkSaturatedKbpsP90,
 		BulkRTTP50Ms: v.BulkRTTP50Ms, BulkSplicedCount: v.BulkSplicedCount,
 		RXOutOfOrderFraction: v.RXOutOfOrderFraction, TXRetransmitFraction: v.TXRetransmitFraction,
+		SpeedLimitDownKbps: v.SpeedLimitDownKbps, SpeedLimitUpKbps: v.SpeedLimitUpKbps,
 	}
 }
 

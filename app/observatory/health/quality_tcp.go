@@ -11,15 +11,18 @@ const (
 	qualityHasLoadRTT
 	qualityHasRX
 	qualityHasTX
+	qualityHasRXBytes
 )
 
 // tcpQualitySnapshot keeps presence separate from value: no retransmissions is
 // a known zero, whereas a field beyond the returned getsockopt length is absent.
 // RX counters are packets on Linux and bytes on Darwin; TX counters are bytes.
+// rxBytes is the payload the kernel received, as the network delivered it.
 type tcpQualitySnapshot struct {
 	rtt, minRTT, loadRTT  time.Duration
 	rxOutOfOrder, rxTotal uint64
 	txRetransmit, txTotal uint64
+	rxBytes               uint64
 	present               uint8
 }
 
@@ -29,6 +32,7 @@ type tcpQualitySnapshot struct {
 const (
 	qualityLinuxRTTOffset       = 68
 	qualityLinuxLoadRTTOffset   = 92
+	qualityLinuxRXBytesOffset   = 128
 	qualityLinuxMinRTTOffset    = 148
 	qualityLinuxRXTotalOffset   = 152
 	qualityLinuxTXTotalOffset   = 200
@@ -71,8 +75,13 @@ func decodeLinuxTCPQuality(b []byte) tcpQualitySnapshot {
 			s.present |= qualityHasLoadRTT
 		}
 	}
-	// Bytes_sent and Bytes_retrans arrived in Linux 4.19; Rcv_ooopack in 5.4.
-	// Check returned field boundaries, because vendor kernels may backport them.
+	// Bytes_received arrived in Linux 4.1, Bytes_sent and Bytes_retrans in
+	// 4.19, Rcv_ooopack in 5.4. Check returned field boundaries, because
+	// vendor kernels may backport them.
+	if len(b) >= qualityLinuxRXBytesOffset+8 {
+		s.rxBytes = binary.NativeEndian.Uint64(b[qualityLinuxRXBytesOffset:])
+		s.present |= qualityHasRXBytes
+	}
 	if len(b) >= qualityLinuxRXOOOOffset+4 && len(b) >= qualityLinuxRXTotalOffset+4 {
 		s.rxOutOfOrder = uint64(binary.NativeEndian.Uint32(b[qualityLinuxRXOOOOffset:]))
 		s.rxTotal = uint64(binary.NativeEndian.Uint32(b[qualityLinuxRXTotalOffset:]))
@@ -97,7 +106,8 @@ func decodeDarwinTCPQuality(b []byte) tcpQualitySnapshot {
 	if len(b) >= qualityDarwinRXOOOOffset+8 && len(b) >= qualityDarwinRXTotalOffset+8 {
 		s.rxOutOfOrder = binary.NativeEndian.Uint64(b[qualityDarwinRXOOOOffset:])
 		s.rxTotal = binary.NativeEndian.Uint64(b[qualityDarwinRXTotalOffset:])
-		s.present |= qualityHasRX
+		s.rxBytes = s.rxTotal
+		s.present |= qualityHasRX | qualityHasRXBytes
 	}
 	if len(b) >= qualityDarwinTXRetransOffset+8 && len(b) >= qualityDarwinTXTotalOffset+8 {
 		s.txRetransmit = binary.NativeEndian.Uint64(b[qualityDarwinTXRetransOffset:])

@@ -512,6 +512,9 @@ func (o *Observer) StartDial(ctx context.Context, tag string, server net.Destina
 	target, udp := targetFrom(ctx)
 	// Capture the measurement epoch before any traffic activity clock reads.
 	quality := o.newConnectionQuality(udp, 0)
+	if quality != nil && o.ohm != nil {
+		quality.limit = qualitySpeedLimitOf(o.ohm.GetHandler(tag))
+	}
 	registry := o.connectionRegistry(tag)
 	activity, proofSignal := o.connectionSignals(tag)
 	proofSignal = proofSignal && (!udp || o.s.features.passiveTCP())

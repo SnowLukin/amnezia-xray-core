@@ -517,6 +517,10 @@ retiring, replacing, expired, down и quarantined участники не под
 
 Legacy fields with zero or empty values are left out, except those marked always.
 Inside quality, measured zeros remain present; unavailable measurements are omitted.
+Speed in quality also has the peak and saturation scalars and the outbound
+`speedLimit` (`bulkPeakKbpsP90`, `bulkSaturatedKbpsP90`, `speedLimitDownKbps`
+and the rest, see "Скорость: среднее, пик, насыщение" in README.md); the
+histogram buckets of the report are not sent.
 
 | Field | Meaning |
 | --- | --- |

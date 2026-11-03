@@ -301,8 +301,9 @@ func TestQualityIntegrationCollectorChurnIsBoundedAndPolicyFree(t *testing.T) {
 	// This is a payload bound, not a measured heap assertion. Accounting for
 	// at most 130 mutable accumulators and five 16KiB retained-key budgets
 	// prevents a future struct expansion from silently invalidating the plan.
+	// The peak and saturated speed histograms raised it from 256 KiB.
 	payload := 2*(qualityCollectionPaths+1)*unsafe.Sizeof(qualityAccumulator{}) + 5*qualityCollectionTagBytes
-	if payload > 256*1024 {
+	if payload > 320*1024 {
 		t.Fatalf("bounded summary payload grew to %d bytes before maps/scalar views", payload)
 	}
 	if len(o.e.quality.currentView(clk.now()).Paths) != qualityCollectionPaths {

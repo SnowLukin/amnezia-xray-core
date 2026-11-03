@@ -375,6 +375,14 @@ func (h *Handler) Close() error {
 	return nil
 }
 
+// SpeedLimit implements outbound.SpeedLimited.
+func (h *Handler) SpeedLimit() (uplinkBytesPerSecond, downlinkBytesPerSecond uint64) {
+	if h.senderSettings == nil || h.senderSettings.SpeedLimit == nil {
+		return 0, 0
+	}
+	return h.senderSettings.SpeedLimit.UplinkBytesPerSecond, h.senderSettings.SpeedLimit.DownlinkBytesPerSecond
+}
+
 // SenderSettings implements outbound.Handler.
 func (h *Handler) SenderSettings() *serial.TypedMessage {
 	return serial.ToTypedMessage(h.senderSettings)

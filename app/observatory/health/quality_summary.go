@@ -4,6 +4,7 @@ import (
 	"maps"
 	"math"
 	"math/bits"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -70,6 +71,34 @@ func (h *qualitySpeedHistogram) quantile(q float64) int64 {
 	return qualitySpeedBounds[min(i, len(qualitySpeedBounds)-1)]
 }
 
+// buckets returns counts by qualitySpeedBounds, the last one above them all.
+// Unlike quantiles, buckets of many reports add up.
+func (h *qualitySpeedHistogram) buckets() []uint64 {
+	return slices.Clone(h.counts[:])
+}
+
+// A bulk connection filled its path when its receiver RTT under load grew
+// well past the idle RTT, or when the network lost or reordered its packets.
+// Either can mislead alone: a managed queue hides a full path, and a server
+// waiting for its source inflates the receiver RTT. It tells which speeds
+// are worth comparing as path capacity; it proves nothing per connection.
+const (
+	qualitySaturationQueue = 30 * time.Millisecond
+	qualitySaturationLoss  = 0.01
+)
+
+func qualitySaturation(s qualityEndSample) (saturated, known bool) {
+	if s.s1.present&qualityHasMinRTT != 0 && s.s2.present&qualityHasLoadRTT != 0 {
+		known = true
+		saturated = s.s2.loadRTT-s.s1.minRTT >= max(qualitySaturationQueue, s.s1.minRTT/2)
+	}
+	if outOfOrder, total, ok := qualityRXDelta(s); ok && total > 0 {
+		known = true
+		saturated = saturated || float64(outOfOrder) >= qualitySaturationLoss*float64(total)
+	}
+	return saturated, known
+}
+
 // Match the legacy histogram: round(q*N), with rank at least one. The
 // unbounded last bucket reports the last finite bound, not a made-up maximum.
 // Callers only request a quantile when total is nonzero.
@@ -107,30 +136,42 @@ func (s qualityCounterSum) number() float64 {
 // measurements that can honestly be zero. Counts accompany sampled histograms;
 // a histogram without samples contributes neither its count nor its quantiles.
 type qualityPathView struct {
-	ProbeCount           uint64            `json:"probe_count,omitempty"`
-	ProbeFailedCount     uint64            `json:"probe_failed_count,omitempty"`
-	ProbeConnectP50Ms    *int64            `json:"probe_connect_p50_ms,omitempty"`
-	ProbeReasons         map[string]uint64 `json:"probe_reasons,omitempty"`
-	BytesDown            *int64            `json:"bytes_down,omitempty"`
-	BytesDownOverflow    bool              `json:"bytes_down_overflow,omitempty"`
-	TTFBCount            uint64            `json:"ttfb_count,omitempty"`
-	TTFBP50Ms            *int64            `json:"ttfb_p50_ms,omitempty"`
-	TTFBP90Ms            *int64            `json:"ttfb_p90_ms,omitempty"`
-	DialCount            uint64            `json:"dial_count,omitempty"`
-	DialP50Ms            *int64            `json:"dial_p50_ms,omitempty"`
-	DialP90Ms            *int64            `json:"dial_p90_ms,omitempty"`
-	TCPCount             uint64            `json:"tcp_count,omitempty"`
-	TCPRTTP50Ms          *int64            `json:"tcp_rtt_p50_ms,omitempty"`
-	TCPRTTP90Ms          *int64            `json:"tcp_rtt_p90_ms,omitempty"`
-	TCPRTTMinMs          *int64            `json:"tcp_rtt_min_ms,omitempty"`
-	BulkCount            uint64            `json:"bulk_count,omitempty"`
-	BulkKbpsP50          *int64            `json:"bulk_kbps_p50,omitempty"`
-	BulkKbpsP90          *int64            `json:"bulk_kbps_p90,omitempty"`
-	BulkKbpsMax          *int64            `json:"bulk_kbps_max,omitempty"`
-	BulkRTTP50Ms         *int64            `json:"bulk_rtt_p50_ms,omitempty"`
-	BulkSplicedCount     *uint64           `json:"bulk_spliced_count,omitempty"`
-	RXOutOfOrderFraction *float64          `json:"rx_out_of_order_fraction,omitempty"`
-	TXRetransmitFraction *float64          `json:"tx_retransmit_fraction,omitempty"`
+	ProbeCount            uint64            `json:"probe_count,omitempty"`
+	ProbeFailedCount      uint64            `json:"probe_failed_count,omitempty"`
+	ProbeConnectP50Ms     *int64            `json:"probe_connect_p50_ms,omitempty"`
+	ProbeReasons          map[string]uint64 `json:"probe_reasons,omitempty"`
+	BytesDown             *int64            `json:"bytes_down,omitempty"`
+	BytesDownOverflow     bool              `json:"bytes_down_overflow,omitempty"`
+	TTFBCount             uint64            `json:"ttfb_count,omitempty"`
+	TTFBP50Ms             *int64            `json:"ttfb_p50_ms,omitempty"`
+	TTFBP90Ms             *int64            `json:"ttfb_p90_ms,omitempty"`
+	DialCount             uint64            `json:"dial_count,omitempty"`
+	DialP50Ms             *int64            `json:"dial_p50_ms,omitempty"`
+	DialP90Ms             *int64            `json:"dial_p90_ms,omitempty"`
+	TCPCount              uint64            `json:"tcp_count,omitempty"`
+	TCPRTTP50Ms           *int64            `json:"tcp_rtt_p50_ms,omitempty"`
+	TCPRTTP90Ms           *int64            `json:"tcp_rtt_p90_ms,omitempty"`
+	TCPRTTMinMs           *int64            `json:"tcp_rtt_min_ms,omitempty"`
+	BulkCount             uint64            `json:"bulk_count,omitempty"`
+	BulkKbpsP50           *int64            `json:"bulk_kbps_p50,omitempty"`
+	BulkKbpsP90           *int64            `json:"bulk_kbps_p90,omitempty"`
+	BulkKbpsMax           *int64            `json:"bulk_kbps_max,omitempty"`
+	BulkKbpsHist          []uint64          `json:"bulk_kbps_hist,omitempty"`
+	BulkPeakCount         uint64            `json:"bulk_peak_count,omitempty"`
+	BulkPeakKbpsP50       *int64            `json:"bulk_peak_kbps_p50,omitempty"`
+	BulkPeakKbpsP90       *int64            `json:"bulk_peak_kbps_p90,omitempty"`
+	BulkPeakKbpsHist      []uint64          `json:"bulk_peak_kbps_hist,omitempty"`
+	BulkSaturatedCount    *uint64           `json:"bulk_saturated_count,omitempty"`
+	BulkUnsaturatedCount  *uint64           `json:"bulk_unsaturated_count,omitempty"`
+	BulkSaturatedKbpsP50  *int64            `json:"bulk_saturated_kbps_p50,omitempty"`
+	BulkSaturatedKbpsP90  *int64            `json:"bulk_saturated_kbps_p90,omitempty"`
+	BulkSaturatedKbpsHist []uint64          `json:"bulk_saturated_kbps_hist,omitempty"`
+	BulkRTTP50Ms          *int64            `json:"bulk_rtt_p50_ms,omitempty"`
+	BulkSplicedCount      *uint64           `json:"bulk_spliced_count,omitempty"`
+	RXOutOfOrderFraction  *float64          `json:"rx_out_of_order_fraction,omitempty"`
+	TXRetransmitFraction  *float64          `json:"tx_retransmit_fraction,omitempty"`
+	SpeedLimitDownKbps    *int64            `json:"speed_limit_down_kbps,omitempty"`
+	SpeedLimitUpKbps      *int64            `json:"speed_limit_up_kbps,omitempty"`
 }
 
 type qualitySegmentView struct {
@@ -154,7 +195,9 @@ type qualityAccumulator struct {
 	probes, probesFailed        uint64
 	probeReasons                map[string]uint64
 	ttfb, dial, tcpRTT, bulkRTT qualityTimeHistogram
-	bulk                        qualitySpeedHistogram
+	bulk, peak, saturatedPeak   qualitySpeedHistogram
+	unsaturated                 uint64
+	limit                       qualitySpeedLimit
 	bytesDown                   int64
 	minRTT                      time.Duration
 	maxBulkKbps                 int64
@@ -223,6 +266,17 @@ func (a *qualityAccumulator) addEnd(s qualityEndSample) {
 		a.bulk.add(kbps)
 		a.maxBulkKbps = max(a.maxBulkKbps, kbps)
 	}
+	if s.hasPeak {
+		kbps := max(s.peakKbps, 0)
+		a.peak.add(kbps)
+		if saturated, known := qualitySaturation(s); saturated {
+			a.saturatedPeak.add(kbps)
+		} else if known {
+			a.unsaturated++
+		}
+	}
+	// The limit of the latest connection: a provider may change it.
+	a.limit = s.limit
 	if s.hasBulk || s.spliced || s.bytesDown >= int64(qualityMilestones[0]) {
 		a.hasBulkSpliced = true
 		if s.spliced {
@@ -276,6 +330,23 @@ func (a *qualityAccumulator) view() qualityPathView {
 		v.BulkCount = a.bulk.total
 		v.BulkKbpsP50, v.BulkKbpsP90 = qualityScalar(a.bulk.quantile(0.5)), qualityScalar(a.bulk.quantile(0.9))
 		v.BulkKbpsMax = qualityScalar(a.maxBulkKbps)
+		v.BulkKbpsHist = a.bulk.buckets()
+	}
+	if a.peak.total > 0 {
+		v.BulkPeakCount = a.peak.total
+		v.BulkPeakKbpsP50, v.BulkPeakKbpsP90 = qualityScalar(a.peak.quantile(0.5)), qualityScalar(a.peak.quantile(0.9))
+		v.BulkPeakKbpsHist = a.peak.buckets()
+		v.BulkSaturatedCount, v.BulkUnsaturatedCount = qualityScalar(a.saturatedPeak.total), qualityScalar(a.unsaturated)
+	}
+	if a.saturatedPeak.total > 0 {
+		v.BulkSaturatedKbpsP50, v.BulkSaturatedKbpsP90 = qualityScalar(a.saturatedPeak.quantile(0.5)), qualityScalar(a.saturatedPeak.quantile(0.9))
+		v.BulkSaturatedKbpsHist = a.saturatedPeak.buckets()
+	}
+	if a.limit.downKbps > 0 {
+		v.SpeedLimitDownKbps = qualityScalar(a.limit.downKbps)
+	}
+	if a.limit.upKbps > 0 {
+		v.SpeedLimitUpKbps = qualityScalar(a.limit.upKbps)
 	}
 	if a.bulkRTT.total > 0 {
 		v.BulkRTTP50Ms = qualityScalar(a.bulkRTT.quantile(0.5))
@@ -518,6 +589,13 @@ func cloneQualityPath(v qualityPathView) qualityPathView {
 	v.TCPRTTMinMs = cloneQualityPointer(v.TCPRTTMinMs)
 	v.BulkKbpsP50, v.BulkKbpsP90 = cloneQualityPointer(v.BulkKbpsP50), cloneQualityPointer(v.BulkKbpsP90)
 	v.BulkKbpsMax = cloneQualityPointer(v.BulkKbpsMax)
+	v.BulkKbpsHist = slices.Clone(v.BulkKbpsHist)
+	v.BulkPeakKbpsP50, v.BulkPeakKbpsP90 = cloneQualityPointer(v.BulkPeakKbpsP50), cloneQualityPointer(v.BulkPeakKbpsP90)
+	v.BulkPeakKbpsHist = slices.Clone(v.BulkPeakKbpsHist)
+	v.BulkSaturatedCount, v.BulkUnsaturatedCount = cloneQualityPointer(v.BulkSaturatedCount), cloneQualityPointer(v.BulkUnsaturatedCount)
+	v.BulkSaturatedKbpsP50, v.BulkSaturatedKbpsP90 = cloneQualityPointer(v.BulkSaturatedKbpsP50), cloneQualityPointer(v.BulkSaturatedKbpsP90)
+	v.BulkSaturatedKbpsHist = slices.Clone(v.BulkSaturatedKbpsHist)
+	v.SpeedLimitDownKbps, v.SpeedLimitUpKbps = cloneQualityPointer(v.SpeedLimitDownKbps), cloneQualityPointer(v.SpeedLimitUpKbps)
 	v.BulkRTTP50Ms = cloneQualityPointer(v.BulkRTTP50Ms)
 	v.BulkSplicedCount = cloneQualityPointer(v.BulkSplicedCount)
 	v.RXOutOfOrderFraction = cloneQualityPointer(v.RXOutOfOrderFraction)

@@ -52,8 +52,12 @@ func TestQualityRequestProjectionPreservesAllFieldsAndOwnsPointers(t *testing.T)
 		DialCount: 2, DialP50Ms: qualityScalar(int64(30)), DialP90Ms: qualityScalar(int64(40)),
 		TCPCount: 3, TCPRTTP50Ms: qualityScalar(int64(50)), TCPRTTP90Ms: qualityScalar(int64(60)), TCPRTTMinMs: qualityScalar(int64(0)),
 		BulkCount: 4, BulkKbpsP50: qualityScalar(int64(128)), BulkKbpsP90: qualityScalar(int64(500000)), BulkKbpsMax: qualityScalar(int64(0)),
+		BulkPeakCount: 3, BulkPeakKbpsP50: qualityScalar(int64(2000)), BulkPeakKbpsP90: qualityScalar(int64(3000)),
+		BulkSaturatedCount: qualityScalar(uint64(0)), BulkUnsaturatedCount: qualityScalar(uint64(2)),
+		BulkSaturatedKbpsP50: qualityScalar(int64(5000)), BulkSaturatedKbpsP90: qualityScalar(int64(8000)),
 		BulkRTTP50Ms: qualityScalar(int64(90)), BulkSplicedCount: qualityScalar(uint64(0)),
 		RXOutOfOrderFraction: qualityScalar(float64(0)), TXRetransmitFraction: qualityScalar(.125),
+		SpeedLimitDownKbps: qualityScalar(int64(20971)), SpeedLimitUpKbps: qualityScalar(int64(5242)),
 	}
 	request := requestQualityOf(view)
 	snake, camel := qualityProjectionJSON(t, view), qualityProjectionJSON(t, request)
@@ -63,8 +67,12 @@ func TestQualityRequestProjectionPreservesAllFieldsAndOwnsPointers(t *testing.T)
 		"dial_count": "dialCount", "dial_p50_ms": "dialP50Ms", "dial_p90_ms": "dialP90Ms",
 		"tcp_count": "tcpCount", "tcp_rtt_p50_ms": "tcpRttP50Ms", "tcp_rtt_p90_ms": "tcpRttP90Ms", "tcp_rtt_min_ms": "tcpRttMinMs",
 		"bulk_count": "bulkCount", "bulk_kbps_p50": "bulkKbpsP50", "bulk_kbps_p90": "bulkKbpsP90", "bulk_kbps_max": "bulkKbpsMax",
+		"bulk_peak_count": "bulkPeakCount", "bulk_peak_kbps_p50": "bulkPeakKbpsP50", "bulk_peak_kbps_p90": "bulkPeakKbpsP90",
+		"bulk_saturated_count": "bulkSaturatedCount", "bulk_unsaturated_count": "bulkUnsaturatedCount",
+		"bulk_saturated_kbps_p50": "bulkSaturatedKbpsP50", "bulk_saturated_kbps_p90": "bulkSaturatedKbpsP90",
 		"bulk_rtt_p50_ms": "bulkRttP50Ms", "bulk_spliced_count": "bulkSplicedCount",
 		"rx_out_of_order_fraction": "rxOutOfOrderFraction", "tx_retransmit_fraction": "txRetransmitFraction",
+		"speed_limit_down_kbps": "speedLimitDownKbps", "speed_limit_up_kbps": "speedLimitUpKbps",
 	}
 	if len(snake) != len(pairs) || len(camel) != len(pairs) {
 		t.Fatal("projection omitted a present field or introduced a second spelling")
@@ -86,6 +94,12 @@ func TestQualityRequestProjectionPreservesAllFieldsAndOwnsPointers(t *testing.T)
 	*request.RXOutOfOrderFraction = .5
 	if *view.BytesDown != 0 || *view.TCPRTTMinMs != 0 || *view.RXOutOfOrderFraction != 0 {
 		t.Fatal("projection mutation changed the captured current-network view")
+	}
+	// Buckets add up across reports; a provider request has no use for them.
+	buckets := view
+	buckets.BulkKbpsHist, buckets.BulkPeakKbpsHist, buckets.BulkSaturatedKbpsHist = []uint64{1}, []uint64{2}, []uint64{3}
+	if fields := qualityProjectionJSON(t, requestQualityOf(buckets)); len(fields) != len(pairs) {
+		t.Fatalf("request projection carries histogram buckets: %d fields", len(fields))
 	}
 	if fields := qualityProjectionJSON(t, requestQualityOf(qualityPathView{})); len(fields) != 0 {
 		t.Fatalf("unknown measurements became known zeros: %v", fields)

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/xtls/xray-core/common/net"
+	"github.com/xtls/xray-core/features/outbound"
 )
 
 var qualityMilestones = [...]uint64{1 << 20, 4 << 20, 16 << 20, 64 << 20}
@@ -30,6 +31,18 @@ type qualityTCPPoint struct {
 	tcp   tcpQualitySnapshot
 }
 
+// qualityKernelPoint is the kernel's received byte counter at a read. Its
+// difference measures how fast the network delivered, whatever the pace at
+// which the reader drained the socket buffer.
+type qualityKernelPoint struct {
+	at      int64
+	rxBytes uint64
+}
+
+// Shorter intervals between two counter reads say more about the clock and
+// the syscall than about the path.
+const qualityPeakMinInterval = int64(20 * time.Millisecond)
+
 type qualityInitialSample struct {
 	ttfb, dial       time.Duration
 	hasTTFB, hasDial bool
@@ -41,9 +54,28 @@ type qualityEndSample struct {
 	hasBytes  bool
 	bulkKbps  int64
 	hasBulk   bool
+	peakKbps  int64
+	hasPeak   bool
+	limit     qualitySpeedLimit
 	spliced   bool
 	s1, s2    tcpQualitySnapshot
 	lastTCP   tcpQualitySnapshot
+}
+
+// qualitySpeedLimit is the speedLimit of the outbound, in decimal Kbit/s like
+// the measured speeds. Zero is no limit.
+type qualitySpeedLimit struct {
+	upKbps, downKbps int64
+}
+
+func qualitySpeedLimitOf(h outbound.Handler) qualitySpeedLimit {
+	limited, ok := h.(outbound.SpeedLimited)
+	if !ok {
+		return qualitySpeedLimit{}
+	}
+	up, down := limited.SpeedLimit()
+	kbps := func(bytesPerSecond uint64) int64 { return int64(min(bytesPerSecond, math.MaxInt64/8) * 8 / 1000) }
+	return qualitySpeedLimit{upKbps: kbps(up), downKbps: kbps(down)}
 }
 
 // connectionQuality holds measurements only. No path decision reads it.
@@ -51,6 +83,7 @@ type connectionQuality struct {
 	life       qualityLifecycle
 	network    uint64
 	started    int64
+	limit      qualitySpeedLimit // set before the tracker is published
 	dial       atomic.Int64
 	hasDial    atomic.Bool
 	socket     atomic.Pointer[syscall.RawConn]
@@ -58,6 +91,8 @@ type connectionQuality struct {
 	firstClaim atomic.Bool
 	bulk       atomic.Pointer[qualityBulkPoint]
 	s2         atomic.Pointer[qualityTCPPoint]
+	kernel     atomic.Pointer[qualityKernelPoint]
+	peak       atomic.Int64
 	next       atomic.Uint64
 	spliced    atomic.Bool
 	initial    atomic.Bool
@@ -141,6 +176,9 @@ func (q *connectionQuality) mark(o *Observer, now, total int64) {
 	// may have failed to read TCP_INFO while an earlier successful one was
 	// still in flight. Neither may discard the other's measurements.
 	if info := q.snapshot(o); info.present != 0 {
+		if info.present&qualityHasRXBytes != 0 {
+			q.notePeak(now, info.rxBytes)
+		}
 		point := &qualityTCPPoint{bytes: total, tcp: info}
 		for {
 			previous := q.s2.Load()
@@ -161,6 +199,42 @@ func (q *connectionQuality) mark(o *Observer, now, total int64) {
 		if q.bulk.CompareAndSwap(previous, point) {
 			return
 		}
+	}
+}
+
+// notePeak keeps the fastest delivery between consecutive milestones. The
+// first interval starts at the first reply. Out-of-order marks keep the
+// counter monotonic; an interval is measured only between published points.
+func (q *connectionQuality) notePeak(now int64, rxBytes uint64) {
+	point := &qualityKernelPoint{at: now, rxBytes: rxBytes}
+	for {
+		previous := q.kernel.Load()
+		if previous != nil && previous.rxBytes >= rxBytes {
+			return
+		}
+		if !q.kernel.CompareAndSwap(previous, point) {
+			continue
+		}
+		from := previous
+		if from == nil {
+			first := q.first.Load()
+			if first == nil || first.tcp.present&qualityHasRXBytes == 0 || first.tcp.rxBytes >= rxBytes {
+				return
+			}
+			from = &qualityKernelPoint{at: first.at, rxBytes: first.tcp.rxBytes}
+		}
+		if elapsed := now - from.at; elapsed >= qualityPeakMinInterval {
+			kbps := float64(rxBytes-from.rxBytes) * 8e6 / float64(elapsed)
+			if kbps > 0 && kbps < math.MaxInt64 {
+				for {
+					peak := q.peak.Load()
+					if int64(kbps) <= peak || q.peak.CompareAndSwap(peak, int64(kbps)) {
+						break
+					}
+				}
+			}
+		}
+		return
 	}
 }
 
@@ -199,6 +273,7 @@ func (q *connectionQuality) end(total int64) qualityEndSample {
 	if q == nil {
 		return s
 	}
+	s.limit = q.limit
 	s.hasBytes = q.hasDial.Load() || q.first.Load() != nil || total > 0
 	if first := q.first.Load(); first != nil {
 		s.s1, s.lastTCP = first.tcp, first.tcp
@@ -210,6 +285,9 @@ func (q *connectionQuality) end(total int64) qualityEndSample {
 				s.bulkKbps, s.hasBulk = int64(kbps), true
 			}
 		}
+	}
+	if peak := q.peak.Load(); peak > 0 {
+		s.peakKbps, s.hasPeak = peak, true
 	}
 	if s2 := q.s2.Load(); s2 != nil {
 		s.s2, s.lastTCP = s2.tcp, s2.tcp
