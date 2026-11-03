@@ -226,7 +226,7 @@ type OutboundDetourConfig struct {
 	ProxySettings  *json.RawMessage         `json:"proxySettings"`
 	MuxSettings    *MuxConfig               `json:"mux"`
 	TargetStrategy string                   `json:"targetStrategy"`
-	Selection      *OutboundSelectionConfig `json:"selection"`
+	Selection      *OutboundSelectionConfig `json:"selection,omitempty"`
 }
 
 func requiresTransportSecurity(address *Address) bool {
@@ -419,7 +419,7 @@ type Config struct {
 	Version          *VersionConfig          `json:"version"`
 	Geodata          *GeodataConfig          `json:"geodata"`
 
-	HealthObservatory *HealthObservatoryConfig `json:"healthObservatory"`
+	HealthObservatory *HealthObservatoryConfig `json:"healthObservatory,omitempty"`
 }
 
 func (c *Config) findInboundTag(tag string) int {
