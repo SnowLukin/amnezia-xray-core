@@ -124,8 +124,8 @@ func NewClient(ctx context.Context, conf *DeviceConfig) (proxy.Outbound, error) 
 		errors.LogWarning(context.Background(), "Using kernel TUN")
 		tun, tnet, err = createKernelTun(localAddresses, dnses, int(conf.Mtu))
 	} else {
-		errors.LogWarning(context.Background(), "Using gVisor TUN")
-		tun, tnet, _, err = deferNetTUN(localAddresses, dnses, int(conf.Mtu), true)
+		errors.LogWarning(context.Background(), "Using built-in TCP/IP stack")
+		tun, tnet, err = deferNetTUN(localAddresses, dnses, int(conf.Mtu))
 	}
 	if err != nil {
 		return nil, err
@@ -285,7 +285,7 @@ func (h *Handler) init(ctx context.Context) error {
 		return h.dev.Up()
 	}
 	resolveFunc := h.resolveLocal
-	listenFunc := func() (net.PacketConn, error) {
+	listenFunc := func(ctx context.Context) (net.PacketConn, error) {
 		dest, err := net.ParseDestination("udp:" + h.conf.Peers[0].Endpoint)
 		if err != nil {
 			return nil, err
@@ -324,6 +324,7 @@ func (h *Handler) init(ctx context.Context) error {
 	// device.NewDevice may use the bind right away (Up -> BindUpdate -> Open),
 	// so everything it reads must be set before creating the device.
 	bind := &bind{
+		ctx:         ctx,
 		resolveFunc: resolveFunc,
 		listenFunc:  listenFunc,
 		reserved:    h.conf.Reserved,

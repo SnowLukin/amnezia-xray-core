@@ -18,7 +18,8 @@ message PeerConfig {
   repeated string allowed_ips = 5;
   // protocol_version of the peer in UAPI. AmneziaWG accepts only 1, the
   // version it speaks anyway; the field lets a config copied from UAPI load.
-  string protocol_version = 6;
+  // Numbered away from the upstream fields, like DeviceConfig.parameters.
+  string protocol_version = 1000;
 }
 
 // AmneziaWG obfuscation parameters. Outbounds and inbounds write them to
@@ -94,6 +95,9 @@ message DeviceConfig {
   DomainStrategy domain_strategy = 7;
   bool is_client = 8;
   bool no_kernel_tun = 9;
-  AmneziaParameters parameters = 10;
-  repeated string DNS = 11;
+  repeated string DNS = 10;
+
+  // Numbered away from the upstream fields so that new XTLS fields do not
+  // take the same number.
+  AmneziaParameters parameters = 1000;
 }
