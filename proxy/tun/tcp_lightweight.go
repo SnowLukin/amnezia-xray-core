@@ -1354,9 +1354,10 @@ func (c *tcpConn) grow(size int32) {
 		return
 	}
 	// the way got slower for a few round trips: the round trip became much longer than with the half window, and the
-	// reader much slower. A queue that a larger window fills makes the round trip longer as well, but not the reader
-	// slower. On the slower way a window that holds the stream back makes the reader half as fast with half of it
-	if c.rcvBefore == 0 || rtt <= c.rcvBeforeRTT*3/2 || c.rcvRate*3/2 >= c.rcvBefore {
+	// reader at most three quarters as fast. A queue that a larger window fills makes the round trip longer as well,
+	// but not the reader slower. On the slower way a window that holds the stream back makes the reader half as fast
+	// with half of it
+	if c.rcvBefore == 0 || rtt <= c.rcvBeforeRTT*3/2 || c.rcvRate*4/3 >= c.rcvBefore {
 		c.rcvLonger = 0
 	} else if c.rcvLonger++; c.rcvLonger >= 3 {
 		c.rcvBefore, c.rcvBeforeRTT, c.rcvLonger = c.rcvRate/2, rtt, 0
