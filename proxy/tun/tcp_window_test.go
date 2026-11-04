@@ -350,7 +350,7 @@ func TestTCPWindowInFlight(t *testing.T) {
 	}
 }
 
-// A UDP flow that is not read keeps what fits its queue, and drops what comes after.
+// A UDP port that DialUDP opened keeps what fits its queue while it is not read, and drops what comes after.
 func TestUDPQueueBound(t *testing.T) {
 	p, l := newPeer(t, "10.0.0.1:53", "10.0.0.2:0")
 	s := newDialStack(t, l, "10.0.0.2")
@@ -359,7 +359,7 @@ func TestUDPQueueBound(t *testing.T) {
 		t.Fatal(err)
 	}
 	local := conn.LocalAddr().(*gonet.UDPAddr).AddrPort()
-	for range 3 * udpQueueLimit {
+	for range 3 * udpSocketQueueLimit {
 		p.l.in <- udpPacket(p.src, local, []byte("x"))
 	}
 	time.Sleep(100 * time.Millisecond)
@@ -367,7 +367,7 @@ func TestUDPQueueBound(t *testing.T) {
 	u.queue.mu.Lock()
 	queued := len(u.queue.items)
 	u.queue.mu.Unlock()
-	if queued != 128 {
+	if queued != 256 {
 		t.Fatal("queued ", queued)
 	}
 }

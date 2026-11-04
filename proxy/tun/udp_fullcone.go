@@ -164,9 +164,13 @@ func (c *udpConn) SetWriteDeadline(t time.Time) error {
 	return nil
 }
 
-// udpQueueLimit bounds the packets waiting for one UDP flow; more are dropped. Each waits in a buffer of 2 KiB at
-// least, so a flow that is not read holds about 256 KiB, about what a socket of Linux takes by default
-const udpQueueLimit = 128
+// udpQueueLimit bounds the packets waiting for one UDP flow; more are dropped.
+const udpQueueLimit = 1024
+
+// udpSocketQueueLimit is the same for a port that DialUDP opened through a tunnel to another system. Each packet
+// waits in a buffer of 2 KiB at least: a flow that is not read holds about 512 KiB, and one whose reader stops for
+// 20 ms every 50 ms keeps up with 100 Mbit/s
+const udpSocketQueueLimit = 256
 
 // packetQueue holds the packets waiting for one UDP flow. Unlike a buffered
 // channel of the same bound it only allocates for packets actually queued, so

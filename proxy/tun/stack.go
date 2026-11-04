@@ -469,7 +469,7 @@ func (s *stack) write(header, payload []byte) error {
 
 // DialUDP implements Stack
 func (s *stack) DialUDP() (net.PacketConn, error) {
-	u := &udpSocket{stack: s, queue: newPacketQueue(udpQueueLimit)}
+	u := &udpSocket{stack: s, queue: newPacketQueue(udpSocketQueueLimit)}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed {
