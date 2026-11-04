@@ -174,8 +174,15 @@ type tcpConn struct {
 	rcvEnd  uint32
 	rcvEnds bool
 	// rcvTaken is what the reader has taken since rcvSince, for grow
-	rcvTaken int32
+	rcvTaken int64
 	rcvSince time.Time
+	// rcvRTT is how long a round trip takes now as the received segments tell, see sampled. Without the times of
+	// RFC 7323 that is how long a window takes to come while the reader keeps up: it is measured from rcvRTTAt to
+	// rcvRTTSeq, and not if rcvRTTBehind, as then it is the reader that holds the stream back
+	rcvRTT       time.Duration
+	rcvRTTAt     time.Time
+	rcvRTTSeq    uint32
+	rcvRTTBehind bool
 	// rcvHeld is what came after something that did not, in the order of seq and without overlaps
 	rcvHeld []held
 	// rcvLast is the seq of the last one that was put into rcvHeld
@@ -449,16 +456,47 @@ func (c *tcpConn) sendAck() {
 // that the stream goes on with, so that the other side sees how long that one took, and not one of what came
 // before it. c.mu is held
 func (c *tcpConn) stamped(s segment) {
-	if int32(s.seq-c.rcvAcked) > 0 {
-		return
-	}
 	for kind, value, o := nextOption(s.options); kind != 0; kind, value, o = nextOption(o) {
-		if kind == 8 && len(value) == 8 {
-			if stamp := binary.BigEndian.Uint32(value); int32(stamp-c.stamp) > 0 {
-				c.stamp = stamp
+		if kind != 8 || len(value) != 8 {
+			continue
+		}
+		// what comes carries back the time of what was sent from here that it answers
+		if echo := binary.BigEndian.Uint32(value[4:]); echo != 0 && len(s.payload)+s.rest > 0 {
+			if d := time.Duration(int32(c.stampBase+uint32(time.Since(tcpStarted)/time.Millisecond)-echo)) * time.Millisecond; d >= 0 && d < time.Minute {
+				c.sampled(d)
 			}
 		}
+		if int32(s.seq-c.rcvAcked) > 0 {
+			return
+		}
+		if stamp := binary.BigEndian.Uint32(value); int32(stamp-c.stamp) > 0 {
+			c.stamp = stamp
+		}
 	}
+}
+
+// sampled takes d as how long a round trip takes, an eighth of it next to what was known, as RFC 6298 does: the
+// way gets longer when what is sent waits in a queue on it, or a wireless link waits, and shorter again. c.mu is held
+func (c *tcpConn) sampled(d time.Duration) {
+	if c.rcvRTT == 0 {
+		c.rcvRTT = d
+	} else {
+		c.rcvRTT += (d - c.rcvRTT) / 8
+	}
+}
+
+// measured times how long a window takes to come, when the segments do not carry the times of RFC 7323.
+// The reader keeps up if what waits for it stays below half the window. c.mu is held
+func (c *tcpConn) measured() {
+	switch {
+	case c.rcvRTTAt.IsZero():
+	case int32(c.rcvNxt-c.rcvRTTSeq) < 0:
+		c.rcvRTTBehind = c.rcvRTTBehind || c.rcvLen > c.rcvWindow/2
+		return
+	case !c.rcvRTTBehind:
+		c.sampled(time.Since(c.rcvRTTAt))
+	}
+	c.rcvRTTAt, c.rcvRTTSeq, c.rcvRTTBehind = time.Now(), c.rcvNxt+uint32(c.rcvWindow), false
 }
 
 // input takes a segment of the connection. It returns false if the connection is gone
@@ -835,6 +873,9 @@ func (c *tcpConn) receive(s segment) {
 	}
 	c.rcvLen += int32(size)
 	c.rcvNxt += uint32(size)
+	if c.stack.growing && !c.stamps {
+		c.measured()
+	}
 	for !fin && len(c.rcvHeld) > 0 && int32(c.rcvNxt-c.rcvHeld[0].seq) >= 0 {
 		h := c.rcvHeld[0]
 		if before := int32(c.rcvNxt - h.seq); before < h.data.Len() {
@@ -1114,8 +1155,8 @@ func (c *tcpConn) taken(size int32) {
 	}
 }
 
-// grow doubles rcvWindow of a stack that is growing, up to tcpGrownWindow, when the reader takes more than half of it in the
-// shortest time that an acknowledgment took, as it does when the window is what holds the stream back. The window of a
+// grow doubles rcvWindow of a stack that is growing, up to tcpGrownWindow, when the reader takes more than half of it in
+// a round trip, as it does when the window is what holds the stream back. The window of a
 // reader that is slow stays as it is, and so does what waits for it. It never becomes smaller: the system may
 // already send up to its edge. c.mu is held
 func (c *tcpConn) grow(size int32) {
@@ -1123,17 +1164,21 @@ func (c *tcpConn) grow(size int32) {
 	if !c.stack.growing || c.rcvWindow >= most {
 		return
 	}
-	c.rcvTaken += size
-	rtt, since := c.rttMin, time.Since(c.rcvSince)
+	c.rcvTaken += int64(size)
+	rtt := c.rcvRTT
 	if rtt == 0 {
-		// without an answer timed yet
+		// until the segments that come tell, the shortest that an acknowledgment took
+		rtt = c.rttMin
+	}
+	if rtt == 0 {
 		rtt = tcpTick
 	}
+	since := time.Since(c.rcvSince)
 	if since < rtt {
 		return
 	}
 	// what was taken in a round trip on average, also when the reader took it all at once after a while
-	if int64(c.rcvTaken)*int64(rtt) > int64(c.rcvWindow/2)*int64(since) {
+	if float64(c.rcvTaken)*rtt.Seconds() > float64(c.rcvWindow/2)*since.Seconds() {
 		c.rcvWindow = min(c.rcvWindow*2, most)
 	}
 	c.rcvTaken, c.rcvSince = 0, time.Now()
