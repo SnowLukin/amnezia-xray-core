@@ -138,8 +138,14 @@ func (w *windowPeer) seen(rtt time.Duration) ackSeen {
 	for i > 0 && time.Since(w.acks[i].at) < rtt {
 		i--
 	}
-	w.acks = w.acks[i:]
-	return w.acks[0]
+	a := w.acks[i]
+	// a few seconds of them, for the round trips that come
+	j := 0
+	for j < i && time.Since(w.acks[j].at) > 5*time.Second {
+		j++
+	}
+	w.acks = w.acks[j:]
+	return a
 }
 
 // round sends share of what the window lets the peer send in a round trip of rtt, in pieces spread over it, as a
@@ -282,11 +288,7 @@ func TestTCPWindowStays(t *testing.T) {
 			offered := int32(queued.seen(0).edge - queued.peer.seq)
 			queued.round(max(windowHandshake/2, time.Duration(offered)*(windowHandshake/2)/tcpGrowingWindow), 1, 4)
 		}
-		most := int32(2 * tcpGrowingWindow)
-		if !stamps {
-			most = 8 * tcpGrowingWindow
-		}
-		if got := queued.window(); got > most {
+		if got := queued.window(); got > 4*tcpGrowingWindow {
 			t.Fatal("stamps ", stamps, ": grew for a way that is full to ", got)
 		}
 	}
@@ -454,10 +456,11 @@ func TestTCPWindowFirstRoundTrip(t *testing.T) {
 	if rtt < windowHandshake || rtt > 2*windowHandshake {
 		t.Fatal("the handshake took ", rtt)
 	}
-	for range 4 {
+	// a reader that takes two windows each round trip, in two round trips of it
+	for range 3 {
 		time.Sleep(rtt + rtt/4)
 		c.mu.Lock()
-		c.grow(c.rcvWindow)
+		c.grow(2 * c.rcvWindow)
 		c.mu.Unlock()
 	}
 	if got := w.window(); got == tcpGrowingWindow {
@@ -468,11 +471,17 @@ func TestTCPWindowFirstRoundTrip(t *testing.T) {
 // The round trip that the times of RFC 7323 tell takes an eighth of each sample, and only of segments with data:
 // a pure acknowledgment may be sent long after what it answers.
 func TestTCPRoundTripSamples(t *testing.T) {
-	c := &tcpConn{}
-	for range 10 {
-		c.sampled(40*time.Millisecond, 8)
+	// segments that answer what was sent 40 ms ago, and then one that answers what was sent 400 ms ago
+	c := &tcpConn{stack: &stack{}, stampBase: 1000}
+	answer := func(ago time.Duration) {
+		o := []byte{8, 10, 0, 0, 0, 0, 0, 0, 0, 0}
+		binary.BigEndian.PutUint32(o[6:], c.stampBase+uint32((time.Since(tcpStarted)-ago)/time.Millisecond))
+		c.stamped(segment{options: o, payload: []byte{1}})
 	}
-	c.sampled(400*time.Millisecond, 8)
+	for range 10 {
+		answer(40 * time.Millisecond)
+	}
+	answer(400 * time.Millisecond)
 	if c.rcvRTT < 70*time.Millisecond || c.rcvRTT > 100*time.Millisecond {
 		t.Fatal("one sample of 400 ms after ten of 40 made it ", c.rcvRTT)
 	}
@@ -489,14 +498,30 @@ func TestTCPRoundTripSamples(t *testing.T) {
 	if rtt != 0 {
 		t.Fatal("a pure acknowledgment made the round trip ", rtt)
 	}
-	w.clock++
-	w.send(w.peer.seq, tcpAck, w.stampOption(old), make([]byte, 100))
-	w.peer.seq += 100
+	// the first segments after a pause carry back what was sent before it, the ones after an answer to them what
+	// was sent since
+	w.read()
+	for range 2 {
+		w.clock++
+		w.send(w.peer.seq, tcpAck, w.stampOption(old), make([]byte, 100))
+		w.peer.seq += 100
+	}
 	time.Sleep(windowHandshake / 2)
 	w.conn.mu.Lock()
 	rtt = w.conn.rcvRTT
 	w.conn.mu.Unlock()
-	if rtt < 4*windowHandshake {
+	if rtt != 0 {
+		t.Fatal("what answered a segment from before a pause made the round trip ", rtt)
+	}
+	time.Sleep(windowHandshake)
+	w.clock++
+	w.send(w.peer.seq, tcpAck, w.stampOption(w.seen(0).stamp), make([]byte, 100))
+	w.peer.seq += 100
+	time.Sleep(windowHandshake / 4)
+	w.conn.mu.Lock()
+	rtt = w.conn.rcvRTT
+	w.conn.mu.Unlock()
+	if rtt < windowHandshake || rtt > 2*windowHandshake {
 		t.Fatal("a segment with data made the round trip ", rtt)
 	}
 }
@@ -564,32 +589,239 @@ func TestTCPWindowStoppedReaders(t *testing.T) {
 	}
 }
 
-// A reader that took nothing for a while starts again with the window that it started with, and gives back what it
-// took of the budget once it took what waited for it.
-func TestTCPWindowStalled(t *testing.T) {
-	w := newWindowPeer(t, "10.0.0.1:1901", true)
-	var stop atomic.Bool
-	w.readUntil(&stop)
-	for range 40 {
+// growAll has the peers send to their connections, which read, until each window is as large as it gets
+func growAll(ws []*windowPeer, rounds int) {
+	var wg sync.WaitGroup
+	for _, w := range ws {
+		wg.Go(func() {
+			for range rounds {
+				if w.window() == tcpGrownWindow {
+					return
+				}
+				w.round(windowHandshake, 1, 10)
+			}
+		})
+	}
+	wg.Wait()
+}
+
+// roundsTo is how many round trips of rtt a window takes to grow as large as it gets, or -1
+func roundsTo(w *windowPeer, rtt time.Duration, most int) int {
+	for i := range most {
 		if w.window() == tcpGrownWindow {
-			break
+			return i
 		}
+		w.round(rtt, 1, 10)
+	}
+	return -1
+}
+
+// After a pause of the sender, as between the segments of a video or the requests over a connection that is kept,
+// the window grows again as it did at the start.
+func TestTCPWindowAfterPause(t *testing.T) {
+	for i, stamps := range []bool{true, false} {
+		w := newWindowPeer(t, "10.0.0.1:"+strconv.Itoa(1901+i), stamps)
+		w.read()
+		first := roundsTo(w, windowHandshake, 40)
+		time.Sleep(tcpQuiet + tcpQuiet/2)
+		again := roundsTo(w, windowHandshake, 40)
+		if first < 0 || again < 0 || again > first+4 {
+			t.Fatal("stamps ", stamps, ": ", first, " round trips to grow, after a pause ", again)
+		}
+		w.conn.mu.Lock()
+		rtt := w.conn.rcvRTT
+		w.conn.mu.Unlock()
+		if rtt > 3*windowHandshake {
+			t.Fatal("stamps ", stamps, ": after a pause the round trip is ", rtt)
+		}
+		// a video: 8 round trips of a segment, then 2 s of nothing
+		var mean int64
+		for range 3 {
+			time.Sleep(2 * time.Second)
+			for range 8 {
+				mean += int64(w.window())
+				w.round(windowHandshake, 1, 10)
+			}
+		}
+		if mean /= 24; mean < 1<<20 {
+			t.Fatal("stamps ", stamps, ": the window of segments after pauses is ", mean, " on average")
+		}
+	}
+}
+
+// A quiet connection, whose reader took all, gives back its part of the budget once what the system was told it may
+// send has come, and another one grows into it.
+func TestTCPWindowQuietShare(t *testing.T) {
+	const budget = 4 << 20
+	ws := newWindowPeers(t, []string{"10.0.0.1:1911", "10.0.0.1:1912", "10.0.0.1:1913"}, true, budget)
+	for _, w := range ws {
+		w.read()
+	}
+	growAll(ws[:2], 40)
+	time.Sleep(tcpQuiet + tcpQuiet/2)
+	for range 10 {
+		ws[2].round(windowHandshake, 1, 10)
+	}
+	if got := ws[2].window(); got >= 1<<20 {
+		t.Fatal("grew to ", got, " while quiet ones hold ", ws[0].s.grown.Load(), " of ", budget)
+	}
+	// the quiet ones get what they were told they may send, once
+	for _, w := range ws[:2] {
 		w.round(windowHandshake, 1, 10)
 	}
-	stop.Store(true)
-	for range 4 {
-		w.round(windowHandshake, 1, 4)
+	if n := roundsTo(ws[2], windowHandshake, 40); n < 0 {
+		t.Fatal("grew to ", ws[2].window(), " only after the quiet ones gave back")
 	}
-	if got := w.window(); got != tcpGrownWindow {
-		t.Fatal("grew to ", got, " only")
+	for _, w := range ws[:2] {
+		if got := w.window(); got != tcpGrowingWindow {
+			t.Fatal("a quiet one came back with ", got)
+		}
 	}
-	time.Sleep(tcpStalled)
-	mb, err := w.conn.ReadMultiBuffer()
-	if err != nil {
-		t.Fatal(err)
+}
+
+// What the system was told it may send stays: a window that starts again after a pause is not one that takes it back.
+func TestTCPWindowEdgeKept(t *testing.T) {
+	w := newWindowPeer(t, "10.0.0.1:1921", true)
+	w.read()
+	roundsTo(w, windowHandshake, 40)
+	edge := w.seen(0).edge
+	time.Sleep(tcpQuiet + tcpQuiet/2)
+	payload := make([]byte, 1000)
+	for int32(edge-w.peer.seq) > 0 {
+		n := min(len(payload), int(edge-w.peer.seq))
+		w.clock++
+		w.send(w.peer.seq, tcpAck, w.stampOption(0), payload[:n])
+		w.peer.seq += uint32(n)
 	}
-	buf.ReleaseMulti(mb)
-	if got, taken := w.window(), w.s.grown.Load(); got != tcpGrowingWindow || taken != 0 {
-		t.Fatal("after a stop the window is ", got, " and takes ", taken, " of the budget")
+	time.Sleep(4 * windowHandshake)
+	w.conn.mu.Lock()
+	nxt := w.conn.rcvNxt
+	w.conn.mu.Unlock()
+	if nxt != edge {
+		t.Fatal("took ", int32(nxt-edge), " of what the system was told it may send")
+	}
+	if got := w.window(); got != tcpGrowingWindow {
+		t.Fatal("after a pause the window is ", got)
+	}
+	if got := w.s.grown.Load(); got != 0 {
+		t.Fatal("once all came the window takes ", got, " of the budget")
+	}
+}
+
+// charges is what the connections of s take of its budget
+func charges(s *stack) (sum int64) {
+	s.mu.Lock()
+	conns := make([]*tcpConn, 0, len(s.conns))
+	for _, c := range s.conns {
+		conns = append(conns, c)
+	}
+	s.mu.Unlock()
+	for _, c := range conns {
+		c.mu.Lock()
+		sum += c.charged
+		c.mu.Unlock()
+	}
+	return sum
+}
+
+// Each way that a connection that grew to receive ends gives back what it took of the budget.
+func TestTCPWindowBudgetBack(t *testing.T) {
+	var srcs []string
+	for i := range 5 {
+		srcs = append(srcs, "10.0.0.1:"+strconv.Itoa(1931+i))
+	}
+	ws := newWindowPeers(t, srcs, true, 64<<20)
+	stops := make([]atomic.Bool, len(ws))
+	for i, w := range ws {
+		w.readUntil(&stops[i])
+	}
+	growAll(ws, 40)
+	s := ws[0].s
+	if s.grown.Load() == 0 || s.grown.Load() != charges(s) {
+		t.Fatal("grown ", s.grown.Load(), ", charged ", charges(s))
+	}
+	// the app closes, the other side resets, the reader stops and the app closes, a timeout
+	ws[0].conn.Close()
+	ws[1].send(ws[1].peer.seq, tcpRst|tcpAck, nil, nil)
+	stops[2].Store(true)
+	ws[2].round(windowHandshake, 1, 2)
+	ws[2].round(windowHandshake, 1, 2)
+	ws[2].conn.Close()
+	ws[3].conn.mu.Lock()
+	ws[3].conn.abort(errTCPTimeout)
+	ws[3].conn.mu.Unlock()
+	time.Sleep(4 * windowHandshake)
+	if got, left := s.grown.Load(), charges(s); got != left || got > int64(tcpGrownWindow) {
+		t.Fatal("grown ", got, " where the one left takes ", left)
+	}
+	// the stack goes away
+	s.Close()
+	time.Sleep(4 * windowHandshake)
+	if got := s.grown.Load(); got != 0 {
+		t.Fatal("a stack that is gone takes ", got)
+	}
+}
+
+// What a connection takes of the budget to send more goes back when all it sent is acknowledged, and when it ends.
+func TestTCPWindowBudgetSend(t *testing.T) {
+	for i, end := range []string{"acknowledged", "reset", "timeout", "close"} {
+		p, l := newPeer(t, "10.0.0.1:"+strconv.Itoa(1941+i), "10.0.0.2:80")
+		conns := make(chan accepted, 1)
+		s := newTestStack(t, l, accept(conns))
+		s.growing, s.window, s.budget = true, tcpLargeWindow, 64<<20
+		p.connect([]byte{1, 3, 3, 5})
+		c := take(t, conns).conn.(*tcpConn)
+		go c.WriteMultiBuffer(buf.MergeBytes(nil, make([]byte, 64<<20)))
+		sent := p.ack
+		drain := func(d time.Duration) {
+			for {
+				select {
+				case b := <-p.sent:
+					seg := p.segment(b)
+					if n := len(seg.payload); n > 0 && int32(seg.seq+uint32(n)-sent) > 0 {
+						sent = seg.seq + uint32(n)
+					}
+				case <-time.After(d):
+					return
+				}
+			}
+		}
+		widened := false
+		for range 300 {
+			drain(5 * time.Millisecond)
+			c.mu.Lock()
+			widened = c.window == tcpGrownWindow
+			c.mu.Unlock()
+			if widened {
+				break
+			}
+			p.ack = sent
+			p.send(p.seq, tcpAck, nil, nil)
+		}
+		if !widened || s.grown.Load() == 0 {
+			t.Fatal(end, ": did not take from the budget to send more")
+		}
+		switch end {
+		case "acknowledged":
+			// all of it, and the window of the peer closed, so that nothing more is in flight
+			drain(50 * time.Millisecond)
+			p.window = 0
+			p.ack = sent
+			p.send(p.seq, tcpAck, nil, nil)
+			time.Sleep(50 * time.Millisecond)
+		case "reset":
+			p.send(p.seq, tcpRst|tcpAck, nil, nil)
+		case "timeout":
+			c.mu.Lock()
+			c.abort(errTCPTimeout)
+			c.mu.Unlock()
+		case "close":
+			c.Close()
+		}
+		go drain(500 * time.Millisecond)
+		time.Sleep(50 * time.Millisecond)
+		if got := s.grown.Load(); got != 0 {
+			t.Fatal(end, ": still takes ", got)
+		}
 	}
 }
