@@ -44,7 +44,7 @@ const (
 	tcpGrownWindow = math.MaxUint16 << tcpWindowShift
 	// tcpFaster is how much faster a reader has to take what comes than with a window half as large for its window to
 	// grow again. A window twice as large that held the stream back makes it about twice as fast
-	tcpFaster = 1.5
+	tcpFaster = 1.25
 	// tcpHeld is how many segments wait for one that was lost before them,
 	// and of how many parts what the system says it has is known
 	tcpHeld = 1024
@@ -176,11 +176,13 @@ type tcpConn struct {
 	// rcvEnd is where what the system sends ends, if rcvEnds: its FIN came with a segment that waits in rcvHeld
 	rcvEnd  uint32
 	rcvEnds bool
-	// rcvTaken is what the reader has taken since rcvSince, rcvFastest the most it took a second while the window
-	// held it back, and rcvBefore that with a window half as large, for grow
-	rcvTaken              int64
-	rcvSince              time.Time
-	rcvFastest, rcvBefore float64
+	// rcvTaken is what the reader has taken since rcvSince, for grow. rcvHeldTaken is what it took in rcvHeldTime
+	// while the window held it back, and rcvBefore how much that was a second with a window half as large
+	rcvTaken     int64
+	rcvSince     time.Time
+	rcvHeldTaken int64
+	rcvHeldTime  time.Duration
+	rcvBefore    float64
 	// rcvRTT is how long a round trip takes now as the received segments tell, see sampled. Without the times of
 	// RFC 7323 that is how long a window takes to come while the reader keeps up: it is measured from rcvRTTAt to
 	// rcvRTTSeq, and not if rcvRTTBehind, as then it is the reader that holds the stream back
@@ -1162,8 +1164,8 @@ func (c *tcpConn) taken(size int32) {
 }
 
 // grow doubles rcvWindow of a stack that is growing, up to tcpGrownWindow, when the reader takes more than half of it in
-// a round trip, as it does when the window is what holds the stream back, and clearly faster than with a window half
-// as large: when a larger window did not make it faster, the way or the sender is what holds it back, and what more
+// a round trip, as it does when the window is what holds the stream back, and clearly faster than on average with a
+// window half as large: when a larger window did not make it faster, the way or the sender is what holds it back, and what more
 // the window takes waits in a queue on the way, which makes the round trip longer. The window of a
 // reader that is slow stays as it is, and so does what waits for it. It never becomes smaller: the system may
 // already send up to its edge. c.mu is held
@@ -1187,10 +1189,11 @@ func (c *tcpConn) grow(size int32) {
 	}
 	// what was taken in a second and in a round trip on average, also when the reader took it all at once after a while
 	if rate := float64(c.rcvTaken) / since.Seconds(); rate*rtt.Seconds() > float64(c.rcvWindow/2) {
-		c.rcvFastest = max(c.rcvFastest, rate)
+		c.rcvHeldTaken, c.rcvHeldTime = c.rcvHeldTaken+c.rcvTaken, c.rcvHeldTime+since
 		if rate > c.rcvBefore*tcpFaster {
 			c.rcvWindow = min(c.rcvWindow*2, most)
-			c.rcvBefore, c.rcvFastest = c.rcvFastest, 0
+			c.rcvBefore = float64(c.rcvHeldTaken) / c.rcvHeldTime.Seconds()
+			c.rcvHeldTaken, c.rcvHeldTime = 0, 0
 		}
 	}
 	c.rcvTaken, c.rcvSince = 0, time.Now()

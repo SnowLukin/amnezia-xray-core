@@ -248,14 +248,14 @@ func TestTCPWindowStays(t *testing.T) {
 	}
 
 	// a way that takes 128 KiB in 20 ms, and keeps what more it is given in a queue, which makes the round trip
-	// longer: the reader gets no faster with a larger window, which stops growing a doubling or two after that
+	// longer: the reader gets no faster with a larger window, which stops growing short of the most
 	queued := newWindowPeer(t, "10.0.0.1:1304", false)
 	queued.read()
 	for range 16 {
 		offered := int32(queued.seen(0).edge - queued.peer.seq)
 		queued.round(max(windowHandshake/2, time.Duration(offered)*(windowHandshake/2)/tcpGrowingWindow), 1, 4)
 	}
-	if got := queued.window(); got > 4*tcpGrowingWindow {
+	if got := queued.window(); got >= tcpGrownWindow {
 		t.Fatal("grew for a way that is full to ", got)
 	}
 
