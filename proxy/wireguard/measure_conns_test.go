@@ -55,11 +55,14 @@ import (
 //	AWG_MEASURE_THROUGHPUT=1  TestMeasureThroughput
 //	AWG_MEASURE_UDP_RATES=100,200  TestMeasureUDPThroughput, Mbit/s that the server sends at
 //	AWG_MEASURE_JITTER=0      how much longer each way of a relay takes at most, ms
+//	AWG_MEASURE_UDP_STALL=0   ms that the reader of TestMeasureUDPThroughput takes nothing every 50 ms
 //	AWG_MEASURE_IDLE=1        TestMeasureIdle
 //	AWG_MEASURE_N=100,250     connections per round
-//	AWG_MEASURE_MODES=idle,down,up       also abandon, dead, udp, udp-flood, udp-abandon
+//	AWG_MEASURE_MODES=idle,down,up       also abandon, dead, stop, udp, udp-flood, udp-abandon
 //	AWG_MEASURE_PATHS=awg,direct
 //	AWG_MEASURE_CONN_IDLE=300s           connIdle of the policy, after which an abandoned connection ends
+//	AWG_MEASURE_CONN_DELAY=0  one-way delay of the way of TestMeasureConns, ms
+//	AWG_MEASURE_READ_FOR=5s   how long the connections of mode stop read before they stop
 //	AWG_MEASURE_OUTBOUNDS=1   outbounds of TestMeasureIdle
 //	AWG_MEASURE_IDLE_FOR=30s  how long TestMeasureIdle leaves them without connections
 //	AWG_MEASURE_SERVER=path   a test binary of another revision to be the server, so that every revision
@@ -809,7 +812,16 @@ func TestMeasureConns(t *testing.T) {
 	variant := os.Getenv("AWG_MEASURE_VARIANT")
 
 	priv, pub := testKeys(t)
-	srv, _ := startMeasureServer(t, pub, measureClientAddr, nil)
+	delay := envInts(t, "AWG_MEASURE_CONN_DELAY", "0")[0]
+	var delays []int
+	if delay > 0 {
+		delays = []int{delay}
+	}
+	srv, _ := startMeasureServer(t, pub, measureClientAddr, delays)
+	endpoint := srv.Endpoint
+	if delay > 0 {
+		endpoint = srv.Relays[delay]
+	}
 	inst := newMeasureInstance(t, connIdle)
 	direct := addFreedom(t, inst, "direct")
 	t.Logf("NumCPU %d, GOMAXPROCS %d, pipe limit %d, connIdle %v; deltas against the start of each round",
@@ -818,6 +830,18 @@ func TestMeasureConns(t *testing.T) {
 	round := 0
 	for _, name := range modes {
 		mode, ok := measureModes[name]
+		if name == "stop" {
+			for _, n := range ns {
+				round++
+				oh := addMeasureOutbound(t, inst, "awg"+strconv.Itoa(round), measureClientConf(endpoint, srv.Pub, priv))
+				r := measureStopRound(t, fmt.Sprintf("awg stop N=%d", n), oh, n)
+				r.Variant, r.Path, r.Mode, r.N = variant, "awg", name, n
+				logResult(t, r)
+				closeMeasureOutbound(oh)
+				time.Sleep(measureGap)
+			}
+			continue
+		}
 		if !ok {
 			t.Fatalf("unknown mode %q", name)
 		}
@@ -836,7 +860,11 @@ func TestMeasureConns(t *testing.T) {
 						s, stopServer = startMeasureServer(t, pub, measureClientAddr, nil)
 					}
 					// A fresh outbound each round: a fresh stack, without what the previous round left.
-					oh = addMeasureOutbound(t, inst, "awg"+strconv.Itoa(round), measureClientConf(s.Endpoint, s.Pub, priv))
+					e := s.Endpoint
+					if !mode.kill {
+						e = endpoint
+					}
+					oh = addMeasureOutbound(t, inst, "awg"+strconv.Itoa(round), measureClientConf(e, s.Pub, priv))
 					tcpDest = net.TCPDestination(net.IPAddress(measureServerAddr.AsSlice()), measureTargetPort)
 					udpDest = net.UDPDestination(net.IPAddress(measureServerAddr.AsSlice()), measureUDPPort)
 				case "direct":
@@ -1194,6 +1222,7 @@ func TestMeasureUDPThroughput(t *testing.T) {
 	delays := envInts(t, "AWG_MEASURE_DELAYS", "0,25")
 	runs := envInts(t, "AWG_MEASURE_RUNS", "3")[0]
 	secs := envInts(t, "AWG_MEASURE_SECONDS", "5")[0]
+	stall := time.Duration(envInts(t, "AWG_MEASURE_UDP_STALL", "0")[0]) * time.Millisecond
 	variant := os.Getenv("AWG_MEASURE_VARIANT")
 	var relayed []int
 	for _, d := range delays {
@@ -1222,19 +1251,72 @@ func TestMeasureUDPThroughput(t *testing.T) {
 				if err := c.send("pace " + strconv.Itoa(rate) + " " + strconv.Itoa(secs)); err != nil {
 					t.Fatal(err)
 				}
-				n, _ := c.read(math.MaxInt, time.Duration(secs)*time.Second+2*time.Duration(d)*time.Millisecond+time.Second)
+				// a reader that now and then takes nothing for a while, as one that the system makes wait
+				n := 0
+				for end := time.Now().Add(time.Duration(secs)*time.Second + 2*time.Duration(d)*time.Millisecond + time.Second); time.Now().Before(end); {
+					k, _ := c.read(math.MaxInt, min(50*time.Millisecond, time.Until(end)))
+					n += k
+					time.Sleep(stall)
+				}
 				got = append(got, float64(n)/(float64(rate)*1e6/8*float64(secs)))
 				c.end()
 				closeMeasureOutbound(oh)
 				time.Sleep(measureGap)
 			}
 			slices.Sort(got)
-			t.Logf("UDP %4d Mbit/s one-way delay %3d ms: median %.1f%% came; runs %s", rate, d, 100*got[len(got)/2], fmtFloats(got))
+			t.Logf("UDP %4d Mbit/s one-way delay %3d ms, reader stalls %v: median %.1f%% came; runs %s", rate, d, stall, 100*got[len(got)/2], fmtFloats(got))
 			logResult(t, struct {
-				Variant           string
-				RateMbps, DelayMs int
-				Came              []float64
-			}{variant, rate, d, got})
+				Variant                    string
+				RateMbps, DelayMs, StallMs int
+				Came                       []float64
+			}{variant, rate, d, int(stall / time.Millisecond), got})
 		}
 	}
+}
+
+// measureStopRound has n connections download as fast as they can for a while, and then stop reading, as an app that
+// went to the background, while the server goes on sending. It logs how fast they went together and what they hold
+// once they stopped.
+func measureStopRound(t *testing.T, label string, oh outbound.Handler, n int) measureRoundResult {
+	t.Helper()
+	readFor := envDuration(t, "AWG_MEASURE_READ_FOR", 5*time.Second)
+	dest := net.TCPDestination(net.IPAddress(measureServerAddr.AsSlice()), measureTargetPort)
+	warmUp(t, oh, dest)
+	base := sampleMem(nil)
+	stopPeak := samplePeak()
+	conns := make([]*measureConn, n)
+	var read atomic.Int64
+	var wg sync.WaitGroup
+	end := time.Now().Add(readFor)
+	for i := range conns {
+		conns[i] = dialMeasured(oh, dest)
+		wg.Go(func() {
+			c := conns[i]
+			if c.send("send 1073741824\n") != nil {
+				return
+			}
+			for time.Now().Before(end) {
+				k, err := c.read(math.MaxInt, time.Until(end))
+				read.Add(int64(k))
+				if err != nil && time.Now().Before(end) {
+					return
+				}
+			}
+		})
+	}
+	wg.Wait()
+	mbps := float64(read.Load()) * 8 / readFor.Seconds() / 1e6
+	waitHeapSteady(20 * time.Second)
+	peak := stopPeak()
+	held := sampleMem(nil)
+	r := measureRoundResult{OpenedMs: int64(mbps), PeakKiB: float64(int64(peak)-int64(base.heapInuse)) / 1024}
+	r.Open = held.against(base)
+	t.Logf("%s: %.0f Mbit/s together while they read, HeapInuse peaked at %+.0f KiB", label, mbps, r.PeakKiB)
+	logSample(t, "  stopped", held, base, n)
+	for _, c := range conns {
+		c.end()
+	}
+	closed := sampleMem(nil)
+	r.Closed = closed.against(base)
+	return r
 }
