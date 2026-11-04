@@ -2189,7 +2189,7 @@ func TestNewStack(t *testing.T) {
 	l.segments = false
 	addresses := []netip.Addr{netip.MustParseAddr("10.0.0.2")}
 	made, _ = NewStack(context.Background(), StackOptions{Tun: l, MTU: testMTU, Addresses: addresses, Remote: true}, nil)
-	if s := made.(*stack); s.window != tcpLargeWindow || !s.verify || !s.stamps || s.segmenter != nil || len(s.addresses) != 1 {
+	if s := made.(*stack); s.window != tcpLargeWindow || !s.growing || s.budget != tcpGrowBudget || !s.verify || !s.stamps || s.segmenter != nil || len(s.addresses) != 1 {
 		t.Fatal("wrong stack for a tunnel to another system: ", s)
 	}
 }

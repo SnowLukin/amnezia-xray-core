@@ -7,6 +7,7 @@ import (
 	"math"
 	"math/rand/v2"
 	"net/netip"
+	"runtime"
 	"slices"
 	"sync"
 	"time"
@@ -34,6 +35,21 @@ const (
 	tcpLargeWindow = 1 << 20
 	// tcpWindowShift makes them fit the 16 bits of a window
 	tcpWindowShift = 5
+	// a connection through a tunnel to another system starts to receive with tcpGrowingWindow, and its window grows up
+	// to tcpGrownWindow, the most that the 16 bits take with tcpWindowShift, while its reader keeps up, see grow.
+	// What a reader does not take waits in the heap, a window per connection: one that stays small for a reader that
+	// is slow holds little, and one that grows is not what holds back a way with a long round trip
+	tcpGrowingWindow = 128 << 10
+	// tcpGrownWindow is also the most that such a connection sends before it is acknowledged, where it would send
+	// only tcpLargeWindow, when the budget of its stack lets it: only what is not acknowledged yet waits in the heap,
+	// and the way to the other side takes as much
+	tcpGrownWindow = math.MaxUint16 << tcpWindowShift
+	// tcpFaster is how much faster a reader has to take what comes than with a window half as large for its window to
+	// grow again. A window twice as large that held the stream back makes it about twice as fast
+	tcpFaster = 1.25
+	// tcpQuiet is how long a connection whose reader took all receives nothing before it starts again with
+	// tcpGrowingWindow
+	tcpQuiet = time.Second
 	// tcpHeld is how many segments wait for one that was lost before them,
 	// and of how many parts what the system says it has is known
 	tcpHeld = 1024
@@ -80,6 +96,19 @@ var (
 	errTCPRefused     = errors.New("connection refused")
 	errTCPUnreachable = errors.New("destination unreachable")
 )
+
+// tcpGrowBudget is how much the connections of a stack that is growing take together past what they start with: the
+// heap that readers which stopped can hold, also when an app on a phone is frozen and its connections are not. iOS ends
+// a network extension at about 50 MB: there four readers that stopped hold about what four of 1 MiB did, and one or
+// two that read go as fast as their windows let them
+var tcpGrowBudget = growBudget(runtime.GOOS)
+
+func growBudget(goos string) int64 {
+	if goos == "ios" {
+		return 4 << 20
+	}
+	return 32 << 20
+}
 
 // tcpStarted is where the times that segments carry count from
 var tcpStarted = time.Now()
@@ -128,8 +157,10 @@ type tcpConn struct {
 	ipSize int
 	// mss is the largest payload of a segment that is sent
 	mss int
-	// window is tcpWindow or tcpLargeWindow
+	// window is tcpWindow, tcpLargeWindow or tcpGrownWindow, the most that is sent before it is acknowledged
 	window int32
+	// rcvWindow is what is taken from the system before the reader has to take it: window, or one that grows
+	rcvWindow int32
 	// sndShift and rcvShift are the window scale of what the system and we advertise
 	sndShift, rcvShift uint8
 	// sack is set if the system takes selective acknowledgments
@@ -163,6 +194,34 @@ type tcpConn struct {
 	// rcvEnd is where what the system sends ends, if rcvEnds: its FIN came with a segment that waits in rcvHeld
 	rcvEnd  uint32
 	rcvEnds bool
+	// rcvEdge is the furthest that the system was told it may send to, which no window takes back
+	rcvEdge uint32
+	// rcvTaken is what the reader has taken since rcvSince, for grow. rcvRate is how much it takes a second, from
+	// rcvLimited round trips since the window changed in which the window held it back, and rcvBefore how much that
+	// was with a window half as large, with a round trip of rcvBeforeRTT. rcvLonger counts the round trips in a row
+	// that took much longer. rcvEarned is what the window grew to before a pause, and rcvCameAt when the last segment
+	// with data came
+	rcvTaken     int64
+	rcvSince     time.Time
+	rcvRate      float64
+	rcvLimited   int
+	rcvBefore    float64
+	rcvBeforeRTT time.Duration
+	rcvLonger    int
+	rcvEarned    int32
+	rcvCameAt    time.Time
+	// rcvPaused is set from a pause of the sender until a segment carries back a time after rcvPausedAt
+	rcvPaused   bool
+	rcvPausedAt uint32
+	// charged is what the connection takes of the budget of its stack
+	charged int64
+	// rcvRTT is how long a round trip takes now as the received segments tell, see sampled. Without the times of
+	// RFC 7323 that is how long a window takes to come while the reader keeps up: it is measured from rcvRTTAt to
+	// rcvRTTSeq, and not if rcvRTTBehind, as then it is the reader that holds the stream back
+	rcvRTT       time.Duration
+	rcvRTTAt     time.Time
+	rcvRTTSeq    uint32
+	rcvRTTBehind bool
 	// rcvHeld is what came after something that did not, in the order of seq and without overlaps
 	rcvHeld []held
 	// rcvLast is the seq of the last one that was put into rcvHeld
@@ -201,8 +260,9 @@ type tcpConn struct {
 	// The first one is the SYN-ACK
 	timed   uint32
 	timedAt time.Time
-	// srtt is how long an acknowledgment takes, rttvar how much that varies (RFC 6298)
-	srtt, rttvar time.Duration
+	// srtt is how long an acknowledgment takes, rttvar how much that varies (RFC 6298), and rttMin the shortest that
+	// one took: the first may have waited for the handshake of a tunnel
+	srtt, rttvar, rttMin time.Duration
 
 	timer *time.Timer
 	armed bool
@@ -220,8 +280,10 @@ func newTCPConn(s *stack, f flow) *tcpConn {
 		src:             net.TCPDestination(net.IPAddress(f.src.Addr().AsSlice()), net.Port(f.src.Port())),
 		dst:             net.TCPDestination(net.IPAddress(f.dst.Addr().AsSlice()), net.Port(f.dst.Port())),
 		window:          s.window,
+		rcvWindow:       s.window,
 		ssthresh:        uint32(s.window),
 		timedAt:         time.Now(),
+		rcvSince:        time.Now(),
 		retransmitTicks: tcpRetransmitTicks,
 	}
 	c.readable.L = &c.mu
@@ -231,12 +293,16 @@ func newTCPConn(s *stack, f flow) *tcpConn {
 	c.sndUna = rand.Uint32()
 	c.sndNxt = c.sndUna + 1
 	c.stampBase = rand.Uint32()
+	if s.growing {
+		c.rcvWindow, c.ssthresh = tcpGrowingWindow, tcpGrownWindow
+	}
 	return c
 }
 
 // synchronize takes what the SYN of the other side says. c.mu is held, or nobody else has c yet
 func (c *tcpConn) synchronize(syn segment) {
 	c.rcvNxt = syn.seq + 1
+	c.rcvEdge, c.rcvCameAt = c.rcvNxt, time.Now()
 	c.sndWnd = uint32(syn.window)
 	c.sack, c.stamps, c.sndShift, c.rcvShift = false, false, 0, 0
 	for kind, value, o := nextOption(syn.options); kind != 0; kind, value, o = nextOption(o) {
@@ -325,12 +391,19 @@ func (c *tcpConn) header(b []byte, seq uint32, flags byte, options []byte, size 
 	binary.BigEndian.PutUint32(t[8:], c.rcvNxt)
 	t[12] = byte(len(t)/4) << 4
 	t[13] = flags
-	window := max(c.window-c.rcvLen, 0)
+	window := c.room()
+	var told uint32
 	if flags&tcpSyn != 0 {
 		// the window of a SYN is not scaled
-		binary.BigEndian.PutUint16(t[14:], uint16(min(window, math.MaxUint16)))
+		told = uint32(min(window, math.MaxUint16))
+		binary.BigEndian.PutUint16(t[14:], uint16(told))
 	} else {
-		binary.BigEndian.PutUint16(t[14:], uint16(min(window>>c.rcvShift, math.MaxUint16)))
+		told = uint32(min(window>>c.rcvShift, math.MaxUint16))
+		binary.BigEndian.PutUint16(t[14:], uint16(told))
+		told <<= c.rcvShift
+	}
+	if int32(c.rcvNxt+told-c.rcvEdge) > 0 {
+		c.rcvEdge = c.rcvNxt + told
 	}
 	t[16], t[17], t[18], t[19] = 0, 0, 0, 0
 	if c.stamps {
@@ -348,7 +421,49 @@ func (c *tcpConn) header(b []byte, seq uint32, flags byte, options []byte, size 
 	setIPLength(b[:n], n+len(t)+size)
 	c.rcvAcked = c.rcvNxt
 	c.rcvAdvertised = window
+	c.recharge()
 	return n + len(t)
+}
+
+// room is how much more the system may send: what the window has room for, and not less than it was told.
+// c.mu is held
+func (c *tcpConn) room() int32 {
+	return max(c.rcvWindow-c.rcvLen, int32(c.rcvEdge-c.rcvNxt), 0)
+}
+
+// recharge charges the budget of the stack with what the connection may hold past what it starts with: what waits
+// for the reader and what the system may still send, past tcpGrowingWindow, and what is sent before it is
+// acknowledged past tcpLargeWindow. A connection that is gone holds nothing. c.mu is held
+func (c *tcpConn) recharge() {
+	if !c.stack.growing {
+		return
+	}
+	var want int64
+	if c.err == nil {
+		if !c.closed {
+			want = int64(max(c.rcvLen+c.room()-tcpGrowingWindow, 0))
+		}
+		want += int64(max(c.window-tcpLargeWindow, 0))
+	}
+	if want != c.charged {
+		c.stack.grown.Add(want - c.charged)
+		c.charged = want
+	}
+}
+
+// afford charges the budget of the stack with what the connection may hold with a receive window of rcv and one to
+// send of snd, if the budget has room for it. c.mu is held
+func (c *tcpConn) afford(rcv, snd int32) bool {
+	rcvWas, sndWas := c.rcvWindow, c.window
+	c.rcvWindow, c.window = rcv, snd
+	charged := c.charged
+	c.recharge()
+	if d := c.charged - charged; d > 0 && c.stack.grown.Load() > c.stack.budget {
+		c.rcvWindow, c.window = rcvWas, sndWas
+		c.recharge()
+		return false
+	}
+	return true
 }
 
 // write completes the headers h with the checksum of the segment and writes it to the tun.
@@ -430,16 +545,85 @@ func (c *tcpConn) sendAck() {
 // that the stream goes on with, so that the other side sees how long that one took, and not one of what came
 // before it. c.mu is held
 func (c *tcpConn) stamped(s segment) {
-	if int32(s.seq-c.rcvAcked) > 0 {
-		return
-	}
 	for kind, value, o := nextOption(s.options); kind != 0; kind, value, o = nextOption(o) {
-		if kind == 8 && len(value) == 8 {
-			if stamp := binary.BigEndian.Uint32(value); int32(stamp-c.stamp) > 0 {
-				c.stamp = stamp
+		if kind != 8 || len(value) != 8 {
+			continue
+		}
+		// what comes carries back the time of what was sent from here that it answers, unless the sender paused: then
+		// it answers what was sent before the pause. The times count milliseconds: the round trip is up to one more
+		// than they differ by
+		if echo := binary.BigEndian.Uint32(value[4:]); echo != 0 && len(s.payload)+s.rest > 0 && c.answers(echo) {
+			if d := time.Duration(int32(c.stampBase+uint32(time.Since(tcpStarted)/time.Millisecond)-echo)) * time.Millisecond; d >= 0 && d < time.Minute {
+				c.sampled(d+time.Millisecond, 8)
 			}
 		}
+		if int32(s.seq-c.rcvAcked) > 0 {
+			return
+		}
+		if stamp := binary.BigEndian.Uint32(value); int32(stamp-c.stamp) > 0 {
+			c.stamp = stamp
+		}
 	}
+}
+
+// came is called when a segment with data comes. After nothing came for tcpQuiet, with nothing waiting for the reader,
+// the window starts again with tcpGrowingWindow: the window that a connection grew to does not hold a part of the
+// budget while it is quiet, which is given back once what the system was told it may send has come. In the first round
+// trip that it holds the stream back it grows back to what it was, rcvEarned, as far as the budget lets it, and from
+// there on as before the pause. c.mu is held
+func (c *tcpConn) came() {
+	if c.rcvLen == 0 && c.rcvWindow > tcpGrowingWindow && !c.rcvCameAt.IsZero() && time.Since(c.rcvCameAt) > tcpQuiet {
+		c.rcvEarned = max(c.rcvEarned, c.rcvWindow)
+		c.rcvWindow = tcpGrowingWindow
+		c.rcvLimited, c.rcvRate, c.rcvLonger, c.rcvTaken, c.rcvSince = 0, 0, 0, 0, time.Now()
+	}
+}
+
+// answers reports that a segment with data that carries back echo answers what was sent since the sender paused, if
+// it did. c.mu is held
+func (c *tcpConn) answers(echo uint32) bool {
+	if c.paused() {
+		c.rcvPausedAt, c.rcvPaused = c.stampSent, true
+	}
+	if c.rcvPaused && int32(echo-c.rcvPausedAt) <= 0 {
+		return false
+	}
+	c.rcvPaused = false
+	return true
+}
+
+// paused reports that nothing came for longer than two round trips, and not less than a tick. c.mu is held
+func (c *tcpConn) paused() bool {
+	return !c.rcvCameAt.IsZero() && time.Since(c.rcvCameAt) > max(2*c.rtt(), tcpTick)
+}
+
+// sampled takes d as how long a round trip takes, a part of it next to what was known: an eighth for the many
+// samples of a round trip that the times tell, as RFC 6298 does, and half for one a window. The way gets longer when
+// what is sent waits in a queue on it, or a wireless link waits, and shorter again. c.mu is held
+func (c *tcpConn) sampled(d time.Duration, part time.Duration) {
+	if c.rcvRTT == 0 {
+		c.rcvRTT = d
+	} else {
+		c.rcvRTT += (d - c.rcvRTT) / part
+	}
+}
+
+// measured times how long a window takes to come, when the segments do not carry the times of RFC 7323.
+// The reader keeps up if what waits for it stays below half the window. c.mu is held
+func (c *tcpConn) measured() {
+	if c.paused() {
+		// what comes after a pause tells how long the sender waited
+		c.rcvRTTAt = time.Time{}
+	}
+	switch {
+	case c.rcvRTTAt.IsZero():
+	case int32(c.rcvNxt-c.rcvRTTSeq) < 0:
+		c.rcvRTTBehind = c.rcvRTTBehind || c.rcvLen > c.rcvWindow/2
+		return
+	case !c.rcvRTTBehind:
+		c.sampled(time.Since(c.rcvRTTAt), 2)
+	}
+	c.rcvRTTAt, c.rcvRTTSeq, c.rcvRTTBehind = time.Now(), c.rcvNxt+uint32(c.rcvWindow), false
 }
 
 // input takes a segment of the connection. It returns false if the connection is gone
@@ -478,7 +662,7 @@ func (c *tcpConn) input(s segment) bool {
 	}
 	if s.flags&tcpRst != 0 {
 		// from where the system is, or was before its FIN, not from someone who knows no more than the addresses
-		if s.seq-c.rcvNxt <= uint32(c.window) || c.rcvFin && s.seq+1 == c.rcvNxt {
+		if s.seq-c.rcvNxt <= uint32(c.rcvWindow) || c.rcvFin && s.seq+1 == c.rcvNxt {
 			c.abort(errTCPReset)
 		}
 		return true
@@ -542,6 +726,11 @@ func (c *tcpConn) acknowledge(s segment) {
 		c.sndUna = s.ack
 		c.dupAcks, c.stalled, c.retransmits = 0, 0, 0
 		c.release()
+		if c.sndUna == c.sndNxt && c.window > tcpLargeWindow {
+			// nothing is in flight anymore: the next time that much is sent it takes from the budget again
+			c.window, c.cwnd = tcpLargeWindow, min(c.cwnd, tcpLargeWindow)
+			c.recharge()
+		}
 		n := 0
 		for n < len(c.sacked) && int32(c.sacked[n][0]-c.sndUna) <= 0 {
 			n++
@@ -617,6 +806,11 @@ func (c *tcpConn) acknowledge(s segment) {
 	// and what is sent as they come does not come to it all at once
 	limit := min(c.sndWnd, uint32(c.window))
 	enough := limit / 2
+	if c.stack.growing {
+		// through a tunnel what is sent comes back a long round trip later: a writer that waits for half the window
+		// leaves half of that way empty
+		enough = limit / 8
+	}
 	if c.cwnd < limit {
 		enough = uint32(c.mss)
 	}
@@ -631,6 +825,9 @@ func (c *tcpConn) acknowledge(s segment) {
 func (c *tcpConn) clocked() {
 	d := time.Since(c.timedAt)
 	c.timedAt = time.Time{}
+	if c.rttMin == 0 || d < c.rttMin {
+		c.rttMin = d
+	}
 	if c.srtt == 0 {
 		c.srtt, c.rttvar = d, d/2
 	} else {
@@ -756,7 +953,7 @@ func (c *tcpConn) space() uint32 {
 func (c *tcpConn) receive(s segment) {
 	// what is large, the next and all taken stays in the buffers that it was read into
 	size := len(s.payload) + s.rest
-	keep := c.stack.bufs != nil && size >= tcpKept && s.seq == c.rcvNxt && size <= int(c.window-c.rcvLen)
+	keep := c.stack.bufs != nil && size >= tcpKept && s.seq == c.rcvNxt && size <= int(c.room())
 	if !keep {
 		s.payload = c.stack.whole(s.payload, s.rest)
 	}
@@ -785,9 +982,13 @@ func (c *tcpConn) receive(s segment) {
 		c.reset()
 		return
 	}
+	if c.stack.growing && len(payload) > 0 {
+		c.came()
+		defer func() { c.rcvCameAt = time.Now() }()
+	}
 	// the system is told at once when something is wrong, or it sends more of the same
 	now := len(c.rcvHeld) > 0
-	if room := int(c.window - c.rcvLen - int32(seq-c.rcvNxt)); len(payload) > room {
+	if room := int(c.room() - int32(seq-c.rcvNxt)); len(payload) > room {
 		payload, fin, now = payload[:max(room, 0)], false, true
 	}
 	if seq != c.rcvNxt {
@@ -808,6 +1009,9 @@ func (c *tcpConn) receive(s segment) {
 	}
 	c.rcvLen += int32(size)
 	c.rcvNxt += uint32(size)
+	if c.stack.growing && !c.stamps {
+		c.measured()
+	}
 	for !fin && len(c.rcvHeld) > 0 && int32(c.rcvNxt-c.rcvHeld[0].seq) >= 0 {
 		h := c.rcvHeld[0]
 		if before := int32(c.rcvNxt - h.seq); before < h.data.Len() {
@@ -825,7 +1029,7 @@ func (c *tcpConn) receive(s segment) {
 	c.readable.Signal()
 	// the reader acknowledges what it takes, with one segment for all that came by then.
 	// It is not waited for when it does not read for long
-	if fin || now || c.rcvNxt-c.rcvAcked >= uint32(c.window/4) {
+	if fin || now || c.rcvNxt-c.rcvAcked >= uint32(c.rcvWindow/4) {
 		c.sendAck()
 	} else {
 		c.arm(tcpTick)
@@ -1058,9 +1262,17 @@ func (c *tcpConn) abort(err error) {
 		b.Release()
 	}
 	c.sndQueue = nil
+	c.recharge()
 	c.readable.Broadcast()
 	c.writable.Broadcast()
 	c.stack.remove(c)
+}
+
+// widen lets a connection of a stack that is growing send up to tcpGrownWindow before it is acknowledged, if that
+// is what holds it back and the budget of the stack lets it. c.mu is held
+func (c *tcpConn) widen() bool {
+	return c.stack.growing && c.window < tcpGrownWindow && c.sndWnd > uint32(c.window) && c.cwnd >= uint32(c.window) &&
+		c.sndNxt-c.sndUna >= uint32(c.window)-uint32(c.mss) && c.afford(c.rcvWindow, tcpGrownWindow)
 }
 
 // wait waits for something to read. c.mu is held
@@ -1080,9 +1292,84 @@ func (c *tcpConn) wait() error {
 // taken is called when size bytes have been read. c.mu is held
 func (c *tcpConn) taken(size int32) {
 	c.rcvLen -= size
+	c.grow(size)
+	c.recharge()
 	// the system may also have stopped at the window that it was told
-	if c.err == nil && (c.rcvAcked != c.rcvNxt || c.rcvAdvertised < c.window/2) {
+	if c.err == nil && (c.rcvAcked != c.rcvNxt || c.rcvAdvertised < c.rcvWindow/2) {
 		c.sendAck()
+	}
+}
+
+// rtt is how long a round trip takes now as far as it is known. c.mu is held
+func (c *tcpConn) rtt() time.Duration {
+	switch {
+	case c.rcvRTT != 0:
+		return c.rcvRTT
+	case c.rttMin != 0:
+		// until the segments that come tell, the shortest that an acknowledgment took
+		return c.rttMin
+	}
+	return tcpTick
+}
+
+// grow doubles rcvWindow of a stack that is growing, up to tcpGrownWindow and as far as the budget of the stack
+// lets it, when the reader takes more than half of it in a round trip, as it does when the window is what holds the
+// stream back, and a quarter faster than with a window half as large: when a larger window did not make it faster,
+// the way or the sender is what holds it back, and what more the window takes waits in a queue on the way, which
+// makes the round trip longer. When the round trip became much longer and the reader slower, the way got slower,
+// and what the half window took is taken as half of what the reader takes now. The window never becomes smaller than
+// what the system was told. c.mu is held
+func (c *tcpConn) grow(size int32) {
+	most := min(tcpGrownWindow, int32(math.MaxUint16)<<c.rcvShift)
+	if !c.stack.growing || c.rcvWindow >= most {
+		return
+	}
+	c.rcvTaken += int64(size)
+	rtt, since := c.rtt(), time.Since(c.rcvSince)
+	if since < rtt {
+		return
+	}
+	taken := c.rcvTaken
+	c.rcvTaken, c.rcvSince = 0, time.Now()
+	// what was taken in a round trip on average, also when the reader took it all at once after a while
+	if float64(taken)*rtt.Seconds() <= float64(c.rcvWindow/2)*since.Seconds() {
+		return
+	}
+	// the mean of the first round trips, then each one counts a quarter
+	c.rcvLimited++
+	c.rcvRate += (float64(taken)/since.Seconds() - c.rcvRate) / float64(min(c.rcvLimited, 4))
+	if c.rcvWindow < c.rcvEarned {
+		// back to what the window grew to before a pause, as far as the budget lets it: that it made the reader faster
+		// is known
+		for c.rcvWindow < c.rcvEarned {
+			if !c.afford(min(c.rcvWindow*2, c.rcvEarned), c.window) {
+				break
+			}
+		}
+		c.rcvLimited, c.rcvRate, c.rcvLonger = 0, 0, 0
+		return
+	}
+	// a round trip that is not timed is less sure, and so is what is taken in it
+	if c.rcvLimited < 2 && !c.stamps {
+		return
+	}
+	// the way got slower for a few round trips: the round trip became much longer than with the half window, and the
+	// reader at most three quarters as fast. A queue that a larger window fills makes the round trip longer as well,
+	// but not the reader slower. On the slower way a window that holds the stream back makes the reader half as fast
+	// with half of it
+	if c.rcvBefore == 0 || rtt <= c.rcvBeforeRTT*3/2 || c.rcvRate*4/3 >= c.rcvBefore {
+		c.rcvLonger = 0
+	} else if c.rcvLonger++; c.rcvLonger >= 3 {
+		c.rcvBefore, c.rcvBeforeRTT, c.rcvLonger = c.rcvRate/2, rtt, 0
+	}
+	// one round trip after the window changed tells more when it shows the reader clearly faster
+	faster := tcpFaster
+	if c.rcvLimited < 2 {
+		faster = 1.6
+	}
+	if c.rcvRate > c.rcvBefore*faster && c.afford(min(c.rcvWindow*2, most), c.window) {
+		c.rcvBefore, c.rcvBeforeRTT = c.rcvRate, rtt
+		c.rcvLimited, c.rcvRate, c.rcvLonger = 0, 0, 0
 	}
 }
 
@@ -1146,6 +1433,9 @@ func (c *tcpConn) WriteMultiBuffer(mb buf.MultiBuffer) error {
 		for c.err == nil {
 			if space := c.space(); space >= min(end-c.sndNxt, uint32(c.mss)) || space != 0 && c.sndUna == c.sndNxt {
 				break
+			}
+			if c.widen() {
+				continue
 			}
 			c.blocked = true
 			c.arm(tcpTick)

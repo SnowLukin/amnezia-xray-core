@@ -62,6 +62,12 @@ type stack struct {
 	segmenter segmenter
 	// window is the window of every connection
 	window int32
+	// growing is set if a connection starts to receive with tcpGrowingWindow instead of window, and that grows.
+	// What the windows of all connections take past tcpGrowingWindow, and what they send past tcpLargeWindow before
+	// it is acknowledged, is grown, and not more than budget: see tcpConn.recharge
+	growing bool
+	budget  int64
+	grown   atomic.Int64
 	// verify is set if the checksums of what comes are looked at
 	verify bool
 	// stamps is set if connections carry the times of RFC 7323 when the other side does
@@ -110,6 +116,7 @@ func NewStack(ctx context.Context, options StackOptions, handler ConnectionHandl
 	}
 	if options.Remote {
 		s.window = tcpLargeWindow
+		s.growing, s.budget = true, tcpGrowBudget
 	}
 	for i := range s.identification {
 		s.identification[i].Store(rand.Uint32())
@@ -466,7 +473,7 @@ func (s *stack) write(header, payload []byte) error {
 
 // DialUDP implements Stack
 func (s *stack) DialUDP() (net.PacketConn, error) {
-	u := &udpSocket{stack: s, queue: newPacketQueue(udpQueueLimit)}
+	u := &udpSocket{stack: s, queue: newPacketQueue(udpSocketQueueLimit)}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed {
