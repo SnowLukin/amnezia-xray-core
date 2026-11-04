@@ -62,6 +62,8 @@ type stack struct {
 	segmenter segmenter
 	// window is the window of every connection
 	window int32
+	// growing is set if a connection starts to receive with tcpGrowingWindow instead of window, and that grows
+	growing bool
 	// verify is set if the checksums of what comes are looked at
 	verify bool
 	// stamps is set if connections carry the times of RFC 7323 when the other side does
@@ -110,6 +112,7 @@ func NewStack(ctx context.Context, options StackOptions, handler ConnectionHandl
 	}
 	if options.Remote {
 		s.window = tcpLargeWindow
+		s.growing = true
 	}
 	for i := range s.identification {
 		s.identification[i].Store(rand.Uint32())
