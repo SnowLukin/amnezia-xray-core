@@ -425,11 +425,13 @@ func TestTCPWindowGrowsSlowerWay(t *testing.T) {
 	for i, stamps := range []bool{false, true} {
 		w := newWindowPeer(t, "10.0.0.1:"+strconv.Itoa(1601+i), stamps)
 		w.read()
+		// a round trip long enough that the race detector does not make the stack what holds the stream back
+		rtt := 2 * windowHandshake
 		for range 25 {
 			if w.window() >= 512<<10 {
 				break
 			}
-			w.round(windowHandshake, 1, 10)
+			w.round(rtt, 1, 10)
 		}
 		if got := w.window(); got < 512<<10 {
 			t.Fatal("stamps ", stamps, ": grew to ", got, " only")
@@ -438,7 +440,7 @@ func TestTCPWindowGrowsSlowerWay(t *testing.T) {
 			if w.window() == tcpGrownWindow {
 				break
 			}
-			w.round(4*windowHandshake, 1, 10)
+			w.round(4*rtt, 1, 10)
 		}
 		if got := w.window(); got != tcpGrownWindow {
 			t.Fatal("stamps ", stamps, ": stayed at ", got, " on a way four times as long")
