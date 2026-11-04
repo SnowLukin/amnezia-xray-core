@@ -111,7 +111,7 @@ func NewStack(ctx context.Context, options StackOptions, handler ConnectionHandl
 		s.window = tcpLargeWindow
 	}
 	if options.Remote {
-		s.window = tcpLargeWindow
+		s.window = tcpGrownWindow
 		s.growing = true
 	}
 	for i := range s.identification {

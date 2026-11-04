@@ -39,7 +39,9 @@ const (
 	// What a reader does not take waits in the heap, a window per connection: one that stays small for a reader that
 	// is slow holds little, and one that grows is not what holds back a way with a long round trip
 	tcpGrowingWindow = 128 << 10
-	tcpGrownWindow   = math.MaxUint16 << tcpWindowShift
+	// tcpGrownWindow is also the most that such a connection sends before it is acknowledged: only what is not
+	// acknowledged yet waits in the heap, and the way to the other side takes as much
+	tcpGrownWindow = math.MaxUint16 << tcpWindowShift
 	// tcpHeld is how many segments wait for one that was lost before them,
 	// and of how many parts what the system says it has is known
 	tcpHeld = 1024
@@ -134,7 +136,7 @@ type tcpConn struct {
 	ipSize int
 	// mss is the largest payload of a segment that is sent
 	mss int
-	// window is tcpWindow or tcpLargeWindow, the most that is sent before it is acknowledged
+	// window is tcpWindow, tcpLargeWindow or tcpGrownWindow, the most that is sent before it is acknowledged
 	window int32
 	// rcvWindow is what is taken from the system before the reader has to take it: window, or one that grows
 	rcvWindow int32
@@ -634,6 +636,11 @@ func (c *tcpConn) acknowledge(s segment) {
 	// and what is sent as they come does not come to it all at once
 	limit := min(c.sndWnd, uint32(c.window))
 	enough := limit / 2
+	if c.stack.growing {
+		// through a tunnel what is sent comes back a long round trip later: a writer that waits for half the window
+		// leaves half of that way empty
+		enough = limit / 8
+	}
 	if c.cwnd < limit {
 		enough = uint32(c.mss)
 	}
