@@ -42,6 +42,9 @@ const (
 	// tcpGrownWindow is also the most that such a connection sends before it is acknowledged: only what is not
 	// acknowledged yet waits in the heap, and the way to the other side takes as much
 	tcpGrownWindow = math.MaxUint16 << tcpWindowShift
+	// tcpFaster is how much faster a reader has to take what comes than with a window half as large for its window to
+	// grow again. A window twice as large that held the stream back makes it about twice as fast
+	tcpFaster = 1.5
 	// tcpHeld is how many segments wait for one that was lost before them,
 	// and of how many parts what the system says it has is known
 	tcpHeld = 1024
@@ -173,9 +176,11 @@ type tcpConn struct {
 	// rcvEnd is where what the system sends ends, if rcvEnds: its FIN came with a segment that waits in rcvHeld
 	rcvEnd  uint32
 	rcvEnds bool
-	// rcvTaken is what the reader has taken since rcvSince, for grow
-	rcvTaken int64
-	rcvSince time.Time
+	// rcvTaken is what the reader has taken since rcvSince, rcvFastest the most it took a second while the window
+	// held it back, and rcvBefore that with a window half as large, for grow
+	rcvTaken              int64
+	rcvSince              time.Time
+	rcvFastest, rcvBefore float64
 	// rcvRTT is how long a round trip takes now as the received segments tell, see sampled. Without the times of
 	// RFC 7323 that is how long a window takes to come while the reader keeps up: it is measured from rcvRTTAt to
 	// rcvRTTSeq, and not if rcvRTTBehind, as then it is the reader that holds the stream back
@@ -460,10 +465,11 @@ func (c *tcpConn) stamped(s segment) {
 		if kind != 8 || len(value) != 8 {
 			continue
 		}
-		// what comes carries back the time of what was sent from here that it answers
+		// what comes carries back the time of what was sent from here that it answers. The times count
+		// milliseconds: the round trip is up to one more than they differ by
 		if echo := binary.BigEndian.Uint32(value[4:]); echo != 0 && len(s.payload)+s.rest > 0 {
 			if d := time.Duration(int32(c.stampBase+uint32(time.Since(tcpStarted)/time.Millisecond)-echo)) * time.Millisecond; d >= 0 && d < time.Minute {
-				c.sampled(d)
+				c.sampled(d + time.Millisecond)
 			}
 		}
 		if int32(s.seq-c.rcvAcked) > 0 {
@@ -1156,7 +1162,9 @@ func (c *tcpConn) taken(size int32) {
 }
 
 // grow doubles rcvWindow of a stack that is growing, up to tcpGrownWindow, when the reader takes more than half of it in
-// a round trip, as it does when the window is what holds the stream back. The window of a
+// a round trip, as it does when the window is what holds the stream back, and clearly faster than with a window half
+// as large: when a larger window did not make it faster, the way or the sender is what holds it back, and what more
+// the window takes waits in a queue on the way, which makes the round trip longer. The window of a
 // reader that is slow stays as it is, and so does what waits for it. It never becomes smaller: the system may
 // already send up to its edge. c.mu is held
 func (c *tcpConn) grow(size int32) {
@@ -1177,9 +1185,13 @@ func (c *tcpConn) grow(size int32) {
 	if since < rtt {
 		return
 	}
-	// what was taken in a round trip on average, also when the reader took it all at once after a while
-	if float64(c.rcvTaken)*rtt.Seconds() > float64(c.rcvWindow/2)*since.Seconds() {
-		c.rcvWindow = min(c.rcvWindow*2, most)
+	// what was taken in a second and in a round trip on average, also when the reader took it all at once after a while
+	if rate := float64(c.rcvTaken) / since.Seconds(); rate*rtt.Seconds() > float64(c.rcvWindow/2) {
+		c.rcvFastest = max(c.rcvFastest, rate)
+		if rate > c.rcvBefore*tcpFaster {
+			c.rcvWindow = min(c.rcvWindow*2, most)
+			c.rcvBefore, c.rcvFastest = c.rcvFastest, 0
+		}
 	}
 	c.rcvTaken, c.rcvSince = 0, time.Now()
 }

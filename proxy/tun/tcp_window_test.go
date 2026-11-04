@@ -247,6 +247,18 @@ func TestTCPWindowStays(t *testing.T) {
 		}
 	}
 
+	// a way that takes 128 KiB in 20 ms, and keeps what more it is given in a queue, which makes the round trip
+	// longer: the reader gets no faster with a larger window, which stops growing a doubling or two after that
+	queued := newWindowPeer(t, "10.0.0.1:1304", false)
+	queued.read()
+	for range 16 {
+		offered := int32(queued.seen(0).edge - queued.peer.seq)
+		queued.round(max(windowHandshake/2, time.Duration(offered)*(windowHandshake/2)/tcpGrowingWindow), 1, 4)
+	}
+	if got := queued.window(); got > 4*tcpGrowingWindow {
+		t.Fatal("grew for a way that is full to ", got)
+	}
+
 	// the sender sends less than a third of the window in a round trip, which the times of RFC 7323 tell
 	short := newWindowPeer(t, "10.0.0.1:1303", true)
 	short.read()
