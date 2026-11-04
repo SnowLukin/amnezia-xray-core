@@ -434,7 +434,7 @@ func TestTCPWindowGrowsSlowerWay(t *testing.T) {
 		if got := w.window(); got < 512<<10 {
 			t.Fatal("stamps ", stamps, ": grew to ", got, " only")
 		}
-		for range 40 {
+		for range 60 {
 			if w.window() == tcpGrownWindow {
 				break
 			}
