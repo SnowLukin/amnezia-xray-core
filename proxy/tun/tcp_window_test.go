@@ -2,6 +2,7 @@ package tun
 
 import (
 	"encoding/binary"
+	gonet "net"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -284,5 +285,77 @@ func TestTCPWindowFixed(t *testing.T) {
 	w.conn.mu.Unlock()
 	if got := w.window(); got != tcpGrowingWindow {
 		t.Fatal("grew without a window scale to ", got)
+	}
+}
+
+// A connection of a growing stack goes on sending once an eighth of a full window is acknowledged: through a tunnel
+// what it sends comes back a long round trip later, and a writer that waits for half of the window leaves half of
+// that way empty.
+func TestTCPWindowInFlight(t *testing.T) {
+	const window = 1 << 20
+	p, l := newPeer(t, "10.0.0.1:1501", "10.0.0.2:80")
+	conns := make(chan accepted, 1)
+	s := newTestStack(t, l, accept(conns))
+	s.growing, s.window = true, tcpGrownWindow
+	// the window of the peer is 1 MiB, scaled by 32
+	p.window = window >> 5
+	p.connect([]byte{1, 3, 3, 5})
+	a := take(t, conns)
+	go a.conn.(buf.Writer).WriteMultiBuffer(buf.MergeBytes(nil, make([]byte, 16<<20)))
+	// what the stack sends until it stops, the end of it
+	sent := func(wait time.Duration) (end uint32, any bool) {
+		end = p.ack
+		for {
+			select {
+			case b := <-p.sent:
+				seg := p.segment(b)
+				if n := len(seg.payload); n > 0 {
+					end, any = seg.seq+uint32(n), true
+				}
+			case <-time.After(wait):
+				return end, any
+			}
+		}
+	}
+	// all of it acknowledged whenever the stack stops, until it stops at the window
+	var end uint32
+	for range 30 {
+		end, _ = sent(50 * time.Millisecond)
+		if end-p.ack >= window-uint32(a.conn.(*tcpConn).mss) {
+			break
+		}
+		p.ack = end
+		p.send(p.seq, tcpAck, nil, nil)
+	}
+	if end-p.ack < window-uint32(a.conn.(*tcpConn).mss) {
+		t.Fatal("stopped at ", end-p.ack, " of a window of ", window)
+	}
+	// a quarter of it acknowledged: the writer goes on
+	p.ack += window / 4
+	p.send(p.seq, tcpAck, nil, nil)
+	if _, any := sent(200 * time.Millisecond); !any {
+		t.Fatal("nothing sent with a quarter of the window free")
+	}
+}
+
+// A UDP flow that is not read keeps what fits its queue, and drops what comes after.
+func TestUDPQueueBound(t *testing.T) {
+	p, l := newPeer(t, "10.0.0.1:53", "10.0.0.2:0")
+	s := newDialStack(t, l, "10.0.0.2")
+	conn, err := s.DialUDP()
+	if err != nil {
+		t.Fatal(err)
+	}
+	local := conn.LocalAddr().(*gonet.UDPAddr).AddrPort()
+	for range 3 * udpQueueLimit {
+		p.l.in <- udpPacket(p.src, local, []byte("x"))
+	}
+	time.Sleep(100 * time.Millisecond)
+	u := conn.(*udpSocket)
+	u.queue.mu.Lock()
+	queued := len(u.queue.items)
+	u.queue.mu.Unlock()
+	if queued != 128 {
+		t.Fatal("queued ", queued)
 	}
 }
