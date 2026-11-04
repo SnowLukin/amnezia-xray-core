@@ -107,9 +107,9 @@ func (l *link) WriteSegment(header []byte, payload [][]byte, mss int) error {
 }
 
 func newTestStack(t *testing.T, l *link, handle func(net.Conn, net.Destination)) *stack {
-	s := &stack{ctx: context.Background(), tun: l, mtu: testMTU, window: tcpWindow, rcvWindow: tcpWindow, udpQueue: udpQueueLimit, handle: handle, conns: make(map[flow]*tcpConn), sockets: make(map[netip.AddrPort]*udpSocket)}
+	s := &stack{ctx: context.Background(), tun: l, mtu: testMTU, window: tcpWindow, handle: handle, conns: make(map[flow]*tcpConn), sockets: make(map[netip.AddrPort]*udpSocket)}
 	if l.segments {
-		s.segmenter, s.window, s.rcvWindow, l.wrong = l, tcpLargeWindow, tcpLargeWindow, t.Error
+		s.segmenter, s.window, l.wrong = l, tcpLargeWindow, t.Error
 	}
 	if handle != nil {
 		s.udp = newUdpConnectionHandler(handle, s.writeUDP)
@@ -434,56 +434,6 @@ func TestTCPHandshakeAndClose(t *testing.T) {
 		if s := p.receive(); s.flags != tcpRst || s.seq != p.ack {
 			t.Fatal("not a reset: flags ", s.flags, ", seq ", s.seq)
 		}
-	}
-}
-
-// A stack that grows its windows starts a connection with tcpGrowFrom. The window stays while nothing is read,
-// and doubles for a reader that took the whole window within a round trip.
-func TestTCPGrowWindow(t *testing.T) {
-	conns := make(chan accepted, 1)
-	p, l := newPeer(t, "10.0.0.1:1234", "10.0.0.2:80")
-	s := newTestStack(t, l, accept(conns))
-	s.window, s.rcvWindow = tcpGrownWindow, tcpGrowFrom
-	p.connect([]byte{1, 3, 3, 7})
-	a := take(t, conns)
-	// last sends size bytes and returns the window of the last acknowledgment, in bytes
-	last := func(size int) int {
-		t.Helper()
-		chunk := make([]byte, 1024)
-		for sent := 0; sent < size; sent += len(chunk) {
-			p.send(p.seq, tcpAck, nil, chunk)
-			p.seq += uint32(len(chunk))
-		}
-		window := -1
-		for {
-			select {
-			case b := <-p.sent:
-				if s := p.segment(b); s.ack == p.seq {
-					window = int(s.window) << tcpWindowShift
-				}
-				continue
-			case <-time.After(300 * time.Millisecond):
-			}
-			return window
-		}
-	}
-	take := func(size int) {
-		t.Helper()
-		got := make([]byte, size)
-		if _, err := io.ReadFull(a.conn, got); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	if window := last(64 << 10); window != tcpGrowFrom-64<<10 {
-		t.Fatal("window ", window, " with 64 KiB that is not read, expected ", tcpGrowFrom-64<<10)
-	}
-	take(64 << 10)
-	time.Sleep(10 * time.Millisecond)
-	last(64 << 10)
-	take(64 << 10)
-	if window := last(0); window != 2*tcpGrowFrom {
-		t.Fatal("window ", window, " after the whole window was read, expected ", 2*tcpGrowFrom)
 	}
 }
 
@@ -2239,7 +2189,7 @@ func TestNewStack(t *testing.T) {
 	l.segments = false
 	addresses := []netip.Addr{netip.MustParseAddr("10.0.0.2")}
 	made, _ = NewStack(context.Background(), StackOptions{Tun: l, MTU: testMTU, Addresses: addresses, Remote: true}, nil)
-	if s := made.(*stack); s.window != tcpLargeWindow || !s.verify || !s.stamps || s.segmenter != nil || len(s.addresses) != 1 {
+	if s := made.(*stack); s.window != tcpLargeWindow || !s.growing || s.budget != tcpGrowBudget || !s.verify || !s.stamps || s.segmenter != nil || len(s.addresses) != 1 {
 		t.Fatal("wrong stack for a tunnel to another system: ", s)
 	}
 }

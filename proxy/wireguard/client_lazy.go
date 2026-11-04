@@ -223,7 +223,7 @@ func (c *lazyClient) release() {
 // nothing.
 func (c *lazyClient) wake(ctx context.Context) (*Handler, error) {
 	a := c.args
-	t, tnet, err := createNetTUN(a.localAddresses, a.dnsServers, a.mtu, nil, true)
+	t, tnet, err := CreateNetTUN(a.localAddresses, a.dnsServers, a.mtu, nil)
 	if err != nil {
 		return nil, err
 	}
