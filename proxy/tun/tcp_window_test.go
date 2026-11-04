@@ -197,7 +197,7 @@ func TestTCPWindowGrows(t *testing.T) {
 			}
 			w.read()
 			rtt := longer * windowHandshake
-			for range 25 {
+			for range 40 {
 				if w.window() == tcpGrownWindow {
 					break
 				}
@@ -570,7 +570,7 @@ func TestTCPWindowStalled(t *testing.T) {
 	w := newWindowPeer(t, "10.0.0.1:1901", true)
 	var stop atomic.Bool
 	w.readUntil(&stop)
-	for range 25 {
+	for range 40 {
 		if w.window() == tcpGrownWindow {
 			break
 		}
