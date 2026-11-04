@@ -1317,8 +1317,8 @@ func (c *tcpConn) rtt() time.Duration {
 // stream back, and a quarter faster than with a window half as large: when a larger window did not make it faster,
 // the way or the sender is what holds it back, and what more the window takes waits in a queue on the way, which
 // makes the round trip longer. When the round trip became much longer and the reader slower, the way got slower,
-// and what the half window took is taken as it would be on that way. The window never becomes smaller than what the
-// system was told. c.mu is held
+// and what the half window took is taken as half of what the reader takes now. The window never becomes smaller than
+// what the system was told. c.mu is held
 func (c *tcpConn) grow(size int32) {
 	most := min(tcpGrownWindow, int32(math.MaxUint16)<<c.rcvShift)
 	if !c.stack.growing || c.rcvWindow >= most {
@@ -1353,17 +1353,20 @@ func (c *tcpConn) grow(size int32) {
 	if c.rcvLimited < 2 && !c.stamps {
 		return
 	}
-	// the round trip is much longer than with the half window, and the reader slower, for a few round trips. A queue
-	// that a larger window fills makes the round trip longer as well, but not the reader slower
-	if c.rcvBefore > 0 && rtt > c.rcvBeforeRTT*3/2 && c.rcvRate*tcpFaster < c.rcvBefore {
-		if c.rcvLonger++; c.rcvLonger >= 3 {
-			c.rcvBefore *= c.rcvBeforeRTT.Seconds() / rtt.Seconds()
-			c.rcvBeforeRTT, c.rcvLonger = rtt, 0
-		}
-	} else {
+	// the way got slower for a few round trips: the round trip became much longer than with the half window, and the
+	// reader much slower. A queue that a larger window fills makes the round trip longer as well, but not the reader
+	// slower. On the slower way a window that holds the stream back makes the reader half as fast with half of it
+	if c.rcvBefore == 0 || rtt <= c.rcvBeforeRTT*3/2 || c.rcvRate*3/2 >= c.rcvBefore {
 		c.rcvLonger = 0
+	} else if c.rcvLonger++; c.rcvLonger >= 3 {
+		c.rcvBefore, c.rcvBeforeRTT, c.rcvLonger = c.rcvRate/2, rtt, 0
 	}
-	if c.rcvRate > c.rcvBefore*tcpFaster && c.afford(min(c.rcvWindow*2, most), c.window) {
+	// one round trip after the window changed tells more when it shows the reader clearly faster
+	faster := tcpFaster
+	if c.rcvLimited < 2 {
+		faster = 1.6
+	}
+	if c.rcvRate > c.rcvBefore*faster && c.afford(min(c.rcvWindow*2, most), c.window) {
 		c.rcvBefore, c.rcvBeforeRTT = c.rcvRate, rtt
 		c.rcvLimited, c.rcvRate, c.rcvLonger = 0, 0, 0
 	}
