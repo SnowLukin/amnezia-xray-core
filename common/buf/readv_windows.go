@@ -4,6 +4,9 @@ import (
 	"syscall"
 )
 
+// releaseWhileWaiting: the first Read only asks to wait and Init starts that over, so the buffers are kept
+const releaseWhileWaiting = false
+
 type windowsReader struct {
 	bufs  []syscall.WSABuf
 	ready bool

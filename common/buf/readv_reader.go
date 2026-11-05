@@ -72,14 +72,23 @@ func NewReadVReader(reader io.Reader, rawConn syscall.RawConn, counter stats.Cou
 	}
 }
 
+// readMulti takes the buffers only once the socket has something to read: they go back to the pool every time it
+// has not, so a connection that waits for its peer does not hold them
 func (r *ReadVReader) readMulti() (MultiBuffer, error) {
-	bs := r.alloc.Alloc()
-
-	r.mr.Init(bs)
+	var bs []*Buffer
 	var nBytes int32
 	err := r.rawConn.Read(func(fd uintptr) bool {
+		if bs == nil {
+			bs = r.alloc.Alloc()
+			r.mr.Init(bs)
+		}
 		n := r.mr.Read(fd)
 		if n < 0 {
+			if releaseWhileWaiting {
+				r.mr.Clear()
+				ReleaseMulti(MultiBuffer(bs))
+				bs = nil
+			}
 			return false
 		}
 
@@ -122,7 +131,8 @@ func (r *ReadVReader) readMulti() (MultiBuffer, error) {
 
 // ReadMultiBuffer implements Reader.
 func (r *ReadVReader) ReadMultiBuffer() (MultiBuffer, error) {
-	if r.alloc.Current() == 1 {
+	single := r.alloc.Current() == 1
+	if single && !releaseWhileWaiting {
 		b, err := ReadBuffer(r.Reader)
 		if b.IsFull() {
 			r.alloc.Adjust(1)
@@ -133,6 +143,7 @@ func (r *ReadVReader) ReadMultiBuffer() (MultiBuffer, error) {
 		return MultiBuffer{b}, err
 	}
 
+	// one buffer is read through readv as well where it can wait without the buffer: a plain read takes it before
 	mb, err := r.readMulti()
 	if r.counter != nil && mb != nil {
 		r.counter.Add(int64(mb.Len()))
@@ -140,7 +151,11 @@ func (r *ReadVReader) ReadMultiBuffer() (MultiBuffer, error) {
 	if err != nil {
 		return nil, err
 	}
-	r.alloc.Adjust(uint32(len(mb)))
+	if !single {
+		r.alloc.Adjust(uint32(len(mb)))
+	} else if mb[0].IsFull() {
+		r.alloc.Adjust(1)
+	}
 	return mb, nil
 }
 

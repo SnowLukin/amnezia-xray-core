@@ -8,6 +8,10 @@ import (
 	"unsafe"
 )
 
+// releaseWhileWaiting: readv fails here only when the socket has nothing to read yet, so the buffers can go back
+// to the pool until it has
+const releaseWhileWaiting = true
+
 type posixReader struct {
 	iovecs []syscall.Iovec
 }
