@@ -750,6 +750,28 @@ func TestTCPWindowBudgetIOS(t *testing.T) {
 	}
 }
 
+// After a pause the window does not stay at what it grew to before it when the way is a full queue now, which a
+// larger window only fills: the reader is no faster with it than it was with half of it before the pause. It starts
+// again and stops where it does without the pause, mostly at 256 or 512 KiB.
+func TestTCPWindowAfterPauseQueue(t *testing.T) {
+	for i, stamps := range []bool{true, false} {
+		q := newWindowPeer(t, "10.0.0.1:"+strconv.Itoa(1961+i), stamps)
+		q.read()
+		if n := roundsTo(q, windowHandshake/2, 60); n < 0 {
+			t.Fatal("stamps ", stamps, ": grew to ", q.window(), " only")
+		}
+		time.Sleep(tcpQuiet + tcpQuiet/2)
+		// the way of TestTCPWindowStays that takes 128 KiB in 20 ms and keeps what more it is given in a queue
+		for range 24 {
+			offered := int32(q.seen(0).edge - q.peer.seq)
+			q.round(max(windowHandshake/2, time.Duration(offered)*(windowHandshake/2)/tcpGrowingWindow), 1, 4)
+		}
+		if got := q.window(); got > 8*tcpGrowingWindow {
+			t.Fatal("stamps ", stamps, ": after a pause the window of a way that is full is ", got)
+		}
+	}
+}
+
 // The window grows to the most also on a way whose round trip is another each time, as on a mobile network: a round
 // trip that was shorter by chance does not set what the next window has to beat. Until the first window grows the
 // round trips take as long as the others on average: in its first round trip the peer sends all of a window at once,

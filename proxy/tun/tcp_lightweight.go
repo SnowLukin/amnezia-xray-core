@@ -200,7 +200,8 @@ type tcpConn struct {
 	// rcvLimited round trips since the window changed in which the window held it back, and rcvBefore how much that
 	// was with a window half as large, with a round trip of rcvBeforeRTT. rcvRTTMean is how long those round trips
 	// took on average since the window last became smaller, and rcvLonger counts the ones in a row that took much
-	// longer. rcvEarned is what the window grew to before a pause, and rcvCameAt when the last segment with data came
+	// longer. rcvEarned is what the window grew to before a pause, rcvRegrown is set while the window that grew back
+	// to it has not shown that the reader is faster with it, and rcvCameAt is when the last segment with data came
 	rcvTaken     int64
 	rcvSince     time.Time
 	rcvRate      float64
@@ -210,7 +211,12 @@ type tcpConn struct {
 	rcvRTTMean   time.Duration
 	rcvLonger    int
 	rcvEarned    int32
+	rcvRegrown   bool
 	rcvCameAt    time.Time
+	// rcvWider is set while the system may send more than the window, up to rcvWiderEdge that it was told before the
+	// window became smaller
+	rcvWider     bool
+	rcvWiderEdge uint32
 	// rcvPaused is set from a pause of the sender until a segment carries back a time after rcvPausedAt
 	rcvPaused   bool
 	rcvPausedAt uint32
@@ -608,14 +614,22 @@ func (c *tcpConn) stamped(s segment) {
 // came is called when a segment with data comes. After nothing came for tcpQuiet, with nothing waiting for the reader,
 // the window starts again with tcpGrowingWindow: the window that a connection grew to does not hold a part of the
 // budget after the pause, which is given back once what the system was told it may send has come. In the first round
-// trip that it holds the stream back it grows back to what it was, rcvEarned, as far as the budget lets it, and from
-// there on as before the pause. c.mu is held
+// trip that it holds the stream back it grows back to what it was, rcvEarned, as far as the budget lets it, and keeps
+// it if the reader is faster with it than with half of it before the pause, see grow. c.mu is held
 func (c *tcpConn) came() {
 	if c.rcvWindow > tcpGrowingWindow && c.quiet() {
 		c.rcvEarned = max(c.rcvEarned, c.rcvWindow)
-		c.rcvWindow = tcpGrowingWindow
-		c.rcvLimited, c.rcvRate, c.rcvLonger, c.rcvRTTMean, c.rcvTaken, c.rcvSince = 0, 0, 0, 0, 0, time.Now()
+		c.rcvRegrown = false
+		c.restart()
 	}
+}
+
+// restart makes the window what the connection started with. What the system was told it may send stays, and until
+// that has come the round trips tell nothing about the window. c.mu is held
+func (c *tcpConn) restart() {
+	c.rcvWindow = tcpGrowingWindow
+	c.rcvWider, c.rcvWiderEdge = int32(c.rcvEdge-c.rcvNxt) > c.rcvWindow, c.rcvEdge
+	c.rcvLimited, c.rcvRate, c.rcvLonger, c.rcvRTTMean, c.rcvTaken, c.rcvSince = 0, 0, 0, 0, 0, time.Now()
 }
 
 // answers reports that a segment with data that carries back echo answers what was sent since the sender paused, if
@@ -1364,7 +1378,7 @@ func (c *tcpConn) rtt() time.Duration {
 // told. c.mu is held
 func (c *tcpConn) grow(size int32) {
 	most := min(tcpGrownWindow, int32(math.MaxUint16)<<c.rcvShift)
-	if !c.stack.growing || c.rcvWindow >= most {
+	if !c.stack.growing || c.rcvWindow >= most && !c.rcvRegrown {
 		return
 	}
 	c.rcvTaken += int64(size)
@@ -1378,6 +1392,29 @@ func (c *tcpConn) grow(size int32) {
 	if float64(taken)*rtt.Seconds() <= float64(c.rcvWindow/2)*since.Seconds() {
 		return
 	}
+	if c.rcvWindow < c.rcvEarned {
+		// back to what the window grew to before a pause, as far as the budget lets it: the sender may start again
+		// slowly, and the window is not what holds it back then
+		was := c.rcvWindow
+		for c.rcvWindow < c.rcvEarned {
+			if !c.afford(min(c.rcvWindow*2, c.rcvEarned), c.window) {
+				break
+			}
+		}
+		if c.rcvWindow == c.rcvEarned {
+			c.rcvEarned = 0
+		}
+		c.rcvRegrown = c.rcvRegrown || c.rcvWindow > was
+		c.rcvLimited, c.rcvRate, c.rcvLonger = 0, 0, 0
+		return
+	}
+	if c.rcvWider {
+		// the system may send to what it was told before the window became smaller: that says nothing about the
+		// window, and neither does the round trip in which what comes passes it
+		c.rcvWider = int32(c.rcvNxt-c.rcvWiderEdge) < 0
+		c.rcvLimited, c.rcvRate, c.rcvLonger = 0, 0, 0
+		return
+	}
 	// the mean of the first round trips, then each one counts a quarter, and the same for how long they took
 	c.rcvLimited++
 	c.rcvRate += (float64(taken)/since.Seconds() - c.rcvRate) / float64(min(c.rcvLimited, 4))
@@ -1386,13 +1423,18 @@ func (c *tcpConn) grow(size int32) {
 	} else {
 		c.rcvRTTMean += (rtt - c.rcvRTTMean) / 4
 	}
-	if c.rcvWindow < c.rcvEarned {
-		// back to what the window grew to before a pause, as far as the budget lets it: that it made the reader faster
-		// is known
-		for c.rcvWindow < c.rcvEarned {
-			if !c.afford(min(c.rcvWindow*2, c.rcvEarned), c.window) {
-				break
-			}
+	if c.rcvRegrown {
+		// the window that grew back after a pause stays if the reader is faster with it than it was with half of it
+		// before the pause. Otherwise the way got slower in the pause, or is a queue now, which a larger window only
+		// fills: the window starts again
+		if c.rcvLimited < 2 {
+			return
+		}
+		c.rcvRegrown = false
+		if c.rcvRate <= c.rcvBefore*tcpFaster {
+			c.rcvBefore, c.rcvBeforeRTT = 0, 0
+			c.restart()
+			c.recharge()
 		}
 		c.rcvLimited, c.rcvRate, c.rcvLonger = 0, 0, 0
 		return
