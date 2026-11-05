@@ -213,8 +213,11 @@ type tcpConn struct {
 	// rcvPaused is set from a pause of the sender until a segment carries back a time after rcvPausedAt
 	rcvPaused   bool
 	rcvPausedAt uint32
-	// charged is what the connection takes of the budget of its stack
-	charged int64
+	// charged is what the connection takes of the budget of its stack, and lent what it leaves to the others while it
+	// is quiet. quietTimer looks whether it is, while quietArmed
+	charged, lent int64
+	quietTimer    *time.Timer
+	quietArmed    bool
 	// rcvRTT is how long a round trip takes now as the received segments tell, see sampled. Without the times of
 	// RFC 7323 that is how long a window takes to come while the reader keeps up: it is measured from rcvRTTAt to
 	// rcvRTTSeq, and not if rcvRTTBehind, as then it is the reader that holds the stream back
@@ -433,32 +436,67 @@ func (c *tcpConn) room() int32 {
 
 // recharge charges the budget of the stack with what the connection may hold past what it starts with: what waits
 // for the reader and what the system may still send, past tcpGrowingWindow, and what is sent before it is
-// acknowledged past tcpLargeWindow. A connection that is gone holds nothing. c.mu is held
+// acknowledged past tcpLargeWindow. A connection that is gone holds nothing. A quiet one lends what the system may
+// still send to the others, which then grow while its peer has nothing to send, and takes it back when something
+// comes. c.mu is held
 func (c *tcpConn) recharge() {
 	if !c.stack.growing {
 		return
 	}
-	var want int64
+	var rcv, snd, lent int64
 	if c.err == nil {
 		if !c.closed {
-			want = int64(max(c.rcvLen+c.room()-tcpGrowingWindow, 0))
+			rcv = int64(max(c.rcvLen+c.room()-tcpGrowingWindow, 0))
 		}
-		want += int64(max(c.window-tcpLargeWindow, 0))
+		snd = int64(max(c.window-tcpLargeWindow, 0))
 	}
-	if want != c.charged {
+	if rcv > 0 && c.quiet() {
+		rcv, lent = 0, rcv
+	}
+	if want := rcv + snd; want != c.charged {
 		c.stack.grown.Add(want - c.charged)
 		c.charged = want
 	}
+	if lent != c.lent {
+		c.stack.lent.Add(lent - c.lent)
+		c.lent = lent
+	}
+	if rcv > 0 && c.rcvLen == 0 && !c.quietArmed {
+		// nothing waits for the reader: it lends once nothing comes for long enough
+		c.quietArmed = true
+		d := max(tcpQuiet-time.Since(c.rcvCameAt), tcpTick)
+		if c.quietTimer == nil {
+			c.quietTimer = time.AfterFunc(d, c.quieted)
+		} else {
+			c.quietTimer.Reset(d)
+		}
+	}
+}
+
+// quiet reports that the reader took all and nothing came for tcpQuiet. c.mu is held
+func (c *tcpConn) quiet() bool {
+	return c.rcvLen == 0 && !c.rcvCameAt.IsZero() && time.Since(c.rcvCameAt) > tcpQuiet
+}
+
+// quieted lends what the connection may still receive once it is quiet, see recharge
+func (c *tcpConn) quieted() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.quietArmed = false
+	c.recharge()
 }
 
 // afford charges the budget of the stack with what the connection may hold with a receive window of rcv and one to
-// send of snd, if the budget has room for it. c.mu is held
+// send of snd, if the budget has room for it. What quiet connections lend counts as well, up to the budget once more:
+// readers that stopped hold no more than twice the budget past what they start with, also if the peers of quiet ones
+// send all that they were told they may. c.mu is held
 func (c *tcpConn) afford(rcv, snd int32) bool {
 	rcvWas, sndWas := c.rcvWindow, c.window
 	c.rcvWindow, c.window = rcv, snd
 	charged := c.charged
 	c.recharge()
-	if d := c.charged - charged; d > 0 && c.stack.grown.Load() > c.stack.budget {
+	grown, lent := c.stack.grown.Load(), c.stack.lent.Load()
+	if d := c.charged - charged; d > 0 && (grown > c.stack.budget || grown+lent > 2*c.stack.budget) {
 		c.rcvWindow, c.window = rcvWas, sndWas
 		c.recharge()
 		return false
@@ -568,11 +606,11 @@ func (c *tcpConn) stamped(s segment) {
 
 // came is called when a segment with data comes. After nothing came for tcpQuiet, with nothing waiting for the reader,
 // the window starts again with tcpGrowingWindow: the window that a connection grew to does not hold a part of the
-// budget while it is quiet, which is given back once what the system was told it may send has come. In the first round
+// budget after the pause, which is given back once what the system was told it may send has come. In the first round
 // trip that it holds the stream back it grows back to what it was, rcvEarned, as far as the budget lets it, and from
 // there on as before the pause. c.mu is held
 func (c *tcpConn) came() {
-	if c.rcvLen == 0 && c.rcvWindow > tcpGrowingWindow && !c.rcvCameAt.IsZero() && time.Since(c.rcvCameAt) > tcpQuiet {
+	if c.rcvWindow > tcpGrowingWindow && c.quiet() {
 		c.rcvEarned = max(c.rcvEarned, c.rcvWindow)
 		c.rcvWindow = tcpGrowingWindow
 		c.rcvLimited, c.rcvRate, c.rcvLonger, c.rcvTaken, c.rcvSince = 0, 0, 0, 0, time.Now()
@@ -1249,6 +1287,9 @@ func (c *tcpConn) abort(err error) {
 	c.err = err
 	if c.timer != nil {
 		c.timer.Stop()
+	}
+	if c.quietTimer != nil {
+		c.quietTimer.Stop()
 	}
 	if c.opened != nil {
 		close(c.opened)
