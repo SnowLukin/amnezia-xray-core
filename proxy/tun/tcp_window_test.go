@@ -2,6 +2,7 @@ package tun
 
 import (
 	"encoding/binary"
+	"math/rand/v2"
 	gonet "net"
 	"net/netip"
 	"strconv"
@@ -651,32 +652,149 @@ func TestTCPWindowAfterPause(t *testing.T) {
 	}
 }
 
-// A quiet connection, whose reader took all, gives back its part of the budget once what the system was told it may
-// send has come, and another one grows into it.
+// A quiet connection, whose reader took all and to which nothing came for a while, lends its part of the budget while
+// its peer has nothing to send, and another one grows into it: on iOS two quiet ones would hold almost all of it. It
+// takes its part back when something comes.
 func TestTCPWindowQuietShare(t *testing.T) {
-	const budget = 4 << 20
+	budget := growBudget("ios")
 	ws := newWindowPeers(t, []string{"10.0.0.1:1911", "10.0.0.1:1912", "10.0.0.1:1913"}, true, budget)
 	for _, w := range ws {
 		w.read()
 	}
 	growAll(ws[:2], 40)
+	s := ws[0].s
 	time.Sleep(tcpQuiet + tcpQuiet/2)
-	for range 10 {
-		ws[2].round(windowHandshake, 1, 10)
-	}
-	if got := ws[2].window(); got >= 1<<20 {
-		t.Fatal("grew to ", got, " while quiet ones hold ", ws[0].s.grown.Load(), " of ", budget)
-	}
-	// the quiet ones get what they were told they may send, once
-	for _, w := range ws[:2] {
-		w.round(windowHandshake, 1, 10)
-	}
 	if n := roundsTo(ws[2], windowHandshake, 40); n < 0 {
-		t.Fatal("grew to ", ws[2].window(), " only after the quiet ones gave back")
+		t.Fatal("grew to ", ws[2].window(), " while quiet ones lend ", s.lent.Load(), " and the stack has ", s.grown.Load(), " of ", budget)
+	}
+	if grown, lent := s.grown.Load(), s.lent.Load(); grown > budget || lent == 0 {
+		t.Fatal("grown ", grown, ", lent ", lent, " of ", budget)
+	}
+	// the quiet ones get a little of what they were told they may send: they take back what they lent, and do not grow
+	// past the budget
+	for _, w := range ws[:2] {
+		w.round(windowHandshake, 0.1, 1)
+	}
+	if grown, lent := s.grown.Load(), s.lent.Load(); lent != 0 || grown != charges(s) || grown > 2*budget {
+		t.Fatal("grown ", grown, ", lent ", lent, ", charged ", charges(s))
 	}
 	for _, w := range ws[:2] {
 		if got := w.window(); got != tcpGrowingWindow {
 			t.Fatal("a quiet one came back with ", got)
+		}
+	}
+}
+
+// What quiet connections lend and what the others take together stays within twice the budget: readers that stop
+// then hold no more than that also when the peers of the quiet ones send all that they were told they may.
+func TestTCPWindowQuietBound(t *testing.T) {
+	const budget = 2 << 20
+	ws := newWindowPeers(t, []string{"10.0.0.1:1916", "10.0.0.1:1917", "10.0.0.1:1918"}, true, budget)
+	for _, w := range ws {
+		w.read()
+	}
+	// one grows and goes quiet, then the next one grows into what it lends, and goes quiet as well
+	for _, w := range ws[:2] {
+		if n := roundsTo(w, windowHandshake, 40); n < 0 {
+			t.Fatal("grew to ", w.window(), " only")
+		}
+		time.Sleep(tcpQuiet + tcpQuiet/2)
+	}
+	for range 20 {
+		ws[2].round(windowHandshake, 1, 10)
+	}
+	s := ws[0].s
+	if got := ws[2].window(); got > 2*tcpGrowingWindow {
+		t.Fatal("grew to ", got, " while quiet ones lend ", s.lent.Load(), " of ", budget)
+	}
+	if grown, lent := s.grown.Load(), s.lent.Load(); grown+lent > 2*budget {
+		t.Fatal("grown ", grown, ", lent ", lent, " of ", budget)
+	}
+}
+
+// The budget of iOS, whose network extension ends at about 50 MB, lets two readers that keep up grow as far as their
+// windows go, and a third one only get what is left while the two receive. Elsewhere it is larger.
+func TestTCPWindowBudgetIOS(t *testing.T) {
+	budget := growBudget("ios")
+	if budget != 4<<20 || growBudget("android") != 32<<20 || growBudget("darwin") != 32<<20 {
+		t.Fatal("budgets ", budget, ", ", growBudget("android"), ", ", growBudget("darwin"))
+	}
+	ws := newWindowPeers(t, []string{"10.0.0.1:1951", "10.0.0.1:1952", "10.0.0.1:1953"}, true, budget)
+	for _, w := range ws {
+		w.read()
+	}
+	growAll(ws[:2], 40)
+	for _, w := range ws[:2] {
+		if got := w.window(); got != tcpGrownWindow {
+			t.Fatal("grew to ", got, " only with the budget of iOS")
+		}
+	}
+	// a little now and then keeps the two from being quiet
+	var stop atomic.Bool
+	var wg sync.WaitGroup
+	for _, w := range ws[:2] {
+		wg.Go(func() {
+			for !stop.Load() {
+				w.round(windowHandshake, 0.05, 1)
+			}
+		})
+	}
+	for range 20 {
+		ws[2].round(windowHandshake, 1, 10)
+	}
+	stop.Store(true)
+	wg.Wait()
+	s := ws[0].s
+	if got := ws[2].window(); got > 2*tcpGrowingWindow || s.grown.Load() > budget {
+		t.Fatal("a third one grew to ", got, ", the stack has ", s.grown.Load(), " of ", budget)
+	}
+}
+
+// After a pause the window does not stay at what it grew to before it when the way is a full queue now, which a
+// larger window only fills: the reader is no faster with it than it was with half of it before the pause. It starts
+// again and stops where it does without the pause, mostly at 256 or 512 KiB.
+func TestTCPWindowAfterPauseQueue(t *testing.T) {
+	for i, stamps := range []bool{true, false} {
+		q := newWindowPeer(t, "10.0.0.1:"+strconv.Itoa(1961+i), stamps)
+		q.read()
+		if n := roundsTo(q, windowHandshake/2, 60); n < 0 {
+			t.Fatal("stamps ", stamps, ": grew to ", q.window(), " only")
+		}
+		time.Sleep(tcpQuiet + tcpQuiet/2)
+		// the way of TestTCPWindowStays that takes 128 KiB in 20 ms and keeps what more it is given in a queue
+		for range 24 {
+			offered := int32(q.seen(0).edge - q.peer.seq)
+			q.round(max(windowHandshake/2, time.Duration(offered)*(windowHandshake/2)/tcpGrowingWindow), 1, 4)
+		}
+		if got := q.window(); got > 8*tcpGrowingWindow {
+			t.Fatal("stamps ", stamps, ": after a pause the window of a way that is full is ", got)
+		}
+	}
+}
+
+// The window grows to the most also on a way whose round trip is another each time, as on a mobile network: a round
+// trip that was shorter by chance does not set what the next window has to beat. Until the first window grows the
+// round trips take as long as the others on average: in its first round trip the peer sends all of a window at once,
+// and later about half of it, which the first window would take as a way that got slower.
+func TestTCPWindowGrowsJitter(t *testing.T) {
+	r := rand.New(rand.NewPCG(1209, 50))
+	for trial := range 10 {
+		w := newWindowPeer(t, "10.0.0.1:"+strconv.Itoa(1971+trial), true)
+		w.read()
+		var trace []int32
+		for i := range 60 {
+			if w.window() == tcpGrownWindow {
+				break
+			}
+			rtt := 65 * time.Millisecond
+			if w.window() > tcpGrowingWindow || i >= 10 {
+				rtt = time.Duration(float64(50*time.Millisecond) * (0.6 + 1.4*r.Float64()))
+			}
+			w.round(rtt, 1, 10)
+			trace = append(trace, w.window()>>10)
+		}
+		if got := w.window(); got != tcpGrownWindow {
+			t.Fatal("trial ", trial, ": stayed at ", got, ", windows in KiB ", trace)
 		}
 	}
 }
