@@ -201,6 +201,10 @@ func UClient(c net.Conn, config *Config, ctx context.Context, dest net.Destinati
 	if err := uConn.HandshakeContext(ctx); err != nil {
 		return nil, err
 	}
+	// what the ClientHello was built from is of no use once the handshake is done, and it would stay as long as the
+	// connection does: its ML-KEM key alone is about 9 KiB on every connection to the server. Nothing of it is sent again
+	uConn.HandshakeState = utls.PubClientHandshakeState{}
+	uConn.Extensions = nil
 	if config.Show {
 		fmt.Printf("REALITY localAddr: %v\tuConn.Verified: %v\n", localAddr, uConn.Verified)
 	}
