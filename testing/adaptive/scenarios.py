@@ -274,16 +274,17 @@ def per_name_check(events, names, since=0):
     return check("most probe starts of one server name in 60 s", f"{worst} ({who})", worst <= 3, "<= 3")
 
 
-def jitter_check(events, since=0, spacing=2.0):
+def jitter_check(events, since=0, spacing=2.0, need=4):
     """Probes are spaced by a jittered pause. Gaps near the spacing are the
     ones the pause set (a probe that ran longer sets the gap itself); they must
     not all be the same, and none may be shorter than the jitter allows."""
     ts = sorted(e["ts"] / 1000 for e in events if e["type"] == "probe_start" and e["ts"] / 1000 >= since)
     gaps = [round(b - a, 2) for a, b in zip(ts, ts[1:]) if b - a < 2 * spacing]
-    if len(gaps) < 4:
-        return check("pauses between probes vary", f"{len(gaps)} gaps", False, ">= 4 gaps")
+    if len(gaps) < need:
+        return check("pauses between probes vary", f"{len(gaps)} gaps", False, f">= {need} gaps")
     return check("pauses between probes vary, s", f"{min(gaps)}..{max(gaps)} of {len(gaps)}",
-                 max(gaps) - min(gaps) >= 0.1 and min(gaps) >= 0.7 * spacing - 0.05, "spread >= 0.1, min >= 1.4")
+                 max(gaps) - min(gaps) >= 0.1 and min(gaps) >= 0.7 * spacing - 0.05,
+                 f"spread >= 0.1, min >= {0.7 * spacing:g}")
 
 
 # ---- 1. failover ------------------------------------------------------------
@@ -616,9 +617,9 @@ def false_down_rescue(stand, xray, work, name):
     that rules a1 out at once. The probe, on its connection from before, still passes after
     the down: it rescues a1, which is back within the probe instead of resting its quarantine,
     and its connections that went silent are kept. The failover the down started still
-    moves the balancer to b1, which returns to a1 once minHoldTime ends, long before
-    returnToCheaper.interval."""
-    hold, spacing, successes = 15, 3, 2
+    moves the balancer to b1, which returns to a1 within RETURN_SPREAD after minHoldTime,
+    long before returnToCheaper.interval."""
+    hold, spacing, successes = 15, RETURN_SPACING, RETURN_SUCCESSES
     probe = {"destination": f"http://probe.test:{bench.TARGET_PORT}/slow/262144/{RESCUE_PROBE + 1}",
              "minBytes": 262144, "expectedStatuses": [200], "timeout": "10s", "progressTimeout": "3s"}
     strategy = {"minHoldTime": f"{hold}s", "returnToCheaper": {"interval": "10m", "hasRandomPhase": False,
@@ -643,7 +644,8 @@ def false_down_rescue(stand, xray, work, name):
             time.sleep(1.5)
             bench.chaos(A0, "pass")
             wait_for(lambda: [e for e in switches_to(c.events, "a1", m["refuse"])
-                              if e["fields"]["reason"] == "return"], 60)
+                              if e["fields"]["reason"] == "return"],
+                     hold + RETURN_SPREAD + successes * RESCUE_PROBE + RETURN_PROOF)
         time.sleep(2)
         st = c.status()
         tr.stop()
@@ -677,7 +679,7 @@ def false_down_rescue(stand, xray, work, name):
                         "a1>b1:failover, b1>a1:return"))
     if len(sw) == 2:
         took = (sw[1]["ts"] - sw[0]["ts"]) / 1000
-        limit = hold + successes * RESCUE_PROBE + (successes - 1) * spacing * 1.3 + 5
+        limit = hold + RETURN_SPREAD + successes * RESCUE_PROBE + (successes - 1) * spacing * 1.3 + 5
         checks.append(check("return to a1 after the failover, s", round(took, 1), hold <= took <= limit,
                             f"{hold} .. {round(limit)}"))
     report = c.final_report or {}
@@ -819,17 +821,20 @@ def long_outage(stand, xray, work, name):
 @scenario()
 def check_unreachable(stand, xray, work, name):
     """The network check cannot reach its destination, yet outbounds other than the dead one work."""
-    cfg = bench.client_config(THREE, THREE_COSTS, health={"connectivity": {"maxPause": "20s"}})
+    cfg = bench.client_config(THREE, THREE_COSTS)
     m = Marks()
     with bench.Client(xray, cfg, work, name) as c:
         tr = bench.Traffic(rate=2, big=0.5)
+        # After the pause the failover finds a2, and the next failed check, one recheck later,
+        # is ignored because a2 worked.
         run_timeline(tr, [(5, lambda: bench.chaos(str(bench.CONNECTIVITY_PORT), "blackhole")),
-                          (10, m.at("down", lambda: bench.chaos(str(A0), "blackhole")))], 70)
+                          (10, m.at("down", lambda: bench.chaos(str(A0), "blackhole")))],
+                     10 + 8 + CONNECTIVITY_MAX_PAUSE + 2 * 30 + 10)
         st = c.status()
     rec, _ = bench.recovery(tr.records, m["down"])
     ignored = [e for e in c.events if e["type"] == "connectivity_ignored"]
-    return [check("recovery, s", rec and round(rec, 1), rec is not None and rec <= 50,
-                  "<= suspicion 8 + maxPause 20 + recheck 16 + failover 6"),
+    return [check("recovery, s", rec and round(rec, 1), rec is not None and rec <= 8 + CONNECTIVITY_MAX_PAUSE + 30 + 6,
+                  f"<= suspicion 8 + maxPause {CONNECTIVITY_MAX_PAUSE} + recheck 30 + failover 6"),
             check("check ignored after an outbound worked", len(ignored), len(ignored) == 1, "== 1"),
             check("connectivity state", st.get("connectivity"), st.get("connectivity") == "ignored", "ignored"),
             evidence_check(c.events, m["down"]),
@@ -1021,6 +1026,17 @@ def throughput_spliced(stand, xray, work, name):
 CHEAP_EXPENSIVE = [("a1", "reality", 0), ("b1", "tcp_tls", 0)]
 CHEAP_EXPENSIVE_COSTS = {"a1": 1, "b1": 3}
 
+# The core owns the proof of a return: three successful probes, each 20 s +-30% after the
+# result of the one before. RETURN_PROOF bounds the time from the first of them to the switch.
+RETURN_SUCCESSES = 3
+RETURN_SPACING = 20
+RETURN_PROOF = (RETURN_SUCCESSES - 1) * RETURN_SPACING * 1.3 + 5
+# The return to a path found working after a failover from it starts at a random point this
+# long after minHoldTime, so that devices hit by one hiccup do not come back in one wave.
+RETURN_SPREAD = 300
+# The network check that keeps failing stops holding decisions after this long.
+CONNECTIVITY_MAX_PAUSE = 60
+
 
 def switches_to(events, to, since=0):
     return [e for e in bench.switches(events, since) if e["fields"]["to"] == to]
@@ -1067,7 +1083,7 @@ def return_after_network_change(stand, xray, work, name):
 def return_inside_minhold(stand, xray, work, name):
     """The cheap path is fixed and the network changes while the expensive one is still
     inside minHoldTime: the return must wait for minHoldTime to end."""
-    hold, spacing, successes = 30, 5, 3
+    hold, spacing, successes = 30, RETURN_SPACING, RETURN_SUCCESSES
     strategy = {"minHoldTime": f"{hold}s", "returnToCheaper": {"probeInterval": f"{spacing}s", "probesToReturn": successes}}
     cfg = bench.client_config(CHEAP_EXPENSIVE, CHEAP_EXPENSIVE_COSTS, strategy=strategy)
     m = Marks()
@@ -1188,14 +1204,17 @@ def home_lte_home_expensive(stand, xray, work, name):
             leak_check(c)]
 
 
-@scenario()
+@scenario(slow=True)
 def return_penalty(stand, xray, work, name):
-    """A cheap path that fails right after the return waits twice as long next time."""
+    """A cheap path that fails right after the return makes the next return wait longer.
+
+    This takes about ten minutes with the core constants: a path found down rests in
+    quarantine for 2 minutes +-30% before a return may probe it, 4 minutes after it fails
+    again, and the return proof comes after that.
+    """
     interval = 40
-    strategy = {"minHoldTime": "20s", "returnToCheaper": {"interval": f"{interval}s", "hasRandomPhase": False, "probeInterval": "5s",
-                                              "probesToReturn": 2, "penaltyWindow": "2m"}}
-    health = {"schedule": {"quarantine": {"initialDelay": "10s", "jitterFraction": 0.1}}}
-    cfg = bench.client_config(CHEAP_EXPENSIVE, CHEAP_EXPENSIVE_COSTS, strategy=strategy, health=health)
+    strategy = {"minHoldTime": "20s", "returnToCheaper": {"interval": f"{interval}s"}}
+    cfg = bench.client_config(CHEAP_EXPENSIVE, CHEAP_EXPENSIVE_COSTS, strategy=strategy)
     with bench.Client(xray, cfg, work, name) as c:
         tr = bench.Traffic(rate=2, big=0.5)
         tr.start()
@@ -1205,13 +1224,14 @@ def return_penalty(stand, xray, work, name):
         time.sleep(15)
         bench.chaos(A0, "pass")
         t_fix = time.time()
-        first_return = wait_for(lambda: switches_to(c.events, "a1", t_fix), 120)
+        first_return = wait_for(lambda: switches_to(c.events, "a1", t_fix), 120 * 1.3 + interval + RETURN_PROOF)
         # The return worked; break the cheap path at once.
         bench.chaos(A0, "blackhole")
         time.sleep(15)
         bench.chaos(A0, "pass")
         t_fix2 = time.time()
-        second_return = wait_for(lambda: switches_to(c.events, "a1", t_fix2), 240)
+        second_return = wait_for(lambda: switches_to(c.events, "a1", t_fix2),
+                                 240 * 1.3 + 2 * interval + RETURN_PROOF)
         tr.stop()
     to_b = switches_to(c.events, "b1", t_fault)
     t_b = to_b[0]["ts"] / 1000 if to_b else None
@@ -1219,22 +1239,23 @@ def return_penalty(stand, xray, work, name):
                  and e["ts"] >= first_return[0]["ts"]]
     delayed = [e for e in c.events if e["type"] == "return_delayed"]
     starts = [e["ts"] / 1000 for e in c.events if e["type"] == "return_start" and e["fields"]["to"] == "a1"]
-    # The usual wait runs from the switch to the expensive path; the doubled one from the failed return.
     t_failed = penalties[0]["ts"] / 1000 if penalties else None
     first_start = next((t for t in starts if t_b and t >= t_b), None)
     second_start = next((t for t in starts if t_failed and t > t_failed), None)
     w1 = first_start - t_b if first_start else None
     w2 = second_start - t_failed if second_start else None
+    delay = delayed[0]["fields"]["delay_ms"] / 1000 if delayed else None
+    served = second_start - delayed[0]["ts"] / 1000 if delayed and second_start else None
     gap1 = first_return[0]["ts"] / 1000 - t_fix if first_return else None
     gap2 = second_return[0]["ts"] / 1000 - t_fix2 if second_return else None
     return [check("penalty after a failed return", len(penalties), len(penalties) >= 1, ">= 1"),
-            check("next return delayed by, s", delayed and round(delayed[0]["fields"]["delay_ms"] / 1000, 1),
-                  bool(delayed) and delayed[0]["fields"]["delay_ms"] >= interval * 1000 - 100,
-                  f">= the usual wait {interval}"),
+            check("next return delayed by, s", delay and round(delay, 1),
+                  delay is not None and delay >= interval - 0.1, f">= the usual wait {interval}"),
+            check("next try after the delay, s", served and round(served, 1),
+                  served is not None and delay is not None and served >= delay - 0.2, ">= the delay"),
             check("first wait, switch to the expensive path to the first try, s", w1 and round(w1, 1), w1 is not None,
                   "info"),
-            check("second wait, failed return to the next try, s", w2 and round(w2, 1),
-                  w1 is not None and w2 is not None and w2 >= 2 * w1 - 0.2, ">= 2 x first"),
+            check("second wait, failed return to the next try, s", w2 and round(w2, 1), w2 is not None, "info"),
             check("first return after fix, s", gap1 and round(gap1, 1), gap1 is not None, "info"),
             check("second return happened", gap2 and round(gap2, 1), gap2 is not None, "yes"),
             leak_check(c)]
@@ -1389,13 +1410,13 @@ def probe_limits(stand, xray, work, name):
 
 @scenario()
 def probe_spacing(stand, xray, work, name):
-    """A return needs eight good probes in a row. A good probe takes milliseconds, so the
-    distance between them is the pause itself: spacing with its jitter, one probe at a time.
-    (A failed probe holds the slot for about two seconds while the dial is retried.)"""
-    successes = 8
-    strategy = {"minHoldTime": "10s", "returnToCheaper": {"probesToReturn": successes, "probeInterval": "2s"}}
-    # Eight probes of one server name would meet the budget of three a minute; that is not what
-    # this scenario looks at.
+    """A return needs three good probes in a row. A good probe takes milliseconds, so the
+    distance between them is the pause itself: the return spacing with its jitter, one probe
+    at a time."""
+    successes = RETURN_SUCCESSES
+    strategy = {"minHoldTime": "10s"}
+    # The return probes and the failover probe of one server name would meet the budget of three
+    # a minute; that is not what this scenario looks at.
     health = {"schedule": {"probesPerServerNamePerMinute": 30, "probesPerMinute": 60}}
     cfg = bench.client_config(CHEAP_EXPENSIVE, CHEAP_EXPENSIVE_COSTS, strategy=strategy, health=health)
     m = Marks()
@@ -1412,7 +1433,7 @@ def probe_spacing(stand, xray, work, name):
             time.sleep(2)
             m["net"] = time.time()
             c.network("cafe")
-            back = wait_for(lambda: switches_to(c.events, "a1", m["net"]), 80)
+            back = wait_for(lambda: switches_to(c.events, "a1", m["net"]), RETURN_PROOF + 10)
         tr.stop()
     if not back:
         return [check("moved to the expensive path and came back", f"b1 {bool(to_b)}, a1 {bool(back)}", False, "both")]
@@ -1422,7 +1443,7 @@ def probe_spacing(stand, xray, work, name):
     return [check("probes for the return", len(returns), len(returns) == successes, f"== {successes}"),
             at_once_check(peak),
             spacing_check(gap, need=True),
-            jitter_check(c.events, m["net"]),
+            jitter_check(returns, m["net"], RETURN_SPACING, successes - 1),
             leak_check(c)]
 
 
@@ -1433,7 +1454,7 @@ def pinned_start(stand, xray, work, name):
     """The host starts the balancer pinned to a1, and a1 dies. Traffic stays on it and the
     failure is visible to the host; nothing switches. After the host releases the balancer it
     works by all the usual rules: it leaves for b1, and returns to a1 once that is fixed."""
-    hold, spacing, successes = 20, 5, 3
+    hold, spacing, successes = 20, RETURN_SPACING, RETURN_SUCCESSES
     strategy = {"startPinnedOutbound": "a1", "minHoldTime": f"{hold}s", "returnToCheaper": {"probeInterval": f"{spacing}s", "probesToReturn": successes}}
     # The paths have different server names, so the probe budget per name is no part of this: with
     # the same name for the path left and the path returned to, the failover probe and the check
@@ -1451,7 +1472,7 @@ def pinned_start(stand, xray, work, name):
         time.sleep(40)
         seen["pinned"] = c.status()["balancers"][0]
         m["release"] = time.time()
-        seen["released"] = c.api("release", "auto")
+        seen["released"] = c.accepts("release", "auto")
         wait_for(lambda: bench.switches(c.events, m["release"]), 30)
         time.sleep(8)
         m["fix"] = time.time()
@@ -1488,7 +1509,7 @@ def pinned_start(stand, xray, work, name):
         check("connections to the other addresses vs their probes", f"{others}/{len(others_probes)}",
               others == len(others_probes), "equal (0 expected)"),
         check("requests answered while pinned to the dead path", f"{served}/{sent}", served == 0 and sent > 0, "0"),
-        check("release accepted", seen["released"], seen["released"] == {"ok": True}, "ok"),
+        check("release accepted", seen["released"], seen["released"] is True, "True"),
         check("after release: first switch", after and f"{after[0]['fields']['to']} ({after[0]['fields']['reason']})",
               bool(after) and after[0]["fields"]["to"] == "b1" and after[0]["fields"]["reason"] == "failover",
               "b1 (failover)"),
@@ -1586,11 +1607,11 @@ def hybrid_pin_release(stand, xray, work, name):
         run = c.status()["run"]
         other_run = run[:-1] + ("1" if run[-1] == "0" else "0")
         m["stale"] = time.time()
-        seen["stale"] = c.api("release", "auto", other_run)
+        seen["stale"] = c.accepts("release", "auto", other_run)
         time.sleep(1.5)
         seen["after_stale"] = c.status()["balancers"][0]
         m["release"] = time.time()
-        seen["release"] = c.api("release", "auto", run)
+        seen["release"] = c.accepts("release", "auto", run)
         wait_for(lambda: bench.switches(c.events, m["release"]), 10)
         time.sleep(8)
         tr.stop()
@@ -1601,12 +1622,12 @@ def hybrid_pin_release(stand, xray, work, name):
     t_pin = first_event(c.events, "switch", reason="start_pinned")
     return held_on_dead_pin(c, cs, m["start"], m["release"]) + [
         check("release for another run", f"{seen['stale']}, stale_request {bool(stale)}",
-              seen["stale"] == {"ok": False} and bool(stale), "ok false, stale_request"),
+              seen["stale"] is False and bool(stale), "False, stale_request"),
         check("after it: pinned and on a1", f"pinned {pinned.get('pinned')!r}, active {pinned['active']!r}",
               pinned.get("pinned") == "a1" and pinned["active"] == "a1" and not early, "a1, a1, no release"),
         check("release of this run, s after the pin", released and t_pin
               and f"{released['fields'].get('by')} {round(released['ts'] / 1000 - t_pin['ts'] / 1000, 1)}",
-              seen["release"] == {"ok": True} and bool(released) and released["fields"].get("by") == "host"
+              seen["release"] is True and bool(released) and released["fields"].get("by") == "host"
               and bool(t_pin) and released["ts"] - t_pin["ts"] < HYBRID_PIN_FOR * 1000, f"host, < {HYBRID_PIN_FOR}"),
     ] + failover_after_release(c, tr, m["release"]) + [leak_check(c)]
 
@@ -1655,13 +1676,13 @@ def hybrid_pin_stop(stand, xray, work, name):
             tr.start()
             time.sleep(1)
             if label == "host":
-                pinned = c.api("pin", "auto", "a1", c.status()["run"])
+                pinned = c.accepts("pin", "auto", "a1", c.status()["run"])
             bench.chaos(A0, "blackhole")
             wait_for(lambda: bench.events_of(c.events, "pinned_down", start), 15)
             tr.stop()
         bench.chaos(A0, "pass")
         clients[label] = c
-    checks = [check("pin of the host", pinned, pinned == {"ok": True}, "ok")]
+    checks = [check("pin of the host", pinned, pinned is True, "True")]
     for label, c in clients.items():
         downs = bench.events_of(c.events, "pinned_down")
         marks = sorted({e["fields"].get("is_start_pinned") is True for e in downs})
@@ -1712,13 +1733,13 @@ def hybrid_pin_network(stand, xray, work, name):
         time.sleep(2)
         run = c.status()["run"]
         m["pin"] = time.time()
-        seen["pin"] = c.api("pin", "auto", "a1", run)
+        seen["pin"] = c.accepts("pin", "auto", "a1", run)
         time.sleep(2)
         m["net2"] = time.time()
         c.network("home")
         time.sleep(4)
         m["release"] = time.time()
-        seen["release"] = c.api("release", "auto", run)
+        seen["release"] = c.accepts("release", "auto", run)
         time.sleep(6)
         tr.stop()
     if "timer" not in m:
@@ -1748,7 +1769,7 @@ def hybrid_pin_network(stand, xray, work, name):
               bool(seen_up) and seen_up["ts"] / 1000 < m["release"], "before the release"),
         check("probes after the release by host", after_host, not after_host, "none"),
         check("pin and release of the host", f"{seen['pin']}, {seen['release']}",
-              seen["pin"] is None and seen["release"] is None, "ok, ok"),
+              seen["pin"] is True and seen["release"] is True, "True, True"),
         check("switches", sw, sw == ["a1 (start_pinned)"], "a1 (start_pinned) only"),
         leak_check(c),
     ]
@@ -2868,6 +2889,7 @@ def provider_slots_last_resort(stand, xray, work, name):
 AWG_SLEEP = 10  # sleep.afterLastUse: its minimum
 HOST_REUSE_SECONDS = 15  # fixed by API v2
 AWG_RETURN_WAIT = 65  # three successes spaced by 20 s with 30% jitter
+HANGING_BEFORE_PROBE = 7  # with the 6 s dial budget of the probe, the decision 13 to 16 s after the SYN
 AWG_MEMBERS = [("v1", "reality", 0), ("w1", "awg", 0)]
 # Wakes of awg_wake_by_probe, and the delay of the datagrams of w1 in ms on those that lose nothing.
 AWG_WAKES = int(os.environ.get("BENCH_AWG_WAKES", "6"))
@@ -3405,9 +3427,14 @@ def awg_probe_down_hanging(stand, xray, work, name):
             m["away"] = away[0]["ts"] / 1000 if away else time.time()
             m["fault"] = time.time()
             bench.chaos(bench.AWG_ADDRESS, "blackhole")
+            # The probe comes once the last proof of w1 no longer answers for it. The connection
+            # opens so that the decision, a dial budget after the probe, finds it waiting past
+            # the 12 s checked below and short of the 19 s after which the stack gives up its SYN.
+            probe_at = m["away"] + HOST_REUSE_SECONDS + 1
+            time.sleep(max(0.0, probe_at - HANGING_BEFORE_PROBE - time.time()))
             m["hanging"] = time.time()
             hanging.open()
-            time.sleep(max(0.0, m["hanging"] + HOST_REUSE_SECONDS + 1 - time.time()))
+            time.sleep(max(0.0, max(probe_at, m["hanging"] + HANGING_BEFORE_PROBE) - time.time()))
             seen["waiting"] = hanging.ended is None
             m["probe"] = time.time()
             seen["probe"] = c.api("-t", "15", "probe", "auto", "w1", timeout=20)

@@ -46,6 +46,10 @@ class RecipeBoundaryTest(unittest.TestCase):
         self.assertEqual(got['triggers']['whenCostAbove']['after'], '0s')
         self.assertNotIn('isEnabled', got['triggers']['whenCostAbove'])
 
+    def test_zero_provider_limits_stay_unlimited(self):
+        got = v2.provider({'limits': {'minInterval': '0s', 'exhaustedMinInterval': '0s', 'maxRefreshesPerHour': 0}})
+        self.assertEqual(got['limits'], {'minInterval': '1ms', 'urgentMinInterval': '1ms', 'maxRefreshesPerHour': 1000000})
+
     def test_result_data_and_errors_are_unwrapped_once(self):
         self.assertEqual(v2.result_payload({'success': True, 'data': {'seq': 1, 'set': {}}}), {'seq': 1, 'set': {}})
         self.assertIsNone(v2.result_payload({'success': True}))

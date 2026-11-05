@@ -80,6 +80,10 @@ def provider(recipe):
     limits = result.setdefault("limits", {})
     if "exhaustedMinInterval" in limits:
         limits["urgentMinInterval"] = limits.pop("exhaustedMinInterval")
+    # A zero limit in a recipe meant no limit; v2 takes only positive limits.
+    for key in ("minInterval", "urgentMinInterval"):
+        if key in limits and not nonzero(limits[key]): limits[key] = "1ms"
+    if limits.get("maxRefreshesPerHour") == 0: limits["maxRefreshesPerHour"] = 1000000
     for key in ("backoff", "authRetryDelay"): limits.pop(key, None)
     result.pop("maxBytes", None)
     apply = result.setdefault("apply", {})
