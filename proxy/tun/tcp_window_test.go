@@ -2,6 +2,7 @@ package tun
 
 import (
 	"encoding/binary"
+	"math/rand/v2"
 	gonet "net"
 	"net/netip"
 	"strconv"
@@ -746,6 +747,33 @@ func TestTCPWindowBudgetIOS(t *testing.T) {
 	s := ws[0].s
 	if got := ws[2].window(); got > 2*tcpGrowingWindow || s.grown.Load() > budget {
 		t.Fatal("a third one grew to ", got, ", the stack has ", s.grown.Load(), " of ", budget)
+	}
+}
+
+// The window grows to the most also on a way whose round trip is another each time, as on a mobile network: a round
+// trip that was shorter by chance does not set what the next window has to beat. Until the first window grows the
+// round trips take as long as the others on average: in its first round trip the peer sends all of a window at once,
+// and later about half of it, which the first window would take as a way that got slower.
+func TestTCPWindowGrowsJitter(t *testing.T) {
+	r := rand.New(rand.NewPCG(1209, 50))
+	for trial := range 10 {
+		w := newWindowPeer(t, "10.0.0.1:"+strconv.Itoa(1971+trial), true)
+		w.read()
+		var trace []int32
+		for i := range 60 {
+			if w.window() == tcpGrownWindow {
+				break
+			}
+			rtt := 65 * time.Millisecond
+			if w.window() > tcpGrowingWindow || i >= 10 {
+				rtt = time.Duration(float64(50*time.Millisecond) * (0.6 + 1.4*r.Float64()))
+			}
+			w.round(rtt, 1, 10)
+			trace = append(trace, w.window()>>10)
+		}
+		if got := w.window(); got != tcpGrownWindow {
+			t.Fatal("trial ", trial, ": stayed at ", got, ", windows in KiB ", trace)
+		}
 	}
 }
 

@@ -198,15 +198,16 @@ type tcpConn struct {
 	rcvEdge uint32
 	// rcvTaken is what the reader has taken since rcvSince, for grow. rcvRate is how much it takes a second, from
 	// rcvLimited round trips since the window changed in which the window held it back, and rcvBefore how much that
-	// was with a window half as large, with a round trip of rcvBeforeRTT. rcvLonger counts the round trips in a row
-	// that took much longer. rcvEarned is what the window grew to before a pause, and rcvCameAt when the last segment
-	// with data came
+	// was with a window half as large, with a round trip of rcvBeforeRTT. rcvRTTMean is how long those round trips
+	// took on average since the window last became smaller, and rcvLonger counts the ones in a row that took much
+	// longer. rcvEarned is what the window grew to before a pause, and rcvCameAt when the last segment with data came
 	rcvTaken     int64
 	rcvSince     time.Time
 	rcvRate      float64
 	rcvLimited   int
 	rcvBefore    float64
 	rcvBeforeRTT time.Duration
+	rcvRTTMean   time.Duration
 	rcvLonger    int
 	rcvEarned    int32
 	rcvCameAt    time.Time
@@ -613,7 +614,7 @@ func (c *tcpConn) came() {
 	if c.rcvWindow > tcpGrowingWindow && c.quiet() {
 		c.rcvEarned = max(c.rcvEarned, c.rcvWindow)
 		c.rcvWindow = tcpGrowingWindow
-		c.rcvLimited, c.rcvRate, c.rcvLonger, c.rcvTaken, c.rcvSince = 0, 0, 0, 0, time.Now()
+		c.rcvLimited, c.rcvRate, c.rcvLonger, c.rcvRTTMean, c.rcvTaken, c.rcvSince = 0, 0, 0, 0, 0, time.Now()
 	}
 }
 
@@ -1358,8 +1359,9 @@ func (c *tcpConn) rtt() time.Duration {
 // stream back, and a quarter faster than with a window half as large: when a larger window did not make it faster,
 // the way or the sender is what holds it back, and what more the window takes waits in a queue on the way, which
 // makes the round trip longer. When the round trip became much longer and the reader slower, the way got slower,
-// and what the half window took is taken as half of what the reader takes now. The window never becomes smaller than
-// what the system was told. c.mu is held
+// and what the half window took is taken as half of what the reader takes now. A round trip that was much shorter by
+// chance does not raise what the next window has to beat. The window never becomes smaller than what the system was
+// told. c.mu is held
 func (c *tcpConn) grow(size int32) {
 	most := min(tcpGrownWindow, int32(math.MaxUint16)<<c.rcvShift)
 	if !c.stack.growing || c.rcvWindow >= most {
@@ -1376,9 +1378,14 @@ func (c *tcpConn) grow(size int32) {
 	if float64(taken)*rtt.Seconds() <= float64(c.rcvWindow/2)*since.Seconds() {
 		return
 	}
-	// the mean of the first round trips, then each one counts a quarter
+	// the mean of the first round trips, then each one counts a quarter, and the same for how long they took
 	c.rcvLimited++
 	c.rcvRate += (float64(taken)/since.Seconds() - c.rcvRate) / float64(min(c.rcvLimited, 4))
+	if c.rcvRTTMean == 0 {
+		c.rcvRTTMean = rtt
+	} else {
+		c.rcvRTTMean += (rtt - c.rcvRTTMean) / 4
+	}
 	if c.rcvWindow < c.rcvEarned {
 		// back to what the window grew to before a pause, as far as the budget lets it: that it made the reader faster
 		// is known
@@ -1408,8 +1415,16 @@ func (c *tcpConn) grow(size int32) {
 	if c.rcvLimited < 2 {
 		faster = 1.6
 	}
-	if c.rcvRate > c.rcvBefore*faster && c.afford(min(c.rcvWindow*2, most), c.window) {
-		c.rcvBefore, c.rcvBeforeRTT = c.rcvRate, rtt
+	if was := c.rcvWindow; c.rcvRate > c.rcvBefore*faster && c.afford(min(c.rcvWindow*2, most), c.window) {
+		// what the reader took with the half window, which the next one has to beat: no more than a quarter more than
+		// that window in a round trip as long as they took on average, as one that was much shorter by chance let it
+		// take more, and no more than twice what the window half as large took, as twice the window makes the reader
+		// twice as fast at most
+		before := min(c.rcvRate, tcpFaster*float64(was)/c.rcvRTTMean.Seconds())
+		if c.rcvBefore != 0 {
+			before = min(before, 2*c.rcvBefore)
+		}
+		c.rcvBefore, c.rcvBeforeRTT = before, max(rtt, c.rcvRTTMean)
 		c.rcvLimited, c.rcvRate, c.rcvLonger = 0, 0, 0
 	}
 }
