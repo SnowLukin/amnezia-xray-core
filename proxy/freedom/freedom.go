@@ -6,6 +6,7 @@ import (
 	"io"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/pires/go-proxyproto"
@@ -481,6 +482,7 @@ func NewPacketReader(conn net.Conn, h *Handler, defaultRule *FinalRule, UDPOverr
 
 		return &PacketReader{
 			PacketConnWrapper: c,
+			rawConn:           buf.ReadyRawConn(c.PacketConn),
 			Counter:           counter,
 			Handler:           h,
 			DefaultRule:       defaultRule,
@@ -494,6 +496,8 @@ func NewPacketReader(conn net.Conn, h *Handler, defaultRule *FinalRule, UDPOverr
 
 type PacketReader struct {
 	*net.PacketConnWrapper
+	// rawConn is the socket under PacketConnWrapper when a reply can be read into a buffer taken only once it came
+	rawConn syscall.RawConn
 	stats.Counter
 	Handler           *Handler
 	DefaultRule       *FinalRule
@@ -502,21 +506,33 @@ type PacketReader struct {
 	InitChangedAddr   net.Address
 }
 
-func (r *PacketReader) ReadMultiBuffer() (buf.MultiBuffer, error) {
+// read reads the next datagram, see buf.ReadPacketReady for why the buffer is taken only once it came
+func (r *PacketReader) read() (*buf.Buffer, *net.UDPAddr, error) {
+	if r.rawConn != nil {
+		return buf.ReadPacketReady(r.rawConn)
+	}
 	b := buf.New()
-	b.Resize(0, buf.Size)
+	n, d, err := r.PacketConnWrapper.ReadFrom(b.Extend(buf.Size))
+	if err != nil {
+		b.Release()
+		return nil, nil, err
+	}
+	b.Resize(0, int32(n))
+	return b, d.(*net.UDPAddr), nil
+}
+
+func (r *PacketReader) ReadMultiBuffer() (buf.MultiBuffer, error) {
 	for {
-		n, d, err := r.PacketConnWrapper.ReadFrom(b.Bytes())
+		b, udpAddr, err := r.read()
 		if err != nil {
-			b.Release()
 			return nil, err
 		}
-		udpAddr := d.(*net.UDPAddr)
+		n := b.Len()
 		sourceAddr := net.IPAddress(udpAddr.IP)
 		if rule := r.Handler.matchFinalRule(net.Network_UDP, sourceAddr, net.Port(udpAddr.Port), r.DefaultRule); rule != nil && rule.action == RuleAction_Block {
+			b.Release()
 			continue
 		}
-		b.Resize(0, int32(n))
 
 		// if udp dest addr is changed, we are unable to get the correct src addr
 		// so we don't attach src info to udp packet, break cone behavior, assuming the dial dest is the expected scr addr

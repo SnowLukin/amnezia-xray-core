@@ -5,6 +5,10 @@ package buf
 
 import "golang.org/x/sys/unix"
 
+// releaseWhileWaiting: readv fails here only when the socket has nothing to read yet, so the buffers can go back
+// to the pool until it has
+const releaseWhileWaiting = true
+
 type unixReader struct {
 	iovs [][]byte
 }
