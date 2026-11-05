@@ -154,6 +154,12 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
 	rec := h.server
 	var conn stat.Connection
 
+	// XTLS rejects UDP/443 whatever connection it would go through, so it is rejected before one is dialed or taken:
+	// QUIC that apps fall back from to TCP costs no dial and no handshake with the server
+	if ob.Target.Network == net.Network_UDP && ob.Target.Port == 443 && rec.User.Account.(*vless.MemoryAccount).Flow == vless.XRV {
+		return errors.New("XTLS rejected UDP/443 traffic")
+	}
+
 	if h.testpre > 0 && h.reverse == nil {
 		h.initpre.Do(func() {
 			h.preConns = make(chan *ConnExpire)
@@ -243,19 +249,15 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
 
 	var input *bytes.Reader
 	var rawInput **bytes.Buffer
-	allowUDP443 := false
 	switch requestAddons.Flow {
 	case vless.XRV + "-udp443":
-		allowUDP443 = true
 		requestAddons.Flow = requestAddons.Flow[:16]
 		fallthrough
 	case vless.XRV:
 		ob.CanSpliceCopy = 2
 		switch request.Command {
 		case protocol.RequestCommandUDP:
-			if !allowUDP443 && request.Port == 443 {
-				return errors.New("XTLS rejected UDP/443 traffic")
-			}
+			// UDP/443 without -udp443 is rejected before dialing
 		case protocol.RequestCommandMux:
 			fallthrough // let server break Mux connections that contain TCP requests
 		case protocol.RequestCommandTCP, protocol.RequestCommandRvs:
