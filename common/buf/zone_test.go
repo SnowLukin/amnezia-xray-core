@@ -6,6 +6,7 @@ import (
 	"net"
 	"strconv"
 	"testing"
+	"time"
 )
 
 func TestZoneNameOfInterface(t *testing.T) {
@@ -24,5 +25,27 @@ func TestZoneNameOfInterface(t *testing.T) {
 	}
 	if _, ok := zoneNames.Load(missing); ok {
 		t.Fatal("a zone without an interface is kept as a name")
+	}
+}
+
+func TestZoneNameIsLookedUpAgainAfterAMinute(t *testing.T) {
+	ifis, err := net.Interfaces()
+	if err != nil || len(ifis) == 0 {
+		t.Skip("no interfaces: ", err)
+	}
+	index := ifis[0].Index
+	zoneNames.Store(index, zoneNameEntry{"renamed", time.Now()})
+	if got := zoneName(index); got != "renamed" {
+		t.Fatalf("a name looked up just now is looked up again: %q", got)
+	}
+	zoneNames.Store(index, zoneNameEntry{"renamed", time.Now().Add(-2 * zoneNameTTL)})
+	if got := zoneName(index); got != ifis[0].Name {
+		t.Fatalf("a name looked up long ago stays %q instead of %q", got, ifis[0].Name)
+	}
+	const missing = 1 << 30
+	zoneNames.Store(missing, zoneNameEntry{"gone", time.Now().Add(-2 * zoneNameTTL)})
+	zoneName(missing)
+	if _, ok := zoneNames.Load(missing); ok {
+		t.Fatal("the name of an interface that is gone is kept")
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"sync"
 	"syscall"
+	"time"
 )
 
 // ReadPacketReady reads one datagram from the socket of rc into a buffer that is taken only once the socket has one:
@@ -64,19 +65,30 @@ func udpAddrOf(sa syscall.Sockaddr) *gonet.UDPAddr {
 	return &gonet.UDPAddr{}
 }
 
-// zoneNames are the names of the interfaces of the zones that datagrams came from. A name is looked up once: the
-// index alone would cost a lookup of all the interfaces on every write to the address, as net looks a zone up by name
+// zoneNames are the names of the interfaces of the zones that datagrams came from. A name is looked up once a minute,
+// as net keeps the names of interfaces: the index alone would cost a lookup of all the interfaces on every write to
+// the address, as net looks a zone up by name
 var zoneNames sync.Map
 
+// zoneNameTTL is how long a name is kept: an interface may be renamed, or its index given to another one
+const zoneNameTTL = time.Minute
+
+type zoneNameEntry struct {
+	name    string
+	fetched time.Time
+}
+
 func zoneName(index int) string {
-	if name, ok := zoneNames.Load(index); ok {
-		return name.(string)
+	now := time.Now()
+	if e, ok := zoneNames.Load(index); ok && now.Sub(e.(zoneNameEntry).fetched) < zoneNameTTL {
+		return e.(zoneNameEntry).name
 	}
 	ifi, err := gonet.InterfaceByIndex(index)
 	if err != nil {
-		// net takes the index for a zone as well
+		// the interface is gone, net takes the index for a zone as well
+		zoneNames.Delete(index)
 		return strconv.Itoa(index)
 	}
-	zoneNames.Store(index, ifi.Name)
+	zoneNames.Store(index, zoneNameEntry{ifi.Name, now})
 	return ifi.Name
 }
