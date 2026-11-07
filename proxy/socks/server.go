@@ -186,8 +186,9 @@ func (s *Server) processTCP(ctx context.Context, conn stat.Connection, dispatche
 		// Associated TCP keeps the UDP alive
 		// Close UDP if TCP connection is closed
 		// Or Close TCP if UDP is idle timeout
-		// Nothing comes on it, so it is read without a buffer of the pool
-		var b [1]byte
+		// Nothing should come on it, so it is read without a buffer of the pool, in pieces that a client which sends
+		// on it anyway does not turn into a read for every byte
+		var b [256]byte
 		for {
 			if _, err := conn.Read(b[:]); err != nil {
 				break

@@ -4,6 +4,7 @@ package buf
 
 import (
 	gonet "net"
+	"strconv"
 	"syscall"
 )
 
@@ -55,9 +56,8 @@ func udpAddrOf(sa syscall.Sockaddr) *gonet.UDPAddr {
 	case *syscall.SockaddrInet6:
 		addr := &gonet.UDPAddr{IP: gonet.IP(append([]byte(nil), sa.Addr[:]...)), Port: sa.Port}
 		if sa.ZoneId != 0 {
-			if ifi, err := gonet.InterfaceByIndex(int(sa.ZoneId)); err == nil {
-				addr.Zone = ifi.Name
-			}
+			// the index as it is: net takes it for a zone, and the name would cost a lookup for every datagram
+			addr.Zone = strconv.Itoa(int(sa.ZoneId))
 		}
 		return addr
 	}
