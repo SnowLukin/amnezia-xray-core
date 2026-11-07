@@ -3,10 +3,14 @@
 
 package buf
 
-import "golang.org/x/sys/unix"
+import (
+	"os"
 
-// releaseWhileWaiting: readv fails here only when the socket has nothing to read yet, so the buffers can go back
-// to the pool until it has
+	"golang.org/x/sys/unix"
+)
+
+// releaseWhileWaiting: Read tells an empty socket from a failed one, so the buffers can go back to the pool until
+// the socket has something to read
 const releaseWhileWaiting = true
 
 type unixReader struct {
@@ -24,15 +28,24 @@ func (r *unixReader) Init(bs []*Buffer) {
 	r.iovs = iovs
 }
 
-func (r *unixReader) Read(fd uintptr) int32 {
-	n, e := unix.Readv(int(fd), r.iovs)
-	if e != nil {
-		return -1
+func (r *unixReader) Read(fd uintptr) (int32, error) {
+	for {
+		n, e := unix.Readv(int(fd), r.iovs)
+		switch e {
+		case nil:
+			return int32(n), nil
+		case unix.EINTR:
+			continue
+		case unix.EAGAIN:
+			return -1, nil
+		}
+		return -1, os.NewSyscallError("readv", e)
 	}
-	return int32(n)
 }
 
 func (r *unixReader) Clear() {
+	// without the slices of the buffers, which go back to the pool while it waits
+	clear(r.iovs)
 	r.iovs = r.iovs[:0]
 }
 

@@ -3,36 +3,14 @@
 package buf_test
 
 import (
+	"errors"
+	"io"
 	"net"
-	"runtime"
-	"runtime/debug"
-	"runtime/metrics"
 	"testing"
 	"time"
 
 	. "github.com/xtls/xray-core/common/buf"
 )
-
-// heapObjects is the heap that live objects take, after what is garbage is gone
-func heapObjects() uint64 {
-	runtime.GC()
-	runtime.GC()
-	debug.FreeOSMemory()
-	s := []metrics.Sample{{Name: "/memory/classes/heap/objects:bytes"}}
-	metrics.Read(s)
-	return s[0].Value.Uint64()
-}
-
-// idleCost is how much of the heap each of n readers that wait takes, with start making them wait
-func idleCost(t *testing.T, n int, start func(i int)) float64 {
-	t.Helper()
-	before := heapObjects()
-	for i := range n {
-		start(i)
-	}
-	time.Sleep(300 * time.Millisecond)
-	return (float64(heapObjects()) - float64(before)) / float64(n)
-}
 
 func TestReadVReaderHoldsNoBufferWhileWaiting(t *testing.T) {
 	if !ReleaseWhileWaiting {
@@ -135,4 +113,41 @@ func tcpPair(t *testing.T) (net.Conn, net.Conn) {
 		server.Close()
 	})
 	return client, server
+}
+
+func TestReadVReaderReportsReset(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		first int
+	}{
+		{"one buffer", 0},
+		{"several buffers", Size},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			client, server := tcpPair(t)
+			r := NewReader(server)
+			if c.first > 0 {
+				// a full buffer makes the next read take more than one
+				go client.Write(make([]byte, c.first))
+				read := 0
+				for read < c.first {
+					mb, err := r.ReadMultiBuffer()
+					if err != nil {
+						t.Fatal(err)
+					}
+					read += int(mb.Len())
+					ReleaseMulti(mb)
+				}
+			}
+			client.(*net.TCPConn).SetLinger(0)
+			go func() {
+				time.Sleep(50 * time.Millisecond)
+				client.Close()
+			}()
+			_, err := r.ReadMultiBuffer()
+			if err == nil || errors.Is(err, io.EOF) {
+				t.Fatalf("a reset connection reads as %v, not as an error", err)
+			}
+		})
+	}
 }

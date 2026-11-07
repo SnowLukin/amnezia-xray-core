@@ -46,7 +46,8 @@ func (s *allocStrategy) Alloc() []*Buffer {
 
 type multiReader interface {
 	Init([]*Buffer)
-	Read(fd uintptr) int32
+	// Read reads into the buffers given to Init, n < 0 with no error is a socket that has nothing to read yet
+	Read(fd uintptr) (n int32, err error)
 	Clear()
 }
 
@@ -77,12 +78,17 @@ func NewReadVReader(reader io.Reader, rawConn syscall.RawConn, counter stats.Cou
 func (r *ReadVReader) readMulti() (MultiBuffer, error) {
 	var bs []*Buffer
 	var nBytes int32
+	var readErr error
 	err := r.rawConn.Read(func(fd uintptr) bool {
 		if bs == nil {
 			bs = r.alloc.Alloc()
 			r.mr.Init(bs)
 		}
-		n := r.mr.Read(fd)
+		n, err := r.mr.Read(fd)
+		if err != nil {
+			readErr = err
+			return true
+		}
 		if n < 0 {
 			if releaseWhileWaiting {
 				r.mr.Clear()
@@ -97,6 +103,9 @@ func (r *ReadVReader) readMulti() (MultiBuffer, error) {
 	})
 	r.mr.Clear()
 
+	if err == nil {
+		err = readErr
+	}
 	if err != nil {
 		ReleaseMulti(MultiBuffer(bs))
 		return nil, err

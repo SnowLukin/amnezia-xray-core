@@ -4,12 +4,13 @@
 package buf
 
 import (
+	"os"
 	"syscall"
 	"unsafe"
 )
 
-// releaseWhileWaiting: readv fails here only when the socket has nothing to read yet, so the buffers can go back
-// to the pool until it has
+// releaseWhileWaiting: Read tells an empty socket from a failed one, so the buffers can go back to the pool until
+// the socket has something to read
 const releaseWhileWaiting = true
 
 type posixReader struct {
@@ -30,12 +31,19 @@ func (r *posixReader) Init(bs []*Buffer) {
 	r.iovecs = iovecs
 }
 
-func (r *posixReader) Read(fd uintptr) int32 {
-	n, _, e := syscall.Syscall(syscall.SYS_READV, fd, uintptr(unsafe.Pointer(&r.iovecs[0])), uintptr(len(r.iovecs)))
-	if e != 0 {
-		return -1
+func (r *posixReader) Read(fd uintptr) (int32, error) {
+	for {
+		n, _, e := syscall.Syscall(syscall.SYS_READV, fd, uintptr(unsafe.Pointer(&r.iovecs[0])), uintptr(len(r.iovecs)))
+		switch e {
+		case 0:
+			return int32(n), nil
+		case syscall.EINTR:
+			continue
+		case syscall.EAGAIN:
+			return -1, nil
+		}
+		return -1, os.NewSyscallError("readv", e)
 	}
-	return int32(n)
 }
 
 func (r *posixReader) Clear() {
