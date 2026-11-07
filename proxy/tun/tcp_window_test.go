@@ -685,7 +685,7 @@ func TestTCPWindowQuietShare(t *testing.T) {
 	}
 }
 
-// What quiet connections lend and what the others take together stays within twice the budget: readers that stop
+// What quiet connections lend and what the others take together stays within mostHeld: readers that stop
 // then hold no more than that also when the peers of the quiet ones send all that they were told they may.
 func TestTCPWindowQuietBound(t *testing.T) {
 	const budget = 2 << 20
@@ -693,13 +693,16 @@ func TestTCPWindowQuietBound(t *testing.T) {
 	for _, w := range ws {
 		w.read()
 	}
-	// one grows and goes quiet, then the next one grows into what it lends, and goes quiet as well
-	for _, w := range ws[:2] {
-		if n := roundsTo(w, windowHandshake, 40); n < 0 {
-			t.Fatal("grew to ", w.window(), " only")
-		}
-		time.Sleep(tcpQuiet + tcpQuiet/2)
+	// one grows and goes quiet, then the next one grows into what it lends as far as mostHeld lets it, and goes quiet
+	// as well
+	if n := roundsTo(ws[0], windowHandshake, 40); n < 0 {
+		t.Fatal("grew to ", ws[0].window(), " only")
 	}
+	time.Sleep(tcpQuiet + tcpQuiet/2)
+	if roundsTo(ws[1], windowHandshake, 40); ws[1].window() <= tcpGrowingWindow {
+		t.Fatal("the next one grew to ", ws[1].window(), " only")
+	}
+	time.Sleep(tcpQuiet + tcpQuiet/2)
 	for range 20 {
 		ws[2].round(windowHandshake, 1, 10)
 	}

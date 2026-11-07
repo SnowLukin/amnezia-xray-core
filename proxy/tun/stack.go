@@ -385,9 +385,10 @@ func (s *stack) refuse(f flow, seg segment) {
 }
 
 // mostHeld is the most that the connections of s hold past what they start with, together with what quiet ones lend:
-// readers that stopped hold no more than that, also if the peers of quiet ones send all that they were told they may
+// readers that stopped hold no more than that, also if the peers of quiet ones send all that they were told they may.
+// Quiet ones lend up to half of the budget
 func (s *stack) mostHeld() int64 {
-	return 2 * s.budget
+	return s.budget + s.budget/2
 }
 
 // remove forgets a connection. c.mu is held
