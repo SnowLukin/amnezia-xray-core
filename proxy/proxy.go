@@ -13,6 +13,7 @@ import (
 	"math/big"
 	"runtime"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/pires/go-proxyproto"
@@ -307,6 +308,8 @@ type VisionWriter struct {
 	// internal
 	writeOnceUserUUID  []byte
 	directWriteCounter stats.Counter
+	// Mux workers write from one goroutine per session, padding state and wire order must change together
+	access sync.Mutex
 
 	testseed []uint32
 }
@@ -330,6 +333,9 @@ func NewVisionWriter(writer buf.Writer, trafficState *TrafficState, isUplink boo
 }
 
 func (w *VisionWriter) WriteMultiBuffer(mb buf.MultiBuffer) error {
+	w.access.Lock()
+	defer w.access.Unlock()
+
 	var isPadding *bool
 	var switchToDirectCopy *bool
 	var spliceReadyInbound *session.Inbound
