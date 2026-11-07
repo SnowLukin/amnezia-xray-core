@@ -21,7 +21,6 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"testing"
 	"time"
 
@@ -1170,13 +1169,6 @@ func TestMeasureThroughput(t *testing.T) {
 			}
 		}
 	}
-}
-
-// cpuTime is the user and system time the process has taken.
-func cpuTime() time.Duration {
-	var ru syscall.Rusage
-	syscall.Getrusage(syscall.RUSAGE_SELF, &ru)
-	return time.Duration(ru.Utime.Nano() + ru.Stime.Nano())
 }
 
 // transfer moves size bytes through a new connection, down from the server or up to it, and returns the speed in
