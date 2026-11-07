@@ -177,22 +177,31 @@ func (s *Server) processTCP(ctx context.Context, conn stat.Connection, dispatche
 				ReadCounter:  counters.ReadCounter,
 				WriteCounter: counters.WriteCounter,
 			}
+			tempUDPConn.ReadCounter = counters.ReadCounter
 		}
 		errCh := make(chan error, 1)
 		go func() {
-			errCh <- s.handleUDPPayload(ctx, udpConn, dispatcher)
+			errCh <- s.handleUDPPayload(ctx, udpConn, tempUDPConn, dispatcher)
 		}()
 		// Associated TCP keeps the UDP alive
 		// Close UDP if TCP connection is closed
 		// Or Close TCP if UDP is idle timeout
-		io.Copy(buf.DiscardBytes, conn)
+		// Nothing should come on it, so it is read without a buffer of the pool, in pieces that a client which sends
+		// on it anyway does not turn into a read for every byte
+		var b [256]byte
+		for {
+			if _, err := conn.Read(b[:]); err != nil {
+				break
+			}
+		}
 		tempUDPConn.Close()
 		return <-errCh
 	}
 	return nil
 }
 
-func (s *Server) handleUDPPayload(ctx context.Context, conn stat.Connection, dispatcher routing.Dispatcher) error {
+// handleUDPPayload takes the packets of the client from reader and writes the responses to conn
+func (s *Server) handleUDPPayload(ctx context.Context, conn stat.Connection, reader buf.Reader, dispatcher routing.Dispatcher) error {
 	udpServer := udp.NewDispatcher(dispatcher, func(ctx context.Context, packet *udp_proto.Packet) {
 		payload := packet.Payload
 		errors.LogDebug(ctx, "writing back UDP response with ", payload.Len(), " bytes")
@@ -228,7 +237,6 @@ func (s *Server) handleUDPPayload(ctx context.Context, conn stat.Connection, dis
 
 	var dest *net.Destination
 
-	reader := buf.NewPacketReader(conn)
 	var changeRemote sync.Once
 	for {
 		mpayload, err := reader.ReadMultiBuffer()
