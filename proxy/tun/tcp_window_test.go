@@ -675,7 +675,7 @@ func TestTCPWindowQuietShare(t *testing.T) {
 	for _, w := range ws[:2] {
 		w.round(windowHandshake, 0.1, 1)
 	}
-	if grown, lent := s.grown.Load(), s.held.Load()-s.grown.Load(); lent != 0 || grown != charges(s) || grown > 2*budget {
+	if grown, lent := s.grown.Load(), s.held.Load()-s.grown.Load(); lent != 0 || grown != charges(s) || grown > s.mostHeld() {
 		t.Fatal("grown ", grown, ", lent ", lent, ", charged ", charges(s))
 	}
 	for _, w := range ws[:2] {
@@ -707,8 +707,8 @@ func TestTCPWindowQuietBound(t *testing.T) {
 	if got := ws[2].window(); got > 2*tcpGrowingWindow {
 		t.Fatal("grew to ", got, " while quiet ones lend ", s.held.Load()-s.grown.Load(), " of ", budget)
 	}
-	if grown, held := s.grown.Load(), s.held.Load(); held > 2*budget || held != holds(s) {
-		t.Fatal("grown ", grown, ", held ", held, ", the connections hold ", holds(s), " of twice ", budget)
+	if grown, held := s.grown.Load(), s.held.Load(); held > s.mostHeld() || held != holds(s) {
+		t.Fatal("grown ", grown, ", held ", held, ", the connections hold ", holds(s), " of ", s.mostHeld())
 	}
 }
 
@@ -726,9 +726,9 @@ func hold(c *tcpConn, size int32, came time.Time) {
 func TestTCPWindowQuietMoves(t *testing.T) {
 	const budget = 1 << 20
 	ws := newWindowPeers(t, []string{"10.0.0.1:1921", "10.0.0.1:1922", "10.0.0.1:1923"}, true, budget)
-	moving, grower, quiet := ws[0].conn, ws[1].conn, ws[2].conn
-	// what the two hold leaves less than 128 KiB of twice the budget: the window of the third one does not double
-	hold(quiet, 3*budget/2, time.Now().Add(-2*tcpQuiet))
+	s, moving, grower, quiet := ws[0].s, ws[0].conn, ws[1].conn, ws[2].conn
+	// what the two hold leaves less than 128 KiB of what may be held: the window of the third one does not double
+	hold(quiet, int32(s.mostHeld()-budget/2-tcpGrowingWindow/2), time.Now().Add(-2*tcpQuiet))
 	hold(moving, budget/2, time.Now())
 	var stop atomic.Bool
 	var wg sync.WaitGroup
@@ -748,8 +748,28 @@ func TestTCPWindowQuietMoves(t *testing.T) {
 	}
 	stop.Store(true)
 	wg.Wait()
-	if got := holds(ws[0].s); grew || got > 2*budget {
-		t.Fatal("grew: ", grew, ", the connections hold ", got, " of twice ", budget)
+	if got := holds(s); grew || got > s.mostHeld() {
+		t.Fatal("grew: ", grew, ", the connections hold ", got, " of ", s.mostHeld())
+	}
+}
+
+// A connection that is quiet when its reader takes what waited for it grows only as far as the budget lets it: what
+// it lends then counts as well.
+func TestTCPWindowQuietGrows(t *testing.T) {
+	const budget = 512 << 10
+	ws := newWindowPeers(t, []string{"10.0.0.1:1926", "10.0.0.1:1927"}, true, budget)
+	s, quiet, c := ws[0].s, ws[0].conn, ws[1].conn
+	// what a quiet one lends leaves less than 128 KiB of what may be held
+	hold(quiet, int32(s.mostHeld()-tcpGrowingWindow/2), time.Now().Add(-2*tcpQuiet))
+	// the reader takes all of the window, which came a little longer than tcpQuiet ago, in a round trip of 2 s since
+	// the last time that it took
+	c.mu.Lock()
+	c.rcvRTT, c.rcvSince, c.rcvCameAt = 2*time.Second, time.Now().Add(-2*time.Second), time.Now().Add(-tcpQuiet-tcpQuiet/10)
+	c.grow(tcpGrowingWindow)
+	got := c.rcvWindow
+	c.mu.Unlock()
+	if got != tcpGrowingWindow || holds(s) > s.mostHeld() {
+		t.Fatal("grew to ", got, ", the connections hold ", holds(s), " of ", s.mostHeld())
 	}
 }
 

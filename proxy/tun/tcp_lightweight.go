@@ -494,15 +494,14 @@ func (c *tcpConn) quieted() {
 }
 
 // afford charges the budget of the stack with what the connection may hold with a receive window of rcv and one to
-// send of snd, if the budget has room for it. What quiet connections lend counts as well, up to the budget once more:
-// readers that stopped hold no more than twice the budget past what they start with, also if the peers of quiet ones
-// send all that they were told they may. c.mu is held
+// send of snd, if the budget has room for it. What quiet connections lend counts as well, up to mostHeld of the
+// stack, and so does what this one grows by while it is quiet, which it lends at once. c.mu is held
 func (c *tcpConn) afford(rcv, snd int32) bool {
 	rcvWas, sndWas := c.rcvWindow, c.window
 	c.rcvWindow, c.window = rcv, snd
-	charged := c.charged
+	held := c.charged + c.lent
 	c.recharge()
-	if d := c.charged - charged; d > 0 && (c.stack.grown.Load() > c.stack.budget || c.stack.held.Load() > 2*c.stack.budget) {
+	if c.charged+c.lent > held && (c.stack.grown.Load() > c.stack.budget || c.stack.held.Load() > c.stack.mostHeld()) {
 		c.rcvWindow, c.window = rcvWas, sndWas
 		c.recharge()
 		return false

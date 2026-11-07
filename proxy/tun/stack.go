@@ -384,6 +384,12 @@ func (s *stack) refuse(f flow, seg segment) {
 	_ = s.tun.WritePacket(b[:n+tcpHeaderSize], nil)
 }
 
+// mostHeld is the most that the connections of s hold past what they start with, together with what quiet ones lend:
+// readers that stopped hold no more than that, also if the peers of quiet ones send all that they were told they may
+func (s *stack) mostHeld() int64 {
+	return 2 * s.budget
+}
+
 // remove forgets a connection. c.mu is held
 func (s *stack) remove(c *tcpConn) {
 	if !c.established {
