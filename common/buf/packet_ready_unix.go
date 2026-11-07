@@ -5,6 +5,7 @@ package buf
 import (
 	gonet "net"
 	"strconv"
+	"sync"
 	"syscall"
 )
 
@@ -56,10 +57,26 @@ func udpAddrOf(sa syscall.Sockaddr) *gonet.UDPAddr {
 	case *syscall.SockaddrInet6:
 		addr := &gonet.UDPAddr{IP: gonet.IP(append([]byte(nil), sa.Addr[:]...)), Port: sa.Port}
 		if sa.ZoneId != 0 {
-			// the index as it is: net takes it for a zone, and the name would cost a lookup for every datagram
-			addr.Zone = strconv.Itoa(int(sa.ZoneId))
+			addr.Zone = zoneName(int(sa.ZoneId))
 		}
 		return addr
 	}
 	return &gonet.UDPAddr{}
+}
+
+// zoneNames are the names of the interfaces of the zones that datagrams came from. A name is looked up once: the
+// index alone would cost a lookup of all the interfaces on every write to the address, as net looks a zone up by name
+var zoneNames sync.Map
+
+func zoneName(index int) string {
+	if name, ok := zoneNames.Load(index); ok {
+		return name.(string)
+	}
+	ifi, err := gonet.InterfaceByIndex(index)
+	if err != nil {
+		// net takes the index for a zone as well
+		return strconv.Itoa(index)
+	}
+	zoneNames.Store(index, ifi.Name)
+	return ifi.Name
 }
