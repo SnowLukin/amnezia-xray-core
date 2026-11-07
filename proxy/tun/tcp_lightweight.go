@@ -460,14 +460,14 @@ func (c *tcpConn) recharge() {
 	if rcv > 0 && c.quiet() {
 		rcv, lent = 0, rcv
 	}
-	if want := rcv + snd; want != c.charged {
+	want := rcv + snd
+	if want != c.charged {
 		c.stack.grown.Add(want - c.charged)
-		c.charged = want
 	}
-	if lent != c.lent {
-		c.stack.lent.Add(lent - c.lent)
-		c.lent = lent
+	if want+lent != c.charged+c.lent {
+		c.stack.held.Add(want + lent - c.charged - c.lent)
 	}
+	c.charged, c.lent = want, lent
 	if rcv > 0 && c.rcvLen == 0 && !c.quietArmed {
 		// nothing waits for the reader: it lends once nothing comes for long enough
 		c.quietArmed = true
@@ -502,8 +502,7 @@ func (c *tcpConn) afford(rcv, snd int32) bool {
 	c.rcvWindow, c.window = rcv, snd
 	charged := c.charged
 	c.recharge()
-	grown, lent := c.stack.grown.Load(), c.stack.lent.Load()
-	if d := c.charged - charged; d > 0 && (grown > c.stack.budget || grown+lent > 2*c.stack.budget) {
+	if d := c.charged - charged; d > 0 && (c.stack.grown.Load() > c.stack.budget || c.stack.held.Load() > 2*c.stack.budget) {
 		c.rcvWindow, c.window = rcvWas, sndWas
 		c.recharge()
 		return false

@@ -665,9 +665,9 @@ func TestTCPWindowQuietShare(t *testing.T) {
 	s := ws[0].s
 	time.Sleep(tcpQuiet + tcpQuiet/2)
 	if n := roundsTo(ws[2], windowHandshake, 40); n < 0 {
-		t.Fatal("grew to ", ws[2].window(), " while quiet ones lend ", s.lent.Load(), " and the stack has ", s.grown.Load(), " of ", budget)
+		t.Fatal("grew to ", ws[2].window(), " while quiet ones lend ", s.held.Load()-s.grown.Load(), " and the stack has ", s.grown.Load(), " of ", budget)
 	}
-	if grown, lent := s.grown.Load(), s.lent.Load(); grown > budget || lent == 0 {
+	if grown, lent := s.grown.Load(), s.held.Load()-s.grown.Load(); grown > budget || lent == 0 {
 		t.Fatal("grown ", grown, ", lent ", lent, " of ", budget)
 	}
 	// the quiet ones get a little of what they were told they may send: they take back what they lent, and do not grow
@@ -675,7 +675,7 @@ func TestTCPWindowQuietShare(t *testing.T) {
 	for _, w := range ws[:2] {
 		w.round(windowHandshake, 0.1, 1)
 	}
-	if grown, lent := s.grown.Load(), s.lent.Load(); lent != 0 || grown != charges(s) || grown > 2*budget {
+	if grown, lent := s.grown.Load(), s.held.Load()-s.grown.Load(); lent != 0 || grown != charges(s) || grown > 2*budget {
 		t.Fatal("grown ", grown, ", lent ", lent, ", charged ", charges(s))
 	}
 	for _, w := range ws[:2] {
@@ -705,10 +705,51 @@ func TestTCPWindowQuietBound(t *testing.T) {
 	}
 	s := ws[0].s
 	if got := ws[2].window(); got > 2*tcpGrowingWindow {
-		t.Fatal("grew to ", got, " while quiet ones lend ", s.lent.Load(), " of ", budget)
+		t.Fatal("grew to ", got, " while quiet ones lend ", s.held.Load()-s.grown.Load(), " of ", budget)
 	}
-	if grown, lent := s.grown.Load(), s.lent.Load(); grown+lent > 2*budget {
-		t.Fatal("grown ", grown, ", lent ", lent, " of ", budget)
+	if grown, held := s.grown.Load(), s.held.Load(); held > 2*budget || held != holds(s) {
+		t.Fatal("grown ", grown, ", held ", held, ", the connections hold ", holds(s), " of twice ", budget)
+	}
+}
+
+// hold makes the window of c size past what it starts with, and came when something last came to it: if that is
+// longer than tcpQuiet ago, c lends what it may receive, otherwise it takes it back
+func hold(c *tcpConn, size int32, came time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.rcvWindow, c.rcvCameAt = tcpGrowingWindow+size, came
+	c.recharge()
+}
+
+// What a connection lends while it is quiet and takes back when something comes moves from one part of the budget to
+// the other: one that grows meanwhile does not find more room in the budget than there is.
+func TestTCPWindowQuietMoves(t *testing.T) {
+	const budget = 1 << 20
+	ws := newWindowPeers(t, []string{"10.0.0.1:1921", "10.0.0.1:1922", "10.0.0.1:1923"}, true, budget)
+	moving, grower, quiet := ws[0].conn, ws[1].conn, ws[2].conn
+	// what the two hold leaves less than 128 KiB of twice the budget: the window of the third one does not double
+	hold(quiet, 3*budget/2, time.Now().Add(-2*tcpQuiet))
+	hold(moving, budget/2, time.Now())
+	var stop atomic.Bool
+	var wg sync.WaitGroup
+	wg.Go(func() {
+		for !stop.Load() {
+			hold(moving, budget/2, time.Now().Add(-2*tcpQuiet))
+			hold(moving, budget/2, time.Now())
+		}
+	})
+	grew := false
+	for end := time.Now().Add(time.Second); !grew && time.Now().Before(end); {
+		// something just came to it: what it grows by it takes of the budget, and does not lend
+		grower.mu.Lock()
+		grower.rcvCameAt = time.Now()
+		grew = grower.afford(2*tcpGrowingWindow, grower.window)
+		grower.mu.Unlock()
+	}
+	stop.Store(true)
+	wg.Wait()
+	if got := holds(ws[0].s); grew || got > 2*budget {
+		t.Fatal("grew: ", grew, ", the connections hold ", got, " of twice ", budget)
 	}
 }
 
@@ -829,7 +870,16 @@ func TestTCPWindowEdgeKept(t *testing.T) {
 }
 
 // charges is what the connections of s take of its budget
-func charges(s *stack) (sum int64) {
+func charges(s *stack) int64 {
+	return sumConns(s, func(c *tcpConn) int64 { return c.charged })
+}
+
+// holds is what the connections of s take of its budget and what they lend of it
+func holds(s *stack) int64 {
+	return sumConns(s, func(c *tcpConn) int64 { return c.charged + c.lent })
+}
+
+func sumConns(s *stack, of func(*tcpConn) int64) (sum int64) {
 	s.mu.Lock()
 	conns := make([]*tcpConn, 0, len(s.conns))
 	for _, c := range s.conns {
@@ -838,7 +888,7 @@ func charges(s *stack) (sum int64) {
 	s.mu.Unlock()
 	for _, c := range conns {
 		c.mu.Lock()
-		sum += c.charged
+		sum += of(c)
 		c.mu.Unlock()
 	}
 	return sum
