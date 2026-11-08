@@ -50,15 +50,20 @@ func TestUClientDropsHandshakeState(t *testing.T) {
 		t.Fatal(err)
 	}
 	shortID := []byte{1, 2, 3, 4, 5, 6, 7, 8}
+	dest := startDecoy(t)
 	serverConfig := (&Config{
 		Type:        "tcp",
-		Dest:        startDecoy(t),
+		Dest:        dest,
 		ServerNames: []string{"localhost"},
 		PrivateKey:  priv.Bytes(),
 		ShortIds:    [][]byte{shortID},
 	}).GetREALITYConfig()
-	// the server finishes a handshake only once it knows what the decoy sends after one, as in tcp.ListenTCP
-	goreality.DetectPostHandshakeRecordsLens(serverConfig)
+	// the server finishes a handshake only once it knows what the decoy sends after one, and it looks again only
+	// every 5 seconds. tcp.ListenTCP learns it with DetectPostHandshakeRecordsLens, here it is said to be nothing, under
+	// the key that Server looks it up by for each ALPN. A changed key shows as a handshake that never ends
+	for _, alpn := range []string{"0", "1", "2"} {
+		goreality.GlobalPostHandshakeRecordsLens.Store(dest+" localhost "+alpn, []int{})
+	}
 
 	ln, err := gonet.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
