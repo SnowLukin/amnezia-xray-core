@@ -4,9 +4,11 @@ import (
 	"context"
 	gonet "net"
 	"testing"
+	"time"
 
 	"github.com/xtls/xray-core/common/buf"
 	"github.com/xtls/xray-core/common/net"
+	"github.com/xtls/xray-core/common/session"
 	"github.com/xtls/xray-core/transport/internet"
 	"github.com/xtls/xray-core/transport/internet/stat"
 	_ "github.com/xtls/xray-core/transport/internet/udp"
@@ -31,8 +33,11 @@ func TestPacketReaderReadsOnceDataCame(t *testing.T) {
 		{"counted", func(c stat.Connection) stat.Connection { return &stat.CounterConnection{Connection: c} }},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			// Process takes its socket from the outbound handler, which dials it so
-			conn, err := internet.Dial(context.Background(), dest, nil)
+			// Process takes its socket from the outbound handler, which dials it so. It is bound to 127.0.0.1 as with
+			// sendThrough: on darwin a socket on any address of IPv6 loses datagrams to 127.0.0.1 to an IPv4 socket
+			// that has the same port
+			ctx := session.ContextWithOutbounds(context.Background(), []*session.Outbound{{Gateway: net.LocalHostIP}})
+			conn, err := internet.Dial(ctx, dest, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -41,11 +46,10 @@ func TestPacketReaderReadsOnceDataCame(t *testing.T) {
 			if !ok || r.rawConn == nil {
 				t.Fatalf("%T from internet.Dial is read into a buffer taken before it waits", conn)
 			}
-			// the socket listens on any address
-			local := &gonet.UDPAddr{IP: gonet.IPv4(127, 0, 0, 1), Port: conn.LocalAddr().(*gonet.UDPAddr).Port}
-			if _, err := peer.WriteTo([]byte("pong"), local); err != nil {
+			if _, err := peer.WriteTo([]byte("pong"), conn.LocalAddr()); err != nil {
 				t.Fatal(err)
 			}
+			conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 			mb, err := r.ReadMultiBuffer()
 			if err != nil {
 				t.Fatal(err)
