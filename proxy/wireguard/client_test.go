@@ -400,6 +400,61 @@ func tcpEcho(oh outbound.Handler, payload string) error {
 	return goerrors.Join(err, c.close())
 }
 
+// sourceDialer records the source address of each system dial.
+type sourceDialer struct {
+	internet.SystemDialer
+	mu      sync.Mutex
+	sources []net.Address
+}
+
+func (d *sourceDialer) Dial(ctx context.Context, src net.Address, dest net.Destination, sockopt *internet.SocketConfig) (net.Conn, error) {
+	d.mu.Lock()
+	d.sources = append(d.sources, src)
+	d.mu.Unlock()
+	return d.SystemDialer.Dial(ctx, src, dest, sockopt)
+}
+
+// TestClientSendThrough checks that the tunnel socket of every wake leaves
+// from the sendThrough address of the outbound.
+func TestClientSendThrough(t *testing.T) {
+	priv, pub := testKeys(t)
+	addr := netip.MustParseAddr("10.9.0.2")
+	s := startTestServer(t, testParams, testPeer{pub, addr})
+	inst := newTestInstance(t)
+	d := &sourceDialer{SystemDialer: &internet.DefaultSystemDialer{}}
+	internet.UseAlternativeSystemDialer(d)
+	t.Cleanup(func() { internet.UseAlternativeSystemDialer(nil) })
+
+	err := core.AddOutboundHandler(inst, &core.OutboundHandlerConfig{
+		Tag:            "wg",
+		SenderSettings: serial.ToTypedMessage(&proxyman.SenderConfig{Via: net.NewIPOrDomain(net.LocalHostIP)}),
+		ProxySettings:  serial.ToTypedMessage(testClientConf(s, priv, addr, testParams)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	oh := inst.GetFeature(outbound.ManagerType()).(outbound.Manager).GetHandler("wg")
+	h := oh.(proxy.GetOutbound).GetOutbound().(*lazyClient)
+
+	for range 2 {
+		roundTrip(t, oh, s)
+		if !h.Sleep() {
+			t.Fatal("an idle outbound refused to sleep")
+		}
+		time.Sleep(handshakeGap)
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if len(d.sources) == 0 {
+		t.Fatal("the outbound made no system dial")
+	}
+	for i, src := range d.sources {
+		if src == nil || src.String() != net.LocalHostIP.String() {
+			t.Fatalf("dial %d left from %v, want %v", i, src, net.LocalHostIP)
+		}
+	}
+}
+
 // roundTrip carries one TCP echo through the outbound.
 func roundTrip(t testing.TB, oh outbound.Handler, s *testServer) {
 	t.Helper()

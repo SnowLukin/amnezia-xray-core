@@ -772,6 +772,8 @@ type trackingDialer struct {
 	dialed chan error
 }
 
+func (d *trackingDialer) SetOutboundGateway(context.Context, *session.Outbound) {}
+
 func (d *trackingDialer) StartTunnelDial(context.Context, net.Destination) outbound.DialTracker {
 	return &dialRecorder{dialed: d.dialed}
 }

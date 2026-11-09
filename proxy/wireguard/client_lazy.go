@@ -106,8 +106,14 @@ var _ outbound.Sleeper = (*lazyClient)(nil)
 func (c *lazyClient) Process(ctx context.Context, link *transport.Link, dialer internet.Dialer) error {
 	// As in Handler.Process: such a connection does not wake the outbound.
 	outbounds := session.OutboundsFromContext(ctx)
-	if !outbounds[len(outbounds)-1].Target.IsValid() {
+	ob := outbounds[len(outbounds)-1]
+	if !ob.Target.IsValid() {
 		return errors.New("target not specified")
+	}
+	// The wake keeps a copy of the outbound for its bind, so the gateway
+	// must be set before it, as Handler.Process sets it before init.
+	if dialer != nil {
+		dialer.SetOutboundGateway(ctx, ob)
 	}
 	// The wake is part of the dial the observer is told of, as resolving
 	// the server is for other proxies; the Handler takes the dial over.
