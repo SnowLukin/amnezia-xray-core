@@ -15,6 +15,7 @@ import tempfile
 import unittest
 
 sys.dont_write_bytecode = True
+ROOT = Path(__file__).resolve().parent
 SCHEMA = None
 RTT = None
 PROOF = None
@@ -117,9 +118,22 @@ def module(path,name):
     return value
 
 
+def load_defaults():
+    global SCHEMA,RTT,PROOF
+    sys.path.insert(0,str(ROOT))
+    SCHEMA=module(ROOT/'schema_privacy.py','quality_guard_schema')
+    RTT=module(ROOT/'quality_experiments.py','quality_guard_rtt')
+    PROOF=ROOT/'splice_proof.py'
+
+
+def setUpModule():
+    if SCHEMA is None:
+        load_defaults()
+
+
 def main():
     global SCHEMA,RTT,PROOF
-    root=Path(__file__).resolve().parent
+    root=ROOT
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--schema-source',type=Path,default=root/'schema_privacy.py')
     parser.add_argument('--rtt-source',type=Path,default=root/'quality_experiments.py')

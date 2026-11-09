@@ -80,3 +80,53 @@ jobs:
           enableCrossOsArchive: true
       - name: Test
         run: go test -timeout 1h -v ./...
+
+  adaptive-race:
+    needs: check-assets
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.event.pull_request.base.repo.full_name
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout codebase
+        uses: actions/checkout@v7
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          check-latest: true
+      - name: Restore Geodat Cache
+        uses: actions/cache/restore@v6
+        with:
+          path: resources
+          key: xray-geodat-
+      - name: Vet
+        # unreachable and lostcancel are off for warnings that exist outside the adaptive code.
+        # infra/conf is left out until its copylocks warning in balancer_fallback_test.go is fixed.
+        run: go vet -unreachable=false -lostcancel=false ./app/observatory/health/... ./app/proxyman/... ./app/router/... ./proxy/wireguard/... ./common/safe/...
+      - name: Race tests
+        run: go test -race -timeout 30m ./app/observatory/health/... ./app/proxyman/... ./app/router/... ./proxy/wireguard/... ./common/safe/... ./infra/conf/...
+
+  adaptive-stand:
+    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.event.pull_request.base.repo.full_name
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout codebase
+        uses: actions/checkout@v7
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          check-latest: true
+      - name: Stand unit tests
+        run: |
+          python3 -B -m unittest discover -s testing/adaptive -p "test_*.py"
+          python3 -B -m unittest discover -s testing/adaptive/quality/ordinary -p "test_*.py"
+          python3 -B -m unittest discover -s testing/adaptive/quality/linux -p "test_*.py"
+      - name: Pion matrix tests
+        working-directory: testing/adaptive/pion_matrix
+        env:
+          GOWORK: "off"
+        run: go test ./...
