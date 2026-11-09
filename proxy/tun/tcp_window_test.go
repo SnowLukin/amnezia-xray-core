@@ -177,6 +177,29 @@ func (w *windowPeer) window() int32 {
 	return w.conn.rcvWindow
 }
 
+// offered is how much more than what it sent the peer may send once the stack took all of it and the reader too, as
+// the acknowledgment of what the peer sends then tells. One that came before may tell less: what the stack had not
+// taken yet when the round trip was over, or what the reader had not
+func (w *windowPeer) offered() int32 {
+	c := w.conn
+	until := func(done func() bool) {
+		for end := time.Now().Add(time.Second); time.Now().Before(end); time.Sleep(time.Millisecond) {
+			c.mu.Lock()
+			ok := done()
+			c.mu.Unlock()
+			if ok {
+				return
+			}
+		}
+	}
+	until(func() bool { return c.rcvNxt == w.peer.seq && c.rcvLen == 0 })
+	w.clock++
+	w.send(w.peer.seq, tcpAck, w.stampOption(w.seen(0).stamp), []byte{0})
+	w.peer.seq++
+	until(func() bool { return c.rcvAcked == w.peer.seq })
+	return int32(w.seen(0).edge - w.peer.seq)
+}
+
 // read takes what comes as soon as it comes
 func (w *windowPeer) read() {
 	go func() {
@@ -219,8 +242,8 @@ func TestTCPWindowGrows(t *testing.T) {
 			if got := w.window(); got != tcpGrownWindow {
 				t.Fatal("grew past the most: ", got)
 			}
-			if edge := w.seen(0).edge; int32(edge-w.peer.seq) < tcpGrownWindow-int32(w.conn.mss) {
-				t.Fatal("offered ", int32(edge-w.peer.seq))
+			if got := w.offered(); got < tcpGrownWindow-int32(w.conn.mss) {
+				t.Fatal("offered ", got)
 			}
 		}
 	}

@@ -144,9 +144,19 @@ func TestReadVReaderReportsReset(t *testing.T) {
 				time.Sleep(50 * time.Millisecond)
 				client.Close()
 			}()
-			_, err := r.ReadMultiBuffer()
-			if err == nil || errors.Is(err, io.EOF) {
-				t.Fatalf("a reset connection reads as %v, not as an error", err)
+			read := make(chan error, 1)
+			go func() {
+				mb, err := r.ReadMultiBuffer()
+				ReleaseMulti(mb)
+				read <- err
+			}()
+			select {
+			case err := <-read:
+				if err == nil || errors.Is(err, io.EOF) {
+					t.Fatalf("a reset connection reads as %v, not as an error", err)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("a reset connection is waited on as if data could still come")
 			}
 		})
 	}
