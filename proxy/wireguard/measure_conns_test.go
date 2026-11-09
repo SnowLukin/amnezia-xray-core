@@ -7,6 +7,8 @@ import (
 	goerrors "errors"
 	"fmt"
 	"io"
+	"math"
+	"math/rand/v2"
 	stdnet "net"
 	"net/netip"
 	"os"
@@ -19,7 +21,6 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"testing"
 	"time"
 
@@ -51,11 +52,16 @@ import (
 //
 //	AWG_MEASURE_CONNS=1       TestMeasureConns
 //	AWG_MEASURE_THROUGHPUT=1  TestMeasureThroughput
+//	AWG_MEASURE_UDP_RATES=100,200  TestMeasureUDPThroughput, Mbit/s that the server sends at
+//	AWG_MEASURE_JITTER=0      how much longer each way of a relay takes at most, ms
+//	AWG_MEASURE_UDP_STALL=0   ms that the reader of TestMeasureUDPThroughput takes nothing every 50 ms
 //	AWG_MEASURE_IDLE=1        TestMeasureIdle
 //	AWG_MEASURE_N=100,250     connections per round
-//	AWG_MEASURE_MODES=idle,down,up       also abandon, dead, udp, udp-flood, udp-abandon
+//	AWG_MEASURE_MODES=idle,down,up       also abandon, dead, stop, udp, udp-flood, udp-abandon
 //	AWG_MEASURE_PATHS=awg,direct
 //	AWG_MEASURE_CONN_IDLE=300s           connIdle of the policy, after which an abandoned connection ends
+//	AWG_MEASURE_CONN_DELAY=0  one-way delay of the way of TestMeasureConns, ms
+//	AWG_MEASURE_READ_FOR=5s   how long the connections of mode stop read before they stop
 //	AWG_MEASURE_OUTBOUNDS=1   outbounds of TestMeasureIdle
 //	AWG_MEASURE_IDLE_FOR=30s  how long TestMeasureIdle leaves them without connections
 //	AWG_MEASURE_SERVER=path   a test binary of another revision to be the server, so that every revision
@@ -96,6 +102,8 @@ type measureChildConfig struct {
 	PeerPub  string
 	PeerAddr string
 	Delays   []int
+	// Jitter is how much longer each way of a relay takes at most, ms: see startDelayRelay
+	Jitter int
 }
 
 type measureChildInfo struct {
@@ -140,7 +148,7 @@ func TestMeasureServer(t *testing.T) {
 		Relays: map[int]string{},
 	}
 	for _, d := range cfg.Delays {
-		info.Relays[d] = startDelayRelay(t, info.Endpoint, time.Duration(d)*time.Millisecond)
+		info.Relays[d] = startDelayRelay(t, info.Endpoint, time.Duration(d)*time.Millisecond, time.Duration(cfg.Jitter)*time.Millisecond)
 	}
 	b, err := json.Marshal(info)
 	if err != nil {
@@ -227,9 +235,31 @@ func serveMeasureConn(c stdnet.Conn) {
 	}
 }
 
-// answerMeasureDatagram answers a datagram: "flood N" with N datagrams of measureDatagram bytes, anything else
+// answerMeasureDatagram answers a datagram: "flood N" with N datagrams of measureDatagram bytes, "pace R S" with
+// datagrams of measureDatagram bytes at R Mbit/s for S seconds, a millisecond's worth at a time, anything else
 // with itself.
 func answerMeasureDatagram(b []byte, send func([]byte) error) {
+	if f := strings.Fields(string(b)); len(f) == 3 && f[0] == "pace" {
+		rate, err1 := strconv.Atoi(f[1])
+		secs, err2 := strconv.Atoi(f[2])
+		if err1 != nil || err2 != nil {
+			return
+		}
+		go func() {
+			p := make([]byte, measureDatagram)
+			start := time.Now()
+			sent := 0
+			for time.Since(start) < time.Duration(secs)*time.Second {
+				for due := int(time.Since(start).Seconds() * float64(rate) * 1e6 / 8); sent < due; sent += len(p) {
+					if send(p) != nil {
+						return
+					}
+				}
+				time.Sleep(time.Millisecond)
+			}
+		}()
+		return
+	}
 	if n, ok := strings.CutPrefix(string(b), "flood "); ok {
 		k, err := strconv.Atoi(n)
 		if err != nil {
@@ -261,8 +291,10 @@ func serveMeasurePackets(c stdnet.PacketConn) {
 }
 
 // startDelayRelay forwards datagrams between a client and server after delay each way, for a round trip time
-// like that of a phone, and returns the address the client sends to.
-func startDelayRelay(t testing.TB, server string, delay time.Duration) string {
+// like that of a phone, and returns the address the client sends to. With jitter each way takes up to that much
+// longer, a new share of it every 50 ms, as a wireless link or a queue with traffic of others makes it; datagrams
+// keep their order.
+func startDelayRelay(t testing.TB, server string, delay, jitter time.Duration) string {
 	t.Helper()
 	front, err := stdnet.ListenUDP("udp", &stdnet.UDPAddr{IP: stdnet.IPv4(127, 0, 0, 1)})
 	if err != nil {
@@ -283,10 +315,29 @@ func startDelayRelay(t testing.TB, server string, delay time.Duration) string {
 		b   []byte
 	}
 	var client atomic.Pointer[stdnet.UDPAddr]
+	var extra atomic.Int64
+	if jitter > 0 {
+		go func() {
+			for {
+				extra.Store(rand.Int64N(int64(jitter)))
+				time.Sleep(50 * time.Millisecond)
+			}
+		}()
+	}
+	// due is when a datagram that came now goes on, not before the one that came before it
+	due := func(last *time.Time) time.Time {
+		at := time.Now().Add(delay + time.Duration(extra.Load()))
+		if at.Before(*last) {
+			at = *last
+		}
+		*last = at
+		return at
+	}
 	up := make(chan datagram, 1<<16)
 	down := make(chan datagram, 1<<16)
 	// A full queue drops, as a router would.
 	go func() {
+		var last time.Time
 		for {
 			b := make([]byte, 4096)
 			n, addr, err := front.ReadFromUDP(b)
@@ -295,12 +346,13 @@ func startDelayRelay(t testing.TB, server string, delay time.Duration) string {
 			}
 			client.Store(addr)
 			select {
-			case up <- datagram{time.Now().Add(delay), b[:n]}:
+			case up <- datagram{due(&last), b[:n]}:
 			default:
 			}
 		}
 	}()
 	go func() {
+		var last time.Time
 		for {
 			b := make([]byte, 4096)
 			n, err := back.Read(b)
@@ -308,7 +360,7 @@ func startDelayRelay(t testing.TB, server string, delay time.Duration) string {
 				return
 			}
 			select {
-			case down <- datagram{time.Now().Add(delay), b[:n]}:
+			case down <- datagram{due(&last), b[:n]}:
 			default:
 			}
 		}
@@ -334,7 +386,7 @@ func startDelayRelay(t testing.TB, server string, delay time.Duration) string {
 // what it listens on and what ends it.
 func startMeasureServer(t testing.TB, pub string, addr netip.Addr, delays []int) (measureChildInfo, func()) {
 	t.Helper()
-	cfg, err := json.Marshal(measureChildConfig{PeerPub: pub, PeerAddr: addr.String(), Delays: delays})
+	cfg, err := json.Marshal(measureChildConfig{PeerPub: pub, PeerAddr: addr.String(), Delays: delays, Jitter: envInts(t, "AWG_MEASURE_JITTER", "0")[0]})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -759,7 +811,16 @@ func TestMeasureConns(t *testing.T) {
 	variant := os.Getenv("AWG_MEASURE_VARIANT")
 
 	priv, pub := testKeys(t)
-	srv, _ := startMeasureServer(t, pub, measureClientAddr, nil)
+	delay := envInts(t, "AWG_MEASURE_CONN_DELAY", "0")[0]
+	var delays []int
+	if delay > 0 {
+		delays = []int{delay}
+	}
+	srv, _ := startMeasureServer(t, pub, measureClientAddr, delays)
+	endpoint := srv.Endpoint
+	if delay > 0 {
+		endpoint = srv.Relays[delay]
+	}
 	inst := newMeasureInstance(t, connIdle)
 	direct := addFreedom(t, inst, "direct")
 	t.Logf("NumCPU %d, GOMAXPROCS %d, pipe limit %d, connIdle %v; deltas against the start of each round",
@@ -768,6 +829,18 @@ func TestMeasureConns(t *testing.T) {
 	round := 0
 	for _, name := range modes {
 		mode, ok := measureModes[name]
+		if name == "stop" {
+			for _, n := range ns {
+				round++
+				oh := addMeasureOutbound(t, inst, "awg"+strconv.Itoa(round), measureClientConf(endpoint, srv.Pub, priv))
+				r := measureStopRound(t, fmt.Sprintf("awg stop N=%d", n), oh, n)
+				r.Variant, r.Path, r.Mode, r.N = variant, "awg", name, n
+				logResult(t, r)
+				closeMeasureOutbound(oh)
+				time.Sleep(measureGap)
+			}
+			continue
+		}
 		if !ok {
 			t.Fatalf("unknown mode %q", name)
 		}
@@ -786,7 +859,11 @@ func TestMeasureConns(t *testing.T) {
 						s, stopServer = startMeasureServer(t, pub, measureClientAddr, nil)
 					}
 					// A fresh outbound each round: a fresh stack, without what the previous round left.
-					oh = addMeasureOutbound(t, inst, "awg"+strconv.Itoa(round), measureClientConf(s.Endpoint, s.Pub, priv))
+					e := s.Endpoint
+					if !mode.kill {
+						e = endpoint
+					}
+					oh = addMeasureOutbound(t, inst, "awg"+strconv.Itoa(round), measureClientConf(e, s.Pub, priv))
 					tcpDest = net.TCPDestination(net.IPAddress(measureServerAddr.AsSlice()), measureTargetPort)
 					udpDest = net.UDPDestination(net.IPAddress(measureServerAddr.AsSlice()), measureUDPPort)
 				case "direct":
@@ -1094,13 +1171,6 @@ func TestMeasureThroughput(t *testing.T) {
 	}
 }
 
-// cpuTime is the user and system time the process has taken.
-func cpuTime() time.Duration {
-	var ru syscall.Rusage
-	syscall.Getrusage(syscall.RUSAGE_SELF, &ru)
-	return time.Duration(ru.Utime.Nano() + ru.Stime.Nano())
-}
-
 // transfer moves size bytes through a new connection, down from the server or up to it, and returns the speed in
 // Mbit/s and the CPU time of the process in ms.
 func transfer(t testing.TB, oh outbound.Handler, dest net.Destination, dir string, size int) (float64, float64) {
@@ -1132,4 +1202,113 @@ func fmtFloats(fs []float64) string {
 		parts[i] = strconv.FormatFloat(f, 'f', 1, 64)
 	}
 	return strings.Join(parts, " ")
+}
+
+// TestMeasureUDPThroughput logs how much of a UDP flow that the server sends at a rate comes through an AmneziaWG
+// outbound to a reader that takes it as it comes, as a download over QUIC does.
+func TestMeasureUDPThroughput(t *testing.T) {
+	if os.Getenv("AWG_MEASURE_UDP_RATES") == "" {
+		t.Skip("set AWG_MEASURE_UDP_RATES=100,200 to measure UDP through an outbound")
+	}
+	rates := envInts(t, "AWG_MEASURE_UDP_RATES", "")
+	delays := envInts(t, "AWG_MEASURE_DELAYS", "0,25")
+	runs := envInts(t, "AWG_MEASURE_RUNS", "3")[0]
+	secs := envInts(t, "AWG_MEASURE_SECONDS", "5")[0]
+	stall := time.Duration(envInts(t, "AWG_MEASURE_UDP_STALL", "0")[0]) * time.Millisecond
+	variant := os.Getenv("AWG_MEASURE_VARIANT")
+	var relayed []int
+	for _, d := range delays {
+		if d > 0 {
+			relayed = append(relayed, d)
+		}
+	}
+	priv, pub := testKeys(t)
+	srv, _ := startMeasureServer(t, pub, measureClientAddr, relayed)
+	inst := newMeasureInstance(t, 300*time.Second)
+	tcpDest := net.TCPDestination(net.IPAddress(measureServerAddr.AsSlice()), measureTargetPort)
+	udpDest := net.UDPDestination(net.IPAddress(measureServerAddr.AsSlice()), measureUDPPort)
+	tag := 0
+	for _, d := range delays {
+		endpoint := srv.Endpoint
+		if d > 0 {
+			endpoint = srv.Relays[d]
+		}
+		for _, rate := range rates {
+			var got []float64
+			for range runs {
+				tag++
+				oh := addMeasureOutbound(t, inst, "udp"+strconv.Itoa(tag), measureClientConf(endpoint, srv.Pub, priv))
+				warmUp(t, oh, tcpDest)
+				c := dialMeasured(oh, udpDest)
+				if err := c.send("pace " + strconv.Itoa(rate) + " " + strconv.Itoa(secs)); err != nil {
+					t.Fatal(err)
+				}
+				// a reader that now and then takes nothing for a while, as one that the system makes wait
+				n := 0
+				for end := time.Now().Add(time.Duration(secs)*time.Second + 2*time.Duration(d)*time.Millisecond + time.Second); time.Now().Before(end); {
+					k, _ := c.read(math.MaxInt, min(50*time.Millisecond, time.Until(end)))
+					n += k
+					time.Sleep(stall)
+				}
+				got = append(got, float64(n)/(float64(rate)*1e6/8*float64(secs)))
+				c.end()
+				closeMeasureOutbound(oh)
+				time.Sleep(measureGap)
+			}
+			slices.Sort(got)
+			t.Logf("UDP %4d Mbit/s one-way delay %3d ms, reader stalls %v: median %.1f%% came; runs %s", rate, d, stall, 100*got[len(got)/2], fmtFloats(got))
+			logResult(t, struct {
+				Variant                    string
+				RateMbps, DelayMs, StallMs int
+				Came                       []float64
+			}{variant, rate, d, int(stall / time.Millisecond), got})
+		}
+	}
+}
+
+// measureStopRound has n connections download as fast as they can for a while, and then stop reading, as an app that
+// went to the background, while the server goes on sending. It logs how fast they went together and what they hold
+// once they stopped.
+func measureStopRound(t *testing.T, label string, oh outbound.Handler, n int) measureRoundResult {
+	t.Helper()
+	readFor := envDuration(t, "AWG_MEASURE_READ_FOR", 5*time.Second)
+	dest := net.TCPDestination(net.IPAddress(measureServerAddr.AsSlice()), measureTargetPort)
+	warmUp(t, oh, dest)
+	base := sampleMem(nil)
+	stopPeak := samplePeak()
+	conns := make([]*measureConn, n)
+	var read atomic.Int64
+	var wg sync.WaitGroup
+	end := time.Now().Add(readFor)
+	for i := range conns {
+		conns[i] = dialMeasured(oh, dest)
+		wg.Go(func() {
+			c := conns[i]
+			if c.send("send 1073741824\n") != nil {
+				return
+			}
+			for time.Now().Before(end) {
+				k, err := c.read(math.MaxInt, time.Until(end))
+				read.Add(int64(k))
+				if err != nil && time.Now().Before(end) {
+					return
+				}
+			}
+		})
+	}
+	wg.Wait()
+	mbps := float64(read.Load()) * 8 / readFor.Seconds() / 1e6
+	waitHeapSteady(20 * time.Second)
+	peak := stopPeak()
+	held := sampleMem(nil)
+	r := measureRoundResult{OpenedMs: int64(mbps), PeakKiB: float64(int64(peak)-int64(base.heapInuse)) / 1024}
+	r.Open = held.against(base)
+	t.Logf("%s: %.0f Mbit/s together while they read, HeapInuse peaked at %+.0f KiB", label, mbps, r.PeakKiB)
+	logSample(t, "  stopped", held, base, n)
+	for _, c := range conns {
+		c.end()
+	}
+	closed := sampleMem(nil)
+	r.Closed = closed.against(base)
+	return r
 }
