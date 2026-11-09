@@ -59,6 +59,9 @@ type Handler struct {
 	testpre  uint32
 	initpre  sync.Once
 	preConns chan *ConnExpire
+	// preCtx ends with Close; pre-connect producers stop on it instead of the channel being closed under them
+	preCtx    context.Context
+	preCancel context.CancelFunc
 }
 
 type ConnExpire struct {
@@ -134,19 +137,53 @@ func New(ctx context.Context, config *Config) (*Handler, error) {
 	}
 
 	handler.testpre = a.Testpre
+	handler.initLifetime()
 
 	return handler, nil
 }
 
+func (h *Handler) initLifetime() {
+	h.preConns = make(chan *ConnExpire)
+	h.preCtx, h.preCancel = context.WithCancel(context.Background())
+}
+
 // Close implements common.Closable.Close().
 func (h *Handler) Close() error {
-	if h.preConns != nil {
-		close(h.preConns)
+	if h.preCancel != nil {
+		h.preCancel()
 	}
 	if h.reverse != nil {
 		return h.reverse.Close()
 	}
 	return nil
+}
+
+func (h *Handler) preConnect(dialer internet.Dialer, dest net.Destination) {
+	defer safe.Recover(safe.Subsystem, "proxy/vless/outbound/outbound.go:h.Process", nil)
+	if !safe.Allowed(safe.Subsystem, "proxy/vless/outbound/outbound.go:h.Process", nil) {
+		return
+	}
+
+	ctx := xctx.ContextWithID(h.preCtx, session.NewID())
+	for ctx.Err() == nil {
+		conn, err := dialer.Dial(ctx, dest)
+		if err != nil {
+			if ctx.Err() == nil {
+				errors.LogWarningInner(ctx, err, "pre-connect failed")
+			}
+			continue
+		}
+		select {
+		case h.preConns <- &ConnExpire{Conn: conn, Expire: time.Now().Add(time.Minute * 2)}: // TODO: customize & randomize
+		case <-ctx.Done():
+			conn.Close()
+			return
+		}
+		select {
+		case <-time.After(time.Millisecond * 200): // TODO: customize & randomize
+		case <-ctx.Done():
+		}
+	}
 }
 
 // Process implements proxy.Outbound.Process().
@@ -168,38 +205,27 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
 	}
 
 	if h.testpre > 0 && h.reverse == nil {
+		if h.preCtx.Err() != nil {
+			return errors.New("closed handler")
+		}
 		h.initpre.Do(func() {
-			h.preConns = make(chan *ConnExpire)
 			for range h.testpre { // TODO: randomize
-				go func() {
-					defer safe.Recover(safe.Subsystem, "proxy/vless/outbound/outbound.go:h.Process", nil)
-					if !safe.Allowed(safe.Subsystem, "proxy/vless/outbound/outbound.go:h.Process", nil) {
-						return
-					}
-
-					ctx := xctx.ContextWithID(context.Background(), session.NewID())
-					for {
-						conn, err := dialer.Dial(ctx, rec.Destination)
-						if err != nil {
-							errors.LogWarningInner(ctx, err, "pre-connect failed")
-							continue
-						}
-						h.preConns <- &ConnExpire{Conn: conn, Expire: time.Now().Add(time.Minute * 2)} // TODO: customize & randomize
-						time.Sleep(time.Millisecond * 200)                                             // TODO: customize & randomize
-					}
-				}()
+				go h.preConnect(dialer, rec.Destination)
 			}
 		})
-		for {
-			connTime := <-h.preConns
-			if connTime == nil {
+		for conn == nil {
+			select {
+			case connTime := <-h.preConns:
+				if time.Now().Before(connTime.Expire) {
+					conn = connTime.Conn
+				} else {
+					connTime.Conn.Close()
+				}
+			case <-h.preCtx.Done():
 				return errors.New("closed handler")
+			case <-ctx.Done():
+				return errors.New("no pre-connection before the connection ended").Base(ctx.Err())
 			}
-			if time.Now().Before(connTime.Expire) {
-				conn = connTime.Conn
-				break
-			}
-			connTime.Conn.Close()
 		}
 	}
 
