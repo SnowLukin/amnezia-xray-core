@@ -18,6 +18,7 @@ type LeastCostStrategy struct {
 	settings    *serial.TypedMessage
 	ctx         context.Context
 	selector    extension.OutboundSelector
+	err         error
 }
 
 func (s *LeastCostStrategy) InjectContext(ctx context.Context) {
@@ -27,11 +28,13 @@ func (s *LeastCostStrategy) InjectContext(ctx context.Context) {
 		// its fallbackTag; rules added at runtime must not stop the process.
 		provider, ok := observatory.(extension.OutboundSelectorProvider)
 		if !ok {
-			errors.LogError(s.ctx, "balancer ", s.balancerTag, ": leastCost needs an observatory that selects outbounds")
+			s.err = errors.New("leastCost needs an observatory that selects outbounds")
+			errors.LogError(s.ctx, "balancer ", s.balancerTag, ": ", s.err)
 			return nil
 		}
 		selector, err := provider.OutboundSelector(s.balancerTag, s.settings)
 		if err != nil {
+			s.err = err
 			errors.LogErrorInner(s.ctx, err, "balancer ", s.balancerTag, ": failed to create leastCost selector")
 			return nil
 		}
@@ -40,7 +43,15 @@ func (s *LeastCostStrategy) InjectContext(ctx context.Context) {
 	}))
 }
 
+// GetPrincipleTarget only reports: a selector that can tell its choice
+// without Select is asked that way, so polling it does not count as demand.
 func (s *LeastCostStrategy) GetPrincipleTarget(candidates []string) []string {
+	if current, ok := s.selector.(interface{ Current() string }); ok {
+		if tag := current.Current(); tag != "" {
+			return []string{tag}
+		}
+		return nil
+	}
 	if tag := s.PickOutbound(candidates); tag != "" {
 		return []string{tag}
 	}

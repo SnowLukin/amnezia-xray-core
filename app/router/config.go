@@ -155,6 +155,11 @@ func (br *BalancingRule) Build(ohm outbound.Manager, dispatcher routing.Dispatch
 			strategy:    leastLoadStrategy,
 		}, nil
 	case "leastcost":
+		// An exhausted selector returns no tag; without fallbackTag the traffic
+		// would leave through the default outbound.
+		if br.FallbackTag == "" {
+			return nil, errors.New("balancer ", br.Tag, ": leastCost requires explicit fallbackTag")
+		}
 		fallback := ""
 		if br.StrategySettings != nil {
 			settings, err := br.StrategySettings.GetInstance()

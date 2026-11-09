@@ -110,6 +110,7 @@ func (r *Router) ReloadRules(config *Config, shouldAppend bool) error {
 		}
 	}
 
+	built := make([]*Balancer, 0, len(config.BalancingRule))
 	for _, rule := range config.BalancingRule {
 		if _, found := newBalancers[rule.Tag]; found {
 			return errors.New("duplicate balancer tag")
@@ -118,8 +119,8 @@ func (r *Router) ReloadRules(config *Config, shouldAppend bool) error {
 		if err != nil {
 			return err
 		}
-		balancer.InjectContext(r.ctx)
 		newBalancers[rule.Tag] = balancer
+		built = append(built, balancer)
 	}
 
 	if err := bindBalancerFallbacks(newBalancers); err != nil {
@@ -166,6 +167,11 @@ func (r *Router) ReloadRules(config *Config, shouldAppend bool) error {
 		newRules = append(newRules, rr)
 	}
 
+	// A leastCost balancer configures the observatory's selector here, so it
+	// happens only once the whole config has built.
+	for _, balancer := range built {
+		balancer.InjectContext(r.ctx)
+	}
 	committed = true
 	r.balancers.Store(&newBalancers)
 	r.rules.Store(&newRules)
@@ -218,12 +224,11 @@ func (r *Router) pickRouteInternal(ctx routing.Context) (*Rule, routing.Context,
 	// this prevents cycle resolving dead loop
 	skipDNSResolve := ctx.GetSkipDNSResolve()
 
-	r.mu.Lock()
-	rules, strategy := *r.rules.Load(), r.domainStrategy
-	r.mu.Unlock()
-	if strategy == Config_IpOnDemand && !skipDNSResolve {
+	if r.domainStrategy == Config_IpOnDemand && !skipDNSResolve {
 		ctx = routing_dns.ContextWithDNSClient(ctx, r.dns)
 	}
+
+	rules := *r.rules.Load()
 
 	for _, rule := range rules {
 		if rule.Apply(ctx) {
@@ -231,7 +236,7 @@ func (r *Router) pickRouteInternal(ctx routing.Context) (*Rule, routing.Context,
 		}
 	}
 
-	if strategy != Config_IpIfNonMatch || len(ctx.GetTargetDomain()) == 0 || skipDNSResolve {
+	if r.domainStrategy != Config_IpIfNonMatch || len(ctx.GetTargetDomain()) == 0 || skipDNSResolve {
 		return nil, ctx, common.ErrNoClue
 	}
 
@@ -249,6 +254,13 @@ func (r *Router) pickRouteInternal(ctx routing.Context) (*Rule, routing.Context,
 
 // Start implements common.Runnable.
 func (r *Router) Start() error {
+	// Selectors are created once the observatory is resolved, which may be
+	// after Init, so a broken one is reported here rather than from Init.
+	for tag, balancer := range *r.balancers.Load() {
+		if s, ok := balancer.strategy.(*LeastCostStrategy); ok && s.err != nil {
+			return errors.New("balancer ", tag, ": failed to create leastCost selector").Base(s.err)
+		}
+	}
 	if r.script != nil {
 		if err := r.script.start(r); err != nil {
 			return errors.New("failed to initialize routing script").Base(err)
