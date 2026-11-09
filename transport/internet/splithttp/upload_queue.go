@@ -25,6 +25,10 @@ type uploadQueue struct {
 	nextSeq       uint64
 	maxPackets    int
 	closed        *done.Instance
+	// queued holds seqs present in heap: a client resends a packet when the CDN
+	// in front answers 502/504, and a second copy of a seq that is half read
+	// would restart it from the beginning.
+	queued map[uint64]struct{}
 }
 
 func NewUploadQueue(maxPackets int) *uploadQueue {
@@ -34,6 +38,7 @@ func NewUploadQueue(maxPackets int) *uploadQueue {
 		nextSeq:       0,
 		closed:        done.New(),
 		maxPackets:    maxPackets,
+		queued:        map[uint64]struct{}{},
 	}
 }
 
@@ -75,7 +80,7 @@ func (h *uploadQueue) Read(b []byte) (int, error) {
 			if p.Reader != nil {
 				return p.Reader.Read(b)
 			}
-			heap.Push(&h.heap, p)
+			h.enqueue(p)
 		case <-h.closed.Wait():
 			return 0, io.EOF
 		}
@@ -95,6 +100,7 @@ func (h *uploadQueue) Read(b []byte) (int, error) {
 				heap.Push(&h.heap, packet)
 			} else {
 				h.nextSeq = packet.Seq + 1
+				delete(h.queued, packet.Seq)
 			}
 
 			return n, nil
@@ -111,7 +117,7 @@ func (h *uploadQueue) Read(b []byte) (int, error) {
 			heap.Push(&h.heap, packet)
 			select {
 			case p := <-h.pushedPackets:
-				heap.Push(&h.heap, p)
+				h.enqueue(p)
 			case <-h.closed.Wait():
 				return 0, io.EOF
 			}
@@ -122,6 +128,14 @@ func (h *uploadQueue) Read(b []byte) (int, error) {
 }
 
 // heap code directly taken from https://pkg.go.dev/container/heap
+func (h *uploadQueue) enqueue(p Packet) {
+	if _, dup := h.queued[p.Seq]; dup || p.Seq < h.nextSeq {
+		return
+	}
+	h.queued[p.Seq] = struct{}{}
+	heap.Push(&h.heap, p)
+}
+
 type uploadHeap []Packet
 
 func (h uploadHeap) Len() int           { return len(h) }
