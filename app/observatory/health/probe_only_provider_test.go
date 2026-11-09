@@ -22,7 +22,7 @@ func TestProviderProbeOnlyPathBoolean(t *testing.T) {
 		{name: "false", field: `,"isProbeOnly":false`},
 		{name: "true", field: `,"isProbeOnly":true`, want: true},
 		{name: "group", field: `,"isProbeOnly":true`, group: true, want: true},
-		{name: "null", field: `,"isProbeOnly":null`, bad: true},
+		{name: "null", field: `,"isProbeOnly":null`},
 		{name: "string", field: `,"isProbeOnly":"true"`, bad: true},
 		{name: "number", field: `,"isProbeOnly":1`, bad: true},
 		{name: "object", field: `,"isProbeOnly":{}`, bad: true},

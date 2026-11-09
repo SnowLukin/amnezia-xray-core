@@ -21,9 +21,8 @@ func TestAPIRemovedProviderDrainForgetsItsState(t *testing.T) {
 		if _, err := f.apply(t, answer(t, fakeOutbound{Tag: "x2", V: int64(i + 1)})); err != nil {
 			t.Fatal(err)
 		}
-		// HandlerService removes the handler and closes it separately.
+		// HandlerService removes the handler and does not close it.
 		_ = f.m.RemoveHandler(context.Background(), "p-x1")
-		_ = x1.Close()
 		tr.Finished(nil)
 		f.o.settleAllDrains()
 		if len(f.rt.draining) != 0 || x1.closes() != 1 {
@@ -56,7 +55,6 @@ func TestAPIReplacedProviderDrainPreservesTheNewHandler(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = f.m.RemoveHandler(context.Background(), "p-x1")
-	_ = x1.Close()
 	replacement := (&fakeHandler{tag: "p-x1"}).withProxy(fakeSettings(2))
 	if err := f.m.AddHandler(context.Background(), replacement); err != nil {
 		t.Fatal(err)
@@ -80,5 +78,26 @@ func TestAPIReplacedProviderDrainPreservesTheNewHandler(t *testing.T) {
 	f.o.mu.Unlock()
 	if retiring {
 		t.Fatal("a later provider answer did not revive the API-replaced path")
+	}
+}
+
+// HandlerService takes a draining outbound out of the outbound manager, which
+// then does not close it on shutdown: the observer does.
+func TestShutdownClosesADrainTheAPIRemoved(t *testing.T) {
+	f := newApplyFixture(t, time.Hour)
+	if _, err := f.apply(t, answer(t, fakeOutbound{Tag: "x1", V: 1}, fakeOutbound{Tag: "x2", V: 1})); err != nil {
+		t.Fatal(err)
+	}
+	f.follow("p-x1", "p-x2")
+	x1 := f.m.GetHandler("p-x1").(*fakeHandler)
+	x2 := f.m.GetHandler("p-x2").(*fakeHandler)
+	f.open("p-x1")
+	if _, err := f.apply(t, answer(t, fakeOutbound{Tag: "x2", V: 1})); err != nil {
+		t.Fatal(err)
+	}
+	_ = f.m.RemoveHandler(context.Background(), "p-x1")
+	f.o.closeProviders()
+	if x1.closes() != 1 || x2.closes() != 0 {
+		t.Fatalf("on shutdown: removed drain closed %d times, registered outbound %d", x1.closes(), x2.closes())
 	}
 }

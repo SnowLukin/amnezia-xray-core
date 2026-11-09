@@ -501,7 +501,7 @@ func TestQualityStage1IgnoreRetainsRawProbeAndRejectsOldQuality(t *testing.T) {
 		t.Fatal("IGNORE mixed raw probe/controller lifetime with measurement epoch")
 	}
 	ev := te.lastOf(t, "network_change")
-	if ev.Fields["network"] != nextNetwork || ev.Fields["is_known"] != false || ev.Fields["is_ignored"] != true {
+	if ev.Fields["network"] != te.networkHash(nextNetwork) || ev.Fields["is_known"] != false || ev.Fields["is_ignored"] != true {
 		t.Fatal("opaque network change lost Stage 1 event lifetime/state")
 	}
 	for _, absent := range []string{"network_type", "network_operator"} {

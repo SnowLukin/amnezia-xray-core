@@ -5,20 +5,25 @@ import (
 	"fmt"
 	"maps"
 	"math"
+	"slices"
 	"time"
 )
 
-func answerObject(raw json.RawMessage, where string, allowed map[string]bool) (map[string]json.RawMessage, error) {
+// answerObject reads an object of the answer. A key set to null is no key,
+// and a key it does not know is skipped and noted in a.ignored by its path,
+// such as selection.weight.
+func answerObject(a *providerAnswer, raw json.RawMessage, where, path string, allowed map[string]bool) (map[string]json.RawMessage, error) {
 	var obj map[string]json.RawMessage
-	if len(raw) == 0 || string(raw) == "null" || json.Unmarshal(raw, &obj) != nil || obj == nil {
+	if isNull(raw) || json.Unmarshal(raw, &obj) != nil || obj == nil {
 		return nil, fmt.Errorf("%s must be an object", where)
 	}
-	for key := range obj {
-		if !allowed[key] {
-			return nil, fmt.Errorf("%s: unknown key %s", where, key)
-		}
-		if string(obj[key]) == "null" {
-			return nil, fmt.Errorf("%s.%s must not be null", where, key)
+	for _, key := range slices.Sorted(maps.Keys(obj)) {
+		switch {
+		case isNull(obj[key]):
+			delete(obj, key)
+		case !allowed[key]:
+			delete(obj, key)
+			a.ignored = ignoreKey(a.ignored, path+"."+cut(key))
 		}
 	}
 	return obj, nil
@@ -47,12 +52,12 @@ func answerCost(obj map[string]json.RawMessage, where string) (float32, error) {
 }
 
 // A returnToCheaper block enables the override; omission inherits the balancer.
-func answerReturn(obj map[string]json.RawMessage, where string) (int64, *bool, error) {
+func answerReturn(a *providerAnswer, obj map[string]json.RawMessage, where, path string) (int64, *bool, error) {
 	raw := obj["returnToCheaper"]
-	if len(raw) == 0 {
+	if isNull(raw) {
 		return 0, nil, nil
 	}
-	ret, err := answerObject(raw, where+".returnToCheaper", map[string]bool{"isEnabled": true, "interval": true})
+	ret, err := answerObject(a, raw, where+".returnToCheaper", path+".returnToCheaper", map[string]bool{"isEnabled": true, "interval": true})
 	if err != nil {
 		return 0, nil, err
 	}
@@ -122,14 +127,16 @@ func answerLabels(obj map[string]json.RawMessage, where string) (map[string]stri
 func validateAnswerPaths(cfg *providerSettings, a *providerAnswer) error {
 	groups := map[string]*PathGroup{}
 	a.groups = nil
-	if len(a.groupsRaw) > 0 {
+	// Checked again on every pass: the keys skipped are those of this one.
+	a.ignored = slices.Clone(a.ignoredTop)
+	if !isNull(a.groupsRaw) {
 		var raws []json.RawMessage
-		if string(a.groupsRaw) == "null" || json.Unmarshal(a.groupsRaw, &raws) != nil || raws == nil {
+		if json.Unmarshal(a.groupsRaw, &raws) != nil || raws == nil {
 			return fmt.Errorf("groups must be an array")
 		}
 		for i, raw := range raws {
 			where := fmt.Sprintf("groups[%d]", i)
-			obj, err := answerObject(raw, where, map[string]bool{"name": true, "cost": true, "probePolicy": true, "returnToCheaper": true, "probe": true, "failedInRowToLeave": true, "labels": true})
+			obj, err := answerObject(a, raw, where, "groups[]", map[string]bool{"name": true, "cost": true, "probePolicy": true, "returnToCheaper": true, "probe": true, "failedInRowToLeave": true, "labels": true})
 			if err != nil {
 				return err
 			}
@@ -148,7 +155,7 @@ func validateAnswerPaths(cfg *providerSettings, a *providerAnswer) error {
 			if err != nil {
 				return err
 			}
-			interval, returnEnabled, err := answerReturn(obj, where)
+			interval, returnEnabled, err := answerReturn(a, obj, where, "groups[]")
 			if err != nil {
 				return err
 			}
@@ -178,7 +185,7 @@ func validateAnswerPaths(cfg *providerSettings, a *providerAnswer) error {
 	a.paths = nil
 	for _, head := range a.heads {
 		where := fmt.Sprintf("outbound %s selection", head.Tag)
-		obj, err := answerObject(head.Selection, where, map[string]bool{"balancer": true, "group": true, "cost": true, "probePolicy": true, "returnToCheaper": true, "probe": true, "isProbeOnly": true, "labels": true})
+		obj, err := answerObject(a, head.Selection, where, "selection", map[string]bool{"balancer": true, "group": true, "cost": true, "probePolicy": true, "returnToCheaper": true, "probe": true, "isProbeOnly": true, "labels": true})
 		if err != nil {
 			return err
 		}
@@ -220,7 +227,7 @@ func validateAnswerPaths(cfg *providerSettings, a *providerAnswer) error {
 			if err != nil {
 				return err
 			}
-			p.ReturnInterval, p.ReturnIsEnabled, err = answerReturn(obj, where)
+			p.ReturnInterval, p.ReturnIsEnabled, err = answerReturn(a, obj, where, "selection")
 			if err != nil {
 				return err
 			}

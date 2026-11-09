@@ -103,4 +103,14 @@ func TestTraceKeepsErrorClassesOnly(t *testing.T) {
 	if recs[0]["fields"].(map[string]any)["error"] != "other" || recs[1]["fields"].(map[string]any)["error"] != "balancer exhausted" {
 		t.Fatalf("records %+v", recs)
 	}
+	// Every field that holds an error, whatever its prefix.
+	r.event(t0, "some_event", map[string]any{"last_error": "dial tcp 203.0.113.11:443: i/o timeout", "probe_error": "timeout"})
+	d = r.export(0)
+	if strings.Contains(string(d.Records), "203.0.113.11") {
+		t.Fatalf("address leaked: %s", d.Records)
+	}
+	f := traceRecords(t, d)[2]["fields"].(map[string]any)
+	if f["last_error"] != "other" || f["probe_error"] != "timeout" {
+		t.Fatalf("fields %+v", f)
+	}
 }

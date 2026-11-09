@@ -351,7 +351,7 @@ func (s *setServer) requests() int {
 // the report counts the answer once, as rejected.
 func TestSchemaErrorEndsTheAttempts(t *testing.T) {
 	srv := &setServer{}
-	srv.set(`{"protocol": 1, "outbounds": [{"tag": "x1", "selection": {"balancer": "auto", "probe": "check", "cost": 1}, "protocol": "freedom"}], "dns": {"servers": ["1.1.1.1"]}}`)
+	srv.set(`{"protocol": 1, "outbounds": [{"tag": "x1", "selection": {"balancer": "auto", "probe": "check", "cost": 1}, "protocol": "freedom"}], "routing": {"rules": []}}`)
 	ts := httptest.NewServer(srv)
 	defer ts.Close()
 	obs := twoViaCore(t, ts.URL+"/set")
@@ -362,7 +362,7 @@ func TestSchemaErrorEndsTheAttempts(t *testing.T) {
 	if srv.requests() != 1 || len(fetches) != 1 || fetches[0].Fields["is_ok"] != true || fetches[0].Fields["error"] != nil {
 		t.Fatalf("%d requests, fetches %+v; want one that the backend answered", srv.requests(), fetches)
 	}
-	if apply.Fields["is_ok"] != false || apply.Fields["error"] != `invalid answer: unknown key "dns"` {
+	if apply.Fields["is_ok"] != false || apply.Fields["error"] != `invalid answer: routing is not accepted in an answer` {
 		t.Fatalf("apply %v", apply.Fields)
 	}
 	var report map[string]any
@@ -442,9 +442,9 @@ func waitRefreshed(t *testing.T, obs *health.Observer) {
 	t.Fatal("the refresh did not end")
 }
 
-// Only the backend itself ends the attempts: by asking to wait or with an
-// error body of the protocol. A bare status may come from a firewall or a
-// portal on one way, so the next via is tried.
+// Only the backend itself ends the attempts, with an error body of the
+// protocol. A bare status, Retry-After without such a body too, may come from
+// a firewall, a portal or a proxy on one way, so the next via is tried.
 func TestBackendAnswerEndsTheAttempts(t *testing.T) {
 	// A backend whose clock is an hour behind the device asks for two
 	// minutes with a date: counted from the device, the date has passed and
@@ -456,12 +456,12 @@ func TestBackendAnswerEndsTheAttempts(t *testing.T) {
 		requests int
 		fields   map[string]any
 	}{
-		{"503 with Retry-After", &replyServer{status: 503, header: map[string]string{"Retry-After": "7200"}}, 1,
+		{"503 with Retry-After", &replyServer{status: 503, header: map[string]string{"Retry-After": "7200"}}, 2,
 			// Two hours are cut to backoff.max.
 			map[string]any{"status": 503.0, "retry_after_ms": 1_800_000.0}},
 		{"503 without Retry-After", &replyServer{status: 503}, 2, map[string]any{"status": 503.0}},
 		{"503 with a Retry-After date", &replyServer{status: 503, header: map[string]string{
-			"Date": behind.Format(http.TimeFormat), "Retry-After": behind.Add(2 * time.Minute).Format(http.TimeFormat)}}, 1,
+			"Date": behind.Format(http.TimeFormat), "Retry-After": behind.Add(2 * time.Minute).Format(http.TimeFormat)}}, 2,
 			map[string]any{"status": 503.0, "retry_after_ms": 120_000.0}},
 		{"429 with an error body", &replyServer{status: 429, header: map[string]string{"Content-Type": "application/json"},
 			body: `{"protocol": 1, "code": "rate_limited", "message": "slow down"}`}, 1,

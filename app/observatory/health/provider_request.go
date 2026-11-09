@@ -239,7 +239,8 @@ func (e *engine) providerRequest(p *provider, j *refreshJob, now time.Time) *pro
 			}
 		}
 		if own > 0 {
-			r.Groups = append(r.Groups, requestGroup{Balancer: v.Balancer, Group: v.Group, State: v.State, Members: own, Healthy: healthy, Quarantined: quarantined, ClientPosition: v.ClientPosition, Failed: v.Failed, QuarantineMs: v.QuarantineMs, LastFailure: v.LastFailure})
+			// Named as the answer named it, like the outbounds.
+			r.Groups = append(r.Groups, requestGroup{Balancer: v.Balancer, Group: strings.TrimPrefix(v.Group, p.cfg.prefix), State: v.State, Members: own, Healthy: healthy, Quarantined: quarantined, ClientPosition: v.ClientPosition, Failed: v.Failed, QuarantineMs: v.QuarantineMs, LastFailure: v.LastFailure})
 		}
 	}
 	for _, tag := range p.tags {

@@ -52,7 +52,7 @@ func TestLeastCostAddedAtRuntimeNextToAnotherObservatoryDoesNotPanic(t *testing.
 	}
 	defer inst.Close()
 	r := inst.GetFeature(routing.RouterType()).(*router.Router)
-	rule := &router.BalancingRule{Tag: "b", OutboundSelector: []string{"a"}, Strategy: "leastcost"}
+	rule := &router.BalancingRule{Tag: "b", OutboundSelector: []string{"a"}, Strategy: "leastcost", FallbackTag: "a"}
 	if err := r.ReloadRules(&router.Config{BalancingRule: []*router.BalancingRule{rule}}, true); err != nil {
 		t.Logf("reload refused: %v", err)
 	}

@@ -74,6 +74,9 @@ func parseHeaders(raw []byte) (map[string]string, error) {
 	}
 	out := make(map[string]string, len(sent))
 	for _, name := range slices.Sorted(maps.Keys(sent)) {
+		if isNull(sent[name]) {
+			continue
+		}
 		var v string
 		if json.Unmarshal(sent[name], &v) != nil {
 			return nil, answerErrorf("headers must be an object of strings")
@@ -324,8 +327,9 @@ func (p *provider) authHeld(now time.Time) bool {
 }
 
 // holdAuth starts the pause after refused headers. Asking again with the
-// same headers only loads the backend: every trigger but the host waits,
-// and the failure grows no backoff, since the pause is longer anyway.
+// same headers only loads the backend: every trigger waits, the host's as
+// well, which ends the pause by setting new headers instead. The failure
+// grows no backoff, since the pause is longer anyway.
 func (e *engine) holdAuth(p *provider, now time.Time) {
 	p.authFailed = true
 	p.authRetryAt = time.Time{}

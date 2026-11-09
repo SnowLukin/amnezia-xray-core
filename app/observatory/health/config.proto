@@ -440,7 +440,7 @@ message ProviderLimits {
   int32 max_refreshes_per_hour = 3;
   // Pause after failed refreshes.
   Backoff backoff = 4;
-  // Pause of every trigger but the host after the backend refused the
+  // Pause of every trigger, the host's too, after the backend refused the
   // headers of the provider, 1 h by default. Negative waits for new headers.
   int64 auth_retry_delay = 5;
 }
@@ -459,9 +459,9 @@ message ProviderApply {
   // to a server; an outbound that sends traffic straight out, such as
   // freedom, is refused unless listed here.
   repeated string allowed_protocols = 5;
-  // Applies the routing rules, balancers and domain strategy of an answer
-  // without a restart. Off, the routing of an answer is ignored.
-  bool is_routing_accepted = 6;
+  // An answer never changes routing.
+  reserved 6;
+  reserved "is_routing_accepted";
   // Header names an answer may set over those of the config, to rotate the
   // token of the provider. Empty allows Authorization.
   repeated string accepted_headers = 7;

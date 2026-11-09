@@ -145,8 +145,9 @@ type provider struct {
 	// apart.
 	rotated    map[string]string
 	headersGen uint64
-	// The backend refused the headers: every trigger but the host waits
-	// until authRetryAt, or until the headers change when it is zero.
+	// The backend refused the headers: every trigger, the host's as well,
+	// waits until authRetryAt, or until the headers change when it is zero.
+	// The host ends the pause by setting headers.
 	authFailed  bool
 	authRetryAt time.Time
 
@@ -413,6 +414,8 @@ func (e *engine) wantedRefresh(p *provider, now time.Time) ([triggerCount]bool, 
 			d := p.cfg.exhaustedDelay
 			if t == triggerMinHealthy {
 				d = p.cfg.minHealthyDelay
+			} else {
+				d.max = exhaustedSpread(d.max, p.failures)
 			}
 			p.delayed[t] = now.Add(e.randomDelay(d.min, d.max))
 		}
@@ -422,6 +425,22 @@ func (e *engine) wantedRefresh(p *provider, now time.Time) ([triggerCount]bool, 
 		}
 	}
 	return want, expiry, wake
+}
+
+// maxExhaustedSpread is how wide the delay of an exhausted balancer grows
+// while refreshes fail.
+const maxExhaustedSpread = time.Minute
+
+// exhaustedSpread widens the delay of an exhausted balancer with every
+// refresh that failed before it: a popular entry that fell takes many
+// clients with it, and those whose first request failed spread over up to a
+// minute instead of coming back together. A wider delay of the config stays.
+func exhaustedSpread(hi time.Duration, failures int) time.Duration {
+	wide := hi
+	for range min(failures, 8) {
+		wide *= 2
+	}
+	return max(hi, min(wide, maxExhaustedSpread))
 }
 
 // healthy counts candidates that are working or not judged yet. One whose

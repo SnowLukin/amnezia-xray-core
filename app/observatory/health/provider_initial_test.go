@@ -132,6 +132,11 @@ func TestInitialLeaseClock(t *testing.T) {
 		// The next refresh it asked for has passed: the interval, off here.
 		{"saved without serverTime", fmt.Sprintf(`"receivedAt": %q, "expiresAt": {"x1": %q}, "nextRefreshIn": "1h"`,
 			stamp(wall.Add(-2*time.Hour)), stamp(wall.Add(time.Hour))), time.Hour, "saved", 0, 2 * time.Hour, 0},
+		// Kept an hour ahead of the clock now, which went back since: at
+		// least an hour passed, and the lease ends no later than that says.
+		{"saved before the clock went back", fmt.Sprintf(`"serverTime": %q, "receivedAt": %q, "expiresAt": {"x1": %q}`,
+			stamp(wall.Add(time.Hour)), stamp(wall.Add(time.Hour)), stamp(wall.Add(4*time.Hour))),
+			2 * time.Hour, "saved", 2 * time.Hour, time.Hour, 0},
 		// The answer of a connect: serverTime is when it arrived.
 		{"fresh", fmt.Sprintf(`"serverTime": %q, "expiresAt": {"x1": %q}, "nextRefreshIn": "3h"`,
 			stamp(wall.Add(time.Hour)), stamp(wall.Add(6*time.Hour))), 5 * time.Hour, "server", time.Hour, 0, 3 * time.Hour},
@@ -277,13 +282,16 @@ func TestEndedLeaseOfAFreshInitialIsNotSaved(t *testing.T) {
 func TestInitialThenSameVersionChangesNoHandler(t *testing.T) {
 	f, _ := initialFixture(t, `{"version": "v1", "outbounds": [{"tag": "x1", "protocol": "vless", "v": 1}]}`)
 	f.rt.cfg.initial = fixtureAnswerBody(f.rt.cfg.initial)
+	initial := f.rt.cfg.initial
 	f.o.applyInitial()
 	if ev := f.lastApply(t); ev["is_ok"] != true || ev["is_changed"] != true || ev["added"] != 1.0 {
 		t.Fatalf("initial %v", ev)
 	}
 	x1, created := f.m.GetHandler("p-x1"), len(f.created)
-	a := answer(t, fakeOutbound{Tag: "x1", V: 1})
-	a.version = "v1"
+	a, err := parseAnswer(initial)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if changed, err := f.apply(t, a); changed || err != nil {
 		t.Fatalf("the same set: %v, %v", changed, err)
 	}

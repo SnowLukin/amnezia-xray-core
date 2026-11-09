@@ -32,7 +32,7 @@ func TestAnswerRotatesOnlyAllowedHeaders(t *testing.T) {
 	}{
 		{`{"X-Api-Key": "k"}`, allowed, "header X-Api-Key is not in apply.acceptedHeaders"},
 		{`{"Authorization": "Bearer a"}`, none, "headers are not accepted: apply.acceptedHeaders is empty"},
-		{`{}`, none, "headers are not accepted"},
+		{`{"Authorization": "x"}`, none, "headers are not accepted"},
 		{`{"Authorization": "Bearer a\r\nX-Evil: 1"}`, allowed, "header Authorization has a value that is not valid"},
 		{`{"Authorization": "Bearer \u0000"}`, allowed, "has a value that is not valid"},
 		{"{\"Authorization\": \"Bearer \xff\"}", allowed, "header Authorization has a value that is not valid UTF-8"},

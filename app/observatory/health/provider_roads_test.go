@@ -257,3 +257,31 @@ func TestApplyRejectionNeverChangesAnotherRoadAfterTraceFills(t *testing.T) {
 		}
 	}
 }
+
+// Clients whose refreshes failed spread wider when their balancer runs dry
+// again, up to a minute; the first exhaustion keeps the delay of the config.
+func TestExhaustedDelayWidensWithFailedRefreshes(t *testing.T) {
+	for failures, want := range map[int]time.Duration{0: 10 * time.Second, 1: 20 * time.Second, 2: 40 * time.Second, 3: time.Minute, 40: time.Minute} {
+		if got := exhaustedSpread(10*time.Second, failures); got != want {
+			t.Errorf("%d failures: %v, want %v", failures, got, want)
+		}
+	}
+	if got := exhaustedSpread(2*time.Minute, 3); got != 2*time.Minute {
+		t.Errorf("a wider delay of the config narrowed to %v", got)
+	}
+	te := newProviderEngine(t, quietProvider(nil), &SelectorConfig{Paths: pathSpecs("a", 1)}, "a1")
+	p := te.prov()
+	p.cfg.whenExhausted = true
+	p.cfg.exhaustedDelay = durationRange{0, 10 * time.Second}
+	te.sel.exhausted = true
+	p.failures = 3
+	longest := time.Duration(0)
+	for range 50 {
+		p.delayed[triggerExhausted] = time.Time{}
+		te.wantedRefresh(p, t0)
+		longest = max(longest, p.delayed[triggerExhausted].Sub(t0))
+	}
+	if longest <= 10*time.Second || longest > time.Minute {
+		t.Fatalf("longest delay after three failures %v", longest)
+	}
+}

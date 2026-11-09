@@ -89,10 +89,15 @@ func (r *traceRing) event(now time.Time, typ string, fields map[string]any) {
 		f["network"] = r.hash("network:" + id)
 	}
 	// Some events keep the text of an error, which may name an address of
-	// a server: the trace keeps only a class.
-	if text, ok := f["error"].(string); ok && !isErrorClass(text) {
-		f = maps.Clone(f)
-		f["error"] = "other"
+	// a server: the trace keeps only a class, of every field named so.
+	cloned := false
+	for k, v := range fields {
+		if text, ok := v.(string); ok && strings.HasSuffix(k, "error") && !isErrorClass(text) {
+			if !cloned {
+				f, cloned = maps.Clone(f), true
+			}
+			f[k] = "other"
+		}
 	}
 	r.add(now, map[string]any{"type": "event", "event": typ, "fields": f})
 }

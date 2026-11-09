@@ -19,7 +19,6 @@ import (
 
 	"github.com/xtls/xray-core/app/metrics"
 	"github.com/xtls/xray-core/app/observatory"
-	"github.com/xtls/xray-core/app/router"
 	"github.com/xtls/xray-core/common"
 	"github.com/xtls/xray-core/common/errors"
 	"github.com/xtls/xray-core/common/net"
@@ -82,8 +81,6 @@ type Observer struct {
 	applyClosed    bool
 	parseOutbounds func(json.RawMessage) ([]*core.OutboundHandlerConfig, error)
 	newHandler     func(*core.OutboundHandlerConfig) (outbound.Handler, error)
-	parseRouting   func(json.RawMessage) (*router.Config, error)
-	replaceRules   func(*router.Config, bool) error
 
 	clock func() time.Time
 	// Connection times count from here on the monotonic clock, so a jump of
@@ -111,13 +108,6 @@ func New(ctx context.Context, config *Config) (*Observer, error) {
 		o.dispatcher = dispatcher
 		o.ohm = ohm
 		o.stats = sm
-		// The signature has to follow app/router: a mismatch fails this check
-		// quietly and leaves provider routing unsupported.
-		if rr, ok := r.(interface {
-			ReplaceRules(*router.Config, bool) error
-		}); ok {
-			o.replaceRules = rr.ReplaceRules
-		}
 		return nil
 	})
 	if err != nil {
@@ -137,7 +127,6 @@ func newObserver(ctx context.Context, config *Config) *Observer {
 		e:              newEngine(s, time.Now().UnixNano()),
 		kick:           make(chan struct{}, 1),
 		parseOutbounds: loadOutbounds,
-		parseRouting:   loadRouting,
 		clock:          time.Now,
 		done:           make(chan struct{}),
 	}
@@ -292,7 +281,11 @@ func (o *Observer) initialAnswer(rt *providerRuntime, raw []byte) (*providerAnsw
 		return nil, err
 	}
 	if !a.receivedAt.IsZero() {
-		a.age = min(max(o.now().Round(0).Sub(a.receivedAt), 0), maxLease)
+		// A set kept in the future was kept before the clock went back,
+		// by at least that much: counted as its age, the leases end early
+		// rather than late.
+		age := o.now().Round(0).Sub(a.receivedAt)
+		a.age = min(max(age, -age), maxLease)
 	}
 	return a, nil
 }

@@ -14,7 +14,7 @@ import (
 	"maps"
 	"math"
 	"net/http"
-	"net/url"
+	"net/http/httptrace"
 	"slices"
 	"sort"
 	"strconv"
@@ -22,10 +22,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/xtls/xray-core/app/router"
 	"github.com/xtls/xray-core/common"
 	"github.com/xtls/xray-core/common/net"
-	"github.com/xtls/xray-core/common/serial"
 	"github.com/xtls/xray-core/core"
 	"github.com/xtls/xray-core/features/outbound"
 	"github.com/xtls/xray-core/transport/internet/tagged"
@@ -38,8 +36,8 @@ type providerRuntime struct {
 	p   *provider
 	cfg *providerSettings
 
-	// Guarded by Observer.applyMu.
-	version string
+	// The hash of the applied set, see setHash. Guarded by Observer.applyMu.
+	hash string
 	// Config of every outbound this provider added, by tag, to tell an
 	// unchanged outbound from a changed one.
 	built    map[string]*core.OutboundHandlerConfig
@@ -79,11 +77,15 @@ type providerAnswer struct {
 	groups           []*PathGroup
 	nextRefreshIn    time.Duration
 	hasNextRefreshIn bool
-	version          string
-	// Rules, balancers and the domain strategy in the format of the config
-	// file; withStrategy tells whether the strategy was there at all.
-	routing      json.RawMessage
-	withStrategy bool
+	// The version the answer named, or its hash without one; the hash of
+	// its set keys tells whether the set is the applied one.
+	version string
+	hash    string
+	// Keys the core does not know and skipped, by their path: those of the
+	// top level, then those of selection and groups the checks of the set
+	// found.
+	ignoredTop []string
+	ignored    []string
 	// When the leases of outbounds end, by the tag as sent, and the clock of
 	// the backend they count from.
 	expiresAt  map[string]time.Time
@@ -113,16 +115,28 @@ type outboundHead struct {
 	Selection json.RawMessage `json:"selection"`
 }
 
-// Keys of an answer in protocol 1. The set keys make up the set, and an
-// answer without a version is named by a hash of them. The meta keys only
-// say how to take the set: an answer that differs in them alone is the same
-// set. Any other key refuses the whole answer, so a backend never takes a
-// key for applied that the core threw away; a new key is protocol 2.
+// Keys of an answer in protocol 1. The set keys make up the set, and their
+// hash tells a new set from the applied one. The meta keys only say how to
+// take the set: an answer that differs in them alone is the same set. Any
+// other key is skipped and named in provider_apply: a backend adds a key an
+// older core may ignore without changing its rev, and one the core must
+// understand only for a rev that knows it.
 var (
 	setKeys  = map[string]bool{"outbounds": true, "groups": true}
 	metaKeys = map[string]bool{"protocol": true, "version": true, "nextRefreshIn": true,
 		"expiresAt": true, "serverTime": true, "headers": true, "baseVersion": true}
 )
+
+// maxIgnoredKeys bounds the ignored keys an event names.
+const maxIgnoredKeys = 16
+
+// ignoreKey notes a key of the answer the core skipped, by its path.
+func ignoreKey(keys []string, path string) []string {
+	if len(keys) >= maxIgnoredKeys || slices.Contains(keys, path) {
+		return keys
+	}
+	return append(keys, path)
+}
 
 // answerError is an answer that is a JSON object but breaks protocol 1. The
 // backend itself answered, so no other via is tried: it leads to the same
@@ -176,16 +190,21 @@ func readAnswer(body []byte, initial bool) (*providerAnswer, error) {
 			return nil, answerErrorf("protocol %s is not supported", cut(string(p)))
 		}
 	}
+	a := &providerAnswer{outbounds: sections["outbounds"], initial: initial}
 	for _, key := range slices.Sorted(maps.Keys(sections)) {
 		switch {
-		case key == "healthObservatory":
-			return nil, answerErrorf("healthObservatory is not accepted in an answer")
+		case key == "healthObservatory" || key == "routing":
+			// Not unknown: the answer must not change what the config
+			// decides, and a backend that sends them must learn so.
+			if !isNull(sections[key]) {
+				return nil, answerErrorf("%s is not accepted in an answer", key)
+			}
 		case key == "receivedAt" && initial:
 		case !setKeys[key] && !metaKeys[key]:
-			return nil, answerErrorf("unknown key %q", cut(key))
+			a.ignoredTop = ignoreKey(a.ignoredTop, cut(key))
 		}
 	}
-	a := &providerAnswer{outbounds: sections["outbounds"], initial: initial}
+	a.ignored = a.ignoredTop
 	if isNull(a.outbounds) {
 		return nil, answerErrorf("no outbounds")
 	}
@@ -211,6 +230,9 @@ func readAnswer(body []byte, initial bool) (*providerAnswer, error) {
 		}
 		a.expiresAt = make(map[string]time.Time, len(ends))
 		for _, tag := range slices.Sorted(maps.Keys(ends)) {
+			if isNull(ends[tag]) {
+				continue
+			}
 			end, ok := answerTime(ends[tag])
 			if !ok {
 				return nil, answerErrorf("expiresAt of %s: %s is not a time in RFC 3339 with a zone", cut(tag), cut(string(ends[tag])))
@@ -237,7 +259,11 @@ func readAnswer(body []byte, initial bool) (*providerAnswer, error) {
 		if err != nil {
 			return nil, err
 		}
-		a.headers = h
+		// An empty object sets no header, as no key does: it is not refused
+		// where the answer may set none.
+		if len(h) > 0 {
+			a.headers = h
+		}
 	}
 	if raw := sections["baseVersion"]; !isNull(raw) {
 		// Only a name: the core compares it with its base, nothing more.
@@ -251,14 +277,13 @@ func readAnswer(body []byte, initial bool) (*providerAnswer, error) {
 		}
 	}
 
+	a.hash = setHash(sections)
 	if a.version == "" {
-		a.version = setHash(sections)
+		a.version = a.hash
 	}
 	a.body = body
 	return a, nil
 }
-
-var domainStrategies = []string{"AsIs", "IPIfNonMatch", "IPOnDemand"}
 
 // answerTime reads a JSON string in RFC 3339 with a zone, fractions of a
 // second allowed.
@@ -297,11 +322,8 @@ func isNull(raw json.RawMessage) bool {
 
 // parseRefreshIn accepts a Go duration string such as "90m".
 func parseRefreshIn(raw json.RawMessage) (time.Duration, bool, error) {
-	if len(raw) == 0 {
+	if isNull(raw) {
 		return 0, false, nil
-	}
-	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
-		return 0, false, errors.New("nextRefreshIn must be a duration string")
 	}
 	var s string
 	if err := json.Unmarshal(raw, &s); err != nil {
@@ -320,7 +342,7 @@ func parseRefreshIn(raw json.RawMessage) (time.Duration, bool, error) {
 func setHash(sections map[string]json.RawMessage) string {
 	keys := make([]string, 0, len(sections))
 	for key := range sections {
-		if setKeys[key] {
+		if setKeys[key] && !isNull(sections[key]) {
 			keys = append(keys, key)
 		}
 	}
@@ -385,191 +407,6 @@ func loadOutbounds(raw json.RawMessage) ([]*core.OutboundHandlerConfig, error) {
 		return nil, err
 	}
 	return c.Outbound, nil
-}
-
-// loadRouting builds rules and balancers with the JSON config loader of the
-// core, like loadOutbounds.
-func loadRouting(raw json.RawMessage) (*router.Config, error) {
-	var doc map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &doc); err != nil {
-		return nil, err
-	}
-	var balancers []map[string]json.RawMessage
-	if len(doc["balancers"]) > 0 {
-		if err := json.Unmarshal(doc["balancers"], &balancers); err != nil {
-			return nil, err
-		}
-	}
-	// The config loader needs a path for each leastCost balancer. These
-	// placeholders are replaced with the declared paths before routing applies.
-	fake := make([]map[string]any, 0, len(balancers))
-	seenTags := map[string]bool{}
-	for i, b := range balancers {
-		var tag string
-		if err := json.Unmarshal(b["tag"], &tag); err != nil || tag == "" {
-			return nil, fmt.Errorf("balancer %d needs tag", i+1)
-		}
-		if seenTags[tag] {
-			return nil, fmt.Errorf("duplicate balancer tag %s", tag)
-		}
-		seenTags[tag] = true
-		var strategy struct {
-			Type string `json:"type"`
-		}
-		if err := json.Unmarshal(b["strategy"], &strategy); err != nil {
-			return nil, err
-		}
-		if !strings.EqualFold(strategy.Type, "leastcost") {
-			continue
-		}
-		if _, exists := b["selector"]; exists {
-			return nil, fmt.Errorf("leastCost selector is not supported")
-		}
-		fake = append(fake, map[string]any{"tag": fmt.Sprintf("__routing_check_%d", i), "protocol": "freedom", "path": map[string]any{"balancer": tag, "cost": 1}})
-	}
-	wrapper := map[string]any{"routing": json.RawMessage(raw), "outbounds": fake, "healthObservatory": map[string]any{}}
-	body, err := json.Marshal(wrapper)
-	if err != nil {
-		return nil, err
-	}
-	c, err := core.LoadConfig("json", bytes.NewReader(body))
-	if err != nil {
-		return nil, err
-	}
-	for _, app := range c.App {
-		if inst, err := app.GetInstance(); err == nil {
-			if rc, ok := inst.(*router.Config); ok {
-				for _, b := range rc.BalancingRule {
-					if strings.EqualFold(b.Strategy, "leastcost") {
-						b.OutboundSelector = nil
-					}
-				}
-				return rc, nil
-			}
-		}
-	}
-	return nil, errors.New("no routing in the answer")
-}
-
-// checkRouting refuses rules that would send traffic to an outbound or a
-// balancer that does not exist: Xray would take its default outbound for
-// them, which may be outside the tunnel. It refuses webhooks too: a webhook
-// posts every matching connection, with its destination, from a goroutine
-// of its own.
-func (o *Observer) checkRouting(rt *providerRuntime, a *providerAnswer, rc *router.Config, setTags []string) error {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	exists := func(tag string) bool {
-		return slices.Contains(setTags, tag) || (o.ohm != nil && o.ohm.GetHandler(tag) != nil)
-	}
-	balancers := map[string]*router.BalancingRule{}
-	for _, b := range rc.BalancingRule {
-		if _, exists := balancers[b.Tag]; exists {
-			return fmt.Errorf("duplicate balancer tag %s", b.Tag)
-		}
-		balancers[b.Tag] = b
-		if b.FallbackTag != "" && !exists(b.FallbackTag) {
-			return fmt.Errorf("balancer %s falls back to unknown outbound %s", b.Tag, b.FallbackTag)
-		}
-		if !strings.EqualFold(b.Strategy, "leastcost") {
-			continue
-		}
-		if len(b.OutboundSelector) > 0 {
-			return fmt.Errorf("balancer %s: leastCost selector is not supported", b.Tag)
-		}
-		var base *SelectorConfig
-		if selected := o.e.selectors[b.Tag]; selected != nil {
-			base = selected.baseRaw
-		}
-		var settings *SelectorConfig
-		if b.StrategySettings != nil {
-			inst, err := b.StrategySettings.GetInstance()
-			if err != nil {
-				return fmt.Errorf("balancer %s: %w", b.Tag, err)
-			}
-			settings, _ = inst.(*SelectorConfig)
-		}
-		if settings == nil && base != nil {
-			settings = proto.Clone(base).(*SelectorConfig)
-		}
-		if settings == nil {
-			settings = &SelectorConfig{}
-		}
-		settings.Paths, settings.Groups = nil, nil
-		if base != nil {
-			settings.Paths = append(settings.Paths, base.Paths...)
-			settings.Groups = append(settings.Groups, base.Groups...)
-		}
-		for _, p := range o.e.providers {
-			if !p.cfg.feeds(b.Tag) {
-				continue
-			}
-			if p == rt.p {
-				settings.Paths = append(settings.Paths, pathsForBalancer(a.paths, b.Tag)...)
-				settings.Groups = append(settings.Groups, a.groups...)
-			} else {
-				settings.Paths = append(settings.Paths, pathsForBalancer(p.pathDefs, b.Tag)...)
-				settings.Groups = append(settings.Groups, p.groupDefs...)
-			}
-			b.OutboundSelector = append(b.OutboundSelector, p.cfg.prefix)
-		}
-		for _, path := range settings.Paths {
-			if path.Balancer == b.Tag {
-				b.OutboundSelector = append(b.OutboundSelector, path.Tag)
-			}
-		}
-		if len(b.OutboundSelector) == 0 {
-			return fmt.Errorf("balancer %s has no paths", b.Tag)
-		}
-		b.StrategySettings = serial.ToTypedMessage(settings)
-	}
-	for _, tag := range rt.cfg.balancers {
-		if b := balancers[tag]; b == nil || !strings.EqualFold(b.Strategy, "leastcost") {
-			return fmt.Errorf("routing drops the leastCost balancer %s the provider feeds", tag)
-		}
-	}
-	ruleTags := map[string]bool{}
-	for i, r := range rc.Rule {
-		if tag := r.GetRuleTag(); tag != "" {
-			if ruleTags[tag] {
-				return fmt.Errorf("duplicate ruleTag %s", tag)
-			}
-			ruleTags[tag] = true
-		}
-		if r.GetWebhook() != nil {
-			return fmt.Errorf("rule %d has a webhook", i+1)
-		}
-		if tag := r.GetTag(); tag != "" && !exists(tag) {
-			return fmt.Errorf("rule %d goes to unknown outbound %s", i+1, tag)
-		}
-		if tag := r.GetBalancingTag(); tag != "" && balancers[tag] == nil {
-			return fmt.Errorf("rule %d goes to unknown balancer %s", i+1, tag)
-		}
-		if _, err := r.BuildCondition(); err != nil {
-			return fmt.Errorf("rule %d: %w", i+1, err)
-		}
-	}
-	return nil
-}
-
-func (o *Observer) observedSelector(sel string) bool {
-	found := false
-	o.s.paths.Range(func(key, _ any) bool {
-		if strings.HasPrefix(key.(string), sel) {
-			found = true
-			return false
-		}
-		return true
-	})
-	if found {
-		return true
-	}
-	for _, rt := range o.providers {
-		if strings.HasPrefix(sel, rt.cfg.prefix) {
-			return true
-		}
-	}
-	return false
 }
 
 func (o *Observer) runtimeFor(p *provider) *providerRuntime {
@@ -648,9 +485,12 @@ type fetchResult struct {
 	via string
 	// The Date of the answer; zero without one.
 	date time.Time
-	// The backend itself answered, in the protocol or by asking to wait.
-	// Another via leads to the same backend, so the attempts end.
+	// The backend itself answered in the protocol. Another via leads to the
+	// same backend, so the attempts end.
 	backend bool
+	// The request went out whole: a timeout after it is a server that took
+	// the request and did not answer, not a road that is blocked.
+	sent bool
 	// What failed, for the next request to tell the backend: timeout,
 	// network, status, too_large or broken_json; empty for an answer
 	// against the protocol, which is told by its reason.
@@ -672,7 +512,7 @@ func (o *Observer) fetchSet(rt *providerRuntime, j *refreshJob, body []byte) (fe
 	}
 	var last fetchResult
 	var lastErr error
-	asked, attempt, nonProtocol := false, 0, 0
+	asked, attempt, nonProtocol, timeouts := false, 0, 0, 0
 	for _, v := range via {
 		var candidates []string
 		if o.ohm != nil {
@@ -760,10 +600,17 @@ func (o *Observer) fetchSet(rt *providerRuntime, j *refreshJob, body []byte) (fe
 				if r.backend {
 					return last, lastErr
 				}
-				if r.status != 0 {
+				// A server that took the request and did not answer is loaded
+				// by every further attempt as much as one that answered out
+				// of the protocol. Every timeout holds the refresh for the
+				// whole timeout, so their number has a ceiling of its own.
+				if r.status != 0 || (r.class == "timeout" && r.sent) {
 					nonProtocol++
 				}
-				if nonProtocol >= 2 {
+				if r.class == "timeout" {
+					timeouts++
+				}
+				if nonProtocol >= maxNonProtocolAnswers || timeouts >= maxRefreshTimeouts {
 					return last, lastErr
 				}
 				if low {
@@ -792,10 +639,6 @@ func (o *Observer) fetchingVia(tag string, delta int) {
 	}()
 }
 
-func (o *Observer) fetchOnce(cfg *providerSettings, headers map[string]string, tag string, body []byte) (fetchResult, error) {
-	return o.fetchURL(cfg, headers, tag, cfg.url, body)
-}
-
 func (o *Observer) fetchURL(cfg *providerSettings, headers map[string]string, tag, destination string, body []byte) (fetchResult, error) {
 	r := fetchResult{class: "network"}
 	// Counted like a probe, so the request is not taken for user traffic.
@@ -806,6 +649,10 @@ func (o *Observer) fetchURL(cfg *providerSettings, headers map[string]string, ta
 	}
 	ctx, cancel := context.WithTimeout(probeCtx, cfg.timeout)
 	defer cancel()
+	var sent atomic.Bool
+	ctx = httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{
+		WroteRequest: func(w httptrace.WroteRequestInfo) { sent.Store(w.Err == nil) },
+	})
 	// Keep-alive stays on: a server told to close the connection after the
 	// answer may lose its last bytes on some transports. The connection is
 	// closed here once the answer is read.
@@ -846,16 +693,19 @@ func (o *Observer) fetchURL(cfg *providerSettings, headers map[string]string, ta
 		req.Header.Set("Content-Type", "application/json")
 	}
 	resp, err := client.Do(req)
+	r.sent = sent.Load()
 	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
 			r.class = "timeout"
 			return r, errors.New("timeout")
 		}
-		// Events go to analytics; the URL may name more than it should.
-		if ue, ok := err.(*url.Error); ok {
-			err = ue.Err
+		// Only a class goes on to events and Status: the text may name the
+		// host of a mirror, as a certificate for another name does. The
+		// backend learns no more than network, as before.
+		if errorClass(err) == "tls" {
+			return r, errors.New("tls")
 		}
-		return r, err
+		return r, errors.New(r.class)
 	}
 	defer resp.Body.Close()
 	r.status = resp.StatusCode
@@ -879,8 +729,10 @@ func (o *Observer) fetchURL(cfg *providerSettings, headers map[string]string, ta
 				r.retryAfter = min(ra, cfg.backoff.max)
 			}
 		}
-		r.backend = r.code != "" || r.retryAfter > 0
-		return r, fmt.Errorf("status %d", resp.StatusCode)
+		// Retry-After alone may come from a proxy on the way: the next road
+		// may reach the backend. The pause holds if no road does.
+		r.backend = r.code != ""
+		return r, errors.New("status")
 	}
 	answer, err := io.ReadAll(io.LimitReader(resp.Body, cfg.maxBytes+1))
 	received := o.now()
@@ -889,9 +741,8 @@ func (o *Observer) fetchURL(cfg *providerSettings, headers map[string]string, ta
 		r.class = "network"
 		if ctx.Err() == context.DeadlineExceeded {
 			r.class = "timeout"
-			err = errors.New("timeout")
 		}
-		return r, err
+		return r, errors.New(r.class)
 	}
 	if int64(len(answer)) > cfg.maxBytes {
 		r.class = "too_large"
@@ -989,6 +840,7 @@ func (o *Observer) applySet(rt *providerRuntime, a *providerAnswer, j *refreshJo
 		err = errors.New(cutText(err.Error(), maxFailureText))
 		fields["is_ok"] = false
 		fields["error"] = err.Error()
+		ignoredFields(fields, a)
 		o.emit("provider_apply", fields)
 		return false, err
 	}
@@ -1034,15 +886,14 @@ func (o *Observer) applySet(rt *providerRuntime, a *providerAnswer, j *refreshJo
 			}
 		}
 	}()
-	if a.version == rt.version && !modeChanged {
-		// The version names the set, not the answer: the most common answer
-		// while leases run is the same set with later ends, which renews
-		// them without rebuilding anything. Its outbounds are checked all
-		// the same, short of building: the answer is kept for the next
-		// start, which would refuse it.
-		if _, err := checkHeads(rt.cfg, a); err != nil {
-			return fail(err)
-		}
+	if a.hash == rt.hash && !modeChanged {
+		// The most common answer while leases run is the applied set with
+		// later ends, which renews them without rebuilding anything. The set
+		// is told by its content, whatever version the answer names: a
+		// version the backend kept over a new set would leave the core on
+		// the old one. Its outbounds are checked all the same, short of
+		// building: the answer is kept for the next start, which would
+		// refuse it.
 		if err := validateAnswerProbes(o.s, a); err != nil {
 			return fail(err)
 		}
@@ -1065,13 +916,16 @@ func (o *Observer) applySet(rt *providerRuntime, a *providerAnswer, j *refreshJo
 			gen = rt.p.headersGen
 			names, stale = o.e.takeAnswerHeaders(rt.p, a.headers, j.headersGen, headersBy(j), now)
 			based = o.e.takeBase(rt.p, a, now)
-			o.e.keepAnswer(rt.p, a, kept, leases.ends || rt.p.headersGen != gen || based, now)
+			renamed := rt.p.version != a.version
+			rt.p.version = a.version
+			o.e.keepAnswer(rt.p, a, kept, leases.ends || rt.p.headersGen != gen || based || renamed, now)
 			fields["is_ok"] = true
 			fields["is_changed"] = false
 			fields["unchanged"] = len(rt.p.tags)
 			leaseFields(fields, leases, rt.p)
 			headerFields(fields, names, stale)
 			baseFields(fields, a)
+			ignoredFields(fields, a)
 			o.e.emit(now, "provider_apply", fields)
 
 		}()
@@ -1098,29 +952,6 @@ func (o *Observer) applySet(rt *providerRuntime, a *providerAnswer, j *refreshJo
 	changes, unchanged, err := o.buildSet(rt, a)
 	if err != nil {
 		return fail(err)
-	}
-	var routing *router.Config
-	if len(a.routing) > 0 {
-		if !rt.cfg.routing || o.replaceRules == nil {
-			// Whether to take routing from a provider is the choice of the
-			// client: the set applies without it.
-			fields["is_routing_ignored"] = true
-		} else {
-			setTags := make([]string, 0, len(changes)+len(unchanged))
-			for _, c := range changes {
-				setTags = append(setTags, c.tag)
-			}
-			setTags = append(setTags, unchanged...)
-			if routing, err = o.parseRouting(a.routing); err == nil {
-				err = o.checkRouting(rt, a, routing, setTags)
-			}
-			if err != nil {
-				for _, c := range changes {
-					safe.Close(c.handler)
-				}
-				return fail(fmt.Errorf("routing: %w", err))
-			}
-		}
 	}
 
 	owned := map[string]outbound.Handler{}
@@ -1260,28 +1091,7 @@ func (o *Observer) applySet(rt *providerRuntime, a *providerAnswer, j *refreshJo
 			revive = append(revive, path.Tag)
 		}
 	}
-	rt.version = a.version
-	// Outside the observer lock: rebuilt leastCost balancers ask the observer
-	// for their selectors.
-	if routing != nil {
-		if err := o.replaceRules(routing, a.withStrategy); err != nil {
-			fields["routing_error"] = cutText(err.Error(), maxFailureText)
-		} else {
-			fields["rules"] = len(routing.Rule)
-			keep := map[string]bool{}
-			for _, b := range routing.BalancingRule {
-				keep[b.Tag] = true
-			}
-
-			func() {
-				o.mu.Lock()
-				defer o.mu.Unlock()
-
-				o.e.keepSelectorsAt(keep, o.now())
-
-			}()
-		}
-	}
+	rt.hash = a.hash
 
 	kept := compactAnswer(a.body)
 	now := o.now()
@@ -1343,6 +1153,7 @@ func (o *Observer) applySet(rt *providerRuntime, a *providerAnswer, j *refreshJo
 		leaseFields(fields, leases, rt.p)
 		headerFields(fields, names, stale)
 		baseFields(fields, a)
+		ignoredFields(fields, a)
 		o.e.emit(now, "provider_apply", fields)
 
 	}()
@@ -1375,6 +1186,14 @@ func leasesOf(a *providerAnswer, prefix string) leaseAnswer {
 		}
 	}
 	return la
+}
+
+// ignoredFields names in provider_apply the keys of the answer the core
+// skipped, so a backend learns which of its keys this core does not know.
+func ignoredFields(f map[string]any, a *providerAnswer) {
+	if len(a.ignored) > 0 {
+		f["ignored_keys"] = slices.Clone(a.ignored)
+	}
 }
 
 // leaseFields tells in provider_apply what the answer did to the leases,
@@ -1777,9 +1596,10 @@ func (o *Observer) endOverdueDrains() {
 	}
 }
 
-// endDrain removes and closes a draining outbound. One that was registered
-// and is no longer, which only HandlerService.RemoveOutbound does, was closed
-// there and is not closed again. The caller holds applyMu.
+// endDrain removes and closes a draining outbound. One that HandlerService
+// removed or replaced meanwhile is closed as well: the API only takes it out
+// of the outbound manager, which then closes it on no shutdown either. The
+// caller holds applyMu.
 func (o *Observer) endDrain(rt *providerRuntime, d *drainingOutbound) {
 	if rt.draining[d.handler] != d {
 		return
@@ -1817,13 +1637,12 @@ func (o *Observer) endDrain(rt *providerRuntime, d *drainingOutbound) {
 		o.e.emit(o.now(), "provider_drained", map[string]any{"provider": rt.cfg.tag, "outbound": d.tag, "is_replaced": !d.registered})
 
 	}()
-	if registered || !d.registered {
-		common.Close(d.handler)
-	}
+	common.Close(d.handler)
 }
 
-// closeProviders stops drains on shutdown. Registered outbounds are closed
-// by the outbound manager; replaced ones only this observer knows about.
+// closeProviders stops drains on shutdown. Outbounds the outbound manager
+// still holds are closed by it; replaced ones, and ones HandlerService took
+// out of it, only this observer knows about.
 func (o *Observer) closeProviders() {
 	o.applyMu.Lock()
 	defer o.applyMu.Unlock()
@@ -1831,7 +1650,7 @@ func (o *Observer) closeProviders() {
 	for _, rt := range o.providers {
 		for _, d := range rt.draining {
 			d.timer.Stop()
-			if !d.registered {
+			if !d.registered || o.ohm == nil || o.ohm.GetHandler(d.tag) != d.handler {
 				common.Close(d.handler)
 			}
 		}

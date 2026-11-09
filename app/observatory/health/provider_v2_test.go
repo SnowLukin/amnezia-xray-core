@@ -136,22 +136,30 @@ func TestProviderV2SemanticMetadataAndShapeBounds(t *testing.T) {
 	if _, err := parseAnswer(makeBody("x", "v", `,"baseVersion":"`+strings.Repeat("b", 257)+`"`)); err == nil {
 		t.Fatal("oversized baseVersion accepted")
 	}
-	for _, extra := range []string{`,"routing":{}`, `,"routing":null`, `,"dns":{}`} {
+	for _, extra := range []string{`,"routing":{}`, `,"healthObservatory":{}`} {
 		if _, err := parseAnswer(makeBody("x", "v", extra)); err == nil {
 			t.Fatal("forbidden response accepted")
 		}
 	}
-	for _, selection := range []string{`{"balancer":"auto","probe":"check","cost":1,"isLazy":true}`, `{"balancer":"auto","probe":"check","cost":1,"returnInterval":"1h"}`, `{"balancer":"auto","probe":"check","cost":1,"probePolicy":"lazy"}`} {
+	// Retired names are keys like any other the core does not know.
+	for _, selection := range []string{`{"balancer":"auto","probe":"check","cost":1,"isLazy":true}`, `{"balancer":"auto","probe":"check","cost":1,"returnInterval":"1h"}`} {
 		body := fmt.Sprintf(`{"outbounds":[{"tag":"x","protocol":"vless","selection":%s}]}`, selection)
 		a, err := parseAnswer([]byte(body))
 		if err == nil {
 			_, err = checkHeads(cfg, a)
 		}
-		if err == nil {
-			t.Fatal("retired response alias accepted")
+		if err != nil || len(a.ignored) != 1 || a.paths[0].IsLazy || a.paths[0].ReturnInterval != 0 {
+			t.Fatalf("retired key %s: %v, ignored %v", selection, err, a.ignored)
 		}
 	}
-	a, _ := parseAnswer(makeBody("x", "v", `,"groups":[{"name":"unused","probe":"check","cost":1}]`))
+	a, err := parseAnswer([]byte(`{"outbounds":[{"tag":"x","protocol":"vless","selection":{"balancer":"auto","probe":"check","cost":1,"probePolicy":"lazy"}}]}`))
+	if err == nil {
+		_, err = checkHeads(cfg, a)
+	}
+	if err == nil {
+		t.Fatal("an unknown probePolicy accepted")
+	}
+	a, _ = parseAnswer(makeBody("x", "v", `,"groups":[{"name":"unused","probe":"check","cost":1}]`))
 	if _, err := checkHeads(cfg, a); err == nil {
 		t.Fatal("unused group accepted")
 	}

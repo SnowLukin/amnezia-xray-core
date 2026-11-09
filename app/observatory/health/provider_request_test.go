@@ -15,6 +15,7 @@ import (
 	"time"
 
 	xerrors "github.com/xtls/xray-core/common/errors"
+	"google.golang.org/protobuf/proto"
 )
 
 // requestOf starts a host refresh at now and returns its body as the backend
@@ -292,4 +293,18 @@ func mustRequestBody(t *testing.T, o *Observer, rt *providerRuntime, j *refreshJ
 		t.Fatal(err)
 	}
 	return body
+}
+
+// The backend names a group as it named it in the answer, like the tags of
+// the outbounds: without the prefix of the provider.
+func TestRequestNamesGroupsWithoutPrefix(t *testing.T) {
+	paths := []*PathDefinition{{Tag: "p-x1", Balancer: "auto", Group: "p-de"}, {Tag: "p-x2", Balancer: "auto", Group: "p-de"}}
+	groups := []*PathGroup{{Name: "p-de", Cost: 1, FailedInRowToLeave: 3}}
+	te := newProviderEngine(t, quietProvider(nil), &SelectorConfig{Features: &SelectorFeatureConfig{Groups: proto.Bool(true)}, Paths: paths, Groups: groups}, "p-x1", "p-x2")
+	te.applyProviderSet(te.prov(), providerChange{tags: []string{"p-x1", "p-x2"}, paths: paths, groups: groups}, t0)
+	body, _, _ := requestOf(t, te, at(time.Minute))
+	got, _ := body["groups"].([]any)
+	if len(got) != 1 || got[0].(map[string]any)["group"] != "de" {
+		t.Fatalf("groups %v, want de", body["groups"])
+	}
 }

@@ -22,7 +22,8 @@ func TestProviderReturnToCheaperBlockPresence(t *testing.T) {
 		{name: "retired true", raw: `{"returnToCheaper":{"isEnabled":true}}`, wantErr: true},
 		{name: "retired false", raw: `{"returnToCheaper":{"isEnabled":false}}`, wantPresent: true, wantOff: true},
 		{name: "boolean", raw: `{"returnToCheaper":true}`, wantErr: true},
-		{name: "null", raw: `{"returnToCheaper":null}`, wantErr: true},
+		// Null is no key: the balancer decides.
+		{name: "null", raw: `{"returnToCheaper":null}`},
 		{name: "zero interval", raw: `{"returnToCheaper":{"interval":"0s"}}`, wantErr: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -30,7 +31,7 @@ func TestProviderReturnToCheaperBlockPresence(t *testing.T) {
 			if err := json.Unmarshal([]byte(tc.raw), &obj); err != nil {
 				t.Fatal(err)
 			}
-			interval, present, err := answerReturn(obj, "selection")
+			interval, present, err := answerReturn(&providerAnswer{}, obj, "selection", "selection")
 			if (err != nil) != tc.wantErr {
 				t.Fatalf("error=%v, expected error=%v", err, tc.wantErr)
 			}

@@ -3,6 +3,9 @@ package health
 import (
 	"cmp"
 	"context"
+	crand "crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"maps"
 	"math"
 	"math/rand"
@@ -141,13 +144,16 @@ const lowMemoryRecheck = 2 * time.Minute
 type engine struct {
 	census *censusState
 
-	frozen    *atomic.Bool
-	s         *settings
-	rnd       *rand.Rand
-	run       string
-	paths     map[string]*path
-	selectors map[string]*selector
-	events    *eventLog
+	frozen *atomic.Bool
+	s      *settings
+	rnd    *rand.Rand
+	run    string
+	// Hashes the network the host names in events, which leave the device;
+	// kept nowhere else.
+	networkSalt [16]byte
+	paths       map[string]*path
+	selectors   map[string]*selector
+	events      *eventLog
 	// Last server address dialed per tag, for outbounds without a server
 	// name. Dials write it without the observer lock.
 	lastServer sync.Map
@@ -247,6 +253,18 @@ type engine struct {
 	labelProof    bool
 }
 
+// networkHash names the network the host reported in an event: the same
+// within a run, and not the id itself, which may name a Wi-Fi network.
+func (e *engine) networkHash(id string) string {
+	if id == "" {
+		return ""
+	}
+	h := sha256.New()
+	h.Write(e.networkSalt[:])
+	h.Write([]byte(id))
+	return "h:" + hex.EncodeToString(h.Sum(nil)[:6])
+}
+
 func newEngine(s *settings, seed int64) *engine {
 	e := &engine{
 		s:                s,
@@ -275,6 +293,7 @@ func newEngine(s *settings, seed int64) *engine {
 	if s.features.Report && s.reportQuietShare > 0 {
 		e.report.quietSample = s.reportQuietShare >= 1 || e.rnd.Float64() < s.reportQuietShare
 	}
+	_, _ = crand.Read(e.networkSalt[:])
 	return e
 }
 
@@ -2674,12 +2693,12 @@ func (e *engine) onNetworkChangeWithLabels(id string, labels map[string]string, 
 		}
 	}
 	if len(reacting) == 0 {
-		e.emit(now, "network_change", map[string]any{"network": id, "is_known": known, "generation": e.generation, "is_ignored": true})
+		e.emit(now, "network_change", map[string]any{"network": e.networkHash(id), "is_known": known, "generation": e.generation, "is_ignored": true})
 		return
 	}
 	oldGeneration := e.generation
 	e.generation++
-	e.emit(now, "network_change", map[string]any{"network": id, "is_known": known, "generation": e.generation})
+	e.emit(now, "network_change", map[string]any{"network": e.networkHash(id), "is_known": known, "generation": e.generation})
 	for tag, p := range e.paths {
 		if !reset[tag] {
 			continue

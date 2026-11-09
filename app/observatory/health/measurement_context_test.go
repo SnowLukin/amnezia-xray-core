@@ -293,6 +293,8 @@ func TestMeasurementBlockedRequestDoesNotDelayFailover(t *testing.T) {
 			cfg.LabelRequest = measurementConfig().LabelRequest
 		}
 		e := newTestEngine(t, cfg, &SelectorConfig{Paths: pathSpecs("a1", 1, "b1", 2), SkipProbeBeforeSwitch: true, NetworkChangeAction: NetworkChangeMode_IGNORE}, "a1", "b1")
+		// The same salt in both runs, so the hashed network compares.
+		e.networkSalt = [16]byte{}
 		e.onNetworkChange("home", t0)
 		if enabled {
 			e.hostLabels = map[string]string{"type": "wifi"}

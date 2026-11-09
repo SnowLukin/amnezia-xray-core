@@ -95,6 +95,11 @@ const (
 	// body along with the status.
 	maxErrorBody  = 4 << 10
 	errorBodyWait = 2 * time.Second
+	// One refresh ends after this many answers out of the protocol, a
+	// server that took the request and did not answer among them, or after
+	// this many timeouts of any kind.
+	maxNonProtocolAnswers = 2
+	maxRefreshTimeouts    = 4
 	// The reason an answer was refused, as events, Status and the next
 	// request tell it.
 	maxFailureText = 200
@@ -389,8 +394,8 @@ type providerSettings struct {
 	exhaustedMinInterval time.Duration
 	maxPerHour           int
 	backoff              backoff
-	// How long every trigger but the host waits after the backend refused
-	// the headers; zero waits until they change.
+	// How long every trigger, the host's too, waits after the backend
+	// refused the headers; zero waits until they change.
 	authRetry time.Duration
 
 	balancers    []string
@@ -399,7 +404,6 @@ type providerSettings struct {
 	drain        time.Duration
 	maxOutbounds int
 	protocols    []string
-	routing      bool
 	// Canonical header names an answer may set; none turns that off.
 	rotate []string
 }
@@ -482,7 +486,6 @@ func newProviderSettings(c *ProviderConfig) *providerSettings {
 		drain:        min(dur(a.GetDrainTimeout(), defaultDrain), maxDrain),
 		maxOutbounds: maxOutbounds,
 		protocols:    stringsOr(a.GetAllowedProtocols(), defaultProviderProtocols),
-		routing:      false,
 	}
 	if len(p.balancers) > 0 {
 		p.balancer = p.balancers[0]

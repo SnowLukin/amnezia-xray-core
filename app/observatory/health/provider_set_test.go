@@ -271,8 +271,9 @@ func (f *applyFixture) apply(t *testing.T, a *providerAnswer) (bool, error) {
 	var heads []outboundHead
 	var sections map[string]json.RawMessage
 	_ = json.Unmarshal(a.body, &sections)
+	a.hash = setHash(sections)
 	if wasGenerated {
-		a.version = setHash(sections)
+		a.version = a.hash
 	}
 	_ = json.Unmarshal(sections["outbounds"], &heads)
 	for i := range a.heads {
@@ -508,15 +509,15 @@ func TestApplySameVersionChecksItsOutbounds(t *testing.T) {
 			if again, after := f.providerSet(t, 0); after != seq || fmt.Sprint(again) != fmt.Sprint(kept) {
 				t.Fatalf("the refused answer was kept: seq %d after %d", after, seq)
 			}
-			// A body of one outbound under the version of two still names
-			// the set of two.
+			// A body of one outbound under the version of two is a set of
+			// one: the content tells, not the name.
 			same := answer(t, fakeOutbound{Tag: "x1", V: 1})
 			same.version = "v1"
-			if changed, err := f.apply(t, same); changed || err != nil {
-				t.Fatalf("the applied set: changed %v, %v", changed, err)
+			if changed, err := f.apply(t, same); !changed || err != nil {
+				t.Fatalf("a new set under the old version: changed %v, %v", changed, err)
 			}
-			if ev := f.lastApply(t); ev["is_ok"] != true || ev["unchanged"] != 2.0 {
-				t.Fatalf("apply %v, want two outbounds unchanged", ev)
+			if ev := f.lastApply(t); ev["is_ok"] != true || ev["unchanged"] != 1.0 || ev["removed"] != 1.0 {
+				t.Fatalf("apply %v, want one outbound kept and one removed", ev)
 			}
 		})
 	}
@@ -600,8 +601,8 @@ func TestParseAnswer(t *testing.T) {
 	if a, _ := parseAnswer([]byte(`{"outbounds": [{"tag": "x"}], "version": "v7"}`)); a.version != "v7" {
 		t.Fatalf("version %q, want the one the server sent", a.version)
 	}
-	if _, err := parseAnswer([]byte(`{"outbounds": [{"tag": "x"}], "hash": "h"}`)); err == nil {
-		t.Fatal("hash alias was accepted")
+	if a, err := parseAnswer([]byte(`{"outbounds": [{"tag": "x"}], "hash": "h"}`)); err != nil || a.version == "h" {
+		t.Fatalf("hash alias: %v, version %q", err, a.version)
 	}
 	a1, _ := parseAnswer([]byte(`{"outbounds": [{"tag": "x", "v": 1}]}`))
 	a2, _ := parseAnswer([]byte("{\"outbounds\": [ {\"tag\" : \"x\",\n \"v\": 1} ], \"nextRefreshIn\": \"5s\"}"))
@@ -623,23 +624,18 @@ func TestParseAnswer(t *testing.T) {
 	longRefresh := `{"outbounds": [{"tag": "x"}], "nextRefreshIn": "` + strings.Repeat("soon", 50_000) + `"}`
 	longBase := `{"outbounds": [{"tag": "x"}], "baseVersion": "` + strings.Repeat("b", 257) + `"}`
 	for body, want := range map[string]string{
-		`{"outbounds": []}`:                                                     "no outbounds",
-		`{"protocol": 2, "outbounds": [{"tag": "x"}]}`:                          "protocol 2 is not supported",
-		`{"protocol": 2, "outbounds": [{"tag": "x"}], "leases": {}}`:            "protocol 2 is not supported",
-		`{"protocol": 0, "outbounds": [{"tag": "x"}]}`:                          "protocol 0 is not supported",
-		`{"protocol": "1", "outbounds": [{"tag": "x"}]}`:                        `protocol "1" is not supported`,
-		`{"outbounds": [{"tag": "x"}], "dns": {}}`:                              `unknown key "dns"`,
-		`{"outbounds": [{"tag": "x"}], "inbounds": []}`:                         `unknown key "inbounds"`,
-		`{"outbounds": [{"tag": "x"}], "healthObservatory": {}}`:                "healthObservatory is not accepted in an answer",
-		`{"outbounds": [{"tag": "x"}], "receivedAt": "2026-10-08T12:00:00Z"}`:   `unknown key "receivedAt"`,
-		`{"outbounds": [{"tag": "x"}], "baseVersion": 12}`:                      "baseVersion must be a string",
-		`{"outbounds": [{"tag": "x"}], "routing": {"rules": [], "foo": 1}}`:     `unknown key "routing"`,
-		`{"outbounds": [{"tag": "x"}], "nextRefreshIn": "soon"}`:                "nextRefreshIn",
-		`{"outbounds": [{"tag": "x"}], "nextRefreshIn": null}`:                  "nextRefreshIn",
-		`{"outbounds": [{"tag": "x"}], "` + strings.Repeat("k", 1000) + `": 1}`: "...",
-		`{"outbounds": {"tag": "x"}}`:                                           "outbounds:",
-		longRefresh:                                                             "nextRefreshIn",
-		longBase:                                                                "baseVersion must be a string of at most 256 bytes",
+		`{"outbounds": []}`:                                                 "no outbounds",
+		`{"protocol": 2, "outbounds": [{"tag": "x"}]}`:                      "protocol 2 is not supported",
+		`{"protocol": 2, "outbounds": [{"tag": "x"}], "leases": {}}`:        "protocol 2 is not supported",
+		`{"protocol": 0, "outbounds": [{"tag": "x"}]}`:                      "protocol 0 is not supported",
+		`{"protocol": "1", "outbounds": [{"tag": "x"}]}`:                    `protocol "1" is not supported`,
+		`{"outbounds": [{"tag": "x"}], "healthObservatory": {}}`:            "healthObservatory is not accepted in an answer",
+		`{"outbounds": [{"tag": "x"}], "baseVersion": 12}`:                  "baseVersion must be a string",
+		`{"outbounds": [{"tag": "x"}], "routing": {"rules": [], "foo": 1}}`: "routing is not accepted in an answer",
+		`{"outbounds": [{"tag": "x"}], "nextRefreshIn": "soon"}`:            "nextRefreshIn",
+		`{"outbounds": {"tag": "x"}}`:                                       "outbounds:",
+		longRefresh:                                                         "nextRefreshIn",
+		longBase:                                                            "baseVersion must be a string of at most 256 bytes",
 	} {
 		_, err := parseAnswer([]byte(body))
 		if err == nil || !isAnswerError(err) || !strings.Contains(err.Error(), want) || len(err.Error()) > maxFailureText {
@@ -773,9 +769,8 @@ func TestDrainLeavesAnOutboundTheAPIRemovedClosed(t *testing.T) {
 	if x1.closes() != 0 || len(f.rt.draining) != 1 {
 		t.Fatalf("setup: closed %d times, %d draining", x1.closes(), len(f.rt.draining))
 	}
-	// What HandlerService.RemoveOutbound does.
+	// What HandlerService.RemoveOutbound does: it closes nothing.
 	_ = f.m.RemoveHandler(context.Background(), "p-x1")
-	_ = x1.Close()
 	tr.Finished(nil)
 	f.o.SetMemoryLow(true)
 	if len(f.rt.draining) != 0 || x1.closes() != 1 {

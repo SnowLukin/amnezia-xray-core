@@ -109,7 +109,7 @@
 | `provider`, `method`, `version` | Тег, HTTP-метод, версия последнего применённого набора. |
 | `members`, `probe_only_verified`, `draining` | Outbound в наборе, проверенные кандидаты среди них, старые обработчики, которые ещё закрываются. |
 | `is_fetching`, `refreshes`, `failures` | Запрос идёт сейчас; число успешных обновлений; неудачи подряд. |
-| `last_error` | Сырой текст последней ошибки. |
+| `last_error` | Последняя ошибка: класс неудачного запроса (`timeout`, `tls`, `network`, `status`, `too_large`), причина пропуска дороги или причина, по которой ответ отклонён. |
 | `set_age_ms` | Возраст набора. |
 | `next_trigger`, `next_in_ms` | Ближайший повод обновления и когда он наступит (может быть отрицательным, если ждёт). |
 | `backoff_ms`, `retry_after_ms`, `attempts_last_hour` | Остаток паузы после неудач, остаток паузы `Retry-After`, попытки за последний час. |
@@ -347,7 +347,7 @@
 | `network_up` | `by` | Решения возобновлены: `connectivity` (проверка прошла), `traffic` или `probe` (путь сработал), `witness` (сработало соединение через свидетеля). |
 | `connectivity_doubt` | `failed_checks`, `paused_ms` | Проверка не проходила дольше 1 минуты (константа); решения возобновлены временно. |
 | `connectivity_ignored` | `failed_checks` | Проверка не проходит, хотя путь работает; до следующей смены сети она не используется. |
-| `network_change` | `network`, `is_known`, `generation`, [`is_ignored`], [`labels`] | Хост сообщил о смене сети. `network` - сырой идентификатор от хоста. `is_known` - сеть есть в памяти сетей (`network.memory`). `is_ignored: true` - ни один балансировщик не реагирует на смену сети (`networkChanges` нигде нет), выученное сохраняется, `generation` не растёт. `labels` - метки хоста новой сети. |
+| `network_change` | `network`, `is_known`, `generation`, [`is_ignored`], [`labels`] | Хост сообщил о смене сети. `network` - хеш идентификатора от хоста (`h:` и 12 hex-цифр), одинаковый в пределах запуска; сам идентификатор есть только в Status. `is_known` - сеть есть в памяти сетей (`network.memory`). `is_ignored: true` - ни один балансировщик не реагирует на смену сети (`networkChanges` нигде нет), выученное сохраняется, `generation` не растёт. `labels` - метки хоста новой сети. |
 | `network_labels` | `is_ok`, `error`, `labels` | Завершился запрос меток сети (`network.labelRequest`). `error` при успехе пустой, иначе `request`, `timeout`, `network`, `status_<код>`, `no_labels`, `canceled`. `labels` - метки текущей сети (объект или `null`). |
 | `memory_low` | `is_low` | Хост сообщил о нехватке памяти (`true`) или об её окончании. |
 | `outbound_sleep` | `outbound`, `idle_ms`, `reason` | Outbound отпустил туннель. `idle_ms` - время с последнего использования. `reason`: `idle` (после `resources.tunnelSleep.afterLastUse`), `down` (раньше, пока путь в карантине), `memory` (раньше, при нехватке памяти). |
@@ -361,7 +361,7 @@
 | `provider_apply` | см. ниже | Ответ применён, совпал с действующим набором или отвергнут. |
 | `provider_skip` | `provider`, `trigger`, `reason`, [`wait_ms`] | Повод требует обновления, но начать его нельзя. `reason`: `min_interval`, `backoff`, `retry_after`, `max_per_hour`, `idle`, `network_down`, `pinned`, `memory`, `auth`. Пишется один раз на пару повод и причина до начала обновления. |
 | `provider_expired` | `provider`, `outbound`, `was_active`, `renewal` | Аренда пути кончилась. `was_active` - путь был выбран. `renewal` - почему не было продления: `refused` (бэкенд ответил без него), `failed` (последнее обновление с запросом не удалось), `off` (`providers[].triggers.leaseRenewal.renewAtFraction` равен 0), `saved` (кончилась в сохранённом хостом наборе до старта), `pending` (обновление с запросом ещё не завершилось). |
-| `provider_auth_failed` | `provider`, `trigger`, `status`, `via`, `code` | Бэкенд отверг заголовки (`status` 401 или 403, `code` `unauthorized` или `forbidden`). Все поводы, кроме хоста, ждут новых заголовков. |
+| `provider_auth_failed` | `provider`, `trigger`, `status`, `via`, `code` | Бэкенд отверг заголовки (`status` 401 или 403, `code` `unauthorized` или `forbidden`). Все поводы, включая хост, ждут новых заголовков или конца паузы. |
 | `provider_headers` | `provider`, `by`, `names` | Изменились заголовки запросов: `by` = `answer`, `initial` или `host`. `names` - имена изменённых заголовков, значения не выводятся. |
 | `provider_base_changed` | `provider`, `from`, `to` | Применённый ответ назвал другой базовый конфиг `to`, ядро работает с `from`. Пишется один раз на значение. |
 | `provider_urls` | `provider`, `count`, `generation` | Хост заменил зеркала (`SetProviderURLs`). Адреса не выводятся. |
@@ -371,7 +371,7 @@
 
 `provider_fetch` бывает трёх видов:
 
-- обычный запрос: все поля из таблицы. `mirror` - номер зеркала с 1, `outbound` - путь, через который пошёл запрос, `refresh` - номер обновления, `retry` - уровень паузы после неудач, `bytes` - размер ответа. `code` - код ошибки из тела ответа по протоколу, `retry_after_ms` - пауза `Retry-After` после ограничения сверху. `is_ok: true` означает, что бэкенд ответил, в том числе ответом с нарушением протокола; отказ такого ответа пишет `provider_apply`. `error` при сетевой ошибке содержит сырой текст (без URL, но может содержать адрес);
+- обычный запрос: все поля из таблицы. `mirror` - номер зеркала с 1, `outbound` - путь, через который пошёл запрос, `refresh` - номер обновления, `retry` - уровень паузы после неудач, `bytes` - размер ответа. `code` - код ошибки из тела ответа по протоколу, `retry_after_ms` - пауза `Retry-After` после ограничения сверху. `is_ok: true` означает, что бэкенд ответил, в том числе ответом с нарушением протокола; отказ такого ответа пишет `provider_apply`. `error` при неудаче - класс: `timeout`, `tls`, `network`, `status` (код в `status`), `too_large`; у ответа, который не разобран как JSON, причина вида `invalid answer: ...` без адресов;
 - пропущенная запись `via`: `provider`, `trigger`, `retry`, `attempt`, `via`, `outbound`, `method`, `refresh`, `is_ok: false` и `error` со значением `balancer exhausted`, `current outbound down`, `probe-only outbound`, `outbound down` или `no such outbound`;
 - запрос больше 256 КиБ: `provider`, `trigger`, `is_ok: false`, `code: "request_too_large"`.
 
@@ -379,8 +379,8 @@
 
 - применён и изменил набор: `provider`, `trigger`, `version`, `is_ok: true`, `is_changed: true`, `added`, `replaced`, `removed`, `unchanged`, `was_exhausted` (у балансировщика в этот момент не было пригодных);
 - совпал с действующим: `provider`, `trigger`, `version`, `is_ok: true`, `is_changed: false`, `unchanged`;
-- к обоим вариантам добавляются: [`is_routing_ignored: true`] (в ответе был `routing`; ядро его не применяет), [`leases`, `renewed`, `expired`, `skew_ms`, `clock`] (если ответ называет аренды), [`headers`, `is_headers_stale`] (если ответ задал заголовки; `is_headers_stale` - хост сменил заголовки, пока шёл запрос), [`base_version`] (базовый конфиг из ответа);
-- отвергнут при сборке: `provider`, `trigger`, `version`, `is_ok: false`, `error` (текст до 200 символов). Стартовый набор, на котором сборка или запуск outbound упали с паникой, отвергается так же с `error: "panic"`, и ядро стартует без него; наблюдатель при этом не замораживается;
+- к обоим вариантам добавляются: [`ignored_keys`] (до 16 ключей ответа, которых ядро не знает и пропустило, с путём: `ttl`, `selection.weight`, `groups[].region`), [`leases`, `renewed`, `expired`, `skew_ms`, `clock`] (если ответ называет аренды), [`headers`, `is_headers_stale`] (если ответ задал заголовки; `is_headers_stale` - хост сменил заголовки, пока шёл запрос), [`base_version`] (базовый конфиг из ответа);
+- отвергнут при сборке: `provider`, `trigger`, `version`, `is_ok: false`, `error` (текст до 200 символов), [`ignored_keys`]. Стартовый набор, на котором сборка или запуск outbound упали с паникой, отвергается так же с `error: "panic"`, и ядро стартует без него; наблюдатель при этом не замораживается;
 - отвергнут при разборе ответа или стартового набора: `provider`, `trigger`, `is_ok: false`, `error`.
 
 `error` у `provider_apply` - текст причины, а не класс. Подробно о полях аренды, часах и заголовках см. [provider-protocol.md](provider-protocol.md).
@@ -869,7 +869,7 @@ UDP-потоки считаются при `telemetry.report` или `evidence.u
 - значения заголовков провайдера и учётные данные;
 - адресатов пользовательских соединений, домены, SNI, содержимое трафика.
 
-В трассу не попадают адресаты (только хеш с солью), сырой идентификатор сети (хеш), текст в поле `error` событий. `Status` и журнал этих гарантий не дают: в них сырые `network_id` и `network_change.network`, `server_name`, `last_error` пути и провайдера, текст `provider_fetch.error` и `provider_apply.error`, а у TCP-элементов `probe_requests[].outbounds[].error` (и в ответе `ProbeResult`) лежит сырой текст ошибки пробы вместе с её URL. Поэтому `Status`, события и результаты команд хоста не отправляют в аналитику и сторонние сервисы сбора ошибок без собственной фильтрации.
+В трассу не попадают адресаты (только хеш с солью), сырой идентификатор сети (хеш), текст в поле `error` событий. `Status` и журнал этих гарантий не дают: в них сырой `network_id`, `server_name`, `last_error` пути, текст `provider_apply.error` (он может цитировать значения ответа бэка, например адрес сервера outbound), а у TCP-элементов `probe_requests[].outbounds[].error` (и в ответе `ProbeResult`) лежит сырой текст ошибки пробы вместе с её URL. Поэтому `Status`, события и результаты команд хоста не отправляют в аналитику и сторонние сервисы сбора ошибок без собственной фильтрации.
 
 Чего код не проверяет и что обязаны соблюдать автор конфига, бэкенд провайдера и хост:
 

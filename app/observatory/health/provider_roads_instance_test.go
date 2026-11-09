@@ -61,11 +61,14 @@ func TestProviderLimitsNonProtocolHTTPReplies(t *testing.T) {
 			health.ConfigureProviderLongCooldownForTest(obs)
 			obs.RequestProviderRefresh("fresh")
 			waitRefreshed(t, obs)
+			// Retry-After without a body of the protocol may come from a
+			// proxy, and a server that took the request and did not answer
+			// loads the backend like one that answered out of the protocol.
 			want := int64(2)
-			if mode == "network" || mode == "timeout" {
+			if mode == "network" {
 				want = 12
 			}
-			if mode == "protocol" || mode == "retry_after" {
+			if mode == "protocol" {
 				want = 1
 			}
 			if count.Load() != want {

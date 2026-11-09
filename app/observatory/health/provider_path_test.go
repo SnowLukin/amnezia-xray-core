@@ -8,7 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xtls/xray-core/app/router"
 	"github.com/xtls/xray-core/core"
 	"github.com/xtls/xray-core/features/outbound"
 )
@@ -66,17 +65,11 @@ func TestProviderPathStagingRollsBackOnFailure(t *testing.T) {
 			if changed, err := f.apply(t, first); !changed || err != nil {
 				t.Fatalf("first apply %v, %v", changed, err)
 			}
-			oldHandler, oldVersion := f.m.GetHandler("p-x1"), f.rt.version
+			oldHandler, oldHash := f.m.GetHandler("p-x1"), f.rt.hash
 			if failure == "register" {
 				f.m.failAdd = "p-x2"
 			}
-			routing := ""
-			if failure == "routing" {
-				f.rt.cfg.routing = true
-				f.o.replaceRules = func(*router.Config, bool) error { t.Fatal("invalid routing reached ReplaceRules"); return nil }
-				routing = `,"routing":{"rules":[],"balancers":[{"tag":"auto","strategy":{"type":"leastCost","settings":{}}},{"tag":"auto","strategy":{"type":"leastCost","settings":{}}}]}`
-			}
-			second, err := parseAnswer([]byte(`{"version":"new","outbounds":[{"tag":"x2","protocol":"freedom","selection":{"balancer":"auto","probe":"check","cost":2}}]` + routing + `}`))
+			second, err := parseAnswer([]byte(`{"version":"new","outbounds":[{"tag":"x2","protocol":"freedom","selection":{"balancer":"auto","probe":"check","cost":2}}]}`))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -84,9 +77,9 @@ func TestProviderPathStagingRollsBackOnFailure(t *testing.T) {
 				t.Fatalf("rejected apply %v, %v", changed, err)
 			}
 			if !seen || f.o.Observes("p-x2") || !f.o.Observes("p-x1") || f.m.GetHandler("p-x1") != oldHandler ||
-				f.m.GetHandler("p-x2") != nil || f.rt.version != oldVersion {
+				f.m.GetHandler("p-x2") != nil || f.rt.hash != oldHash || f.rt.p.version != "old" {
 				t.Fatalf("rollback: ctor observed=%v, new observed=%v, old observed=%v, handlers=%s, version=%s",
-					seen, f.o.Observes("p-x2"), f.o.Observes("p-x1"), f.m.tags(), f.rt.version)
+					seen, f.o.Observes("p-x2"), f.o.Observes("p-x1"), f.m.tags(), f.rt.p.version)
 			}
 		})
 	}
@@ -146,7 +139,6 @@ func TestProviderPathValidationLeavesPreviousSet(t *testing.T) {
 		{"group false", `,"selection":{"balancer":"auto","group":"relay","probePolicy":"regular"}`, `,"groups":[{"name":"relay","probe":"check","cost":2}]`, "probePolicy is set by group relay"},
 		{"group zero interval", `,"selection":{"balancer":"auto","group":"relay","returnToCheaper":{}}`, `,"groups":[{"name":"relay","probe":"check","cost":2}]`, "returnToCheaper is set by group relay"},
 		{"group empty probe", `,"selection":{"balancer":"auto","group":"relay","probe":""}`, `,"groups":[{"name":"relay","probe":"check","cost":2}]`, "probe is set by group relay"},
-		{"group null", `,"selection":{"balancer":"auto","group":"relay","cost":null}`, `,"groups":[{"name":"relay","probe":"check","cost":2}]`, "must not be null"},
 		{"empty group name", `,"selection":{"balancer":"auto","group":"","cost":1}`, ``, "group needs name of at most 128 bytes including its prefix"},
 		{"unknown probe", `,"selection":{"balancer":"auto","probe":"check","cost":1,"probe":"missing"}`, ``, "unknown probe missing"},
 	} {
@@ -186,15 +178,6 @@ func TestProviderUnusedGroupDeclarationIsRejected(t *testing.T) {
 
 func TestProviderReordersOwnGroup(t *testing.T) {
 	f := newApplyFixture(t, time.Minute)
-	f.rt.cfg.routing = true
-	f.o.replaceRules = func(rc *router.Config, _ bool) error {
-		inst, err := rc.BalancingRule[0].StrategySettings.GetInstance()
-		if err != nil {
-			return err
-		}
-		f.o.e.addSelector("auto", newSelectorSettings(inst.(*SelectorConfig)))
-		return nil
-	}
 	first, err := parseAnswer([]byte(`{"version":"first","outbounds":[
 		{"tag":"x1","protocol":"vless","v":1,"selection":{"balancer":"auto","group":"relay"}},
 		{"tag":"x2","protocol":"vless","v":1,"selection":{"balancer":"auto","group":"relay"}}],

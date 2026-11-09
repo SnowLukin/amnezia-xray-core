@@ -2514,7 +2514,7 @@ type ProviderLimits struct {
 	MaxRefreshesPerHour int32 `protobuf:"varint,3,opt,name=max_refreshes_per_hour,json=maxRefreshesPerHour,proto3" json:"max_refreshes_per_hour,omitempty"`
 	// Pause after failed refreshes.
 	Backoff *Backoff `protobuf:"bytes,4,opt,name=backoff,proto3" json:"backoff,omitempty"`
-	// Pause of every trigger but the host after the backend refused the
+	// Pause of every trigger, the host's too, after the backend refused the
 	// headers of the provider, 1 h by default. Negative waits for new headers.
 	AuthRetryDelay int64 `protobuf:"varint,5,opt,name=auth_retry_delay,json=authRetryDelay,proto3" json:"auth_retry_delay,omitempty"`
 	unknownFields  protoimpl.UnknownFields
@@ -2601,9 +2601,6 @@ type ProviderApply struct {
 	// to a server; an outbound that sends traffic straight out, such as
 	// freedom, is refused unless listed here.
 	AllowedProtocols []string `protobuf:"bytes,5,rep,name=allowed_protocols,json=allowedProtocols,proto3" json:"allowed_protocols,omitempty"`
-	// Applies the routing rules, balancers and domain strategy of an answer
-	// without a restart. Off, the routing of an answer is ignored.
-	IsRoutingAccepted bool `protobuf:"varint,6,opt,name=is_routing_accepted,json=isRoutingAccepted,proto3" json:"is_routing_accepted,omitempty"`
 	// Header names an answer may set over those of the config, to rotate the
 	// token of the provider. Empty allows Authorization.
 	AcceptedHeaders []string `protobuf:"bytes,7,rep,name=accepted_headers,json=acceptedHeaders,proto3" json:"accepted_headers,omitempty"`
@@ -2676,13 +2673,6 @@ func (x *ProviderApply) GetAllowedProtocols() []string {
 		return x.AllowedProtocols
 	}
 	return nil
-}
-
-func (x *ProviderApply) GetIsRoutingAccepted() bool {
-	if x != nil {
-		return x.IsRoutingAccepted
-	}
-	return false
 }
 
 func (x *ProviderApply) GetAcceptedHeaders() []string {
@@ -3714,17 +3704,16 @@ const file_app_observatory_health_config_proto_rawDesc = "" +
 	"\x16exhausted_min_interval\x18\x02 \x01(\x03R\x14exhaustedMinInterval\x123\n" +
 	"\x16max_refreshes_per_hour\x18\x03 \x01(\x05R\x13maxRefreshesPerHour\x12C\n" +
 	"\abackoff\x18\x04 \x01(\v2).xray.core.app.observatory.health.BackoffR\abackoff\x12(\n" +
-	"\x10auth_retry_delay\x18\x05 \x01(\x03R\x0eauthRetryDelay\"\xc3\x02\n" +
+	"\x10auth_retry_delay\x18\x05 \x01(\x03R\x0eauthRetryDelay\"\xae\x02\n" +
 	"\rProviderApply\x12\x1c\n" +
 	"\tbalancers\x18\x01 \x03(\tR\tbalancers\x12\x1d\n" +
 	"\n" +
 	"tag_prefix\x18\x02 \x01(\tR\ttagPrefix\x12#\n" +
 	"\rdrain_timeout\x18\x03 \x01(\x03R\fdrainTimeout\x12#\n" +
 	"\rmax_outbounds\x18\x04 \x01(\x05R\fmaxOutbounds\x12+\n" +
-	"\x11allowed_protocols\x18\x05 \x03(\tR\x10allowedProtocols\x12.\n" +
-	"\x13is_routing_accepted\x18\x06 \x01(\bR\x11isRoutingAccepted\x12)\n" +
+	"\x11allowed_protocols\x18\x05 \x03(\tR\x10allowedProtocols\x12)\n" +
 	"\x10accepted_headers\x18\a \x03(\tR\x0facceptedHeaders\x12#\n" +
-	"\rfixed_headers\x18\b \x01(\bR\ffixedHeaders\"\xa1\x01\n" +
+	"\rfixed_headers\x18\b \x01(\bR\ffixedHeadersJ\x04\b\x06\x10\aR\x13is_routing_accepted\"\xa1\x01\n" +
 	"\x0eUDPProbeConfig\x12\"\n" +
 	"\fdestinations\x18\x01 \x03(\tR\fdestinations\x12\x1a\n" +
 	"\brequests\x18\x02 \x01(\x05R\brequests\x12\x1a\n" +

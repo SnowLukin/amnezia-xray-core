@@ -352,7 +352,7 @@ func TestQualityNetworkChangeEventKeepsOpaqueIDInBothPolicyModes(t *testing.T) {
 			}
 			te.onNetworkChange(id, at(time.Duration(i+1)*time.Second))
 			ev := te.lastOf(t, "network_change")
-			if ev.Fields["network"] != id || ev.Fields["is_known"] != known || te.networkKnown != known {
+			if ev.Fields["network"] != te.networkHash(id) || ev.Fields["is_known"] != known || te.networkKnown != known {
 				t.Fatal("opaque network event lost its original id/known state")
 			}
 			for _, absent := range []string{"network_type", "network_operator", "networkType", "networkOperator"} {
