@@ -68,19 +68,33 @@ func (e *engine) keepAnswer(p *provider, a *providerAnswer, raw []byte, changed 
 // as well. Asked with the number it returned, it allocates nothing, so a
 // host may ask often.
 func (o *Observer) ExportProviderSet(provider string, after uint64) ([]byte, uint64, error) {
-	o.mu.Lock()
-	p := o.e.provider(provider)
-	if p == nil {
-		o.mu.Unlock()
-		return nil, 0, o.providerCommandError(provider)
+	var (
+		unknown error
+		fresh   bool
+		seq     uint64
+		last    lastAnswer
+		rotated map[string]string
+	)
+	func() {
+		o.mu.Lock()
+		defer o.mu.Unlock()
+		p := o.e.provider(provider)
+		if p == nil {
+			unknown = o.e.providerCommandError(provider)
+			return
+		}
+		seq = p.seq
+		if p.last.raw == nil || seq <= after {
+			return
+		}
+		fresh, last, rotated = true, p.last, maps.Clone(p.rotated)
+	}()
+	if unknown != nil {
+		return nil, 0, unknown
 	}
-	seq := p.seq
-	if p.last.raw == nil || seq <= after {
-		o.mu.Unlock()
+	if !fresh {
 		return nil, seq, nil
 	}
-	last, rotated := p.last, maps.Clone(p.rotated)
-	o.mu.Unlock()
 	doc, err := last.document(rotated)
 	if err != nil {
 		return nil, seq, err

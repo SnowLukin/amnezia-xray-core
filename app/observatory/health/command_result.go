@@ -129,13 +129,21 @@ type RefreshData struct {
 }
 
 func (o *Observer) ProviderRefreshInfo(tag string) (RefreshData, error) {
+	data, err := o.queueProviderRefresh(tag)
+	if err != nil {
+		return RefreshData{}, err
+	}
+	o.wake()
+	return data, nil
+}
+
+func (o *Observer) queueProviderRefresh(tag string) (RefreshData, error) {
 	o.mu.Lock()
+	defer o.mu.Unlock()
 	if len(o.e.providers) == 0 || o.s.disabledProviders[tag] {
-		o.mu.Unlock()
 		return RefreshData{}, NewCommandError("feature_disabled", "providers are disabled")
 	}
 	if tag != "" && o.e.provider(tag) == nil {
-		o.mu.Unlock()
 		return RefreshData{}, NewCommandError("unknown_provider", "provider is unknown")
 	}
 	o.e.requestRefresh(tag)
@@ -161,8 +169,6 @@ func (o *Observer) ProviderRefreshInfo(tag string) (RefreshData, error) {
 			data.RetryInMs = max(data.RetryInMs, at.Sub(now).Milliseconds())
 		}
 	}
-	o.mu.Unlock()
-	o.wake()
 	return data, nil
 }
 

@@ -102,10 +102,14 @@ func (q *connectionQuality) requestEnd(request qualityEndRequest, loadBytesDown 
 }
 
 func (q *connectionQuality) publishedSample() {
-	q.life.mu.Lock()
-	q.life.inFlight--
-	request, ready := q.takeReadyEnd()
-	q.life.mu.Unlock()
+	var request qualityEndRequest
+	var ready bool
+	func() {
+		q.life.mu.Lock()
+		defer q.life.mu.Unlock()
+		q.life.inFlight--
+		request, ready = q.takeReadyEnd()
+	}()
 	if ready && request.observer != nil {
 		// Release the private gate before taking the observer lock. Finish's
 		// existing lock can continue controller/stat/cleanup work immediately.

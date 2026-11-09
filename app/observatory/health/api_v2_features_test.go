@@ -126,6 +126,48 @@ func TestV2ClosureRegistryWorksWithoutDetectors(t *testing.T) {
 	}
 }
 
+func TestV2ClosureUploadIsNotSilence(t *testing.T) {
+	o, _, now := v2Observer(v2NoEvidence(), nil)
+	defer o.Close()
+	tr := o.StartDial(context.Background(), "a", net.Destination{}, nil).(*closureTracker)
+	read, write := tr.Dialed(nil, nil, nil, nil)
+	read.Add(7)
+	*now = now.Add(time.Minute)
+	if write == nil {
+		t.Fatal("writes of a registered connection are not timed")
+	}
+	write.Add(64 << 10)
+	if since, ok := tr.idleSince(o.nowNano()); !ok || since != o.nowNano() {
+		t.Fatalf("idle since %v (%v), want the last write", time.Duration(o.nowNano()-since), ok)
+	}
+	tr.Finished(nil)
+}
+
+// A connection whose proxy never returns is let go like a full tracker.
+func TestV2AbandonedClosureLeavesTheRegistry(t *testing.T) {
+	o, _, now := v2Observer(v2NoEvidence(), nil)
+	defer o.Close()
+	stuck := o.StartDial(context.Background(), "a", net.Destination{}, nil).(*closureTracker)
+	stuck.Dialed(nil, nil, nil, nil)
+	*now = now.Add(trackerAbandoned + time.Second)
+	var live []*closureTracker
+	for range 256 {
+		tr := o.StartDial(context.Background(), "a", net.Destination{}, nil).(*closureTracker)
+		tr.Dialed(nil, nil, nil, nil)
+		live = append(live, tr)
+	}
+	o.trackMu.Lock()
+	_, kept := o.closures[stuck]
+	n := len(o.closures)
+	o.trackMu.Unlock()
+	if kept || n != len(live) {
+		t.Fatalf("abandoned kept %v, %d registered, want %d", kept, n, len(live))
+	}
+	for _, tr := range live {
+		tr.Finished(nil)
+	}
+}
+
 func TestV2UDPOnlyUsesMinimalTCPProof(t *testing.T) {
 	f := v2NoEvidence()
 	f.UdpReplies = v2Bool(true)

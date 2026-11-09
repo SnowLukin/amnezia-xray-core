@@ -57,7 +57,7 @@ func (e *engine) cancelLoneFailure(tag string) {
 	e.dropQueued(tag, reasonLone)
 	for _, j := range e.running {
 		if j.tag == tag && j.reason == reasonLone && !j.invalidated {
-			j.invalidated = true
+			j.invalidate()
 			if p := e.paths[tag]; p != nil && j.generation == e.generation {
 				p.probing = false
 			}

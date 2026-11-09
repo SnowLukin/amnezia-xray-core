@@ -174,9 +174,9 @@ func (e *engine) probePlan(s *selector, now time.Time) []string {
 	plan = append(plan, e.ranked(s, now, skip)...)
 	var resting []string
 	if len(s.groups) == 0 {
-		resting = e.ranked(s, time.Unix(1<<40, 0), skip)
+		resting = e.rankedAt(s, now, time.Unix(1<<40, 0), skip)
 	} else {
-		resting = e.groupOrder(s, time.Unix(1<<40, 0), skip, reasonHost)
+		resting = e.groupOrderAt(s, now, time.Unix(1<<40, 0), skip, reasonHost)
 	}
 	representatives := map[*outboundGroup]string{}
 	for _, t := range resting {

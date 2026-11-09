@@ -3,6 +3,8 @@ package health
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/xtls/xray-core/core"
+	"github.com/xtls/xray-core/features/outbound"
 	"google.golang.org/protobuf/proto"
 	"strings"
 	"testing"
@@ -82,6 +84,28 @@ func TestBrokenInitialKeepsTheCoreRunning(t *testing.T) {
 				t.Fatalf("started %v, version %q, outbounds %s, initial kept %v", p.started, p.version, f.m.tags(), f.rt.cfg.initial != nil)
 			}
 		})
+	}
+}
+
+// The host passes the kept set at every start: an outbound of it whose
+// constructor panics refuses the set, not the start of the core.
+func TestInitialBuildPanicRefusesTheSet(t *testing.T) {
+	f, _ := initialFixture(t, `{"outbounds":[{"tag":"x1","protocol":"vless","v":1}]}`)
+	f.rt.cfg.initial = fixtureAnswerBody(f.rt.cfg.initial)
+	f.o.newHandler = func(*core.OutboundHandlerConfig) (outbound.Handler, error) { panic("constructor") }
+	if panics(func() {
+		if err := f.o.Start(); err != nil {
+			t.Error(err)
+		}
+	}) {
+		t.Fatal("a panic building the initial set ended the start")
+	}
+	ev := f.lastApply(t)
+	if ev["trigger"] != "initial" || ev["is_ok"] != false || ev["error"] == "" {
+		t.Fatalf("apply %v, want a refusal of the initial set", ev)
+	}
+	if f.o.failed.Load() || f.m.tags() != "" {
+		t.Fatalf("failed %v, outbounds %s after a refused initial set", f.o.failed.Load(), f.m.tags())
 	}
 }
 

@@ -1049,3 +1049,27 @@ func TestProtoZeroValuesMatchJSONDefaults(t *testing.T) {
 		t.Fatalf("zero config remembers networks without its flag")
 	}
 }
+
+// The recheck of an exhausted balancer ranks its outbounds as if every
+// quarantine were over; an outbound it is the first to look at still dates
+// from now.
+func TestRecheckExhaustedNotesTheRealTime(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		sc   *SelectorConfig
+	}{
+		{"plain", &SelectorConfig{}},
+		{"groups", groupConfig()},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			te := newTestEngine(t, nil, tc.sc, "a1", "a2", "b1")
+			te.sel.exhausted = true
+			te.path("b1").created = time.Time{}
+			now := at(time.Minute)
+			te.recheckExhausted(te.sel, now)
+			if got := te.path("b1").created; !got.Equal(now) {
+				t.Fatalf("created %v, want %v", got, now)
+			}
+		})
+	}
+}

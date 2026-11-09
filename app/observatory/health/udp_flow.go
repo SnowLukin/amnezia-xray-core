@@ -144,16 +144,18 @@ func (f *udpFlow) Uplink(bytes, packets int64) {
 		return
 	}
 	first := false
-	f.mu.Lock()
-	if !f.closed {
-		f.bytesUp += bytes
-		f.writes.Add(packets)
-		if f.firstWrite == 0 {
-			f.firstWrite = f.o.nowNano()
-			first = true
+	func() {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		if !f.closed {
+			f.bytesUp += bytes
+			f.writes.Add(packets)
+			if f.firstWrite == 0 {
+				f.firstWrite = f.o.nowNano()
+				first = true
+			}
 		}
-	}
-	f.mu.Unlock()
+	}()
 	if first {
 		f.o.udpFirstWrite(f, f.o.now())
 	}
@@ -164,16 +166,18 @@ func (f *udpFlow) Downlink(bytes, packets int64) {
 		return
 	}
 	answered := false
-	f.mu.Lock()
-	if !f.closed {
-		answered = bytes > 0 && f.bytesDown == 0
-		f.bytesDown += bytes
-		f.reads += packets
-		if f.firstRead == 0 {
-			f.firstRead = f.o.nowNano()
+	func() {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		if !f.closed {
+			answered = bytes > 0 && f.bytesDown == 0
+			f.bytesDown += bytes
+			f.reads += packets
+			if f.firstRead == 0 {
+				f.firstRead = f.o.nowNano()
+			}
 		}
-	}
-	f.mu.Unlock()
+	}()
 	if answered {
 		f.o.udpAnswered(f, f.o.now())
 	}
@@ -181,8 +185,8 @@ func (f *udpFlow) Downlink(bytes, packets int64) {
 
 func (f *udpFlow) Finished() {
 	f.o.mu.Lock()
+	defer f.o.mu.Unlock()
 	f.finishLocked()
-	f.o.mu.Unlock()
 }
 
 // finishLocked runs with Observer.mu held, including when a final report

@@ -392,7 +392,7 @@ Status - локальная диагностика (`is_local_only: true`). В �
 2. Получить конфиг. Если бэк вернул вместе с ним ответ провайдера, положить его в `healthObservatory.providers[].initialAnswer` нужного провайдера.
 3. Запустить ядро. Если приложение знает свежие адреса бэка, вызвать `SetProviderURLs`.
 4. Сразу вызвать `NetworkChangedWithLabels(id, labels)` с текущей сетью.
-5. Найти в событиях `provider_apply` с `trigger: initial`. Значение `is_ok: false` значит, что начальный набор отклонён, и ядро работает на outbound конфига до первого запроса.
+5. Найти в событиях `provider_apply` с `trigger: initial`. Значение `is_ok: false` значит, что начальный набор отклонён, и ядро работает на outbound конфига до первого запроса. `error: "panic"` значит, что outbound набора упал при сборке; такой сохранённый набор хосту лучше не передавать на следующем старте.
 6. Запустить периодический тик: Status, `DrainEvents`, `ExportProviderSet`, `TakeReport(false)`, `PeekReport`.
 
 ### Старт с сохранённым набором

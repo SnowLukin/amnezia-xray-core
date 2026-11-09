@@ -83,7 +83,7 @@ func (e *engine) cancelCandidates(selectorTag string) {
 	e.cancelCandidateQueue(selectorTag)
 	for _, j := range e.running {
 		if j.reason == reasonCandidate && (selectorTag == "" || j.selector == selectorTag) {
-			j.invalidated = true
+			j.invalidate()
 			if p := e.paths[j.tag]; p != nil {
 				p.probing = false
 			}

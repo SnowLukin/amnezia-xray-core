@@ -31,6 +31,7 @@ type closureTracker struct {
 	answered         atomic.Bool
 	bytesRead        atomic.Int64
 	lastRead         atomic.Int64
+	lastWrite        atomic.Int64
 	spliced          atomic.Bool
 	// Guarded by trackMu, together with the registry and abort closure.
 	abort      func()
@@ -76,6 +77,7 @@ func (o *Observer) newClosureTracker(tag string, abort func(), tcpProof, registe
 				o.closures = make(map[*closureTracker]struct{})
 			}
 			o.closures[t] = struct{}{}
+			o.countTrackedLocked()
 
 		}()
 	}
@@ -89,7 +91,7 @@ func (t *closureTracker) Dialed(_ net.Conn, err error, read, write stats.Counter
 	}
 	t.read.inner = read
 	t.state.Store(trackerOpen)
-	if t.activity {
+	if t.activity || t.progress {
 		t.write.t = t
 		t.write.inner = write
 		write = &t.write
@@ -105,9 +107,15 @@ func (t *closureTracker) Finished(error) {
 	delete(t.o.closures, t)
 	t.abort = nil
 	t.o.trackMu.Unlock()
-	t.o.mu.Lock()
-	woke := t.o.e.used(t.tag, t.o.now())
-	t.o.mu.Unlock()
+	if t.o.failed.Load() {
+		return
+	}
+	var woke bool
+	func() {
+		t.o.mu.Lock()
+		defer t.o.mu.Unlock()
+		woke = t.o.e.used(t.tag, t.o.now())
+	}()
 	if woke || t.aborted.Load() {
 		t.o.wake()
 	}
@@ -141,7 +149,11 @@ func (t *closureTracker) idleSince(now int64) (int64, bool) {
 	// Registry trackers timestamp every read. Unlike the full tracker after
 	// its success threshold, they need no counter sample to establish silence.
 	// Using the check time here would restart the wait after a late first check.
-	return max(t.lastRead.Load(), t.started), true
+	return max(t.lastRead.Load(), t.lastWrite.Load(), t.started), true
+}
+
+func (t *closureTracker) abandoned(now int64) bool {
+	return now-max(t.lastRead.Load(), t.lastWrite.Load(), t.started) > int64(trackerAbandoned)
 }
 
 type closureReadCounter struct {
@@ -173,10 +185,12 @@ func (c *closureReadCounter) Add(n int64) int64 {
 		if c.t.activity {
 			c.t.o.e.lastDemand.Store(c.t.o.now().UnixNano())
 		}
-		if c.t.proof && c.t.answered.CompareAndSwap(false, true) {
-			c.t.o.mu.Lock()
-			c.t.o.noteControllerReplyLocked(c.t.tag, c.t.started, c.t.network, c.t.proofPath)
-			c.t.o.mu.Unlock()
+		if c.t.proof && c.t.answered.CompareAndSwap(false, true) && !c.t.o.failed.Load() {
+			func() {
+				c.t.o.mu.Lock()
+				defer c.t.o.mu.Unlock()
+				c.t.o.noteControllerReplyLocked(c.t.tag, c.t.started, c.t.network, c.t.proofPath)
+			}()
 		}
 		if (c.t.tcpProof || c.t.proof || c.t.labels) && total >= c.t.o.s.passive.successBytes && c.t.proved.CompareAndSwap(false, true) {
 			if c.t.labels {
@@ -203,6 +217,7 @@ func (o *Observer) connectionSignals(tag string) (activity, proof bool) {
 	proof = f.passiveTCP() || f.NetworkMemory || f.UserPresent || f.Connectivity
 	activity = len(o.providers) > 0
 	o.mu.Lock()
+	defer o.mu.Unlock()
 	for _, s := range o.e.selectors {
 		if !s.hasCandidate(tag) {
 			continue
@@ -211,7 +226,6 @@ func (o *Observer) connectionSignals(tag string) (activity, proof bool) {
 			activity = true
 		}
 	}
-	o.mu.Unlock()
 	return
 }
 
@@ -234,7 +248,12 @@ func (c *closureWriteCounter) Set(n int64) int64 {
 }
 func (c *closureWriteCounter) Add(n int64) int64 {
 	if n > 0 {
-		c.t.o.e.lastDemand.Store(c.t.o.now().UnixNano())
+		if c.t.activity {
+			c.t.o.e.lastDemand.Store(c.t.o.now().UnixNano())
+		}
+		if c.t.progress {
+			c.t.lastWrite.Store(c.t.o.nowNano())
+		}
 	}
 	if c.inner != nil {
 		return c.inner.Add(n)

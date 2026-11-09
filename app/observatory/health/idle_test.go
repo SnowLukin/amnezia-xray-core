@@ -215,6 +215,22 @@ func TestIdleConnectionsEndOnceLeftAndSilent(t *testing.T) {
 	}
 }
 
+// A connection that only sends, a long upload, is not silent.
+func TestIdleCloseKeepsAnUpload(t *testing.T) {
+	const after, n = 5 * time.Minute, 2 * time.Minute
+	f := newIdleFixture(t, after, n)
+	f.now = at(time.Second)
+	upload := f.open("upload", 100)
+	left := at(10 * time.Second)
+	f.leave(left)
+	f.turn(left)
+	closeAt := left.Add(n)
+	f.now = closeAt.Add(-time.Second)
+	upload.tr.writeCounter.Add(64 << 10)
+	f.turn(closeAt)
+	f.check()
+}
+
 // The check comes at the later of sleep.afterLastUse after the outbound was left
 // and closeIdleAfter after the silence of the connection began, not before.
 func TestIdleCloseWaitsForBothThresholds(t *testing.T) {

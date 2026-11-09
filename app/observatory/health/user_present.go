@@ -102,7 +102,7 @@ func (e *engine) cancelWakeProbe(tag string) {
 	e.dropQueued(tag, reasonWake)
 	for _, j := range e.running {
 		if j.tag == tag && j.reason == reasonWake && !j.invalidated {
-			j.invalidated = true
+			j.invalidate()
 			if p := e.paths[tag]; p != nil && j.generation == e.generation {
 				p.probing = false
 			}

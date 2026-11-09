@@ -150,27 +150,39 @@ func (e *engine) onIdleChecked(j sleepJob, now time.Time) {
 // connections serves every check of the batch.
 func (o *Observer) closeIdle(batch []sleepJob) {
 	var checks map[string]*sleepJob
-	o.mu.Lock()
-	now := o.now()
-	for i := range batch {
-		j := &batch[i]
-		if !j.idleCheck || !o.e.idleCheckStillDue(j, now) {
-			continue
+	var now time.Time
+	func() {
+		o.mu.Lock()
+		defer o.mu.Unlock()
+		now = o.now()
+		for i := range batch {
+			j := &batch[i]
+			if !j.idleCheck || !o.e.idleCheckStillDue(j, now) {
+				continue
+			}
+			j.checked = true
+			if checks == nil {
+				checks = map[string]*sleepJob{}
+			}
+			checks[j.tag] = j
 		}
-		j.checked = true
-		if checks == nil {
-			checks = map[string]*sleepJob{}
-		}
-		checks[j.tag] = j
-	}
-	o.mu.Unlock()
+	}()
 	if len(checks) == 0 {
 		return
 	}
 	n := int64(o.s.closeIdleAfter)
 	at := int64(now.Sub(o.base))
+	aborts := o.idleAborts(checks, now, at, n)
+	// Ending a connection reports back to the observer.
+	for _, abort := range aborts {
+		abort()
+	}
+}
+
+func (o *Observer) idleAborts(checks map[string]*sleepJob, now time.Time, at, n int64) []func() {
 	var aborts []func()
 	o.trackMu.Lock()
+	defer o.trackMu.Unlock()
 	for t := range o.trackers {
 		j := checks[t.tag]
 		if j == nil || t.abort == nil || t.state.Load() == trackerFinished || t.has(reportedAborted) {
@@ -209,15 +221,12 @@ func (o *Observer) closeIdle(batch []sleepJob) {
 			j.next = due
 		}
 	}
-	o.trackMu.Unlock()
-	// Ending a connection reports back to the observer.
-	for _, abort := range aborts {
-		abort()
-	}
+	return aborts
 }
 
-// idleSince tells since when the connection has received nothing, at now
-// in the units of started, or false when it cannot tell: a spliced
+// idleSince tells since when the connection has received and sent nothing,
+// at now in the units of started, or false when it cannot tell what it
+// received: a spliced
 // connection on a platform whose kernel does not count. Below successBytes
 // lastRead tells. Past it the tracker no longer times reads, and a spliced
 // connection moves its bytes past the counters: what it has received then
@@ -225,6 +234,14 @@ func (o *Observer) closeIdle(batch []sleepJob) {
 // when anything came since, as silence.go does. The observer calls it under
 // trackMu.
 func (t *connTracker) idleSince(now, successBytes int64) (int64, bool) {
+	since, ok := t.receivedSince(now, successBytes)
+	if !ok {
+		return 0, false
+	}
+	return max(since, t.lastWrite.Load()), true
+}
+
+func (t *connTracker) receivedSince(now, successBytes int64) (int64, bool) {
 	n, ok := t.received()
 	if !ok {
 		return 0, false

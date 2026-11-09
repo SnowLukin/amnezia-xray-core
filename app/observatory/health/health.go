@@ -246,7 +246,7 @@ func (o *Observer) applyInitial() {
 		}()
 		// The headers lie under those the host set before the start, name by
 		// name, which gen zero tells.
-		if _, err := o.applySet(rt, a, &refreshJob{p: rt.p, trigger: triggerInitial}); err != nil {
+		if !o.applyInitialSet(rt, a) {
 			continue
 		}
 
@@ -258,6 +258,22 @@ func (o *Observer) applyInitial() {
 
 		}()
 	}
+}
+
+// applyInitialSet refuses a set whose outbound panics while it is built or
+// registered. The host passes the set it kept at every start, so a panic
+// that ended the start would end every start until the host dropped it.
+// applySet has rolled back by then, and its locks are released.
+func (o *Observer) applyInitialSet(rt *providerRuntime, a *providerAnswer) (applied bool) {
+	defer func() {
+		if recover() != nil {
+			applied = false
+			o.emit("provider_apply", map[string]any{"provider": rt.cfg.tag, "trigger": triggerInitial.String(),
+				"version": a.version, "is_ok": false, "error": "panic"})
+		}
+	}()
+	_, err := o.applySet(rt, a, &refreshJob{p: rt.p, trigger: triggerInitial})
+	return err == nil
 }
 
 // initialAnswer reads the initial set of a provider. One the host saved
@@ -493,6 +509,11 @@ func (o *Observer) StartDial(ctx context.Context, tag string, server net.Destina
 	if state := probeStateFrom(ctx); state != nil {
 		return &probeTracker{state: state}
 	}
+	// A panic may have left the engine half changed: a frozen observer keeps
+	// its choice and follows no connection.
+	if o.failed.Load() {
+		return nil
+	}
 	// Metadata uses its own epoch even when routing ignores network changes.
 	labelEpoch := o.qualityEpoch.Load()
 	if !o.s.observes(tag) {
@@ -593,20 +614,33 @@ func (o *Observer) track(t *connTracker) {
 			o.trackers = make(map[*connTracker]struct{})
 		}
 		o.trackers[t] = struct{}{}
-		o.tracked++
-		if o.tracked%256 == 0 {
-			now := o.nowNano()
-			for old := range o.trackers {
-				if old.abandoned(now) {
-					delete(o.trackers, old)
-					delete(o.watching, old)
-					old.watched.Store(false)
-				}
-			}
-		}
+		o.countTrackedLocked()
 
 	}()
 	t.watch()
+}
+
+// countTrackedLocked lets go, every 256 connections, of those whose proxy
+// has not reported for trackerAbandoned: nothing else would ever remove
+// them. It runs under trackMu.
+func (o *Observer) countTrackedLocked() {
+	o.tracked++
+	if o.tracked%256 != 0 {
+		return
+	}
+	now := o.nowNano()
+	for old := range o.trackers {
+		if old.abandoned(now) {
+			delete(o.trackers, old)
+			delete(o.watching, old)
+			old.watched.Store(false)
+		}
+	}
+	for old := range o.closures {
+		if old.abandoned(now) {
+			delete(o.closures, old)
+		}
+	}
 }
 
 // watch makes the sweep check t until it has no deadline left.
@@ -644,33 +678,35 @@ func (o *Observer) watch(t *connTracker) {
 func (o *Observer) closePending(d downMark) {
 	before := int64(d.at.Sub(o.base))
 	var aborts []func()
-	o.trackMu.Lock()
-	for t := range o.trackers {
-		if t.tag != d.tag || t.abort == nil || t.started > before || t.state.Load() == trackerFinished {
-			continue
-		}
-		switch {
-		case d.silent:
-			if !t.silentSince(before) {
+	func() {
+		o.trackMu.Lock()
+		defer o.trackMu.Unlock()
+		for t := range o.trackers {
+			if t.tag != d.tag || t.abort == nil || t.started > before || t.state.Load() == trackerFinished {
 				continue
 			}
-		case d.pending && t.firstRead.Load() == 0 && !t.spliced.Load():
-		default:
-			if d.watch {
-				t.noteReceived(before)
+			switch {
+			case d.silent:
+				if !t.silentSince(before) {
+					continue
+				}
+			case d.pending && t.firstRead.Load() == 0 && !t.spliced.Load():
+			default:
+				if d.watch {
+					t.noteReceived(before)
+				}
+				continue
 			}
-			continue
+			if t.mark(reportedAborted) {
+				aborts = append(aborts, t.abort)
+			}
 		}
-		if t.mark(reportedAborted) {
-			aborts = append(aborts, t.abort)
+		for t := range o.closures {
+			if abort := t.closeFor(d, before); abort != nil {
+				aborts = append(aborts, abort)
+			}
 		}
-	}
-	for t := range o.closures {
-		if abort := t.closeFor(d, before); abort != nil {
-			aborts = append(aborts, abort)
-		}
-	}
-	o.trackMu.Unlock()
+	}()
 	for _, abort := range aborts {
 		abort()
 	}
@@ -778,7 +814,7 @@ func (o *Observer) sweepLoop(done chan struct{}) {
 // neither tells anything about outbounds now.
 func (o *Observer) failure(t *connTracker, kind failureKind) {
 	t.failKind.CompareAndSwap(0, int32(kind)+1)
-	if !o.s.features.failure(kind) {
+	if !o.s.features.failure(kind) || o.failed.Load() {
 		return
 	}
 	var stale bool
@@ -803,6 +839,9 @@ func (o *Observer) failure(t *connTracker, kind failureKind) {
 }
 
 func (o *Observer) answered(t *connTracker) {
+	if o.failed.Load() {
+		return
+	}
 
 	func() {
 		o.mu.Lock()
@@ -834,31 +873,40 @@ func (o *Observer) noteControllerReplyLocked(tag string, started int64, epoch ui
 }
 
 func (o *Observer) connectionSuccess(tag string, started int64, epoch uint64, snapshot *path, udpEpoch, incarnation uint64, tcpProof, controllerProof bool) {
-	if !tcpProof && !controllerProof {
+	if (!tcpProof && !controllerProof) || o.failed.Load() {
 		return
 	}
-	o.mu.Lock()
-	p := o.e.paths[tag]
-	if p == nil || (snapshot != nil && p != snapshot) || p.controllerEpoch != epoch {
-		o.mu.Unlock()
+	var counted, more bool
+	func() {
+		o.mu.Lock()
+		defer o.mu.Unlock()
+		p := o.e.paths[tag]
+		if p == nil || (snapshot != nil && p != snapshot) || p.controllerEpoch != epoch {
+			return
+		}
+		counted = true
+		queued := len(o.e.queue)
+		if tcpProof && udpEpoch == o.e.udpEpoch && p.udpIncarnation == incarnation {
+			p.lastTCPSuccess = o.now()
+			o.sweepUDPEvidenceLocked(o.now())
+		}
+		if controllerProof {
+			o.e.onSuccess(tag, o.now())
+		}
+		more = len(o.e.queue) > queued
+	}()
+	if !counted {
 		return
 	}
-	queued := len(o.e.queue)
-	if tcpProof && udpEpoch == o.e.udpEpoch && p.udpIncarnation == incarnation {
-		p.lastTCPSuccess = o.now()
-		o.sweepUDPEvidenceLocked(o.now())
-	}
-	if controllerProof {
-		o.e.onSuccess(tag, o.now())
-	}
-	more := len(o.e.queue) > queued
-	o.mu.Unlock()
 	if more || o.s.labelRequest != nil {
 		o.wake()
 	}
 }
 
 func (o *Observer) witnessed(labelEpoch uint64) {
+	if o.failed.Load() {
+		return
+	}
 	var queued int
 	var more bool
 	func() {
@@ -877,6 +925,9 @@ func (o *Observer) witnessed(labelEpoch uint64) {
 }
 
 func (o *Observer) finished(t *connTracker) {
+	if o.failed.Load() {
+		return
+	}
 	var now time.Time
 	var woke bool
 	func() {
@@ -1027,18 +1078,23 @@ func (h *selectorHandle) Select(candidates []string) string {
 		h.o.wake()
 	}
 	if snap := h.s.snapshot.Load(); snap == nil || !equalStrings(*snap, candidates) {
-		h.o.mu.Lock()
-		h.o.e.updateCandidates(h.s, candidates, now)
-		h.o.mu.Unlock()
+		func() {
+			h.o.mu.Lock()
+			defer h.o.mu.Unlock()
+			h.o.e.updateCandidates(h.s, candidates, now)
+		}()
 		h.o.wake()
 	}
 	tag := h.s.current()
 	if h.o.s.isProbeOnly(tag) {
 		return ""
 	}
-	h.o.mu.Lock()
-	usable := h.o.e.expiredLeaseUsable(tag)
-	h.o.mu.Unlock()
+	var usable bool
+	func() {
+		h.o.mu.Lock()
+		defer h.o.mu.Unlock()
+		usable = h.o.e.expiredLeaseUsable(tag)
+	}()
 	if !usable {
 		return ""
 	}

@@ -119,6 +119,16 @@ type probeJob struct {
 	request uint64
 }
 
+// invalidate marks the result of the job as stale and ends its probe: a
+// stale probe left running holds a slot of maxConcurrent until its own
+// timeout. A job not started yet has no cancel; runProbe cancels it.
+func (j *probeJob) invalidate() {
+	j.invalidated = true
+	if j.cancel != nil {
+		j.cancel()
+	}
+}
+
 // Outbounds no balancer offers any more are forgotten after this long.
 const staleAfter = 30 * time.Minute
 
@@ -978,8 +988,14 @@ func (e *engine) addSelectorAt(tag string, cfg *selectorSettings, now time.Time)
 // ranked puts live leases first, then paths that are not degraded, cost and
 // candidate order. A path that has not been probed may still be up.
 func (e *engine) ranked(s *selector, now time.Time, skip func(string) bool) []string {
+	return e.rankedAt(s, now, now, skip)
+}
+
+// rankedAt ranks the paths usable at the time at, which may lie past every
+// quarantine; now dates a path the engine sees for the first time.
+func (e *engine) rankedAt(s *selector, now, at time.Time, skip func(string) bool) []string {
 	if len(s.groups) > 0 {
-		return e.rankedGroups(s, now, skip)
+		return e.rankedGroups(s, now, at, skip)
 	}
 	type item struct {
 		tag     string
@@ -994,7 +1010,7 @@ func (e *engine) ranked(s *selector, now time.Time, skip func(string) bool) []st
 			continue
 		}
 		p := e.pathAt(c, now)
-		if !p.usable(now) {
+		if !p.usable(at) {
 			continue
 		}
 		items = append(items, item{c, e.expired[c], e.cost(s, c), e.pathQuality(c), i})
@@ -1549,7 +1565,7 @@ func (e *engine) invalidateProbeJobs(tag string, now time.Time) {
 	})
 	for _, j := range e.running {
 		if !j.isUDP && j.tag == tag && !j.invalidated {
-			j.invalidated = true
+			j.invalidate()
 			old = append(old, j)
 		}
 	}
@@ -1999,9 +2015,9 @@ func (e *engine) recheckExhausted(s *selector, now time.Time) time.Time {
 	var wake time.Time
 	var ranked []string
 	if len(s.groups) > 0 {
-		ranked = e.groupOrder(s, time.Unix(1<<40, 0), nil, reasonRecheck)
+		ranked = e.groupOrderAt(s, now, time.Unix(1<<40, 0), nil, reasonRecheck)
 	} else {
-		ranked = e.ranked(s, time.Unix(1<<40, 0), nil)
+		ranked = e.rankedAt(s, now, time.Unix(1<<40, 0), nil)
 	}
 	for _, c := range ranked {
 		p := e.path(c)
@@ -2704,7 +2720,7 @@ func (e *engine) onNetworkChangeWithLabels(id string, labels map[string]string, 
 			(j.reason == reasonFailover || j.reason == reasonReturnToCheaper || j.reason == reasonGroup) {
 			replacements = append(replacements, j)
 		}
-		j.invalidated = true
+		j.invalidate()
 		return true
 	}
 	e.queue = slices.DeleteFunc(e.queue, resetJob)
@@ -3022,7 +3038,7 @@ func (e *engine) forget(tag string, now time.Time) {
 	e.invalidateUDP(tag, now)
 	for _, j := range e.running {
 		if j.tag == tag {
-			j.invalidated = true
+			j.invalidate()
 			j.forgotten = true
 		}
 	}

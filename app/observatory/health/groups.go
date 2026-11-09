@@ -97,11 +97,17 @@ func (g *outboundGroup) start(s *selector) int {
 
 // Live leases and path quality precede price, including prices changed by a
 // provider. At the same quality and price a group follows its tag ring.
-func (e *engine) rankedGroups(s *selector, now time.Time, skip func(string) bool) []string {
-	return e.groupOrder(s, now, skip, reasonFailover)
+func (e *engine) rankedGroups(s *selector, now, at time.Time, skip func(string) bool) []string {
+	return e.groupOrderAt(s, now, at, skip, reasonFailover)
 }
 
 func (e *engine) groupOrder(s *selector, now time.Time, skip func(string) bool, reason probeReason) []string {
+	return e.groupOrderAt(s, now, now, skip, reason)
+}
+
+// groupOrderAt ranks the outbounds usable at the time at, which may lie past
+// every quarantine; now dates an outbound the engine sees for the first time.
+func (e *engine) groupOrderAt(s *selector, now, at time.Time, skip func(string) bool, reason probeReason) []string {
 	type item struct {
 		tag, key               string
 		cost                   float64
@@ -117,7 +123,7 @@ func (e *engine) groupOrder(s *selector, now time.Time, skip func(string) bool, 
 		}
 		p := e.pathAt(t, now)
 		g := s.groupFor(t)
-		if !e.expiredLeaseUsable(t) || !p.usable(now) || (g != nil && g.down && reason != reasonRecheck && reason != reasonHost) {
+		if !e.expiredLeaseUsable(t) || !p.usable(at) || (g != nil && g.down && reason != reasonRecheck && reason != reasonHost) {
 			continue
 		}
 		it := item{tag: t, key: t, cost: e.cost(s, t), expired: e.expired[t], quality: e.pathQuality(t), pathOrder: i}
