@@ -23,8 +23,12 @@ import (
 	"github.com/xtls/xray-core/app/proxyman"
 	"github.com/xtls/xray-core/common/net"
 	"github.com/xtls/xray-core/common/serial"
+	"github.com/xtls/xray-core/common/session"
 	"github.com/xtls/xray-core/core"
+	"github.com/xtls/xray-core/features/outbound"
 	"github.com/xtls/xray-core/features/stats"
+	"github.com/xtls/xray-core/transport"
+	"github.com/xtls/xray-core/transport/internet"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -623,7 +627,7 @@ func TestUnansweredDialStaysOpenWhileTheConnectionWaits(t *testing.T) {
 		dials[i] = waiting{rec, &tunnelDial{h: h, tracker: rec, ctx: ctx, settled: make(chan struct{})}, abort}
 		dials[i].td.entered()
 	}
-	time.Sleep(answerWait + time.Second)
+	time.Sleep(answerWait(testParams) + time.Second)
 	for _, d := range dials {
 		select {
 		case err := <-d.rec.dialed:
@@ -696,5 +700,112 @@ func TestAbortedLookupLeavesTheDeadTunnel(t *testing.T) {
 	}
 	if !h.Sleep() {
 		t.Fatal("the outbound refused to sleep once its only connection ended")
+	}
+}
+
+func TestAnswerWait(t *testing.T) {
+	def := 2*device.RekeyTimeout + time.Second
+	for rekey, want := range map[string]time.Duration{
+		"": def, "0": def, "junk": def,
+		"12":   25 * time.Second,
+		"8-12": 25 * time.Second,
+	} {
+		if got := answerWait(&AmneziaParameters{RekeyTimeout: rekey}); got != want {
+			t.Errorf("rekey_timeout %q: %v, want %v", rekey, got, want)
+		}
+	}
+	if got := answerWait(nil); got != def {
+		t.Errorf("no parameters: %v, want %v", got, def)
+	}
+}
+
+// With a rekey_timeout of 12 s, a connection that has waited past the wait
+// for the default 5 s still has a repeated handshake to wait for.
+func TestAnswerWaitFollowsRekeyTimeout(t *testing.T) {
+	priv, pub := testKeys(t)
+	addr := netip.MustParseAddr("10.9.0.2")
+	params := proto.Clone(testParams).(*AmneziaParameters)
+	params.RekeyTimeout = "12"
+	s := startTestServer(t, params, testPeer{pub, addr})
+	r := startTestRelay(t, s.endpoint)
+	r.freeze()
+	conf := testClientConf(s, priv, addr, params)
+	conf.Peers[0].Endpoint = r.addr
+	c := newBareClient(t, conf, nil)
+	h, err := c.acquire(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.release()
+
+	rec := &dialRecorder{dialed: make(chan error, 1)}
+	ctx, abort := context.WithCancel(context.Background())
+	defer abort()
+	td := &tunnelDial{
+		h: h, tracker: rec, ctx: ctx, settled: make(chan struct{}),
+		mark:  h.recv.Load(),
+		since: time.Now().Add(-(2*device.RekeyTimeout + 2*time.Second)),
+		timer: time.NewTimer(time.Hour),
+	}
+	td.poll()
+	failed := make(chan struct{})
+	go func() {
+		td.failedInside()
+		close(failed)
+	}()
+	select {
+	case <-failed:
+		t.Fatalf("the dial ended with %v before a handshake of the device could be repeated", <-rec.dialed)
+	case <-time.After(300 * time.Millisecond):
+	}
+	abort()
+	<-failed
+	if err := <-rec.dialed; !goerrors.Is(err, context.Canceled) {
+		t.Fatalf("the dial ended with %v, want context.Canceled", err)
+	}
+}
+
+// trackingDialer is the dialer of an observed outbound; it hands over what
+// each tunnel dial ended with.
+type trackingDialer struct {
+	internet.Dialer
+	dialed chan error
+}
+
+func (d *trackingDialer) StartTunnelDial(context.Context, net.Destination) outbound.DialTracker {
+	return &dialRecorder{dialed: d.dialed}
+}
+
+// A failed wake is one failure of the path for the observer, however many
+// connections it failed.
+func TestFailedWakeIsOneFailure(t *testing.T) {
+	priv, pub := testKeys(t)
+	addr := netip.MustParseAddr("10.9.0.2")
+	s := startTestServer(t, testParams, testPeer{pub, addr})
+	c := newResolvingClient(t, s, priv, addr, &slowDNS{delay: 300 * time.Millisecond, err: goerrors.New("no such host")})
+	d := &trackingDialer{dialed: make(chan error, 8)}
+	ctx := session.ContextWithOutbounds(context.Background(), []*session.Outbound{{Target: tcpTo(testServerAddr, 7)}})
+
+	var wg sync.WaitGroup
+	for range 3 {
+		wg.Go(func() {
+			if err := c.Process(ctx, &transport.Link{}, d); err == nil {
+				t.Error("a connection got the tunnel of a failed wake")
+			}
+		})
+	}
+	wg.Wait()
+	// Within initRetryDelay: the error of the same wake.
+	if err := c.Process(ctx, &transport.Link{}, d); err == nil {
+		t.Error("a connection got the tunnel of a failed wake")
+	}
+	failures := 0
+	for range 4 {
+		if err := <-d.dialed; !goerrors.Is(err, context.Canceled) {
+			failures++
+		}
+	}
+	if failures != 1 {
+		t.Fatalf("the observer got %d failures, want 1", failures)
 	}
 }

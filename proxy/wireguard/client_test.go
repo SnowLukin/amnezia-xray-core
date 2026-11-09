@@ -778,6 +778,38 @@ func TestClientFailedInitKeepsNothing(t *testing.T) {
 	}
 }
 
+// An awake outbound keeps nothing of the connection that woke it, such as
+// its inbound, until it sleeps.
+func TestWakeKeepsNoValuesOfTheConnection(t *testing.T) {
+	priv, pub := testKeys(t)
+	addr := netip.MustParseAddr("10.9.0.2")
+	s := startTestServer(t, testParams, testPeer{pub, addr})
+	c := newBareClient(t, testClientConf(s, priv, addr, testParams), nil)
+	gone := make(chan struct{})
+	func() {
+		inbound := &session.Inbound{Tag: "first"}
+		runtime.AddCleanup(inbound, func(ch chan struct{}) { close(ch) }, gone)
+		ctx := session.ContextWithInbound(context.Background(), inbound)
+		ctx = session.ContextWithOutbounds(ctx, []*session.Outbound{{Target: net.TCPDestination(net.IPAddress(testServerAddr.AsSlice()), 7)}})
+		if _, err := c.acquire(ctx); err != nil {
+			t.Fatal(err)
+		}
+		c.release()
+	}()
+	if !c.holds() {
+		t.Fatal("the outbound holds no device after a wake")
+	}
+	for range 50 {
+		runtime.GC()
+		select {
+		case <-gone:
+			return
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
+	t.Fatal("the awake outbound keeps the inbound of the connection that woke it")
+}
+
 // TestWakeCopiesEveryField fails when the Handler gains a field that wake
 // neither copies from the Handler NewClient built nor sets for the wake, as
 // a rebase onto a newer upstream may bring.

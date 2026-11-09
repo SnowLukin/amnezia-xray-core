@@ -44,11 +44,20 @@ const (
 	askHandshakeAfter = time.Second
 	// While a connection waits for the answer, it checks this often.
 	answerPoll = 100 * time.Millisecond
-	// Without an answer for this long the tunnel does not work: it covers a
-	// lost handshake, retried after device.RekeyTimeout, and the wait of a
-	// handshake asked for right after another one.
-	answerWait = 2*device.RekeyTimeout + time.Second
 )
+
+// answerWait is how long a connection waits for an answer before the tunnel
+// counts as not working. It covers a lost handshake, which the device repeats
+// after the rekey timeout, at most its upper bound, and a handshake asked for
+// right after another one, which the device holds back for the lower bound.
+func answerWait(p *AmneziaParameters) time.Duration {
+	rekey := device.RekeyTimeout
+	var r device.UintRange
+	if p != nil && r.FromString(p.RekeyTimeout) == nil && !r.IsZero() {
+		rekey = time.Duration(r.Hi()) * time.Second
+	}
+	return 2*rekey + time.Second
+}
 
 var errNoAnswer = goerrors.New("the server answered nothing through the tunnel")
 
@@ -310,7 +319,7 @@ func (t *tunnelDial) poll() {
 		t.settle(context.Canceled)
 		return
 	}
-	if time.Since(t.since) >= answerWait {
+	if time.Since(t.since) >= answerWait(t.h.conf.Parameters) {
 		t.giveUp()
 		return
 	}

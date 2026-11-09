@@ -3,7 +3,6 @@ package wireguard
 import (
 	"context"
 	"fmt"
-	gonet "net"
 	"net/netip"
 	"reflect"
 	"strings"
@@ -85,6 +84,9 @@ func NewClient(ctx context.Context, conf *DeviceConfig) (proxy.Outbound, error) 
 			return nil, errors.New("peer without endpoint")
 		}
 	}
+	if err := validateTemplates(conf.Parameters); err != nil {
+		return nil, err
+	}
 
 	localAddresses := make([]netip.Addr, 0, len(conf.Endpoint))
 	for _, localaddress := range conf.Endpoint {
@@ -165,22 +167,6 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
 	}
 
 	td.entered()
-	var addr netip.Addr
-	if ob.Target.Address.Family().IsDomain() {
-		ip, err := h.resolveRemote(ctx, ob.Target.Address.String())
-		if err != nil {
-			td.failedInside()
-			return errors.New("failed to resolve domain").Base(err)
-		}
-		addr, _ = netip.AddrFromSlice(ip)
-	} else {
-		addr, _ = netip.AddrFromSlice(ob.Target.Address.IP())
-	}
-
-	addrPort := netip.AddrPortFrom(addr, ob.Target.Port.Value())
-	if !addrPort.IsValid() {
-		return errors.New("invalid target ", ob.Target)
-	}
 
 	var newCtx context.Context
 	var newCancel context.CancelFunc
@@ -210,10 +196,10 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
 		var err error
 		if sessionPolicy.Timeouts.Handshake != 0 {
 			timeoutCtx, timeoutCancel := context.WithTimeout(ctx, sessionPolicy.Timeouts.Handshake)
-			conn, err = h.tnet.DialContext(timeoutCtx, "tcp", gonet.UDPAddrFromAddrPort(addrPort).String())
+			conn, err = h.tnet.DialContext(timeoutCtx, "tcp", ob.Target.NetAddr())
 			timeoutCancel()
 		} else {
-			conn, err = h.tnet.DialContext(ctx, "tcp", gonet.UDPAddrFromAddrPort(addrPort).String())
+			conn, err = h.tnet.DialContext(ctx, "tcp", ob.Target.NetAddr())
 		}
 		if err != nil {
 			td.failedInside()
@@ -224,15 +210,16 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
 		reader = buf.NewReader(conn)
 		writer = buf.NewWriter(conn)
 	case net.Network_UDP:
-		conn, err := h.tnet.DialContext(ctx, "udp", gonet.UDPAddrFromAddrPort(addrPort).String())
+		conn, err := h.tnet.DialContext(ctx, "udp", ob.Target.NetAddr())
 		if err != nil {
+			td.failedInside()
 			return errors.New("failed to create UDP connection").Base(err)
 		}
 		defer conn.Close()
 		c := &udpConnClient{
 			PacketConn:  conn.(*net.PacketConnWrapper).PacketConn,
 			resolveFunc: func(host string) (net.IP, error) { return h.resolveRemote(ctx, host) },
-			dest:        gonet.UDPAddrFromAddrPort(addrPort),
+			dest:        conn.RemoteAddr().(*net.UDPAddr),
 		}
 		c.PacketConn = td.openedPacket(c.PacketConn)
 		reader = c
@@ -284,7 +271,7 @@ func (h *Handler) init(ctx context.Context) error {
 	if h.dev != nil {
 		return h.dev.Up()
 	}
-	resolveFunc := h.resolveLocal
+	resolveFunc := MakeResolveLocal(h.dns, h.streamSettings)
 	listenFunc := func(ctx context.Context) (net.PacketConn, error) {
 		dest, err := net.ParseDestination("udp:" + h.conf.Peers[0].Endpoint)
 		if err != nil {
@@ -374,75 +361,64 @@ func (h *Handler) init(ctx context.Context) error {
 	return nil
 }
 
-func (h *Handler) resolveLocal(host string) (net.IP, error) {
-	return resolveDomain(host, h.conf.DomainStrategy, func(host string) ([]net.IP, error) {
-		ips, _, err := h.dns.LookupIP(host, dns.IPOption{IPv4Enable: true, IPv6Enable: true})
-		return ips, err
-	})
-}
-
-// resolveRemote resolves host inside the tunnel for a connection. The lookup
-// ends with ctx: one for a connection the observer gave up on would keep the
-// tunnel busy and send queries to a server that may be gone.
-func (h *Handler) resolveRemote(ctx context.Context, host string) (net.IP, error) {
-	return resolveDomain(host, h.conf.DomainStrategy, func(host string) ([]net.IP, error) {
-		addrs, err := h.tnet.LookupContextHost(ctx, host)
+func MakeResolveLocal(d dns.Client, streamSettings *internet.MemoryStreamConfig) func(host string) (net.IP, error) {
+	return func(host string) (net.IP, error) {
+		if ip := net.ParseIP(host); ip != nil {
+			return ip, nil
+		}
+		ips, _, err := d.LookupIP(host, dns.IPOption{IPv4Enable: true, IPv6Enable: true})
 		if err != nil {
 			return nil, err
 		}
-		ips := make([]net.IP, 0, len(addrs))
-		for _, addr := range addrs {
-			ips = append(ips, net.ParseIP(addr))
+		got := ips
+		if streamSettings.SocketSettings != nil {
+			var got4, got6 []net.IP
+			for _, ip := range ips {
+				if ip.To4() != nil {
+					got4 = append(got4, ip)
+				} else {
+					got6 = append(got6, ip)
+				}
+			}
+			switch streamSettings.SocketSettings.DomainStrategy {
+			case internet.DomainStrategy_AS_IS, internet.DomainStrategy_USE_IP, internet.DomainStrategy_FORCE_IP:
+				got = ips
+			case internet.DomainStrategy_USE_IP4, internet.DomainStrategy_FORCE_IP4:
+				got = got4
+			case internet.DomainStrategy_USE_IP6, internet.DomainStrategy_FORCE_IP6:
+				got = got6
+			case internet.DomainStrategy_USE_IP46, internet.DomainStrategy_FORCE_IP46:
+				got = got4
+				if len(got) == 0 {
+					got = got6
+				}
+			case internet.DomainStrategy_USE_IP64, internet.DomainStrategy_FORCE_IP64:
+				got = got6
+				if len(got) == 0 {
+					got = got4
+				}
+			}
+			if len(got) == 0 {
+				return nil, dns.ErrEmptyResponse
+			}
 		}
-		return ips, nil
-	})
+		return got[dice.Roll(len(got))], nil
+	}
 }
 
-func resolveDomain(host string, strategy DeviceConfig_DomainStrategy, lookupIP func(host string) ([]net.IP, error)) (net.IP, error) {
-	if ip := net.ParseIP(host); ip != nil {
-		return ip, nil
-	}
-	ips, err := lookupIP(host)
+// resolveRemote resolves host inside the tunnel for a datagram of a UDP flow,
+// to the address a dial to host takes. The lookup ends with ctx: one for a
+// connection the observer gave up on would keep the tunnel busy and send
+// queries to a server that may be gone.
+func (h *Handler) resolveRemote(ctx context.Context, host string) (net.IP, error) {
+	addrs, err := h.tnet.LookupContextHost(ctx, host)
 	if err != nil {
 		return nil, err
 	}
-	if len(ips) == 0 {
+	if len(addrs) == 0 {
 		return nil, dns.ErrEmptyResponse
 	}
-	var got4, got6 []net.IP
-	for _, ip := range ips {
-		if ip.To4() != nil {
-			got4 = append(got4, ip)
-		} else {
-			got6 = append(got6, ip)
-		}
-	}
-	var got []net.IP
-	switch strategy {
-	case DeviceConfig_FORCE_IP:
-		got = ips
-		return ips[dice.Roll(len(ips))], nil
-	case DeviceConfig_FORCE_IP4:
-		got = got4
-	case DeviceConfig_FORCE_IP6:
-		got = got6
-	case DeviceConfig_FORCE_IP46:
-		got = got4
-		if len(got) == 0 {
-			got = got6
-		}
-	case DeviceConfig_FORCE_IP64:
-		got = got6
-		if len(got) == 0 {
-			got = got4
-		}
-	default:
-		panic(strategy)
-	}
-	if len(got) == 0 {
-		return nil, dns.ErrEmptyResponse
-	}
-	return got[dice.Roll(len(got))], nil
+	return net.ParseIP(addrs[0]), nil
 }
 
 type udpConnClient struct {

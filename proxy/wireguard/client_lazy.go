@@ -59,6 +59,11 @@ func newOutbound(h *Handler) (proxy.Outbound, error) {
 
 var errOutboundClosed = goerrors.New("outbound closed")
 
+// sharedWakeError is the error of a wake that another connection ran.
+type sharedWakeError struct{ error }
+
+func (e sharedWakeError) Unwrap() error { return e.error }
+
 // initRetryDelay is how long connections fail with the error of the last wake
 // before one tries again.
 const initRetryDelay = time.Second
@@ -109,6 +114,12 @@ func (c *lazyClient) Process(ctx context.Context, link *transport.Link, dialer i
 	td := startTunnelDial(ctx, dialer, c.server)
 	h, err := c.acquire(ctx)
 	if err != nil {
+		// The connection that ran the failed wake reports it, once.
+		var shared sharedWakeError
+		if goerrors.As(err, &shared) {
+			td.failed(context.Canceled)
+			return shared.error
+		}
 		td.failed(err)
 		return err
 	}
@@ -165,7 +176,7 @@ func (c *lazyClient) acquire(ctx context.Context) (*Handler, error) {
 		if c.initErr != nil && time.Since(c.initErrTime) < initRetryDelay {
 			err := c.initErr
 			c.mu.Unlock()
-			return nil, err
+			return nil, sharedWakeError{err}
 		}
 		if done := c.initDone; done != nil {
 			c.mu.Unlock()
@@ -181,10 +192,9 @@ func (c *lazyClient) acquire(ctx context.Context) (*Handler, error) {
 		done := make(chan struct{})
 		c.initDone = done
 		c.mu.Unlock()
-		// The device keeps the context for reopening its bind long after
-		// this connection ends; it must not end with it. This connection
-		// finishes the wake even when it is canceled, for those waiting.
-		h, err := c.wake(context.WithoutCancel(ctx))
+		// This connection finishes the wake even when it is canceled, for
+		// those waiting.
+		h, err := c.wake(wakeContext(ctx))
 		c.mu.Lock()
 		c.initDone = nil
 		close(done)
@@ -209,6 +219,20 @@ func (c *lazyClient) acquire(ctx context.Context) (*Handler, error) {
 	h := c.h
 	c.mu.Unlock()
 	return h, nil
+}
+
+// wakeContext is the context of a wake, which the device keeps for reopening
+// its bind long after the connection that woke it ends: it neither ends with
+// that connection nor keeps its values, only copies of the outbounds the bind
+// dials by.
+func wakeContext(ctx context.Context) context.Context {
+	obs := session.OutboundsFromContext(ctx)
+	kept := make([]*session.Outbound, len(obs))
+	for i, ob := range obs {
+		o := *ob
+		kept[i] = &o
+	}
+	return session.ContextWithOutbounds(context.Background(), kept)
 }
 
 // release ends the use of the Handler that acquire returned.
