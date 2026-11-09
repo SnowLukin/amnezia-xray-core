@@ -157,7 +157,7 @@ def invoke(client, wait=20, tag="a1", prime_path=True):
     started = time.time()
     response = client.api("-t", str(wait), "probe", "auto", tag, timeout=wait + 5)
     result, event_start, duration = probe_result(client, started, tag)
-    request = response.get("request") or {}
+    request = response.get("result") or {}
     outbound = next((item for item in request.get("outbounds", []) if item.get("outbound") == tag), {})
     return result, event_start, duration, outbound, client.status()
 
@@ -461,7 +461,7 @@ def phase_network_800ms_2pct(stand, xray, work, name):
                 at = time.time()
                 try:
                     answer = client.api("-t", "20", "probe", "auto", "w1", timeout=25)
-                    request = answer.get("request") or {}
+                    request = answer.get("result") or {}
                     outbound = next((item for item in request.get("outbounds", [])
                                      if item.get("outbound") == "w1"), {})
                     requests.append({"at": at, "result": outbound.get("result"), "source": outbound.get("source")})

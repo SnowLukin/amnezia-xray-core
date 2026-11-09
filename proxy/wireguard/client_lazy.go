@@ -4,7 +4,6 @@ import (
 	"context"
 	goerrors "errors"
 	"net/netip"
-	"slices"
 	"sync"
 	"time"
 
@@ -16,16 +15,16 @@ import (
 	"github.com/xtls/xray-core/proxy"
 	"github.com/xtls/xray-core/transport"
 	"github.com/xtls/xray-core/transport/internet"
-	"gvisor.dev/gvisor/pkg/tcpip/stack"
 )
 
-// A client outbound on the gVisor stack creates its stack and its device with
+// A client outbound on the built-in stack creates its stack and its device with
 // its first connection, and Sleep releases both while no connection uses
-// them; the next connection creates them again. About 65 goroutines and half
-// a megabyte on a 14-core machine are held only while the outbound is in use.
+// them; the next connection creates them again. About 50 goroutines and
+// 160 KiB on a Mac are held only while the outbound is in use, and the device
+// sends no handshakes and keepalives while it sleeps.
 //
 // This lives here, apart from client.go, so that the Handler keeps following
-// upstream. NewClient builds the Handler as upstream does, and on the gVisor
+// upstream. NewClient builds the Handler as upstream does, and on the stack
 // path wraps it in a lazyClient: each wake copies that Handler into a new one
 // with a stack of its own and brings its device up, and only then lets it
 // process connections. A Handler thus keeps one stack and one device for its
@@ -33,29 +32,21 @@ import (
 // interface from load to Close; it does not sleep.
 
 // lazyNetTUN stands in for the TUN of CreateNetTUN in the Handler NewClient
-// builds on the gVisor path, and keeps the arguments for the wakes. It is
+// builds on the stack path, and keeps the arguments for the wakes. It is
 // never used as a TUN.
 type lazyNetTUN struct {
 	tun.Device
 	localAddresses, dnsServers []netip.Addr
 	mtu                        int
-	handleLocal                bool
 }
 
 // deferNetTUN takes the arguments of CreateNetTUN but leaves the stack to
 // the first connection.
-func deferNetTUN(localAddresses, dnsServers []netip.Addr, mtu int, handleLocal bool) (tun.Device, *Net, *stack.Stack, error) {
-	// The stack refuses an address it already has, whatever its zone, and
-	// fails on nothing else: check here to keep failing at load.
-	for i, addr := range localAddresses {
-		if slices.ContainsFunc(localAddresses[:i], func(a netip.Addr) bool { return a.WithZone("") == addr.WithZone("") }) {
-			return nil, nil, nil, errors.New("duplicate address ", addr)
-		}
-	}
-	return &lazyNetTUN{localAddresses: localAddresses, dnsServers: dnsServers, mtu: mtu, handleLocal: handleLocal}, nil, nil, nil
+func deferNetTUN(localAddresses, dnsServers []netip.Addr, mtu int) (tun.Device, *Net, error) {
+	return &lazyNetTUN{localAddresses: localAddresses, dnsServers: dnsServers, mtu: mtu}, nil, nil
 }
 
-// newOutbound returns the Handler NewClient built, or on the gVisor path the
+// newOutbound returns the Handler NewClient built, or on the stack path the
 // lazyClient around it.
 func newOutbound(h *Handler) (proxy.Outbound, error) {
 	args, ok := h.tun.(*lazyNetTUN)
@@ -72,7 +63,7 @@ var errOutboundClosed = goerrors.New("outbound closed")
 // before one tries again.
 const initRetryDelay = time.Second
 
-// lazyClient is a client outbound on the gVisor stack. It implements
+// lazyClient is a client outbound on the built-in stack. It implements
 // outbound.Sleeper; the Handler on a kernel TUN does not, so observers leave
 // that awake.
 type lazyClient struct {
@@ -232,7 +223,7 @@ func (c *lazyClient) release() {
 // nothing.
 func (c *lazyClient) wake(ctx context.Context) (*Handler, error) {
 	a := c.args
-	t, tnet, _, err := CreateNetTUN(a.localAddresses, a.dnsServers, a.mtu, a.handleLocal)
+	t, tnet, err := CreateNetTUN(a.localAddresses, a.dnsServers, a.mtu, nil)
 	if err != nil {
 		return nil, err
 	}

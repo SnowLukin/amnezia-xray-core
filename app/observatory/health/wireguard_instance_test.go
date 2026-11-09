@@ -729,11 +729,11 @@ func TestWireGuardUnchosenOutboundProbedDeadSleepsOnceItsSilentConnectionsEnd(t 
 // waits inside the tunnel for the answer to its SYN, which never comes, while
 // its client waits for a timeout of its own. The tunnel stops asking the
 // server for handshakes for it 11 s after it entered, but the connection
-// goes on waiting, for the handshake timeout of its policy, 60 s by default,
-// and holds the tunnel awake. w1, found down later on a failed probe, ends it
-// as a connection that has received nothing: at the decision, or as silent
-// stallTimeout later when shouldKeepPendingOnDown keeps it then; w1 then
-// sleeps at once. On a phone such a connection outlived both and kept the
+// goes on waiting until the stack gives up on its SYN, 19 s after it, and
+// holds the tunnel awake. w1, found down before that on a failed probe, ends
+// it as a connection that has received nothing: at the decision, or as
+// silent stallTimeout later when shouldKeepPendingOnDown keeps it then; w1
+// then sleeps at once. On a phone such a connection outlived both and kept the
 // device handshaking with the dead address for 49 s after the down.
 func TestWireGuardConnectionWaitingInADeadTunnelEndsWhenItsOutboundIsDown(t *testing.T) {
 	for _, keepPending := range []bool{false, true} {
@@ -744,7 +744,9 @@ func TestWireGuardConnectionWaitingInADeadTunnelEndsWhenItsOutboundIsDown(t *tes
 		t.Run(name, func(t *testing.T) {
 			const stall = 2 * time.Second
 			ts := targetServer(t)
-			f := startWireGuard(t, ts, `{"stallTimeout": "2s", "sweepInterval": "50ms", "shouldKeepPendingOnDown": `+
+			// The probe takes dialTimeout to fail: short enough for the
+			// decision and the silent close to come before the stack gives up.
+			f := startWireGuard(t, ts, `{"dialTimeout": "3s", "stallTimeout": "2s", "sweepInterval": "50ms", "shouldKeepPendingOnDown": `+
 				strconv.FormatBool(keepPending)+`}`, `{"destination": "http://10.10.0.1/probe", "timeout": "8s", "progressTimeout": "6s"}`)
 			if err := f.get("10.10.0.1", "/small", 10*time.Second); err != nil {
 				t.Fatal(err)
@@ -775,7 +777,7 @@ func TestWireGuardConnectionWaitingInADeadTunnelEndsWhenItsOutboundIsDown(t *tes
 			}
 			// Past the 11 s the tunnel asks the server for handshakes for the
 			// connection.
-			time.Sleep(13 * time.Second)
+			time.Sleep(12 * time.Second)
 			select {
 			case <-ended:
 				t.Fatal("the connection ended before w1 was found down")

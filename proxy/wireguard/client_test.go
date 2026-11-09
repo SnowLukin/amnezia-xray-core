@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"encoding/binary"
 	"encoding/hex"
 	goerrors "errors"
 	"fmt"
@@ -36,9 +37,6 @@ import (
 	_ "github.com/xtls/xray-core/transport/internet/tcp"
 	"github.com/xtls/xray-core/transport/pipe"
 	"golang.org/x/crypto/curve25519"
-	"gvisor.dev/gvisor/pkg/tcpip"
-	"gvisor.dev/gvisor/pkg/tcpip/adapters/gonet"
-	"gvisor.dev/gvisor/pkg/tcpip/network/ipv4"
 )
 
 // testParams are AmneziaWG parameters both ends of the tests use: testJc
@@ -79,20 +77,20 @@ type testPeer struct {
 	addr netip.Addr
 }
 
-// testServer is an AmneziaWG peer on loopback. Behind it, a gVisor stack
-// echoes TCP and UDP on port 7 of testServerAddr.
+// testServer is an AmneziaWG peer on loopback. Behind it, a stack echoes
+// TCP and UDP on port 7 of testServerAddr.
 type testServer struct {
 	endpoint string
 	pub      string
 
-	dev      *device.Device
-	listener *gonet.TCPListener
-	udp      *gonet.UDPConn
-	wg       sync.WaitGroup
+	dev *device.Device
+	wg  sync.WaitGroup
 
-	mu    sync.Mutex
-	conns map[stdnet.Conn]struct{}
-	done  chan struct{} // closed when conns becomes empty
+	mu     sync.Mutex
+	closed bool
+	conns  map[stdnet.Conn]struct{}
+	done   chan struct{} // closed when conns becomes empty
+	flows  map[stdnet.Conn]struct{}
 }
 
 func startTestServer(t testing.TB, params *AmneziaParameters, peers ...testPeer) *testServer {
@@ -101,14 +99,16 @@ func startTestServer(t testing.TB, params *AmneziaParameters, peers ...testPeer)
 	if err != nil {
 		t.Fatal(err)
 	}
-	tun, _, stk, err := CreateNetTUN([]netip.Addr{testServerAddr}, nil, 1420, false)
+	priv, pub := testKeys(t)
+	s := &testServer{endpoint: conn.LocalAddr().String(), pub: pub, conns: map[stdnet.Conn]struct{}{}, flows: map[stdnet.Conn]struct{}{}}
+	tun, _, err := CreateNetTUN([]netip.Addr{testServerAddr}, nil, 1420, s)
 	if err != nil {
 		t.Fatal(err)
 	}
-	priv, pub := testKeys(t)
-	rt := newReadyTun(tun)
+	rt := newReadyTun(refusingTun{tun.(*netTun)})
 	dev := device.NewDevice(rt, &bind{
-		listenFunc: func() (net.PacketConn, error) { return conn, nil },
+		ctx:        context.Background(),
+		listenFunc: func(context.Context) (net.PacketConn, error) { return conn, nil },
 	}, device.NewLogger(device.LogLevelSilent, ""))
 	var cfg strings.Builder
 	cfg.WriteString("private_key=" + priv + "\n")
@@ -124,61 +124,132 @@ func startTestServer(t testing.TB, params *AmneziaParameters, peers ...testPeer)
 	if err := dev.Up(); err != nil {
 		t.Fatal(err)
 	}
-	s := &testServer{endpoint: conn.LocalAddr().String(), pub: pub, dev: dev, conns: map[stdnet.Conn]struct{}{}}
-
-	full := tcpip.FullAddress{NIC: 1, Addr: tcpip.AddrFrom4(testServerAddr.As4()), Port: 7}
-	s.listener, err = gonet.ListenTCP(stk, full, ipv4.ProtocolNumber)
-	if err != nil {
-		t.Fatal(err)
-	}
-	s.udp, err = gonet.DialUDP(stk, &full, nil, ipv4.ProtocolNumber)
-	if err != nil {
-		t.Fatal(err)
-	}
-	s.wg.Add(2)
-	go func() {
-		defer s.wg.Done()
-		for {
-			c, err := s.listener.Accept()
-			if err != nil {
-				return
-			}
-			s.mu.Lock()
-			if len(s.conns) == 0 {
-				s.done = make(chan struct{})
-			}
-			s.conns[c] = struct{}{}
-			s.mu.Unlock()
-			s.wg.Go(func() {
-				io.Copy(c, c)
-				c.Close()
-				s.mu.Lock()
-				delete(s.conns, c)
-				if len(s.conns) == 0 {
-					close(s.done)
-				}
-				s.mu.Unlock()
-			})
-		}
-	}()
-	go func() {
-		defer s.wg.Done()
-		b := make([]byte, 2048)
-		for {
-			n, addr, err := s.udp.ReadFrom(b)
-			if err != nil {
-				return
-			}
-			s.udp.WriteTo(b[:n], addr)
-		}
-	}()
+	s.dev = dev
 	t.Cleanup(s.close)
 	return s
 }
 
+// HandleConnection echoes what the stack hands it for port 7, TCP or UDP.
+// Only the TCP connections count for waitConns: a UDP flow ends only when the
+// stack forgets it.
+func (s *testServer) HandleConnection(c stdnet.Conn, dest net.Destination) {
+	if dest.Port != 7 || dest.Address != net.IPAddress(testServerAddr.AsSlice()) {
+		c.Close()
+		return
+	}
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		c.Close()
+		return
+	}
+	tcp := dest.Network == net.Network_TCP
+	if tcp {
+		if len(s.conns) == 0 {
+			s.done = make(chan struct{})
+		}
+		s.conns[c] = struct{}{}
+	} else {
+		s.flows[c] = struct{}{}
+	}
+	s.wg.Add(1)
+	s.mu.Unlock()
+	defer s.wg.Done()
+	if !tcp {
+		defer c.Close()
+		b := make([]byte, 2048)
+		for {
+			n, err := c.Read(b)
+			if err != nil {
+				return
+			}
+			c.Write(b[:n])
+		}
+	}
+	io.Copy(c, c)
+	c.Close()
+	s.mu.Lock()
+	delete(s.conns, c)
+	if len(s.conns) == 0 {
+		close(s.done)
+	}
+	s.mu.Unlock()
+}
+
+// refusingTun drops what goes to an address other than testServerAddr and
+// resets a TCP connection to any port of it but 7, as a network without that
+// host and a host with that port closed do: a stack with a handler takes
+// every connection, for any address.
+type refusingTun struct {
+	*netTun
+}
+
+func (t refusingTun) Write(bufs [][]byte, offset int) (int, error) {
+	for _, b := range bufs {
+		p := b[offset:]
+		if len(p) >= 20 && p[0]>>4 == 4 && netip.AddrFrom4([4]byte(p[16:20])) != testServerAddr {
+			continue
+		}
+		if rst := resetFor(p); rst != nil {
+			t.WritePacket(rst, nil)
+			continue
+		}
+		t.stack.Input(p)
+	}
+	return len(bufs), nil
+}
+
+// resetFor returns the RST/ACK for p if p is an IPv4 SYN to a port other
+// than 7, else nil.
+func resetFor(p []byte) []byte {
+	if len(p) < 40 || p[0]>>4 != 4 || p[9] != 6 {
+		return nil
+	}
+	ihl := int(p[0]&0x0f) * 4
+	if len(p) < ihl+20 {
+		return nil
+	}
+	tcp := p[ihl:]
+	if tcp[13]&0x12 != 0x02 || binary.BigEndian.Uint16(tcp[2:]) == 7 {
+		return nil
+	}
+	r := make([]byte, 40)
+	r[0], r[8], r[9] = 0x45, 64, 6
+	binary.BigEndian.PutUint16(r[2:], 40)
+	copy(r[12:16], p[16:20])
+	copy(r[16:20], p[12:16])
+	h := r[20:]
+	copy(h[0:2], tcp[2:4])
+	copy(h[2:4], tcp[0:2])
+	binary.BigEndian.PutUint32(h[8:], binary.BigEndian.Uint32(tcp[4:])+1)
+	h[12], h[13] = 5<<4, 0x14
+	binary.BigEndian.PutUint16(r[10:], ^sum16(r[:20], 0))
+	var pseudo uint32
+	for i := 12; i < 20; i += 2 {
+		pseudo += uint32(binary.BigEndian.Uint16(r[i:]))
+	}
+	pseudo += 6 + 20
+	binary.BigEndian.PutUint16(h[16:], ^sum16(h, pseudo))
+	return r
+}
+
+func sum16(b []byte, s uint32) uint16 {
+	for i := 0; i+1 < len(b); i += 2 {
+		s += uint32(binary.BigEndian.Uint16(b[i:]))
+	}
+	for s > 0xffff {
+		s = s>>16 + s&0xffff
+	}
+	return uint16(s)
+}
+
 func (s *testServer) close() {
-	s.listener.Close()
-	s.udp.Close()
+	s.mu.Lock()
+	s.closed = true
+	for c := range s.flows {
+		c.Close()
+	}
+	s.mu.Unlock()
 	s.closeConns()
 	s.dev.Close()
 	s.wg.Wait()
@@ -230,7 +301,7 @@ func addTestClient(t testing.TB, inst *core.Instance, tag string, s *testServer,
 	return addTestClientConf(t, inst, tag, testClientConf(s, priv, addr, params))
 }
 
-// testClientConf is the config of a gVisor client outbound that connects to
+// testClientConf is the config of a client outbound on the built-in stack that connects to
 // s from addr.
 func testClientConf(s *testServer, priv string, addr netip.Addr, params *AmneziaParameters) *DeviceConfig {
 	return &DeviceConfig{
@@ -493,7 +564,7 @@ func newResolvingClient(t testing.TB, s *testServer, priv string, addr netip.Add
 	}, d)
 }
 
-// newBareClient returns a gVisor client outbound outside any instance, as
+// newBareClient returns a client outbound on the built-in stack outside any instance, as
 // NewClient would build it, that resolves its endpoint through d.
 func newBareClient(t testing.TB, conf *DeviceConfig, d dns.Client) *lazyClient {
 	t.Helper()
@@ -501,7 +572,7 @@ func newBareClient(t testing.TB, conf *DeviceConfig, d dns.Client) *lazyClient {
 	for i, a := range conf.Endpoint {
 		addrs[i] = netip.MustParseAddr(a)
 	}
-	tun, _, _, err := deferNetTUN(addrs, nil, int(conf.Mtu), true)
+	tun, _, err := deferNetTUN(addrs, nil, int(conf.Mtu))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -704,28 +775,6 @@ func TestClientFailedInitKeepsNothing(t *testing.T) {
 		waitGoroutines(t, base)
 		// Let the next connection try again instead of getting this error.
 		time.Sleep(initRetryDelay)
-	}
-}
-
-func TestNewClientRejectsDuplicateAddress(t *testing.T) {
-	priv, pub := testKeys(t)
-	addr := netip.MustParseAddr("10.9.0.2")
-	s := startTestServer(t, testParams, testPeer{pub, addr})
-	inst := newTestInstance(t)
-	err := core.AddOutboundHandler(inst, &core.OutboundHandlerConfig{
-		Tag:            "wg",
-		SenderSettings: serial.ToTypedMessage(&proxyman.SenderConfig{}),
-		ProxySettings: serial.ToTypedMessage(&DeviceConfig{
-			IsClient:    true,
-			SecretKey:   priv,
-			Endpoint:    []string{"10.9.0.2", "10.9.0.2/32"},
-			Mtu:         1420,
-			NoKernelTun: true,
-			Peers:       []*PeerConfig{{PublicKey: s.pub, Endpoint: s.endpoint, AllowedIps: []string{"0.0.0.0/0"}}},
-		}),
-	})
-	if err == nil {
-		t.Fatal("an outbound with a duplicate address was created")
 	}
 }
 

@@ -808,6 +808,16 @@ class Client:
             raise RuntimeError(f"api health {args}: {out.stderr.strip()}")
         return result_payload(json.loads(out.stdout))
 
+    def accepts(self, *args):
+        """Sends a pin or a release and tells whether the core took it."""
+        try:
+            self.api(*args)
+        except RuntimeError as e:
+            if "was not accepted" in str(e):
+                return False
+            raise
+        return True
+
     def network(self, network_id=""):
         return self.api("network", network_id) if network_id else self.api("network")
 
@@ -1020,9 +1030,11 @@ class Traffic:
     def start(self):
         self.thread = threading.Thread(target=self._run, daemon=True)
         self.thread.start()
+        RUNNING_TRAFFIC.add(self)
         return self
 
     def stop(self):
+        RUNNING_TRAFFIC.discard(self)
         self._stop.set()
         self.thread.join(timeout=10)
         time.sleep(self.timeout + 0.5)
@@ -1336,6 +1348,20 @@ def fold_report(events):
         elif t == "udp_suspect":
             c["udp_suspect_count"] += 1
     return c, decided
+
+
+# Traffic that a scenario started and did not stop, as when it raised: left running, it would
+# reach the clients of the next scenarios and count there as use.
+RUNNING_TRAFFIC = set()
+
+
+def stop_running_traffic():
+    # A subclass may override stop() without leaving the set, so only a live thread counts as left.
+    left = [traffic for traffic in RUNNING_TRAFFIC if traffic.thread.is_alive()]
+    RUNNING_TRAFFIC.clear()
+    for traffic in left:
+        traffic.stop()
+    return len(left)
 
 
 def pop_report_checks():

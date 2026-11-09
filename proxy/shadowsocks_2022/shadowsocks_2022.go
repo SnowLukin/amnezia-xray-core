@@ -19,12 +19,8 @@ import (
 )
 
 func (s *ServerUDPSession) UpdateConn(conn stat.Connection) {
-	if s.currentConn.Load() == nil {
-		s.currentConn.Store(conn)
-	}
-	if s.timer != nil {
-		s.timer.Update()
-	}
+	s.currentConn.Store(conn)
+	s.timer.Update()
 }
 
 func (s *ServerUDPSession) WriteToClient(b []byte) error {
@@ -58,18 +54,15 @@ func (s *ServerUDPSession) EnsureLink(
 	policyManager policy.Manager,
 	responseEncoder func(dest net.Destination, payload []byte) ([]byte, error),
 ) (*transport.Link, error) {
-	s.UpdateConn(conn)
-
-	if link := s.link.Load(); link != nil {
-		return link, nil
-	}
-
 	s.Lock()
 	defer s.Unlock()
 
 	if link := s.link.Load(); link != nil {
+		s.UpdateConn(conn)
 		return link, nil
 	}
+
+	s.currentConn.Store(conn)
 
 	sessCtx, cancel := context.WithCancel(ctx)
 	inbound := session.InboundFromContext(sessCtx)
@@ -95,7 +88,6 @@ func (s *ServerUDPSession) EnsureLink(
 		return nil, err
 	}
 
-	s.link.Store(link)
 	sessionPolicy := policyManager.ForLevel(level)
 	s.timer = signal.CancelAfterInactivity(sessCtx, func() {
 		if s.manager != nil {
@@ -104,6 +96,7 @@ func (s *ServerUDPSession) EnsureLink(
 		s.Close()
 		cancel()
 	}, sessionPolicy.Timeouts.ConnectionIdle)
+	s.link.Store(link)
 
 	go safe.Run(safe.Connection, "proxy/shadowsocks_2022/shadowsocks_2022.go:handleUDPResponse", s.Close, func() { handleUDPResponse(s, link, dest, responseEncoder) })
 	return link, nil
@@ -119,19 +112,13 @@ func ResetTCPConn(conn net.Conn) {
 }
 
 func handleUDPResponse(s *ServerUDPSession, link *transport.Link, fallbackDest net.Destination, encode func(dest net.Destination, payload []byte) ([]byte, error)) {
-	defer func() {
-		if s.timer != nil {
-			s.timer.SetTimeout(0)
-		}
-	}()
+	defer s.timer.SetTimeout(0)
 	for {
 		resMb, err := link.Reader.ReadMultiBuffer()
 		if err != nil {
 			return
 		}
-		if s.timer != nil {
-			s.timer.Update()
-		}
+		s.timer.Update()
 		for i, rb := range resMb {
 			b := rb.Bytes()
 			if encode != nil {

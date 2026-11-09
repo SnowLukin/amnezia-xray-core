@@ -52,13 +52,13 @@ func TestProcessAfterCloseFails(t *testing.T) {
 
 // The Handler as NewClient builds it on a kernel TUN takes its first
 // connections at once: init creates the device under the lock, and Process
-// reads it only through init. A gVisor TUN stands in for the kernel one.
+// reads it only through init. A TUN of the built-in stack stands in for the kernel one.
 func TestConcurrentFirstConnectionsOnAPlainHandler(t *testing.T) {
 	priv, pub := testKeys(t)
 	addr := netip.MustParseAddr("10.9.0.2")
 	s := startTestServer(t, testParams, testPeer{pub, addr})
 	conf := testClientConf(s, priv, addr, testParams)
-	tn, tnet, _, err := CreateNetTUN([]netip.Addr{addr}, nil, 1420, true)
+	tn, tnet, err := CreateNetTUN([]netip.Addr{addr}, nil, 1420, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

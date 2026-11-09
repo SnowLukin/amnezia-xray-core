@@ -48,6 +48,11 @@ def main():
             except Exception as e:
                 traceback.print_exc()
                 checks = [{"check": "scenario ran", "value": repr(e), "limit": "", "ok": False}]
+            finally:
+                left = bench.stop_running_traffic()
+            if left:
+                checks.append({"check": "traffic stopped by the scenario", "value": f"{left} left running",
+                               "limit": "0", "ok": False})
             checks += bench.pop_report_checks()
             for c in checks:
                 mark = "PASS" if c["ok"] else "FAIL"

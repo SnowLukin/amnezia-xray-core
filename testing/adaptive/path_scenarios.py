@@ -61,7 +61,7 @@ def invalid_configs():
 
     def group(cfg):
         cfg["routing"]["balancers"][0]["strategy"]["settings"]["groups"] = [
-            {"name": "relay", "cost": 1}]
+            {"name": "relay", "cost": 1, "probe": "default"}]
         outbound(cfg, "a1")["path"] = {"balancer": "auto", "group": "relay"}
 
     def unknown_group(cfg):
@@ -80,9 +80,10 @@ def invalid_configs():
         ("unknown probe", changed(lambda c: outbound(c, "a1")["path"].update(probe="absent")), "a1"),
         ("leastCost selector", changed(lambda c: c["routing"]["balancers"][0].update(selector=["a1"])), "selector"),
         ("duplicate group", changed(lambda c: c["routing"]["balancers"][0]["strategy"]["settings"].update(
-            groups=[{"name": "relay", "cost": 1}, {"name": "relay", "cost": 2}])), "relay"),
+            groups=[{"name": "relay", "cost": 1, "probe": "default"},
+                    {"name": "relay", "cost": 2, "probe": "default"}])), "relay"),
         ("empty group", changed(lambda c: c["routing"]["balancers"][0]["strategy"]["settings"].update(
-            groups=[{"name": "relay", "cost": 1}])), "relay"),
+            groups=[{"name": "relay", "cost": 1, "probe": "default"}])), "relay"),
         ("no participants", changed(lambda c: outbound(c, "a1").pop("path")), "auto"),
     ]
     grouped = changed(group)
@@ -107,7 +108,7 @@ def invalid_path_config(stand, xray, work, name):
     for label, cfg, expected in invalid_configs():
         path = os.path.join(work, f"{name}-{label.replace(' ', '-')}.json")
         with open(path, "w") as stream:
-            json.dump(cfg, stream)
+            json.dump(bench.api_config(cfg), stream)
         result = subprocess.run([xray, "run", "-test", "-c", path], capture_output=True, text=True, timeout=15)
         output = result.stdout + result.stderr
         checks.append(check(label, output[-300:], result.returncode != 0 and expected in output,

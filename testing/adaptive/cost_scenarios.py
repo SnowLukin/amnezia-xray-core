@@ -2,7 +2,7 @@
 import time
 
 import bench
-from scenarios import check, first_event, leak_check, run_timeline, scenario
+from scenarios import RETURN_PROOF, check, first_event, leak_check, run_timeline, scenario
 
 
 def current(client):
@@ -39,7 +39,8 @@ def cost_above_immediate(stand, xray, work, name):
 
     with bench.Client(xray, cfg, work, name) as c:
         traffic = bench.Traffic(rate=2, big=0.5)
-        run_timeline(traffic, [(2, prime), (5, ban)], 45)
+        # The return interval is 3 s, and the return to p-cheap3 takes its proof after that.
+        run_timeline(traffic, [(2, prime), (5, ban)], 5 + 3 + RETURN_PROOF + 5)
     expensive = first_event(c.events, "switch", marks["ban"], to="p-expensive")
     fetch = first_event(c.events, "provider_fetch", marks["ban"], trigger="cost_above", is_ok=True)
     returned = first_event(c.events, "switch", marks["ban"], to="p-cheap3")
