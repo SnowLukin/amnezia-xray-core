@@ -55,6 +55,11 @@ func TestQualityRequestProjectionPreservesAllFieldsAndOwnsPointers(t *testing.T)
 		BulkPeakCount: 3, BulkPeakKbpsP50: qualityScalar(int64(2000)), BulkPeakKbpsP90: qualityScalar(int64(3000)),
 		BulkSaturatedCount: qualityScalar(uint64(0)), BulkUnsaturatedCount: qualityScalar(uint64(2)),
 		BulkSaturatedKbpsP50: qualityScalar(int64(5000)), BulkSaturatedKbpsP90: qualityScalar(int64(8000)),
+		BulkPolicedCount: qualityScalar(uint64(1)), BulkPolicedKbpsP50: qualityScalar(int64(1000)), BulkPolicedKbpsP90: qualityScalar(int64(1000)),
+		UploadPeakCount: 2, UploadPeakKbpsP50: qualityScalar(int64(3000)), UploadPeakKbpsP90: qualityScalar(int64(5000)),
+		UploadSaturatedCount: qualityScalar(uint64(1)), UploadUnsaturatedCount: qualityScalar(uint64(0)),
+		UploadSaturatedKbpsP50: qualityScalar(int64(5000)), UploadSaturatedKbpsP90: qualityScalar(int64(5000)),
+		UploadPolicedCount: qualityScalar(uint64(0)), UploadPolicedKbpsP50: qualityScalar(int64(256)), UploadPolicedKbpsP90: qualityScalar(int64(512)),
 		BulkRTTP50Ms: qualityScalar(int64(90)), BulkSplicedCount: qualityScalar(uint64(0)),
 		RXOutOfOrderFraction: qualityScalar(float64(0)), TXRetransmitFraction: qualityScalar(.125),
 		SpeedLimitDownKbps: qualityScalar(int64(20971)), SpeedLimitUpKbps: qualityScalar(int64(5242)),
@@ -70,6 +75,11 @@ func TestQualityRequestProjectionPreservesAllFieldsAndOwnsPointers(t *testing.T)
 		"bulk_peak_count": "bulkPeakCount", "bulk_peak_kbps_p50": "bulkPeakKbpsP50", "bulk_peak_kbps_p90": "bulkPeakKbpsP90",
 		"bulk_saturated_count": "bulkSaturatedCount", "bulk_unsaturated_count": "bulkUnsaturatedCount",
 		"bulk_saturated_kbps_p50": "bulkSaturatedKbpsP50", "bulk_saturated_kbps_p90": "bulkSaturatedKbpsP90",
+		"bulk_policed_count": "bulkPolicedCount", "bulk_policed_kbps_p50": "bulkPolicedKbpsP50", "bulk_policed_kbps_p90": "bulkPolicedKbpsP90",
+		"upload_peak_count": "uploadPeakCount", "upload_peak_kbps_p50": "uploadPeakKbpsP50", "upload_peak_kbps_p90": "uploadPeakKbpsP90",
+		"upload_saturated_count": "uploadSaturatedCount", "upload_unsaturated_count": "uploadUnsaturatedCount",
+		"upload_saturated_kbps_p50": "uploadSaturatedKbpsP50", "upload_saturated_kbps_p90": "uploadSaturatedKbpsP90",
+		"upload_policed_count": "uploadPolicedCount", "upload_policed_kbps_p50": "uploadPolicedKbpsP50", "upload_policed_kbps_p90": "uploadPolicedKbpsP90",
 		"bulk_rtt_p50_ms": "bulkRttP50Ms", "bulk_spliced_count": "bulkSplicedCount",
 		"rx_out_of_order_fraction": "rxOutOfOrderFraction", "tx_retransmit_fraction": "txRetransmitFraction",
 		"speed_limit_down_kbps": "speedLimitDownKbps", "speed_limit_up_kbps": "speedLimitUpKbps",
@@ -98,6 +108,8 @@ func TestQualityRequestProjectionPreservesAllFieldsAndOwnsPointers(t *testing.T)
 	// Buckets add up across reports; a provider request has no use for them.
 	buckets := view
 	buckets.BulkKbpsHist, buckets.BulkPeakKbpsHist, buckets.BulkSaturatedKbpsHist = []uint64{1}, []uint64{2}, []uint64{3}
+	buckets.BulkPolicedKbpsHist, buckets.UploadPeakKbpsHist, buckets.UploadSaturatedKbpsHist, buckets.UploadPolicedKbpsHist = []uint64{4}, []uint64{5}, []uint64{6}, []uint64{7}
+	buckets.TTFBMsHist, buckets.DialMsHist = []uint64{8}, []uint64{9}
 	if fields := qualityProjectionJSON(t, requestQualityOf(buckets)); len(fields) != len(pairs) {
 		t.Fatalf("request projection carries histogram buckets: %d fields", len(fields))
 	}

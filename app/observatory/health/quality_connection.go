@@ -31,12 +31,55 @@ type qualityTCPPoint struct {
 	tcp   tcpQualitySnapshot
 }
 
-// qualityKernelPoint is the kernel's received byte counter at a read. Its
-// difference measures how fast the network delivered, whatever the pace at
-// which the reader drained the socket buffer.
+// qualityKernelPoint is a kernel byte counter at a milestone: received bytes
+// for a download, acknowledged bytes for an upload. Its difference measures
+// how fast the network delivered, whatever the pace at which the user drained
+// or filled the socket buffer.
 type qualityKernelPoint struct {
-	at      int64
-	rxBytes uint64
+	at    int64
+	bytes uint64
+}
+
+// qualityPeak keeps the fastest delivery of one direction between
+// consecutive milestones. Out-of-order marks keep the counter monotonic; an
+// interval is measured only between published points.
+type qualityPeak struct {
+	last atomic.Pointer[qualityKernelPoint]
+	kbps atomic.Int64
+}
+
+// note publishes a counter. start, when there is no earlier milestone, gives
+// the point the first interval starts at.
+func (p *qualityPeak) note(now int64, bytes uint64, start func() *qualityKernelPoint) {
+	point := &qualityKernelPoint{at: now, bytes: bytes}
+	for {
+		previous := p.last.Load()
+		if previous != nil && previous.bytes >= bytes {
+			return
+		}
+		if !p.last.CompareAndSwap(previous, point) {
+			continue
+		}
+		from := previous
+		if from == nil && start != nil {
+			from = start()
+		}
+		if from == nil || from.bytes >= bytes {
+			return
+		}
+		if elapsed := now - from.at; elapsed >= qualityPeakMinInterval {
+			kbps := float64(bytes-from.bytes) * 8e6 / float64(elapsed)
+			if kbps > 0 && kbps < math.MaxInt64 {
+				for {
+					peak := p.kbps.Load()
+					if int64(kbps) <= peak || p.kbps.CompareAndSwap(peak, int64(kbps)) {
+						break
+					}
+				}
+			}
+		}
+		return
+	}
 }
 
 // Shorter intervals between two counter reads say more about the clock and
@@ -60,6 +103,10 @@ type qualityEndSample struct {
 	spliced   bool
 	s1, s2    tcpQualitySnapshot
 	lastTCP   tcpQualitySnapshot
+	// The upload: its peak, and snapshots at its first and latest milestone.
+	upPeakKbps int64
+	hasUpPeak  bool
+	u1, u2     tcpQualitySnapshot
 }
 
 // qualitySpeedLimit is the speedLimit of the outbound, in decimal Kbit/s like
@@ -91,9 +138,10 @@ type connectionQuality struct {
 	firstClaim atomic.Bool
 	bulk       atomic.Pointer[qualityBulkPoint]
 	s2         atomic.Pointer[qualityTCPPoint]
-	kernel     atomic.Pointer[qualityKernelPoint]
-	peak       atomic.Int64
+	down, up   qualityPeak
+	u1, u2     atomic.Pointer[qualityTCPPoint]
 	next       atomic.Uint64
+	nextUp     atomic.Uint64
 	spliced    atomic.Bool
 	initial    atomic.Bool
 }
@@ -104,6 +152,7 @@ func (o *Observer) newConnectionQuality(udp bool, started int64) *connectionQual
 	}
 	q := &connectionQuality{network: o.qualityEpoch.Load(), started: started}
 	q.next.Store(qualityMilestones[0])
+	q.nextUp.Store(qualityMilestones[0])
 	return q
 }
 
@@ -177,18 +226,9 @@ func (q *connectionQuality) mark(o *Observer, now, total int64) {
 	// still in flight. Neither may discard the other's measurements.
 	if info := q.snapshot(o); info.present != 0 {
 		if info.present&qualityHasRXBytes != 0 {
-			q.notePeak(now, info.rxBytes)
+			q.down.note(now, info.rxBytes, q.firstKernelPoint)
 		}
-		point := &qualityTCPPoint{bytes: total, tcp: info}
-		for {
-			previous := q.s2.Load()
-			if previous != nil && previous.bytes >= total {
-				break
-			}
-			if q.s2.CompareAndSwap(previous, point) {
-				break
-			}
-		}
+		latestQualityPoint(&q.s2, &qualityTCPPoint{bytes: total, tcp: info})
 	}
 	point := &qualityBulkPoint{at: now, bytes: total}
 	for {
@@ -202,39 +242,46 @@ func (q *connectionQuality) mark(o *Observer, now, total int64) {
 	}
 }
 
-// notePeak keeps the fastest delivery between consecutive milestones. The
-// first interval starts at the first reply. Out-of-order marks keep the
-// counter monotonic; an interval is measured only between published points.
-func (q *connectionQuality) notePeak(now int64, rxBytes uint64) {
-	point := &qualityKernelPoint{at: now, rxBytes: rxBytes}
+// The first download interval starts at the first reply.
+func (q *connectionQuality) firstKernelPoint() *qualityKernelPoint {
+	first := q.first.Load()
+	if first == nil || first.tcp.present&qualityHasRXBytes == 0 {
+		return nil
+	}
+	return &qualityKernelPoint{at: first.at, bytes: first.tcp.rxBytes}
+}
+
+// latestQualityPoint keeps the snapshot of the most bytes.
+func latestQualityPoint(latest *atomic.Pointer[qualityTCPPoint], point *qualityTCPPoint) {
 	for {
-		previous := q.kernel.Load()
-		if previous != nil && previous.rxBytes >= rxBytes {
+		previous := latest.Load()
+		if previous != nil && previous.bytes >= point.bytes || latest.CompareAndSwap(previous, point) {
 			return
 		}
-		if !q.kernel.CompareAndSwap(previous, point) {
-			continue
-		}
-		from := previous
-		if from == nil {
-			first := q.first.Load()
-			if first == nil || first.tcp.present&qualityHasRXBytes == 0 || first.tcp.rxBytes >= rxBytes {
-				return
-			}
-			from = &qualityKernelPoint{at: first.at, rxBytes: first.tcp.rxBytes}
-		}
-		if elapsed := now - from.at; elapsed >= qualityPeakMinInterval {
-			kbps := float64(rxBytes-from.rxBytes) * 8e6 / float64(elapsed)
-			if kbps > 0 && kbps < math.MaxInt64 {
-				for {
-					peak := q.peak.Load()
-					if int64(kbps) <= peak || q.peak.CompareAndSwap(peak, int64(kbps)) {
-						break
-					}
-				}
-			}
-		}
+	}
+}
+
+func (q *connectionQuality) needsUpMark(total int64) bool {
+	return q != nil && uint64(total) >= q.nextUp.Load()
+}
+
+// markUp samples the socket when the user's writes cross a milestone. The
+// writes only fill the socket buffer; the acknowledged bytes tell the speed.
+// Upload intervals start at the first upload milestone.
+func (q *connectionQuality) markUp(o *Observer, now, total int64) {
+	if !q.needsUpMark(total) || !q.beginUpMarkSample(total) {
 		return
+	}
+	defer q.publishedSample()
+	info := q.snapshot(o)
+	if info.present == 0 {
+		return
+	}
+	point := &qualityTCPPoint{bytes: total, tcp: info}
+	q.u1.CompareAndSwap(nil, point)
+	latestQualityPoint(&q.u2, point)
+	if info.present&qualityHasTXAcked != 0 {
+		q.up.note(now, info.txAcked, nil)
 	}
 }
 
@@ -286,8 +333,17 @@ func (q *connectionQuality) end(total int64) qualityEndSample {
 			}
 		}
 	}
-	if peak := q.peak.Load(); peak > 0 {
+	if peak := q.down.kbps.Load(); peak > 0 {
 		s.peakKbps, s.hasPeak = peak, true
+	}
+	if peak := q.up.kbps.Load(); peak > 0 {
+		s.upPeakKbps, s.hasUpPeak = peak, true
+	}
+	if u1 := q.u1.Load(); u1 != nil {
+		s.u1, s.u2 = u1.tcp, u1.tcp
+		if u2 := q.u2.Load(); u2 != nil {
+			s.u2 = u2.tcp
+		}
 	}
 	if s2 := q.s2.Load(); s2 != nil {
 		s.s2, s.lastTCP = s2.tcp, s2.tcp

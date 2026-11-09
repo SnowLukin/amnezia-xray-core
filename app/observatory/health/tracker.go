@@ -299,8 +299,9 @@ func (t *connTracker) onWrite(n int64) {
 		t.o.e.lastDemand.Store(t.o.now().UnixNano())
 	}
 	now := t.o.nowNano()
-	t.bytesWritten.Add(n)
+	total := t.bytesWritten.Add(n)
 	t.lastWrite.Store(now)
+	t.quality.markUp(t.o, now, total)
 	if t.firstWrite.Load() == 0 && t.firstWrite.CompareAndSwap(0, now) {
 		t.o.firstUserWrite(t)
 	}

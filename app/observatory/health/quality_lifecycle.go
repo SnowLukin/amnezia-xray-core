@@ -3,6 +3,7 @@ package health
 import (
 	"math"
 	"sync"
+	"sync/atomic"
 )
 
 type qualityEndRequest struct {
@@ -43,9 +44,18 @@ func (q *connectionQuality) beginFirstSample(kernelProgress bool) bool {
 }
 
 func (q *connectionQuality) beginMarkSample(total int64) bool {
+	return q.beginMilestoneSample(&q.next, total)
+}
+
+func (q *connectionQuality) beginUpMarkSample(total int64) bool {
+	return q.beginMilestoneSample(&q.nextUp, total)
+}
+
+// beginMilestoneSample claims the milestone of one direction.
+func (q *connectionQuality) beginMilestoneSample(nextMilestone *atomic.Uint64, total int64) bool {
 	q.life.mu.Lock()
 	defer q.life.mu.Unlock()
-	boundary := q.next.Load()
+	boundary := nextMilestone.Load()
 	if q.life.closed || uint64(total) < boundary {
 		return false
 	}
@@ -56,7 +66,7 @@ func (q *connectionQuality) beginMarkSample(total int64) bool {
 			break
 		}
 	}
-	q.next.Store(next)
+	nextMilestone.Store(next)
 	q.life.inFlight++
 	return true
 }
@@ -81,6 +91,7 @@ func (q *connectionQuality) requestEnd(request qualityEndRequest, loadBytesDown 
 	}
 	q.life.closed = true
 	q.next.Store(math.MaxUint64)
+	q.nextUp.Store(math.MaxUint64)
 	// This immediate atomic counter load follows admission close under the
 	// same gate. Every admitted mark incremented the counter before entering
 	// the gate, so its total cannot exceed this completion byte cutoff. The

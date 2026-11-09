@@ -54,8 +54,8 @@ func TestQualityPeakUsesKernelDelivery(t *testing.T) {
 	if end.peakKbps != 50331 || !end.hasBulk || end.bulkKbps >= end.peakKbps {
 		t.Fatalf("end %+v, want peak 50331 kbps above the average", end)
 	}
-	if saturated, known := qualitySaturation(end); !saturated || !known {
-		t.Fatal("80 ms of queue above a 40 ms path is not saturation")
+	if load := qualityDownloadLoad(end); load != qualityLoadQueued {
+		t.Fatalf("80 ms of queue above a 40 ms path is load %d", load)
 	}
 
 	tr.Finished(nil)
@@ -83,36 +83,91 @@ func TestQualityPeakNeedsKernelCounter(t *testing.T) {
 	}
 }
 
-func TestQualitySaturation(t *testing.T) {
-	rtt := func(minRTT, loadRTT time.Duration) qualityEndSample {
-		return qualityEndSample{
-			s1: tcpQualitySnapshot{minRTT: minRTT, present: qualityHasMinRTT},
-			s2: tcpQualitySnapshot{loadRTT: loadRTT, present: qualityHasLoadRTT},
-		}
+func TestQualityLoad(t *testing.T) {
+	ms := time.Millisecond
+	rtt := func(minRTT, loadRTT time.Duration) qualityLoadSignals {
+		return qualityLoadSignals{minRTT: minRTT, loadRTT: loadRTT, hasRTT: true}
 	}
-	loss := func(outOfOrder, total uint64) qualityEndSample {
-		return qualityEndSample{
-			s1: tcpQualitySnapshot{present: qualityHasRX},
-			s2: tcpQualitySnapshot{rxOutOfOrder: outOfOrder, rxTotal: total, present: qualityHasRX},
-		}
+	withLoss := func(s qualityLoadSignals, lost, total uint64) qualityLoadSignals {
+		s.lost, s.total, s.hasLoss = lost, total, true
+		return s
 	}
 	for name, c := range map[string]struct {
-		s                qualityEndSample
-		saturated, known bool
+		s    qualityLoadSignals
+		want qualityLoad
 	}{
-		"no signals":               {qualityEndSample{}, false, false},
-		"queue on a short path":    {rtt(20*time.Millisecond, 55*time.Millisecond), true, true},
-		"small queue":              {rtt(20*time.Millisecond, 45*time.Millisecond), false, true},
-		"queue below half of long": {rtt(200*time.Millisecond, 290*time.Millisecond), false, true},
-		"queue above half of long": {rtt(200*time.Millisecond, 300*time.Millisecond), true, true},
-		"loss":                     {loss(2, 100), true, true},
-		"rare reordering":          {loss(1, 1000), false, true},
-		"counter reset":            {loss(0, 0), false, false},
+		"no signals":               {qualityLoadSignals{}, qualityLoadUnknown},
+		"queue on a short path":    {rtt(20*ms, 55*ms), qualityLoadQueued},
+		"small queue":              {rtt(20*ms, 45*ms), qualityLoadFree},
+		"queue below half of long": {rtt(200*ms, 290*ms), qualityLoadFree},
+		"queue above half of long": {rtt(200*ms, 300*ms), qualityLoadQueued},
+		"queue overflowing":        {withLoss(rtt(20*ms, 200*ms), 5, 100), qualityLoadQueued},
+		"policer":                  {withLoss(rtt(20*ms, 25*ms), 5, 100), qualityLoadPoliced},
+		"managed queue drops":      {withLoss(rtt(20*ms, 25*ms), 2, 100), qualityLoadLossy},
+		"loss without rtt":         {withLoss(qualityLoadSignals{}, 5, 100), qualityLoadLossy},
+		"rare reordering":          {withLoss(qualityLoadSignals{}, 1, 1000), qualityLoadFree},
+		"counter reset":            {withLoss(qualityLoadSignals{}, 0, 0), qualityLoadUnknown},
 	} {
-		if saturated, known := qualitySaturation(c.s); saturated != c.saturated || known != c.known {
-			t.Errorf("%s: saturated %v known %v, want %v %v", name, saturated, known, c.saturated, c.known)
+		if got := c.s.load(); got != c.want {
+			t.Errorf("%s: load %d, want %d", name, got, c.want)
 		}
 	}
+}
+
+func TestQualityDownloadAndUploadLoadSignals(t *testing.T) {
+	s := qualityEndSample{
+		s1: tcpQualitySnapshot{minRTT: 40 * time.Millisecond, present: qualityHasMinRTT | qualityHasRX},
+		s2: tcpQualitySnapshot{loadRTT: 45 * time.Millisecond, rxOutOfOrder: 10, rxTotal: 100, present: qualityHasLoadRTT | qualityHasRX},
+		u1: tcpQualitySnapshot{minRTT: 60 * time.Millisecond, txRetransmit: 100, txTotal: 1000, present: qualityHasMinRTT | qualityHasTX},
+		u2: tcpQualitySnapshot{rtt: 200 * time.Millisecond, txRetransmit: 100, txTotal: 101000, present: qualityHasRTT | qualityHasTX},
+	}
+	if load := qualityDownloadLoad(s); load != qualityLoadPoliced {
+		t.Fatalf("10%% reordered with no queue: load %d", load)
+	}
+	// The upload takes the least RTT known, the 40 ms of the first reply.
+	if load := qualityUploadLoad(s); load != qualityLoadQueued {
+		t.Fatalf("160 ms of upload queue: load %d", load)
+	}
+	s.u2.rtt = 50 * time.Millisecond
+	s.u2.txRetransmit = 100 + 5000
+	if load := qualityUploadLoad(s); load != qualityLoadPoliced {
+		t.Fatalf("5%% retransmitted with no queue: load %d", load)
+	}
+	s.u2.txTotal = 10
+	if load := qualityUploadLoad(s); load != qualityLoadFree {
+		t.Fatalf("a reset counter became loss: load %d", load)
+	}
+}
+
+// Writes fill the socket buffer at once; the acknowledged bytes show 8 MiB
+// went out in two seconds.
+func TestQualityUploadPeakUsesAcknowledgedBytes(t *testing.T) {
+	o, clk := qualityIntegrationObserver(false)
+	var acked uint64
+	o.qualityInfo = func(syscall.RawConn) tcpQualitySnapshot {
+		return tcpQualitySnapshot{txAcked: acked, rtt: 300 * time.Millisecond, minRTT: 40 * time.Millisecond,
+			present: qualityHasRTT | qualityHasMinRTT | qualityHasTXAcked}
+	}
+	tr, _, w := qualityOpenPath(o, clk, qualityTestConn{raw: &qualityTestRawConn{}}, 50*time.Millisecond)
+	clk.advance(10 * time.Millisecond)
+	w.Add(1 << 20)
+	w.Add(3 << 20)
+	if end := tr.quality.end(0); end.hasUpPeak {
+		t.Fatalf("a full socket buffer became an upload speed: %+v", end)
+	}
+	clk.advance(2 * time.Second)
+	acked = 8 << 20
+	w.Add(12 << 20)
+	end := tr.quality.end(0)
+	if !end.hasUpPeak || end.upPeakKbps != 33554 || end.hasPeak {
+		t.Fatalf("end %+v, want an upload peak of 33554 kbps and no download peak", end)
+	}
+	tr.Finished(nil)
+	v := o.e.quality.currentView(clk.now()).Paths["a1"]
+	if v.UploadPeakCount != 1 || *v.UploadSaturatedCount != 1 || *v.UploadPolicedCount != 0 || v.BulkPeakCount != 0 {
+		t.Fatalf("path view %+v", v)
+	}
+	qualitySummaryInt(t, v.UploadSaturatedKbpsP50, 50000)
 }
 
 func TestQualitySpeedHistogramsAddUp(t *testing.T) {
@@ -125,23 +180,41 @@ func TestQualitySpeedHistogramsAddUp(t *testing.T) {
 		{hasBulk: true, bulkKbps: 900, hasPeak: true, peakKbps: 4000, s1: saturatedRTT.s1, s2: saturatedRTT.s2},
 		{hasBulk: true, bulkKbps: 7000, hasPeak: true, peakKbps: 9000, s1: saturatedRTT.s1, s2: tcpQualitySnapshot{loadRTT: 25 * time.Millisecond, present: qualityHasLoadRTT}},
 		{hasBulk: true, bulkKbps: 600000, hasPeak: true, peakKbps: 700000},
+		{hasPeak: true, peakKbps: 1500,
+			s1: tcpQualitySnapshot{minRTT: 20 * time.Millisecond, present: qualityHasMinRTT | qualityHasRX},
+			s2: tcpQualitySnapshot{loadRTT: 22 * time.Millisecond, rxOutOfOrder: 10, rxTotal: 100, present: qualityHasLoadRTT | qualityHasRX}},
+		{hasUpPeak: true, upPeakKbps: 3000},
 		{hasBulk: true, bulkKbps: 100, limit: qualitySpeedLimit{downKbps: 8000, upKbps: 2000}},
 	} {
 		a.addEnd(s)
 	}
+	a.addInitial(qualityInitialSample{hasTTFB: true, ttfb: 70 * time.Millisecond, hasDial: true, dial: 15 * time.Millisecond})
 	v := a.view()
-	if v.BulkCount != 4 || v.BulkPeakCount != 3 || *v.BulkSaturatedCount != 1 || *v.BulkUnsaturatedCount != 1 {
-		t.Fatalf("counts %+v", v)
+	if v.BulkCount != 4 || v.BulkPeakCount != 4 || *v.BulkSaturatedCount != 2 || *v.BulkUnsaturatedCount != 1 || *v.BulkPolicedCount != 1 {
+		t.Fatalf("download counts %+v", v)
+	}
+	// A peak with no signals counts neither as saturated nor as free.
+	if v.UploadPeakCount != 1 || *v.UploadSaturatedCount != 0 || *v.UploadUnsaturatedCount != 0 || v.UploadSaturatedKbpsP50 != nil {
+		t.Fatalf("upload counts %+v", v)
 	}
 	for name, h := range map[string]struct {
 		buckets []uint64
 		total   uint64
-	}{"bulk": {v.BulkKbpsHist, v.BulkCount}, "peak": {v.BulkPeakKbpsHist, v.BulkPeakCount}, "saturated": {v.BulkSaturatedKbpsHist, *v.BulkSaturatedCount}} {
+		bounds  int
+	}{
+		"bulk":      {v.BulkKbpsHist, v.BulkCount, len(qualitySpeedBounds)},
+		"peak":      {v.BulkPeakKbpsHist, v.BulkPeakCount, len(qualitySpeedBounds)},
+		"saturated": {v.BulkSaturatedKbpsHist, *v.BulkSaturatedCount, len(qualitySpeedBounds)},
+		"policed":   {v.BulkPolicedKbpsHist, *v.BulkPolicedCount, len(qualitySpeedBounds)},
+		"upload":    {v.UploadPeakKbpsHist, v.UploadPeakCount, len(qualitySpeedBounds)},
+		"ttfb":      {v.TTFBMsHist, v.TTFBCount, len(qualityTimeBounds)},
+		"dial":      {v.DialMsHist, v.DialCount, len(qualityTimeBounds)},
+	} {
 		var sum uint64
 		for _, n := range h.buckets {
 			sum += n
 		}
-		if len(h.buckets) != len(qualitySpeedBounds)+1 || sum != h.total {
+		if len(h.buckets) != h.bounds+1 || sum != h.total {
 			t.Errorf("%s buckets %v do not add up to %d", name, h.buckets, h.total)
 		}
 	}
@@ -149,6 +222,7 @@ func TestQualitySpeedHistogramsAddUp(t *testing.T) {
 		t.Fatalf("speeds outside the bounds lost their buckets: %v %v", v.BulkKbpsHist, v.BulkPeakKbpsHist)
 	}
 	qualitySummaryInt(t, v.BulkSaturatedKbpsP90, 5000)
+	qualitySummaryInt(t, v.BulkPolicedKbpsP50, 2000)
 	qualitySummaryInt(t, v.SpeedLimitDownKbps, 8000)
 	qualitySummaryInt(t, v.SpeedLimitUpKbps, 2000)
 
@@ -167,7 +241,10 @@ func TestQualitySpeedHistogramsAddUp(t *testing.T) {
 	}
 	for _, name := range []string{"bulk_kbps_hist", "bulk_peak_count", "bulk_peak_kbps_p50", "bulk_peak_kbps_p90", "bulk_peak_kbps_hist",
 		"bulk_saturated_count", "bulk_unsaturated_count", "bulk_saturated_kbps_p50", "bulk_saturated_kbps_p90", "bulk_saturated_kbps_hist",
-		"speed_limit_down_kbps", "speed_limit_up_kbps"} {
+		"bulk_policed_count", "bulk_policed_kbps_p50", "bulk_policed_kbps_p90", "bulk_policed_kbps_hist",
+		"upload_peak_count", "upload_peak_kbps_p50", "upload_peak_kbps_p90", "upload_peak_kbps_hist",
+		"upload_saturated_count", "upload_unsaturated_count", "upload_policed_count",
+		"ttfb_ms_hist", "dial_ms_hist", "speed_limit_down_kbps", "speed_limit_up_kbps"} {
 		if fields[name] == nil {
 			t.Errorf("report omits %s", name)
 		}

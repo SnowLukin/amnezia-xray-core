@@ -12,17 +12,19 @@ const (
 	qualityHasRX
 	qualityHasTX
 	qualityHasRXBytes
+	qualityHasTXAcked
 )
 
 // tcpQualitySnapshot keeps presence separate from value: no retransmissions is
 // a known zero, whereas a field beyond the returned getsockopt length is absent.
 // RX counters are packets on Linux and bytes on Darwin; TX counters are bytes.
-// rxBytes is the payload the kernel received, as the network delivered it.
+// rxBytes is the payload the kernel received, as the network delivered it;
+// txAcked is the payload the network delivered the other way.
 type tcpQualitySnapshot struct {
 	rtt, minRTT, loadRTT  time.Duration
 	rxOutOfOrder, rxTotal uint64
 	txRetransmit, txTotal uint64
-	rxBytes               uint64
+	rxBytes, txAcked      uint64
 	present               uint8
 }
 
@@ -32,6 +34,7 @@ type tcpQualitySnapshot struct {
 const (
 	qualityLinuxRTTOffset       = 68
 	qualityLinuxLoadRTTOffset   = 92
+	qualityLinuxTXAckedOffset   = 120
 	qualityLinuxRXBytesOffset   = 128
 	qualityLinuxMinRTTOffset    = 148
 	qualityLinuxRXTotalOffset   = 152
@@ -75,9 +78,13 @@ func decodeLinuxTCPQuality(b []byte) tcpQualitySnapshot {
 			s.present |= qualityHasLoadRTT
 		}
 	}
-	// Bytes_received arrived in Linux 4.1, Bytes_sent and Bytes_retrans in
-	// 4.19, Rcv_ooopack in 5.4. Check returned field boundaries, because
-	// vendor kernels may backport them.
+	// Bytes_acked and Bytes_received arrived in Linux 4.1, Bytes_sent and
+	// Bytes_retrans in 4.19, Rcv_ooopack in 5.4. Check returned field
+	// boundaries, because vendor kernels may backport them.
+	if len(b) >= qualityLinuxTXAckedOffset+8 {
+		s.txAcked = binary.NativeEndian.Uint64(b[qualityLinuxTXAckedOffset:])
+		s.present |= qualityHasTXAcked
+	}
 	if len(b) >= qualityLinuxRXBytesOffset+8 {
 		s.rxBytes = binary.NativeEndian.Uint64(b[qualityLinuxRXBytesOffset:])
 		s.present |= qualityHasRXBytes
@@ -113,6 +120,12 @@ func decodeDarwinTCPQuality(b []byte) tcpQualitySnapshot {
 		s.txRetransmit = binary.NativeEndian.Uint64(b[qualityDarwinTXRetransOffset:])
 		s.txTotal = binary.NativeEndian.Uint64(b[qualityDarwinTXTotalOffset:])
 		s.present |= qualityHasTX
+		// Darwin counts no acknowledged bytes. Bytes sent once moved at the
+		// pace the congestion window allowed, which is what a peak needs.
+		if s.txTotal >= s.txRetransmit {
+			s.txAcked = s.txTotal - s.txRetransmit
+			s.present |= qualityHasTXAcked
+		}
 	}
 	return s
 }
