@@ -251,18 +251,15 @@ func (h *Handler) Dispatch(ctx context.Context, link *transport.Link) {
 				goto out
 			}
 		}
+		manager := h.mux
 		if h.xudp != nil && ob.Target.Network == net.Network_UDP {
-			if !h.xudp.Enabled {
-				goto out
-			}
-			test(h.xudp.Dispatch(ctx, link))
-			return
+			manager = h.xudp
 		}
-		if h.mux.Enabled {
+		if manager.Enabled {
 			if content != nil && content.SkipMuxReuse {
-				test(h.mux.DispatchIsolated(ctx, link))
+				test(manager.DispatchIsolated(ctx, link))
 			} else {
-				test(h.mux.Dispatch(ctx, link))
+				test(manager.Dispatch(ctx, link))
 			}
 			return
 		}
