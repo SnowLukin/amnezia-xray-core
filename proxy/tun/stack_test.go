@@ -1155,6 +1155,36 @@ func TestTCPSynAfterClose(t *testing.T) {
 	}
 }
 
+// A connection whose answer to the SYN panics does not keep the stack from closing.
+func TestTCPSynPanicReleasesConnection(t *testing.T) {
+	p, l := newPeer(t, "10.0.0.1:1234", "10.0.0.2:80")
+	var once sync.Once
+	l.out = func(b []byte) {
+		once.Do(func() { panic("write") })
+		p.sent <- b
+	}
+	// not newTestStack: its cleanup would wait forever on a connection that stays locked
+	s := &stack{ctx: context.Background(), tun: l, mtu: testMTU, window: tcpWindow, handle: func(net.Conn, net.Destination) {}, conns: make(map[flow]*tcpConn), sockets: make(map[netip.AddrPort]*udpSocket)}
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Fatal("the answer to the SYN did not panic")
+			}
+		}()
+		s.Input(p.bytes(p.seq, tcpSyn, nil, nil))
+	}()
+	closed := make(chan struct{})
+	go func() {
+		s.Close()
+		close(closed)
+	}()
+	select {
+	case <-closed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the stack does not close: the connection stays locked")
+	}
+}
+
 // A UDP packet starts a connection, which answers from any address, and an echo request is answered.
 // Both can be larger than a buffer of a tun that reads into more than one.
 func TestUDPAndICMP(t *testing.T) {

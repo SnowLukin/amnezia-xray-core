@@ -167,8 +167,18 @@ func (c *CacheController) writeAndShrink(expiredKeys []string) {
 		c.dirtyips = c.ips
 		c.ips = make(map[string]*record, int(float64(lenAfter)*1.1))
 		c.highWatermark = lenAfter
-		go safe.Run(safe.Subsystem, "app/dns/cache_controller.go:c.writeAndShrink", nil, func() func() { safeFn := c.migrate; return func() { safeFn() } }())
+		go c.runMigration()
 	}
+}
+
+// runMigration contains a migration panic: the cache serves on, and dropping the
+// migration state lets cleanup run again instead of being skipped forever.
+func (c *CacheController) runMigration() {
+	safe.Run(safe.Connection, "app/dns/cache_controller.go:c.writeAndShrink", func() {
+		c.Lock()
+		c.dirtyips = nil
+		c.Unlock()
+	}, c.migrate)
 }
 
 type migrationEntry struct {
@@ -248,8 +258,27 @@ func (c *CacheController) updateRecord(req *dnsRequest, rep *IPRecord) {
 		return
 	}
 
+	lockWait, pubRecord, pubSuffix := c.storeRecord(req, rep, rtt)
+
+	if pubRecord != nil {
+		_, ttl, err := pubRecord.getIPs()
+		if ttl > 0 && !go_errors.Is(err, errRecordNotFound) {
+			c.pub.Publish(req.domain+pubSuffix, pubRecord)
+		}
+	}
+
+	errors.LogInfo(context.Background(), c.name, " got answer: ", req.domain, " ", req.reqType, " -> ", rep.IP, ", rtt: ", rtt, ", lock: ", lockWait)
+
+	if !c.serveStale || c.serveExpiredTTL != 0 {
+		common.Must(c.cacheCleanup.Start())
+	}
+}
+
+// storeRecord caches rep and returns the cached record of the other address family to publish.
+func (c *CacheController) storeRecord(req *dnsRequest, rep *IPRecord, rtt time.Duration) (lockWait time.Duration, pubRecord *IPRecord, pubSuffix string) {
 	c.Lock()
-	lockWait := time.Since(req.start) - rtt
+	defer c.Unlock()
+	lockWait = time.Since(req.start) - rtt
 
 	newRec := &record{}
 	oldRec := c.ips[req.domain]
@@ -257,9 +286,6 @@ func (c *CacheController) updateRecord(req *dnsRequest, rep *IPRecord) {
 	if c.dirtyips != nil {
 		dirtyRec = c.dirtyips[req.domain]
 	}
-
-	var pubRecord *IPRecord
-	var pubSuffix string
 
 	switch req.reqType {
 	case dnsmessage.TypeA:
@@ -283,20 +309,7 @@ func (c *CacheController) updateRecord(req *dnsRequest, rep *IPRecord) {
 	}
 
 	c.ips[req.domain] = newRec
-	c.Unlock()
-
-	if pubRecord != nil {
-		_, ttl, err := pubRecord.getIPs()
-		if ttl > 0 && !go_errors.Is(err, errRecordNotFound) {
-			c.pub.Publish(req.domain+pubSuffix, pubRecord)
-		}
-	}
-
-	errors.LogInfo(context.Background(), c.name, " got answer: ", req.domain, " ", req.reqType, " -> ", rep.IP, ", rtt: ", rtt, ", lock: ", lockWait)
-
-	if !c.serveStale || c.serveExpiredTTL != 0 {
-		common.Must(c.cacheCleanup.Start())
-	}
+	return
 }
 
 func (c *CacheController) findRecords(domain string) *record {

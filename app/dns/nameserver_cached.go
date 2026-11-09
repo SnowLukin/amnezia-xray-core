@@ -22,9 +22,6 @@ type CachedNameserver interface {
 
 // queryIP is called from dns.Server->queryIPTimeout
 func queryIP(ctx context.Context, s CachedNameserver, domain string, option dns.IPOption) ([]net.IP, uint32, error) {
-	if safe.Broken("app/dns") {
-		return nil, 0, safe.ErrPanic
-	}
 	fqdn := Fqdn(domain)
 
 	cache := s.getCacheController()

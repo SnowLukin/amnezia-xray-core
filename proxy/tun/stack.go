@@ -357,9 +357,9 @@ func (s *stack) handleTCP(p packet) {
 	s.mu.Unlock()
 	s.opening.Add(1)
 	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.sendSyn()
 	c.arm(tcpTick)
-	c.mu.Unlock()
 }
 
 // refuse answers a segment of a connection that is not known with a reset
