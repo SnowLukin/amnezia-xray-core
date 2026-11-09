@@ -327,7 +327,9 @@ func (d *DefaultDispatcher) Dispatch(ctx context.Context, destination net.Destin
 					ob.Target = destination
 				}
 			}
-			safe.TestPanic("connection", destination.NetAddr())
+			if safe.TestPanicEnabled {
+				safe.TestPanic("connection", destination.NetAddr())
+			}
 			d.routedDispatch(ctx, outbound, destination)
 		}()
 	}
@@ -355,7 +357,9 @@ func (d *DefaultDispatcher) DispatchLink(ctx context.Context, destination net.De
 	outbound = WrapLink(ctx, d.policy, d.stats, outbound)
 	sniffingRequest := content.SniffingRequest
 	if !sniffingRequest.Enabled {
-		safe.TestPanic("connection", destination.NetAddr())
+		if safe.TestPanicEnabled {
+			safe.TestPanic("connection", destination.NetAddr())
+		}
 		d.routedDispatch(ctx, outbound, destination)
 	} else {
 		cReader := &cachedReader{
@@ -384,7 +388,9 @@ func (d *DefaultDispatcher) DispatchLink(ctx context.Context, destination net.De
 				ob.Target = destination
 			}
 		}
-		safe.TestPanic("connection", destination.NetAddr())
+		if safe.TestPanicEnabled {
+			safe.TestPanic("connection", destination.NetAddr())
+		}
 		d.routedDispatch(ctx, outbound, destination)
 	}
 

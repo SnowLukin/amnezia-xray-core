@@ -1,8 +1,19 @@
 # Runtime worker inventory
 
-Baseline `8d8a2251`; integration checked through `2478ced5`. Fallback and census add no goroutine launch or timer callback: census jobs use the existing guarded `Observer.runProbe` workers, and the frozen `engine.step` gate stops new census scheduling. Go AST inventory includes every go statement and AfterFunc/errgroup callback outside `_test.go` and generated `.pb.go`. Lines refer to the baseline. Fixtures under testing/, the formatting CLI and the debug distro are process/tool entries. Dependency-owned goroutines are guarded at core callbacks/task/proxy boundaries; fatal runtime throws are outside recover.
+## Panic policy
 
-Go launches: {'subsystem': 54, 'connection': 81, 'process': 9}. Explicit runtime startup assertions remain unchanged. Periodic tasks default to the owner function subsystem; connection ActivityTimer uses connection scope. Global XUDP and Hysteria collectors stay broken until process restart.
+- `connection`: the panic closes that connection or task and the process lives. If one site (`where`) panics 20 times within a minute, the process ends as below: a deterministic bug there would otherwise fail every connection while the tunnel looks connected.
+- `subsystem` outside `app/observatory/health/`: the process ends as on an unrecovered panic, with exit code 2 and the stack trace on stderr, so the mobile system restarts the tunnel. Cleanup is skipped because it may wait on a lock the panicking worker still holds. A connection boundary around such code does not swallow the panic.
+- `subsystem` under `app/observatory/health/`: the observer freezes its current choice, the process lives, and `Status.broken_subsystems` lists `app/observatory/health` until the next core start. It is the only entry that list can contain.
+- Every recovered panic writes `panic_recovered scope=... where=...` with source frames, without the panic value, to the core error log (stderr before the first core start). The record of a panic that ends the process may be lost with the asynchronous log writer; the runtime trace on stderr stays.
+
+Periodic tasks default to the owner function subsystem, so a panic in a cleanup task ends the process; connection ActivityTimer uses connection scope.
+
+## Inventory
+
+The table is a snapshot of baseline `8d8a2251`, checked through `2478ced5`, and line numbers refer to that baseline. It is not complete for the current head: later packages have go statements without a boundary, for example `proxy/masque`, `transport/internet/masque`, `transport/internet/xdrive`, `transport/internet/finalmask/xdns`, `transport/internet/finalmask/realm/client.go`, `proxy/tun/tun_windows.go`, and some listed files no longer exist. A panic in an unguarded goroutine ends the process, which matches the subsystem policy. Fixtures under testing/, the formatting CLI and the debug distro are process/tool entries. Dependency-owned goroutines are guarded at core callbacks/task/proxy boundaries; fatal runtime throws are outside recover.
+
+Go launches at the baseline: {'subsystem': 54, 'connection': 81, 'process': 9}. Explicit runtime startup assertions remain unchanged.
 
 | Function | Baseline line | Launch | Class | Existing recover | Boundary |
 | --- | ---: | --- | --- | --- | --- |

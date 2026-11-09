@@ -29,14 +29,30 @@ func TestParallelPanicReturnsError(t *testing.T) {
 		t.Fatal(err)
 	}
 }
-func TestPeriodicPanicStopsOwner(t *testing.T) {
+func TestPeriodicConnectionPanicStopsOwner(t *testing.T) {
 	safe.Reset()
 	defer safe.Reset()
-	p := &Periodic{Interval: time.Millisecond, Execute: func() error { panic("subsystem") }}
+	p := &Periodic{Interval: time.Millisecond, Scope: safe.Connection, Execute: func() error { panic("connection") }}
 	if err := p.Start(); !errors.Is(err, safe.ErrPanic) {
 		t.Fatal(err)
 	}
 	if !p.hasClosed() {
 		t.Fatal("periodic worker still live")
+	}
+}
+func TestPeriodicSubsystemPanicIsNotSwallowed(t *testing.T) {
+	safe.Reset()
+	defer safe.Reset()
+	p := &Periodic{Interval: time.Millisecond, Execute: func() error { panic("subsystem") }}
+	escaped := func() (escaped bool) {
+		defer func() { escaped = recover() != nil }()
+		_ = p.Start()
+		return false
+	}()
+	if !escaped {
+		t.Fatal("subsystem cleanup panic swallowed")
+	}
+	if _, _, broken := safe.Snapshot(0); len(broken) != 0 {
+		t.Fatal(broken)
 	}
 }

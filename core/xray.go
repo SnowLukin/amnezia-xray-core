@@ -8,6 +8,7 @@ import (
 
 	"github.com/xtls/xray-core/common"
 	"github.com/xtls/xray-core/common/errors"
+	"github.com/xtls/xray-core/common/log"
 	"github.com/xtls/xray-core/common/platform"
 	"github.com/xtls/xray-core/common/serial"
 	"github.com/xtls/xray-core/features"
@@ -386,6 +387,11 @@ func (s *Instance) GetFeature(featureType interface{}) features.Feature {
 	return getFeature(s.features, reflect.TypeOf(featureType))
 }
 
+// recordPanic is registered by core because common/safe sits below the log stack.
+func recordPanic(message string) {
+	log.Record(&log.GeneralMessage{Severity: log.Severity_Error, Content: message})
+}
+
 // Start starts the Xray instance, including all registered features. When Start returns error, the state of the instance is unknown.
 // A Xray instance can be started only once. Upon closing, the instance is not guaranteed to start again.
 //
@@ -394,6 +400,7 @@ func (s *Instance) Start() error {
 	s.statusLock.Lock()
 	defer s.statusLock.Unlock()
 
+	safe.SetLog(recordPanic)
 	safe.BeginRun()
 	s.running = true
 	for _, f := range s.features {
