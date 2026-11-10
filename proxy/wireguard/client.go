@@ -271,7 +271,7 @@ func (h *Handler) init(ctx context.Context) error {
 	if h.dev != nil {
 		return h.dev.Up()
 	}
-	resolveFunc := MakeResolveLocal(h.dns, h.streamSettings)
+	resolveFunc := makeResolveLocal(h.dns, h.streamSettings)
 	listenFunc := func(ctx context.Context) (net.PacketConn, error) {
 		dest, err := net.ParseDestination("udp:" + h.conf.Peers[0].Endpoint)
 		if err != nil {
@@ -361,7 +361,7 @@ func (h *Handler) init(ctx context.Context) error {
 	return nil
 }
 
-func MakeResolveLocal(d dns.Client, streamSettings *internet.MemoryStreamConfig) func(host string) (net.IP, error) {
+func makeResolveLocal(d dns.Client, streamSettings *internet.MemoryStreamConfig) func(host string) (net.IP, error) {
 	return func(host string) (net.IP, error) {
 		if ip := net.ParseIP(host); ip != nil {
 			return ip, nil
@@ -398,9 +398,9 @@ func MakeResolveLocal(d dns.Client, streamSettings *internet.MemoryStreamConfig)
 					got = got4
 				}
 			}
-			if len(got) == 0 {
-				return nil, dns.ErrEmptyResponse
-			}
+		}
+		if len(got) == 0 {
+			return nil, dns.ErrEmptyResponse
 		}
 		return got[dice.Roll(len(got))], nil
 	}

@@ -528,10 +528,6 @@ func ListenXH(ctx context.Context, address net.Address, port net.Port, streamSet
 		}
 		go func() {
 			defer safe.Recover(safe.Subsystem, "transport/internet/splithttp/hub.go:ListenXH", safe.Closer(l))
-			if !safe.Allowed(safe.Subsystem, "transport/internet/splithttp/hub.go:ListenXH", safe.Closer(l)) {
-				return
-			}
-
 			if err := l.h3server.ServeListener(l.h3listener); err != nil {
 				errors.LogErrorInner(ctx, err, "failed to serve HTTP/3 for XHTTP/3")
 			}
@@ -590,10 +586,6 @@ func ListenXH(ctx context.Context, address net.Address, port net.Port, streamSet
 		}
 		go func() {
 			defer safe.Recover(safe.Subsystem, "transport/internet/splithttp/hub.go:ListenXH", safe.Closer(l))
-			if !safe.Allowed(safe.Subsystem, "transport/internet/splithttp/hub.go:ListenXH", safe.Closer(l)) {
-				return
-			}
-
 			if err := l.server.Serve(l.listener); err != nil {
 				errors.LogErrorInner(ctx, err, "failed to serve HTTP for XHTTP")
 			}

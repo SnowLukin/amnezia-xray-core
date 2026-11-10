@@ -140,10 +140,6 @@ func ListenWS(ctx context.Context, address net.Address, port net.Port, streamSet
 
 	go func() {
 		defer safe.Recover(safe.Subsystem, "transport/internet/websocket/hub.go:ListenWS", safe.Closer(l))
-		if !safe.Allowed(safe.Subsystem, "transport/internet/websocket/hub.go:ListenWS", safe.Closer(l)) {
-			return
-		}
-
 		if err := l.server.Serve(l.listener); err != nil {
 			errors.LogWarningInner(ctx, err, "failed to serve http for WebSocket")
 		}

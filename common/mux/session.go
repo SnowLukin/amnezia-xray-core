@@ -240,10 +240,6 @@ func init() {
 	XUDPManager.Map = make(map[[8]byte]*XUDP)
 	go func() {
 		defer safe.Recover(safe.Subsystem, "common/mux/session.go:init", nil)
-		if !safe.Allowed(safe.Subsystem, "common/mux/session.go:init", nil) {
-			return
-		}
-
 		for {
 			time.Sleep(time.Minute)
 			now := time.Now()

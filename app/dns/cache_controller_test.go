@@ -33,9 +33,6 @@ func TestCacheMigrationPanicKeepsCacheWorking(t *testing.T) {
 	if dirty != nil {
 		t.Fatal("migration state is left after a panic, expired records are never cleaned")
 	}
-	if safe.Broken("app/dns") {
-		t.Fatal("a panic in cache migration broke app/dns")
-	}
 
 	c.ips["expired."] = &record{A: &IPRecord{Expire: time.Now().Add(-time.Minute)}}
 	c.ips["live."] = &record{A: &IPRecord{IP: []net.IP{net.IP{1, 2, 3, 4}}, Expire: time.Now().Add(time.Hour)}}

@@ -79,14 +79,10 @@ func (r *traceRing) add(now time.Time, record map[string]any) {
 	}
 }
 
-// event keeps an event of the core. Its fields name no destination already;
-// the network the host reported is hashed like a destination.
+// event keeps an event of the core. Its fields name no destination and no
+// network id already.
 func (r *traceRing) event(now time.Time, typ string, fields map[string]any) {
 	f := fields
-	if id, ok := fields["network"].(string); ok && id != "" {
-		f = maps.Clone(fields)
-		f["network"] = r.hash("network:" + id)
-	}
 	// Some events keep the text of an error, which may name an address of
 	// a server: the trace keeps only a class, of every field named so.
 	cloned := false

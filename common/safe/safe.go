@@ -129,9 +129,12 @@ func record(scope, where string) (escalate bool) {
 		}
 	}
 	message := fmt.Sprintf("panic_recovered scope=%s where=%s%s", scope, where, stack.String())
-	if sink := logSink.Load(); sink != nil {
+	sink := logSink.Load()
+	if sink != nil {
 		(*sink)(message)
-	} else {
+	}
+	// The core log is buffered and would not be written before the process ends.
+	if sink == nil || escalate {
 		log.Print(message)
 	}
 	return escalate

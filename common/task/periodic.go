@@ -40,10 +40,7 @@ func (t *Periodic) checkedExecute() error {
 	if where == "" {
 		where = safe.FunctionWhere(t.Execute)
 	}
-	err := safe.ErrPanic
-	if safe.Allowed(scope, where, nil) {
-		err = safe.Error(scope, where, t.Execute)
-	}
+	err := safe.Error(scope, where, t.Execute)
 	if err != nil {
 		t.access.Lock()
 		t.running = false

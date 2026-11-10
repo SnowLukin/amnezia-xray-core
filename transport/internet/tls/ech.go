@@ -166,10 +166,6 @@ func QueryRecord(domain string, server string, sockopt *internet.SocketConfig) (
 			go func() {
 				defer echConfigCache.UpdateLock.Unlock()
 				defer safe.Recover(safe.Subsystem, "transport/internet/tls/ech.go:QueryRecord", nil)
-				if !safe.Allowed(safe.Subsystem, "transport/internet/tls/ech.go:QueryRecord", nil) {
-					return
-				}
-
 				echConfigCache.Update(domain, server, true, sockopt)
 			}()
 		}

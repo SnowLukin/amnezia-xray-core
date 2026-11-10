@@ -179,6 +179,23 @@ func TestRecordGoesToCoreLog(t *testing.T) {
 	}
 }
 
+func TestEscalatedRecordIsWrittenBeforeExit(t *testing.T) {
+	Reset()
+	defer Reset()
+	var logs bytes.Buffer
+	old := log.Writer()
+	log.SetOutput(&logs)
+	defer log.SetOutput(old)
+	SetLog(func(string) {})
+	defer SetLog(nil)
+	if !escapes(func() { Run(Subsystem, "test/service.go:run", nil, crashingService) }) {
+		t.Fatal("subsystem panic was contained")
+	}
+	if !strings.Contains(logs.String(), "panic_recovered scope=subsystem where=test/service.go:run") {
+		t.Fatalf("stderr %q", logs.String())
+	}
+}
+
 func TestSubsystemStopsAndCountIsConcurrent(t *testing.T) {
 	Reset()
 	defer Reset()

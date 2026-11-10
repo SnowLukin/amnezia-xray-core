@@ -104,10 +104,6 @@ func (o *Observer) background() {
 		for _, v := range outbounds {
 			go func(v string) {
 				defer safe.Recover(safe.Subsystem, "app/observatory/observer.go:o.background", func() { o.finished.Close(); ch <- struct{}{} })
-				if !safe.Allowed(safe.Subsystem, "app/observatory/observer.go:o.background", func() { o.finished.Close(); ch <- struct{}{} }) {
-					return
-				}
-
 				result := o.probe(v)
 				o.updateStatusForResult(v, &result)
 				ch <- struct{}{}

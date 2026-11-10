@@ -51,6 +51,7 @@ func TestOutboundSpeedLimit(t *testing.T) {
 		`"speedLimit": {"downlink": "1000000"}`,
 		`"speedLimit": {"downlink": "1tbps"}`,
 		`"speedLimit": {"downlink": "-1mbps"}`,
+		`"speedLimit": {"downlink": "1e30gbps"}`,
 		// Keys are exact: a typo or another case is not ignored.
 		`"speedLimit": {"down": "5mbps"}`,
 		`"speedLimit": {"downLink": "5mbps"}`,

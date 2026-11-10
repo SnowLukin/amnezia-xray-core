@@ -67,10 +67,6 @@ func (b *bind) Open(port uint16) (fns []conn.ReceiveFunc, actualPort uint16, err
 							if downFunc != nil {
 								go func() {
 									defer safe.Recover(safe.Subsystem, "proxy/wireguard/bind.go:b.Open", nil)
-									if !safe.Allowed(safe.Subsystem, "proxy/wireguard/bind.go:b.Open", nil) {
-										return
-									}
-
 									common.Must(downFunc())
 								}()
 							}

@@ -29,3 +29,12 @@ func TestHealthNetworkArgumentsPreserveOpaqueAndEmptyIDs(t *testing.T) {
 		}
 	}
 }
+
+func TestHealthTraceArguments(t *testing.T) {
+	if req, err := healthTraceArguments([]string{"5", "--max-bytes=100"}); err != nil || req.After != 5 || req.MaxBytes != 100 {
+		t.Fatalf("%v %v", req, err)
+	}
+	if _, err := healthTraceArguments([]string{"5", "9"}); err == nil {
+		t.Fatal("second after accepted")
+	}
+}

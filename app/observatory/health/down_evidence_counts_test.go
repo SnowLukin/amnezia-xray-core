@@ -46,6 +46,31 @@ func TestDownEvidenceCountersFollowActualDecisions(t *testing.T) {
 	}
 }
 
+func TestFailedProbeOlderThanTrafficCountsNoDown(t *testing.T) {
+	t.Run("lone", func(t *testing.T) {
+		te := newLoneEngine(t)
+		j := startLone(t, te, at(3*time.Minute))
+		te.onSuccess("a1", at(3*time.Minute+time.Second))
+		te.onProbeResult(j, probeResult{ok: false}, at(3*time.Minute+2*time.Second))
+		if p := te.path("a1"); p.status != statusUp || p.stats.downsStrong != 0 {
+			t.Fatalf("status=%s strong=%d", p.status, p.stats.downsStrong)
+		}
+	})
+	t.Run("confirm", func(t *testing.T) {
+		te := newReportEngine(t, nil, nil, "a1", "b1")
+		suspectWeak(te, "a1", time.Second)
+		jobs, _ := te.tick(at(4 * time.Second))
+		if len(jobs) != 1 || jobs[0].reason != reasonConfirm {
+			t.Fatalf("setup confirming jobs %+v", jobs)
+		}
+		te.onSuccess("a1", at(5*time.Second))
+		te.onProbeResult(jobs[0], probeResult{ok: false, class: "timeout"}, at(6*time.Second))
+		if p := te.path("a1"); p.status == statusDown || p.stats.downsWeak != 0 {
+			t.Fatalf("status=%s weak=%d", p.status, p.stats.downsWeak)
+		}
+	})
+}
+
 func TestStrongEvidenceOvertakingWeakProbeCountsOneStrongDown(t *testing.T) {
 	te := newReportEngine(t, nil, nil, "a1", "b1")
 	suspectWeak(te, "a1", time.Second)

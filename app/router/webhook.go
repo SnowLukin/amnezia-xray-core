@@ -105,10 +105,6 @@ func (h *WebhookNotifier) Fire(ctx routing.Context, outboundTag string) {
 	go func() {
 		defer h.wg.Done()
 		defer safe.Recover(safe.Subsystem, "app/router/webhook.go:h.Fire", nil)
-		if !safe.Allowed(safe.Subsystem, "app/router/webhook.go:h.Fire", nil) {
-			return
-		}
-
 		h.post(ev)
 	}()
 }

@@ -105,10 +105,6 @@ func (c *Channel) Start() error {
 		c.closed = make(chan struct{}) // Reset close signal
 		go func() {
 			defer safe.Recover(safe.Subsystem, "app/stats/channel.go:c.Start", safe.Closer(c))
-			if !safe.Allowed(safe.Subsystem, "app/stats/channel.go:c.Start", safe.Closer(c)) {
-				return
-			}
-
 			for {
 				select {
 				case pub := <-c.channel: // Published message received

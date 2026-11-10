@@ -3,7 +3,6 @@ package conf
 import (
 	"context"
 	"encoding/json"
-	"math"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -259,7 +258,7 @@ func speedLimitRate(where, s string) (uint64, error) {
 	lower := strings.ToLower(s)
 	for unit, bits := range map[string]float64{"kbps": 1e3, "mbps": 1e6, "gbps": 1e9} {
 		if n, ok := strings.CutSuffix(lower, unit); ok {
-			if v, err := strconv.ParseFloat(n, 64); err == nil && v >= 0 && !math.IsInf(v, 0) {
+			if v, err := strconv.ParseFloat(n, 64); err == nil && v >= 0 && v*bits/8 < 1<<64 {
 				return uint64(v * bits / 8), nil
 			}
 		}

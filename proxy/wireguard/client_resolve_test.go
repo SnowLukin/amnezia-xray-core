@@ -62,6 +62,13 @@ func TestEndpointFollowsSockoptDomainStrategy(t *testing.T) {
 	}
 }
 
+func TestEndpointWithoutAddressesIsResolveError(t *testing.T) {
+	resolve := makeResolveLocal(fixedDNS{}, &internet.MemoryStreamConfig{})
+	if ip, err := resolve("empty.test"); err == nil {
+		t.Fatalf("resolved to %v", ip)
+	}
+}
+
 // A destination name inside the tunnel with a dead address and a live one
 // connects to the live one, whichever comes first.
 func TestDestinationTriesEveryAddress(t *testing.T) {

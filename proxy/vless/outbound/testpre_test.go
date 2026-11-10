@@ -133,6 +133,27 @@ func eventually(t *testing.T, what string, cond func() bool) {
 	}
 }
 
+type failingDialer struct {
+	preDialer
+	dials atomic.Int32
+}
+
+func (d *failingDialer) Dial(context.Context, net.Destination) (stat.Connection, error) {
+	d.dials.Add(1)
+	return nil, gonet.ErrClosed
+}
+
+func TestTestpreWaitsAfterDialError(t *testing.T) {
+	h := newTestpreHandler(1)
+	d := &failingDialer{}
+	go h.preConnect(d, h.server.Destination)
+	time.Sleep(500 * time.Millisecond)
+	h.Close()
+	if n := d.dials.Load(); n > 4 {
+		t.Fatalf("%d dials in 500 ms", n)
+	}
+}
+
 func TestTestpreCloseWithBlockedProducers(t *testing.T) {
 	h := newTestpreHandler(3)
 	d := &preDialer{}

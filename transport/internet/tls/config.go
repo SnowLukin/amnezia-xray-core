@@ -99,10 +99,6 @@ func (c *Config) BuildCertificates() []*tls.Certificate {
 func setupOcspTicker(entry *Certificate, callback func(isReloaded, isOcspstapling bool)) {
 	go func() {
 		defer safe.Recover(safe.Subsystem, "transport/internet/tls/config.go:setupOcspTicker", nil)
-		if !safe.Allowed(safe.Subsystem, "transport/internet/tls/config.go:setupOcspTicker", nil) {
-			return
-		}
-
 		if entry.OneTimeLoading {
 			return
 		}

@@ -143,14 +143,6 @@ func (s *TCPNameServer) sendQuery(ctx context.Context, noResponseErrCh chan<- er
 					noResponseErrCh <- safe.ErrPanic
 				}
 			})
-			if !safe.Allowed(safe.Subsystem, "app/dns/nameserver_tcp.go:s.sendQuery", func() {
-				if noResponseErrCh != nil {
-					noResponseErrCh <- safe.ErrPanic
-				}
-			}) {
-				return
-			}
-
 			dnsCtx := ctx
 
 			if inbound := session.InboundFromContext(ctx); inbound != nil {

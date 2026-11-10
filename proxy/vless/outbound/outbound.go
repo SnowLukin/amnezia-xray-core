@@ -127,10 +127,6 @@ func New(ctx context.Context, config *Config) (*Handler, error) {
 		}
 		go func() {
 			defer safe.Recover(safe.Subsystem, "proxy/vless/outbound/outbound.go:New", safe.Closer(handler.reverse))
-			if !safe.Allowed(safe.Subsystem, "proxy/vless/outbound/outbound.go:New", safe.Closer(handler.reverse)) {
-				return
-			}
-
 			time.Sleep(2 * time.Second)
 			handler.reverse.Start()
 		}()
@@ -160,10 +156,6 @@ func (h *Handler) Close() error {
 
 func (h *Handler) preConnect(dialer internet.Dialer, dest net.Destination) {
 	defer safe.Recover(safe.Subsystem, "proxy/vless/outbound/outbound.go:h.Process", nil)
-	if !safe.Allowed(safe.Subsystem, "proxy/vless/outbound/outbound.go:h.Process", nil) {
-		return
-	}
-
 	ctx := xctx.ContextWithID(h.preCtx, session.NewID())
 	for ctx.Err() == nil {
 		conn, err := dialer.Dial(ctx, dest)
@@ -171,13 +163,13 @@ func (h *Handler) preConnect(dialer internet.Dialer, dest net.Destination) {
 			if ctx.Err() == nil {
 				errors.LogWarningInner(ctx, err, "pre-connect failed")
 			}
-			continue
-		}
-		select {
-		case h.preConns <- &ConnExpire{Conn: conn, Expire: time.Now().Add(time.Minute * 2)}: // TODO: customize & randomize
-		case <-ctx.Done():
-			conn.Close()
-			return
+		} else {
+			select {
+			case h.preConns <- &ConnExpire{Conn: conn, Expire: time.Now().Add(time.Minute * 2)}: // TODO: customize & randomize
+			case <-ctx.Done():
+				conn.Close()
+				return
+			}
 		}
 		select {
 		case <-time.After(time.Millisecond * 200): // TODO: customize & randomize

@@ -242,10 +242,10 @@ func TestHostHeadersWinOverAnAnswerInFlight(t *testing.T) {
 	}
 }
 
-// A backend that refuses the headers is asked again only by the host until
-// the pause ends: the same headers would be refused again. The refusal
-// grows no backoff.
-func TestAuthFailureHoldsAllButTheHost(t *testing.T) {
+// A backend that refuses the headers is asked nothing until the pause ends,
+// not even by the host, whose request waits for the end: the same headers
+// would be refused again. The refusal grows no backoff.
+func TestAuthFailureHoldsEveryTrigger(t *testing.T) {
 	te := newProviderEngine(t, quietProvider(func(p *ProviderConfig) {
 		p.Features.Exhausted = proto.Bool(true)
 		p.Limits.ExhaustedMinInterval = int64(time.Second)

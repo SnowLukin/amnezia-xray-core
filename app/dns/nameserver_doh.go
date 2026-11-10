@@ -180,14 +180,6 @@ func (s *DoHNameServer) sendQuery(ctx context.Context, noResponseErrCh chan<- er
 					noResponseErrCh <- safe.ErrPanic
 				}
 			})
-			if !safe.Allowed(safe.Subsystem, "app/dns/nameserver_doh.go:s.sendQuery", func() {
-				if noResponseErrCh != nil {
-					noResponseErrCh <- safe.ErrPanic
-				}
-			}) {
-				return
-			}
-
 			// generate new context for each req, using same context
 			// may cause reqs all aborted if any one encounter an error
 			dnsCtx := ctx

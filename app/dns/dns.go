@@ -505,10 +505,6 @@ func asyncQueryAll(domain string, option dns.IPOption, clients []*Client, ctx co
 
 		go func(i int, c *Client) {
 			defer safe.Recover(safe.Subsystem, "app/dns/dns.go:asyncQueryAll", func() { ch <- queryResult{err: safe.ErrPanic, index: i} })
-			if !safe.Allowed(safe.Subsystem, "app/dns/dns.go:asyncQueryAll", func() { ch <- queryResult{err: safe.ErrPanic, index: i} }) {
-				return
-			}
-
 			qctx := ctx
 			if !c.server.IsDisableCache() {
 				nctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), c.timeoutMs*2)

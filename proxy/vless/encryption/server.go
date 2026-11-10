@@ -83,10 +83,6 @@ func (i *ServerInstance) Init(nfsSKeysBytes [][]byte, xorMode uint32, secondsFro
 		i.Sessions = make(map[[16]byte]*ServerSession)
 		go func() {
 			defer safe.Recover(safe.Subsystem, "proxy/vless/encryption/server.go:i.Init", nil)
-			if !safe.Allowed(safe.Subsystem, "proxy/vless/encryption/server.go:i.Init", nil) {
-				return
-			}
-
 			for {
 				time.Sleep(time.Minute)
 				i.RWLock.Lock()

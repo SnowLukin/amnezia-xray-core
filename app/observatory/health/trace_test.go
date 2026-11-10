@@ -55,7 +55,7 @@ func TestTraceKeepsNoDestination(t *testing.T) {
 	failed := &connTracker{o: o, tag: "a1", target: "secret-site.example:443", started: int64(2 * time.Second)}
 	failed.failKind.Store(int32(failDialTimeout) + 1)
 	o.traceEnd(failed, errors.New("i/o timeout"))
-	o.e.trace.event(o.clock(), "network_change", map[string]any{"network": "home-wifi-id", "is_known": false})
+	o.e.emit(o.clock(), "network_change", map[string]any{"network": o.e.networkHash("home-wifi-id"), "is_known": false})
 	d, err := o.ExportTrace(0)
 	if err != nil {
 		t.Fatal(err)

@@ -210,19 +210,9 @@ func executeHealth(cmd *base.Command, args []string) {
 	case "urls":
 		response, err = client.SetProviderURLs(ctx, &healthService.SetProviderURLsRequest{Provider: a[1], Urls: urls})
 	case "trace":
-		req := &healthService.ExportTraceRequest{}
-		for _, arg := range a[1:] {
-			var parseErr error
-			if limit, ok := strings.CutPrefix(arg, "--max-bytes="); ok {
-				var n uint64
-				n, parseErr = strconv.ParseUint(limit, 10, 32)
-				req.MaxBytes = uint32(n)
-			} else {
-				req.After, parseErr = strconv.ParseUint(arg, 10, 64)
-			}
-			if parseErr != nil {
-				base.Fatalf("health trace: expected [after] [--max-bytes=N]")
-			}
+		req, parseErr := healthTraceArguments(a[1:])
+		if parseErr != nil {
+			base.Fatalf("health trace: expected [after] [--max-bytes=N]")
 		}
 		response, err = client.ExportTrace(ctx, req)
 	case "header":
@@ -272,6 +262,28 @@ func decodedHealthResult(r *healthService.Result) []byte {
 	}{r.Success, r.Run, json.RawMessage(r.Data), r.Error}
 	raw, _ := json.Marshal(out)
 	return raw
+}
+
+func healthTraceArguments(args []string) (*healthService.ExportTraceRequest, error) {
+	req := &healthService.ExportTraceRequest{}
+	after := false
+	for _, arg := range args {
+		var err error
+		if limit, ok := strings.CutPrefix(arg, "--max-bytes="); ok {
+			var n uint64
+			n, err = strconv.ParseUint(limit, 10, 32)
+			req.MaxBytes = uint32(n)
+		} else if !after {
+			req.After, err = strconv.ParseUint(arg, 10, 64)
+			after = true
+		} else {
+			err = strconv.ErrSyntax
+		}
+		if err != nil {
+			return nil, err
+		}
+	}
+	return req, nil
 }
 
 // Arguments follow the subcommand, after the shared flag parser has stopped.
