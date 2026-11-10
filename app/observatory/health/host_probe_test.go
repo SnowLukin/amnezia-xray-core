@@ -559,3 +559,18 @@ func TestHostProbeRequestsAreBounded(t *testing.T) {
 		t.Fatalf("status probe_requests %v", st.ProbeRequests)
 	}
 }
+
+// A failed probe answers the host with a class, as events do: the text of the
+// error names the address of the probe.
+func TestHostProbeFailureIsAClass(t *testing.T) {
+	te := newTestEngine(t, hostConfig(nil), &SelectorConfig{Paths: pathSpecs("a", 1)}, "a1")
+	r := te.ask(t, at(0), "a1")
+	jobs, _ := te.tick(at(time.Second))
+	if len(jobs) != 1 {
+		t.Fatalf("jobs %+v, want the host probe", jobs)
+	}
+	te.onProbeResult(jobs[0], probeResult{err: `Get "https://probe.example/x": dial tcp 192.0.2.1:443: i/o timeout`, class: "dial_timeout"}, at(2*time.Second))
+	if v := r.view(at(2 * time.Second)); v.Outbounds[0].Result != probeFailed || v.Outbounds[0].Error != "dial_timeout" {
+		t.Fatalf("answer %+v, want failed with class dial_timeout", v.Outbounds[0])
+	}
+}

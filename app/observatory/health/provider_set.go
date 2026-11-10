@@ -513,6 +513,7 @@ func (o *Observer) fetchSet(rt *providerRuntime, j *refreshJob, body []byte) (fe
 	var last fetchResult
 	var lastErr error
 	asked, attempt, nonProtocol, timeouts := false, 0, 0, 0
+nextVia:
 	for _, v := range via {
 		var candidates []string
 		if o.ohm != nil {
@@ -604,6 +605,9 @@ func (o *Observer) fetchSet(rt *providerRuntime, j *refreshJob, body []byte) (fe
 				// by every further attempt as much as one that answered out
 				// of the protocol. Every timeout holds the refresh for the
 				// whole timeout, so their number has a ceiling of its own.
+				// Past a ceiling every further via still gets one attempt: an
+				// entry that swallows requests looks just like such a server,
+				// and the next road may well reach the backend.
 				if r.status != 0 || (r.class == "timeout" && r.sent) {
 					nonProtocol++
 				}
@@ -611,7 +615,7 @@ func (o *Observer) fetchSet(rt *providerRuntime, j *refreshJob, body []byte) (fe
 					timeouts++
 				}
 				if nonProtocol >= maxNonProtocolAnswers || timeouts >= maxRefreshTimeouts {
-					return last, lastErr
+					continue nextVia
 				}
 				if low {
 					return last, lastErr

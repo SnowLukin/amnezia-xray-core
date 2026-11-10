@@ -315,7 +315,7 @@ libXray, C, Swift и Android возвращают `bool`, причину ожи�
 {"success": true, "run": "232c4c611bfbaee9", "data": {"id": 3, "run": "232c4c611bfbaee9", "balancer": "auto", "is_udp": false, "age_ms": 2100, "is_done": true, "end": "done", "outbounds": [{"outbound": "a1", "result": "ok", "source": "probe", "rtt_ms": 113}, {"outbound": "b1", "result": "down", "source": "quarantine", "quarantine_ms": 64000}]}}
 ```
 
-`result` у пути: `pending`, `ok`, `failed`, `down`, `skipped`, `expired`, `gone`. `source` говорит, откуда ответ: `probe`, `recent`, `quarantine`, `group_quarantine`, `memory`, `network_change`, `timeout`. `end` у закрытого запроса: `done`, `timeout` (по умолчанию 2 минуты, потолок 10), `network_change`, `gone`.
+`result` у пути: `pending`, `ok`, `failed`, `down`, `skipped`, `expired`, `gone`. `source` говорит, откуда ответ: `probe`, `recent`, `quarantine`, `group_quarantine`, `memory`, `network_change`, `timeout`. `end` у закрытого запроса: `done`, `timeout` (по умолчанию 2 минуты, потолок 10), `network_change`, `gone`. `error` у `failed` - класс ошибки пробы, как в событии `probe_result`, без адресов и URL.
 
 Ядро хранит 4 последних закрытых запроса (1 при нехватке памяти), старые отвечают `not_found`. Билет действует только в своём запуске: `run` другого запуска или пустой дают `stale_run`. Ошибки: `stale_run`, `not_found`, `feature_disabled`, `invalid_argument` (`id` не больше 0), `not_running`.
 

@@ -275,10 +275,10 @@ def check_last_refresh(last, expect):
             bad.append(f"{where}.isOk: {a.get('isOk')!r}")
         if "code" in a and a["code"] not in ATTEMPT_CODES:
             bad.append(f"{where}.code: {a['code']!r}")
-        if "outbound" in a:
+        # The outbound the attempt went through: the choice of a balancer
+        # or a probe credential, both as served, or the via itself.
+        if "outbound" in a and a["outbound"] != a.get("via"):
             bad += check_tag(a["outbound"], expect, f"{where}.outbound")
-            if a["outbound"] in expect.known and not expect.known[a["outbound"]]:
-                bad.append(f"{where}.outbound: {a['outbound']} is not a probe credential")
     return bad
 
 

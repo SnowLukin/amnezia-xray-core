@@ -6,6 +6,7 @@ import (
 	gonet "net"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -142,7 +143,8 @@ func (s *hangServer) ServeHTTP(_ http.ResponseWriter, r *http.Request) {
 }
 
 // A backend that takes requests and does not answer gets as many as one that
-// answers out of the protocol, however many roads and mirrors there are.
+// answers out of the protocol, however many mirrors there are, and one more
+// through each further via.
 func TestProviderServerThatDoesNotAnswerGetsTwoRequests(t *testing.T) {
 	hang := &hangServer{done: make(chan struct{})}
 	srv := httptest.NewServer(hang)
@@ -154,13 +156,64 @@ func TestProviderServerThatDoesNotAnswerGetsTwoRequests(t *testing.T) {
 		t.Fatal("manual refresh refused")
 	}
 	waitRefreshed(t, obs)
-	if n := hang.n.Load(); n != 2 {
-		t.Fatalf("%d requests to a server that does not answer, want 2", n)
+	if n := hang.n.Load(); n != 3 {
+		t.Fatalf("%d requests to a server that does not answer, want 2 and 1 via direct2", n)
+	}
+}
+
+// Roads whose entries swallow requests look like a backend that does not
+// answer. They must not use up the refresh before the next roads, direct
+// among them, get their attempt.
+func TestProviderEveryViaGetsAnAttemptAfterDeadRoads(t *testing.T) {
+	hang := &hangServer{done: make(chan struct{})}
+	dead := httptest.NewServer(hang)
+	defer dead.Close()
+	defer close(hang.done)
+	working := &setServer{body: `{"outbounds":[{"tag":"x1","protocol":"freedom","selection":{"balancer":"auto","probe":"check","cost":1}}]}`}
+	backend := httptest.NewServer(working)
+	defer backend.Close()
+	entry := strings.TrimPrefix(dead.URL, "http://")
+	cfg, err := core.LoadConfig("json", strings.NewReader(fmt.Sprintf(`{
+		"log":{"loglevel":"none"},"outbounds":[{"tag":"direct","protocol":"freedom"},
+		{"tag":"entry1","protocol":"freedom","settings":{"redirect":%q}},
+		{"tag":"entry2","protocol":"freedom","settings":{"redirect":%q}}],
+		"routing":{"balancers":[{"tag":"auto","fallbackTag":"direct","strategy":{"type":"leastCost"}}]},
+		"healthObservatory":{"telemetry":{"events":{}},
+		"providers":[{"tag":"fresh","urls":[%q,%q],"isPlainHttpAllowed":true,"timeout":"300ms","via":["entry1","entry2","direct"],
+		"triggers":{"exhausted":{"isEnabled":false},"leaseRenewal":{"isEnabled":false}},
+		"apply":{"balancers":["auto"],"tagPrefix":"p-","allowedProtocols":["freedom"]}}]}}`, entry, entry, backend.URL+"/1", backend.URL+"/2")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	inst, err := core.New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := inst.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer inst.Close()
+	obs := health.FromInstance(inst)
+	health.ConfigureProviderScenarioForTest(obs)
+	health.ConfigureProviderLongCooldownForTest(obs)
+	selectProviderTraffic(t, obs)
+	w := &eventWaiter{t: t, o: obs}
+	if !obs.RequestProviderRefresh("fresh") {
+		t.Fatal("manual refresh refused")
+	}
+	waitRefreshed(t, obs)
+	w.until("provider_fetch", nil)
+	var vias []any
+	for _, f := range w.since(0, "provider_fetch") {
+		vias = append(vias, f.Fields["via"])
+	}
+	if !slices.Contains(vias, "entry2") || vias[len(vias)-1] != "direct" || working.requests() != 1 {
+		t.Fatalf("attempts via %v, backend requests %d", vias, working.requests())
 	}
 }
 
 // Timeouts before the request went out, such as a TLS handshake that never
-// ends, end the refresh after four.
+// ends, end a via after four; the next via gets one more attempt.
 func TestProviderTimeoutsHaveACeiling(t *testing.T) {
 	ln, err := gonet.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -193,8 +246,8 @@ func TestProviderTimeoutsHaveACeiling(t *testing.T) {
 	waitRefreshed(t, obs)
 	w.until("provider_fetch", nil)
 	fetches := w.since(0, "provider_fetch")
-	if len(fetches) != 4 || accepted.Load() < 4 {
-		t.Fatalf("%d attempts, %d connections; want 4 attempts", len(fetches), accepted.Load())
+	if len(fetches) != 5 || accepted.Load() < 5 {
+		t.Fatalf("%d attempts, %d connections; want 4 and 1 via direct2", len(fetches), accepted.Load())
 	}
 	for _, f := range fetches {
 		if f.Fields["error"] != "timeout" {

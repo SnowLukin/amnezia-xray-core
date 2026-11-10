@@ -285,6 +285,32 @@ func TestNetworkLostWhileExhaustedEndsWithTraffic(t *testing.T) {
 	}
 }
 
+// A probe begun while the network was gone ends after user traffic through
+// the outbound worked again: its failure is older than that proof.
+func TestProbeFailureOlderThanWorkingTrafficKeepsThePath(t *testing.T) {
+	te := newTestEngine(t, nil, &SelectorConfig{Paths: pathSpecs("a", 1)}, "a1")
+	te.onNetworkChange("other", at(time.Second))
+	jobs, _ := te.tick(at(2 * time.Second))
+	if len(jobs) == 0 {
+		t.Fatal("no probe after the network change")
+	}
+	te.onConnSuccess("a1", at(3*time.Second), at(3*time.Second))
+	for _, j := range jobs {
+		te.onProbeResult(j, probeResult{ok: false, class: "dial_timeout"}, at(4*time.Second))
+	}
+	if p := te.path("a1"); p.status != statusUp || te.sel.current() != "a1" {
+		t.Fatalf("a1 %v active %q, want up and chosen", p.status, te.sel.current())
+	}
+	te.enqueue("a1", reasonRecheck, "auto", at(5*time.Second))
+	jobs, _ = te.tick(at(5 * time.Second))
+	for _, j := range jobs {
+		te.onProbeResult(j, probeResult{ok: false, class: "dial_timeout"}, at(6*time.Second))
+	}
+	if len(jobs) == 0 || te.path("a1").status != statusDown {
+		t.Fatalf("a probe begun after the traffic failed: %d jobs, a1 %v, want down", len(jobs), te.path("a1").status)
+	}
+}
+
 // Probes fail because their own destination is out of reach, while user
 // connections through the outbound work: a connection begun after the down
 // that works undoes it.

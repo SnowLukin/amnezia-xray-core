@@ -1,6 +1,7 @@
 package health
 
 import (
+	"cmp"
 	"encoding/json"
 	"fmt"
 	"slices"
@@ -295,9 +296,9 @@ func (e *engine) answerRequests(j *probeJob, res probeResult, now time.Time) {
 			if it.tag != j.tag || it.result != probePending {
 				continue
 			}
-			it.result, it.source, it.reason, it.rtt, it.err = probeFailed, "probe", j.reason, res.rtt, res.err
-			if res.ok {
-				it.result = probeOK
+			it.result, it.source, it.reason, it.rtt, it.err = probeOK, "probe", j.reason, res.rtt, ""
+			if !res.ok {
+				it.result, it.err = probeFailed, cmp.Or(res.class, "other")
 			}
 		}
 		if r.answered() {

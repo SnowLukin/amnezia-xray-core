@@ -457,7 +457,7 @@ func (o *Observer) runProbe(j *probeJob) {
 	if j.reason == reasonConnectivity {
 		c := o.s.connectivity
 		r = o.probeWithContext(ctx, c.outbound, &probeSettings{steps: []probeStepSettings{{
-			name: "connectivity", destinations: c.destinations, method: "GET", timeout: c.timeout, progressTimeout: c.timeout,
+			name: "connectivity", destinations: c.destinations, method: "GET", timeout: c.timeout, progressTimeout: c.timeout, isRace: true,
 		}}})
 	} else {
 		r = o.probeWithContext(ctx, j.tag, j.profile)

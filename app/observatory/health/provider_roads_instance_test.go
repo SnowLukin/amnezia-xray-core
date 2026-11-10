@@ -64,7 +64,9 @@ func TestProviderLimitsNonProtocolHTTPReplies(t *testing.T) {
 			// Retry-After without a body of the protocol may come from a
 			// proxy, and a server that took the request and did not answer
 			// loads the backend like one that answered out of the protocol.
-			want := int64(2)
+			// Two such answers end the first via; each of the other two gets
+			// one attempt.
+			want := int64(4)
 			if mode == "network" {
 				want = 12
 			}

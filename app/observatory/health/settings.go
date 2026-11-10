@@ -95,9 +95,10 @@ const (
 	// body along with the status.
 	maxErrorBody  = 4 << 10
 	errorBodyWait = 2 * time.Second
-	// One refresh ends after this many answers out of the protocol, a
-	// server that took the request and did not answer among them, or after
-	// this many timeouts of any kind.
+	// One refresh moves on to the next via after this many answers out of
+	// the protocol, a server that took the request and did not answer among
+	// them, or after this many timeouts of any kind; past either every
+	// further via gets one attempt.
 	maxNonProtocolAnswers = 2
 	maxRefreshTimeouts    = 4
 	// The reason an answer was refused, as events, Status and the next
@@ -238,6 +239,8 @@ type probeStepSettings struct {
 	minBytes        int64
 	timeout         time.Duration
 	progressTimeout time.Duration
+	// The addresses are asked all at once rather than in turn.
+	isRace bool
 }
 
 func (p *probeSettings) statusOK(code int) bool {

@@ -716,6 +716,10 @@ func (e *engine) countDownEvidence(p *path, strong bool, now time.Time) {
 // markDown rules p out, on traffic or a failed probe, and has its
 // connections ended as noteDown tells.
 func (e *engine) markDown(p *path, reason string, now time.Time) {
+	// The outbound worked after the probe began: the failure is older news.
+	if reason != "traffic" && p.lastSuccess.After(p.lastProbe) {
+		return
+	}
 	e.cancelLoneFailure(p.tag)
 	e.cancelWakeProbe(p.tag)
 	if p.status == statusDown && p.quarantined(now) {
@@ -2092,17 +2096,23 @@ func (e *engine) begin(j *probeJob, now time.Time) {
 	p.probing = true
 	p.lastProbe = now
 	e.used(j.tag, now)
+	f := map[string]any{"outbound": j.tag, "reason": j.reason.String(), "balancer": j.selector, "running": e.runningProbes()}
+	if j.request != 0 {
+		f["request"] = j.request
+	}
+	e.emit(now, "probe_start", f)
+}
+
+// runningProbes counts the probes of outbounds under way, as probe_start
+// tells them; network checks are not among them.
+func (e *engine) runningProbes() int {
 	running := 0
 	for _, r := range e.running {
 		if r.reason != reasonConnectivity {
 			running++
 		}
 	}
-	f := map[string]any{"outbound": j.tag, "reason": j.reason.String(), "balancer": j.selector, "running": running}
-	if j.request != 0 {
-		f["request"] = j.request
-	}
-	e.emit(now, "probe_start", f)
+	return running
 }
 
 // An exhausted balancer has nowhere else to go, so it does not wait for the

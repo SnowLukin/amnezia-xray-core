@@ -2,6 +2,7 @@ package health
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"testing"
@@ -230,6 +231,26 @@ func TestCensusPreemptionBelowEveryOrdinaryReasonKeepsBudgetsAndIntent(t *testin
 				t.Fatal("preempted snapshot claims complete")
 			}
 		})
+	}
+}
+
+// Census probes tell running and error by the rules of every other probe:
+// a network check does not count, a failure without a class is other.
+func TestCensusProbeEventsFollowTheCommonRules(t *testing.T) {
+	e := censusTestEngine(t, 1, &PathDefinition{Tag: "a", Cost: 1})
+	e.events = newEventLog(100, 1<<20)
+	// A stale check still winding down does not hold the census back.
+	e.running[1000] = &probeJob{id: 1000, reason: reasonConnectivity, invalidated: true}
+	j := censusStartedJob(t, e, at(time.Second))
+	e.onProbeResult(j, probeResult{state: statusDown}, at(2*time.Second))
+	raw, _ := e.events.drain()
+	var evs []Event
+	if err := json.Unmarshal(raw, &evs); err != nil {
+		t.Fatal(err)
+	}
+	start, result := eventsOf(evs, "probe_start"), eventsOf(evs, "probe_result")
+	if len(start) != 1 || start[0].Fields["running"] != 1.0 || len(result) != 1 || result[0].Fields["error"] != "other" {
+		t.Fatalf("probe_start %v, probe_result %v", start, result)
 	}
 }
 

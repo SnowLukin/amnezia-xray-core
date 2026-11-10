@@ -6,6 +6,7 @@ import (
 	gonet "net"
 	"net/http"
 	"reflect"
+	"sync"
 	"testing"
 	"time"
 )
@@ -76,7 +77,55 @@ func TestProbeStepsOptionalFailuresContinueAndKeepPathLive(t *testing.T) {
 	}
 }
 
-func TestProbeStepsParallelWinnerClosesLoser(t *testing.T) {
+// The addresses of a step are fallbacks through one server: the next is
+// asked only after the one before failed.
+func TestProbeStepsAskFallbackAddressesInTurn(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		first string
+		want  []string
+		dest  int
+	}{
+		{"first answers", "204 No Content", []string{"/first"}, 0},
+		{"first fails", "503 Unavailable", []string{"/first", "/second"}, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var mu sync.Mutex
+			var paths []string
+			d := &probePhaseDispatcher{reportDial: true, serve: func(c gonet.Conn) {
+				req, err := http.ReadRequest(bufio.NewReader(c))
+				if err != nil {
+					return
+				}
+				req.Body.Close()
+				mu.Lock()
+				paths = append(paths, req.URL.Path)
+				mu.Unlock()
+				if req.URL.Path == "/first" {
+					// The second address must not be asked while the first
+					// one is still answering.
+					time.Sleep(100 * time.Millisecond)
+					io.WriteString(c, "HTTP/1.1 "+tc.first+"\r\nContent-Length: 0\r\n\r\n")
+					return
+				}
+				io.WriteString(c, "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n")
+			}}
+			o := probePhaseObserver(time.Second, d)
+			defer o.stopRun()
+			r := o.probe("a1", &probeSettings{name: "fallback", steps: []probeStepSettings{
+				stepSettings("egress", false, "http://example.test/first", "http://example.test/second"),
+			}})
+			mu.Lock()
+			defer mu.Unlock()
+			if !r.ok || len(r.steps) != 1 || r.steps[0].destination != tc.dest || !reflect.DeepEqual(paths, tc.want) {
+				t.Fatalf("result %+v, asked %v, want %v", r, paths, tc.want)
+			}
+		})
+	}
+}
+
+// Connectivity asks different servers: all at once, the first answer wins.
+func TestConnectivityAddressesRace(t *testing.T) {
 	slowStarted := make(chan struct{})
 	slowClosed := make(chan struct{})
 	d := &probePhaseDispatcher{reportDial: true, serve: func(c gonet.Conn) {
@@ -96,13 +145,11 @@ func TestProbeStepsParallelWinnerClosesLoser(t *testing.T) {
 	}}
 	o := probePhaseObserver(time.Second, d)
 	defer o.stopRun()
-	start := time.Now()
-	r := o.probe("a1", &probeSettings{name: "parallel", steps: []probeStepSettings{
-		stepSettings("egress", false, "http://example.test/slow", "http://example.test/fast"),
-	}})
-	if !r.ok || r.state != statusUp || len(r.steps) != 1 || r.steps[0].destination != 1 ||
-		r.steps[0].connect <= 0 || r.steps[0].elapsed <= 0 || time.Since(start) > 500*time.Millisecond {
-		t.Fatalf("parallel winner: %+v after %v", r, time.Since(start))
+	step := stepSettings("connectivity", false, "http://example.test/slow", "http://example.test/fast")
+	step.isRace = true
+	r := o.probe("direct", &probeSettings{steps: []probeStepSettings{step}})
+	if !r.ok || r.steps[0].destination != 1 {
+		t.Fatalf("connectivity: %+v", r)
 	}
 	select {
 	case <-slowClosed:

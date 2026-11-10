@@ -1,6 +1,7 @@
 package health
 
 import (
+	"cmp"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/json"
@@ -393,7 +394,7 @@ func (e *engine) beginCensus(j *probeJob, now time.Time) {
 	name := e.serverName(j.tag)
 	e.startsByName[name] = append(e.startsByName[name], now)
 	e.report.counts.CensusProbes++
-	e.emit(now, "probe_start", map[string]any{"outbound": j.tag, "reason": "census", "balancer": j.selector, "running": len(e.running)})
+	e.emit(now, "probe_start", map[string]any{"outbound": j.tag, "reason": "census", "balancer": j.selector, "running": e.runningProbes()})
 }
 
 func (e *engine) onCensusResult(j *probeJob, r probeResult, now time.Time) {
@@ -403,8 +404,12 @@ func (e *engine) onCensusResult(j *probeJob, r probeResult, now time.Time) {
 	j.censusDone = true
 	delete(e.running, j.id)
 	e.report.counts.CensusProbeBytes += r.bytes
+	eventError := ""
+	if !r.ok && !r.canceled {
+		eventError = cmp.Or(r.class, "other")
+	}
 	e.emit(now, "probe_result", map[string]any{"outbound": j.tag, "reason": "census", "balancer": j.selector, "is_ok": r.ok,
-		"rtt_ms": r.rtt.Milliseconds(), "bytes": r.bytes, "error": r.class, "is_stale": !e.censusJobCurrent(j),
+		"rtt_ms": r.rtt.Milliseconds(), "bytes": r.bytes, "error": eventError, "is_stale": !e.censusJobCurrent(j),
 		"profile": r.profile, "state": r.pathState().String(), "steps": r.eventSteps()})
 	if !e.censusJobCurrent(j) {
 		return

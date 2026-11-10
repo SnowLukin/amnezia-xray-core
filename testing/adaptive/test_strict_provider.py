@@ -103,14 +103,18 @@ class RequestTest(unittest.TestCase):
         doc["balancers"][0]["isOwn"] = True
         self.assertTrue(any("exhausted yet holds" in f for f in self.problems(doc)))
 
-    def test_attempt_outbound_names_only_a_probe_credential(self):
+    def test_attempt_outbound_names_the_road_taken(self):
         doc = body(self.backend, number=2)
         doc["lastRefresh"]["attempts"] = [
-            {"via": "roads", "outbound": self.backend.tag(1, "r"), "mirror": 1, "isOk": True, "status": 200, "ms": 9},
+            {"via": "roads", "outbound": self.backend.tag(1, "r"), "mirror": 1, "isOk": False, "status": 0, "code": "timeout", "ms": 9},
+            {"via": "direct", "outbound": "direct", "mirror": 1, "isOk": True, "status": 200, "ms": 9}]
+        self.assertEqual(self.problems(doc), [])
+        doc["lastRefresh"]["attempts"] = [
+            {"via": "auto", "outbound": "p-" + self.backend.tag(0, "s"), "mirror": 1, "isOk": True, "status": 200, "ms": 9},
             {"via": "elsewhere", "mirror": 0, "isOk": False, "status": 0, "code": "skipped", "ms": 0},
             {"via": "auto", "mirror": 1, "isOk": False, "status": 0, "code": "dns", "ms": 0}]
         found = self.problems(doc)
-        for part in ("is not a probe credential", "not in via of the config", "code: 'dns'"):
+        for part in ("carries the prefix", "not in via of the config", "code: 'dns'"):
             self.assertTrue(any(part in f for f in found), (part, found))
 
     def test_no_addresses_domains_or_secrets(self):

@@ -494,10 +494,13 @@ def prod_all_entries_dead(stand, xray, work, name):
     reached = [r for r in backend.requests if r["at"] >= m["revive"]]
     new = full(backend, 2, "s")
     switched = first_switch_to(events, new, m["revive"])
+    first = [via for refresh, via, _, _ in during if during and refresh == during[0][0]]
     save(work, name, events=events, requests=backend.requests, violations=backend.violations,
          report=c.final_report, marks=m, traffic=sorted(tr.records))
     return [
         check("attempts while every entry was dead (refresh, via, outbound, error)", during[:12], True, "info"),
+        check("roads of the first refresh after the entries died", first,
+              {"auto", "roads", "direct"} <= set(first), "every via, direct among them"),
         check("first request at the backend after the revival, s",
               reached and round(reached[0]["at"] - m["revive"], 1), bool(reached), "info, must come"),
         check("slot moved to the revived entry and auto switched to it",

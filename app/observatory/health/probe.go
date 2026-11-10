@@ -266,10 +266,13 @@ func (o *Observer) probeStepWithContext(parent context.Context, tag string, step
 		probeAttemptResult
 	}, len(step.destinations))
 	cancels := make([]context.CancelFunc, len(step.destinations))
-	for i, destination := range step.destinations {
+	launched := 0
+	launch := func() {
+		index, destination := launched, step.destinations[launched]
+		launched++
 		ctx, cancel := context.WithCancel(parent)
-		cancels[i] = cancel
-		go func(index int, destination string) {
+		cancels[index] = cancel
+		go func() {
 			defer safe.Recover(safe.Subsystem, "app/observatory/health/probe.go:Observer.probeDestination", func() {
 				o.fail()
 				results <- struct {
@@ -282,10 +285,16 @@ func (o *Observer) probeStepWithContext(parent context.Context, tag string, step
 				index int
 				probeAttemptResult
 			}{index, r}
-		}(i, destination)
+		}()
+	}
+	// The addresses of a step lead through one server: the next is asked
+	// only after the one before failed, as simultaneous handshakes to one
+	// server stand out to a censor. Connectivity asks different servers.
+	for launched < len(step.destinations) && (launched == 0 || step.isRace) {
+		launch()
 	}
 	failures := make([]probeAttemptResult, len(step.destinations))
-	for range step.destinations {
+	for received := 0; received < launched; received++ {
 		attempt := <-results
 		result.bytes += attempt.bytes
 		failures[attempt.index] = attempt.probeAttemptResult
@@ -293,14 +302,16 @@ func (o *Observer) probeStepWithContext(parent context.Context, tag string, step
 			result.ok = true
 			result.destination = attempt.index
 			result.connect = attempt.connect
-			for i, cancel := range cancels {
+			for i, cancel := range cancels[:launched] {
 				if i != attempt.index {
 					cancel()
 				}
 			}
+		} else if !result.ok && launched < len(step.destinations) && parent.Err() == nil {
+			launch()
 		}
 	}
-	for _, cancel := range cancels {
+	for _, cancel := range cancels[:launched] {
 		cancel()
 	}
 	result.elapsed = time.Since(started)
