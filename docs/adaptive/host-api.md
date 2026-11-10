@@ -35,7 +35,7 @@
 | журнал событий | `DrainEvents` | `DrainEvents` | `events` | `HealthDrainEvents` | `LibXrayHealthDrainEvents` | `drainEvents` |
 | снимок сводки | `PeekReport` | `PeekReport` | `report` | `HealthPeekReport` | `LibXrayHealthPeekReport` | `peekReport` |
 | закрыть окно сводки | `TakeReport` | `TakeReport` | `report take`, `report final` | `HealthTakeReport` | `LibXrayHealthTakeReport` | `takeReport` |
-| трасса | `ExportTrace`, `ExportTraceUpTo` | `ExportTrace` | `trace [after] [--max-bytes=N]` | `HealthExportTrace` | `LibXrayHealthExportTrace` | `exportTrace` |
+| трасса | `ExportTrace`, `ExportTraceUpTo` | `ExportTrace` | `trace [after] [--max-bytes=N]` | `HealthExportTrace`, `HealthExportTraceUpTo` | `LibXrayHealthExportTrace`, `LibXrayHealthExportTraceUpTo` | `exportTrace(after:)`, `exportTrace(after:maxBytes:)` |
 
 Типы результата на разных слоях разные. Сигнальные команды (смена и потеря сети, `UserPresent`, `SetMemoryLow`, `Pin`, `Release`, `RequestProviderRefresh`) в libXray возвращают `bool`, в C `int` (1 или 0), в Swift `Bool`. Остальные команды на этих слоях возвращают контейнер Result, описанный ниже. В gRPC Result возвращает каждая команда, включая сигнальные.
 
@@ -359,7 +359,7 @@ Status - локальная диагностика (`is_local_only: true`). В �
 
 `records` - массив строк после `after`, `seq` - номер последней отданной строки, `dropped` - сколько строк кольцо вытеснило с начала трассы, `started` - начало трассы по часам. Если `after` старше начала кольца, приходит всё кольцо, и разрыв виден по `seq` первой записи.
 
-Предел порции `maxBytes` ограничивает размер `records` одного ответа; строка больше предела приходит одна. `is_more: true` значит, что за порцией есть ещё строки, и хост сразу спрашивает снова с полученным `seq`. 0 или отсутствие предела отдаёт всё после `after` за один вызов. Предел есть в Go API (`ExportTraceUpTo(after, maxBytes)`), в gRPC (`max_bytes`) и в CLI (`--max-bytes=N`); `ExportTrace(after)` в Go API и libXray вызывают выгрузку без предела.
+Предел порции `maxBytes` ограничивает размер `records` одного ответа; строка больше предела приходит одна. `is_more: true` значит, что за порцией есть ещё строки, и хост сразу спрашивает снова с полученным `seq`. 0 или отсутствие предела отдаёт всё после `after` за один вызов. Предел есть на всех слоях: `ExportTraceUpTo(after, maxBytes)` в Go API, `max_bytes` в gRPC, `--max-bytes=N` в CLI, `HealthExportTraceUpTo` в libXray, `LibXrayHealthExportTraceUpTo` в C и `exportTrace(after:maxBytes:)` в Swift. `ExportTrace(after)` и его аналоги выгружают без предела.
 
 Номера строк начинаются с 1 в каждом запуске. После перезапуска ядра (новый `run` или `started`) хост начинает с `after: 0`. Прежний `after`, больший номера последней строки новой трассы, ядро считает нулём и отдаёт трассу с начала; если новая трасса успела его обогнать, начало новой трассы хост пропустит, поэтому смену `run` стоит проверять.
 
