@@ -1,6 +1,6 @@
 # Выходные данные адаптивного ядра
 
-Справочник по тому, что ядро отдаёт наружу: `Status`, журнал событий, отчёт (сводка окна), сигналы качества соединений, перепись путей и трасса. Ключи конфига описаны в [config.md](config.md), команды и конверт ответа в [host-api.md](host-api.md), запрос и ответ провайдера в [provider-protocol.md](provider-protocol.md).
+Справочник по тому, что ядро отдаёт наружу: `Status`, журнал событий, отчёт за окно, сигналы качества соединений, перепись путей и трасса. Ключи конфига описаны в [config.md](config.md), команды и конверт ответа в [host-api.md](host-api.md), запрос и ответ провайдера в [provider-protocol.md](provider-protocol.md).
 
 ## Обзор
 
@@ -65,7 +65,7 @@
 | `can_sleep`, `can_close_unchosen_idle` | bool, необязательные | Поддерживает ли outbound сон туннеля и закрытие тихих соединений. Поля появляются, когда это выяснено. |
 | `quality` | объект качества, необязательный | Качество пути в текущей сети в snake_case, без гистограмм (`*_hist` есть только в отчёте), см. [Качество](#качество). |
 | `outbound` | строка | Тег. |
-| `is_probe_only` | bool | Кандидат, который только проверяется и не получает пользовательский трафик. |
+| `is_probe_only` | bool | Проверочная учётка: только проверяется, пользовательский трафик не получает. |
 | `state` | строка | `up`, `degraded`, `suspect`, `down` или `unknown`. |
 | `reason` | строка, необязательная | Причина последней смены состояния, значения как у `path_state.reason`, плюс `chosen` (путь снова выбран после отдыха, без события). |
 | `for_ms` | целое | Сколько путь в текущем состоянии. |
@@ -93,7 +93,7 @@
 | `is_falling_back` | bool | Трафик сейчас уходит в `fallback_balancer`. |
 | `balancer` | строка | Тег балансировщика. |
 | `active` | строка | Текущий выбор. Пустая строка при исчерпании. |
-| `pinned` | строка, необязательная | Путь, закреплённый хостом или стартовым пином. |
+| `pinned` | строка, необязательная | Путь, закреплённый хостом или на старте (`startup.pin`). |
 | `is_exhausted` | bool | Пригодных кандидатов нет. |
 | `exit` | строка | Outbound, в который роутер отправляет новые соединения балансировщика сейчас, см. [Через какой outbound идёт трафик](#через-какой-outbound-идёт-трафик). До первого выбора равен `fallbackTag`. |
 | `exit_labels` | объект, необязательный | Метки outbound из `exit`. |
@@ -110,7 +110,7 @@
 | Поле | Что значит |
 | --- | --- |
 | `provider`, `method`, `version` | Тег, HTTP-метод, версия последнего применённого набора. |
-| `members`, `probe_only_verified`, `draining` | Outbound в наборе, проверенные кандидаты среди них, старые обработчики, которые ещё закрываются. |
+| `members`, `probe_only_verified`, `draining` | Outbound в наборе, прошедшие проверку проверочные учётки среди них, старые обработчики, которые ещё закрываются. |
 | `is_fetching`, `refreshes`, `failures` | Запрос идёт сейчас; число успешных обновлений; неудачи подряд. |
 | `last_error` | Последняя ошибка: класс неудачного запроса (`timeout`, `tls`, `network`, `status`), `answer larger than <N> bytes` у слишком большого ответа, `provider request exceeds 256 KiB` у слишком большого запроса, причина пропуска дороги или причина, по которой ответ или набор отклонён. |
 | `set_age_ms` | Возраст набора. |
@@ -118,7 +118,7 @@
 | `backoff_ms`, `retry_after_ms`, `attempts_last_hour` | Остаток паузы после неудач, остаток паузы `Retry-After`, попытки за последний час. |
 | `renew_in_ms`, `expired`, `skew_ms`, `clock` | Ближайшее продление аренды, число истёкших аренд, расхождение часов, по которым считаются аренды, и источник этих часов (`server`, `date`, `saved`, `device`). |
 | `headers`, `is_auth_refused`, `auth_retry_in_ms` | Имена заголовков, заданных ответом или хостом (значения не выводятся); бэкенд отверг заголовки; когда будет следующая попытка. |
-| `answer_seq` | Номер, который `ProviderSet` возвращает вместе с набором. |
+| `answer_seq` | Номер `seq`, который `ExportProviderSet` возвращает вместе с набором. |
 | `base_version`, `answer_base_version`, `is_base_changed` | Базовый конфиг при старте, базовый конфиг из последнего ответа, хосту сообщено о другом базовом конфиге. |
 | `urls_count`, `urls_generation` | Число зеркал и сколько раз хост их заменил. Адреса не выводятся. |
 
@@ -236,9 +236,9 @@
 
 `balancers[].exit` называет outbound, в который роутер отправляет новые соединения балансировщика прямо сейчас, а `exit_labels` его метки (`selection.labels` пути или набора провайдера). Уже открытые соединения остаются на том пути, где открылись. `exit` выводится по тем же правилам, что роутер:
 
-- выбор балансировщика (`active`, в том числе закреплённый `pinned`), если он может принимать соединения. Путь с истёкшей арендой без `expiredLease.fallback` и путь только для проверки не могут: тогда `active` не пуст, а `exit` равен `fallbackTag`;
+- выбор балансировщика (`active`, в том числе закреплённый `pinned`), если он может принимать соединения. Путь с истёкшей арендой при выключенном `apply.expiredLeaseFallback` и проверочная учётка не могут: тогда `active` не пуст, а `exit` равен `fallbackTag`;
 - при исчерпании (`is_exhausted: true`, `active` пуст) путь, который балансировщик ещё держит (удержание, см. `fallbackBalancer` в [config.md](config.md)): ядро ещё не знает, пропала сеть или пути;
-- после удержания с заданным `fallback_balancer` выход того балансировщика по тем же правилам (цепочка не длиннее четырёх). `is_falling_back` становится `true` на первом соединении, которое ушло туда, а `exit` показывает целевой путь сразу;
+- после удержания с заданным `fallback_balancer` выход того балансировщика по тем же правилам (цепочка не длиннее 4 балансировщиков, считая исходный). `is_falling_back` становится `true` на первом соединении, которое ушло туда, а `exit` показывает целевой путь сразу;
 - иначе `fallbackTag` балансировщика из `routing.balancers`. У него обычно нет меток, `exit_labels` тогда отсутствует.
 
 До первого соединения через балансировщик он ещё не выбирал: `active` пуст, `is_exhausted: false`, а `exit` по последнему правилу равен `fallbackTag`, хотя первое же соединение выберет путь. Поэтому `exit`, равный `fallbackTag`, означает заглушку только при `is_exhausted: true` или непустом `active`. Команда `View` называет этот случай `state: idle`.
@@ -289,7 +289,7 @@
 | `pinned_down` | `balancer`, `outbound`, [`is_start_pinned`] | Закреплённый путь отказал, балансировщик остаётся на нём. `is_start_pinned` - закрепление из `leastCost.settings.startup.pin`, а не от хоста. |
 | `pin` | `balancer`, `outbound` | Хост закрепил путь. |
 | `release` | `balancer`, `outbound`, `by` | Закрепление снято: `by` = `host` (хост) или `timer` (истёк `startup.pin.timeout`). |
-| `stale_request` | `request`, `balancer`, `run` | Пин или снятие пина с чужим `run` проигнорированы. `request` = `pin` или `release`, `run` - значение от хоста. |
+| `stale_request` | `request`, `balancer`, `run` | Закрепление или его снятие с чужим `run` проигнорированы. `request` = `pin` или `release`, `run` - значение от хоста. |
 | `fresh_path_down` | `outbound` | Новый или заменённый путь провайдера впервые признан `down` в первые пять минут после включения. |
 | `group_state` | `balancer`, `group`, `state`, `members`, `failed`, `quarantine_ms` | Явная группа стала `down` после отказов подряд или `up` после успешной проверки. |
 | `pending_closed` | `outbound`, `connections`, `reason`, [`is_silent`] | Закрыты соединения отказавшего пути: в момент решения и при уходе с пути те, что ничего не получили; с `is_silent: true` - те, что замолчали после решения (через `leastCost.settings.failover.closeSilent.after`, по умолчанию 8 с). `reason` - причина `down`. |
@@ -300,7 +300,7 @@
 
 Значения `switch.reason`:
 
-- `start`, `start_pinned`, `start_remembered`, `start_with` - выбор при старте: по цене, по стартовому пину, по памяти сетей, по `startup.outbound`. Решением не считаются;
+- `start`, `start_pinned`, `start_remembered`, `start_with` - выбор при старте: по цене, по стартовому закреплению, по памяти сетей, по `startup.outbound`. Решением не считаются;
 - `failover` - уход с отказавшего пути;
 - `recovered` - возврат после того, как проба доказала, что путь снова работает;
 - `remembered` - выбор по памяти сетей после смены сети;
@@ -308,7 +308,7 @@
 - `network_change` - перевыбор после смены сети;
 - `network_up` - проверка связи снова прошла и вернула пути, отброшенные, пока она не проходила, балансировщику, у которого не было пригодных;
 - `candidates_changed` - изменился список кандидатов;
-- `promoted` - свежий проверенный кандидат стал обычным путём и заменил мёртвый или исчерпанный выбор;
+- `promoted` - проверочная учётка, прошедшая проверку, стала обычным путём и заменила мёртвый или исчерпанный выбор;
 - `pin` - закрепление хостом;
 - `retired` - прежний путь ушёл из набора провайдера;
 - `expired` - кончилась аренда прежнего пути, а сам он работал. Если он ещё и отказал, причина `failover`.
@@ -331,7 +331,7 @@
 | `probe_start` | `outbound`, `reason`, `balancer`, `running`, [`request`] | Проба началась. `running` - число выполняющихся проб путей вместе с этой. `request` - номер запроса хоста у причины `host`. |
 | `probe_result` | `outbound`, `reason`, `balancer`, `is_ok`, `rtt_ms`, `bytes`, `error`, `is_stale`, `profile`, `state`, `steps`, [`request`] | Проба завершилась. `error` - пустая строка при успехе, иначе класс. `bytes` - трафик в обе стороны поверх TLS. `state` - вывод из результата: `up`, `degraded` или `down`. `is_stale: true` - за время пробы сменились сеть, обработчик или профиль, и результат путь не изменил (шаги всё равно учтены в отчёте). `steps` - только попытанные шаги, поля как у `Status.paths[].probe.steps`. |
 | `probe_request` | `is_udp`, `request`, `balancer`, `outbounds`, `end`, `ms`, `probed`, `reused`, `ok`, `failed`, `down`, `skipped`, `expired`, `gone` | Закончился запрос хоста, который ждал пробы. Запрос, на который ответ был готов сразу, события не пишет. `outbounds` - число путей. `end`: `done`, `timeout`, `network_change`, `gone` (балансировщик исчез), `replaced` (UDP-путь заменён). `probed` и `reused` считают ответы свежей пробой и недавним успехом, остальные - элементы по результату. |
-| `probe_only_promoted` | `provider`, `outbound` | Провайдер сделал проверенного кандидата обычным путём. |
+| `probe_only_promoted` | `provider`, `outbound` | Провайдер сделал проверочную учётку, прошедшую проверку, обычным путём. |
 
 Проба переписи пишет `probe_result` и тогда, когда её отменили (вытеснила другая проба, сменилась сеть): `error` у такой пробы пустой. Остальные отменённые пробы `probe_result` не пишут.
 
@@ -365,12 +365,12 @@
 | `provider_fetch` | `provider`, `trigger`, `retry`, `attempt`, `mirror`, `via`, `outbound`, `method`, `refresh`, `is_ok`, `status`, `ms`, `bytes`, [`code`], [`retry_after_ms`], [`error`] | Один запрос обновления через одну запись `via` к одному зеркалу. Варианты и поля ниже. |
 | `provider_apply` | `provider`, `trigger`, `is_ok`, [`version`], [`is_changed`], [`added`, `replaced`, `removed`, `was_exhausted`], [`unchanged`], [`error`], [`ignored_keys`], [`leases`, `renewed`, `expired`, `skew_ms`, `clock`], [`headers`, `is_headers_stale`], [`base_version`] | Ответ применён, совпал с действующим набором или отвергнут. Варианты ниже. |
 | `provider_skip` | `provider`, `trigger`, `reason`, [`wait_ms`] | Повод требует обновления, но начать его нельзя. `reason`: `min_interval`, `backoff`, `retry_after`, `max_per_hour`, `idle`, `network_down`, `pinned`, `memory`, `auth`. Пишется один раз на пару повод и причина до начала обновления. |
-| `provider_expired` | `provider`, `outbound`, `was_active`, `renewal` | Аренда пути кончилась. `was_active` - путь был выбран. `renewal` - почему не было продления: `refused` (бэкенд ответил без него), `failed` (последнее обновление с запросом не удалось), `off` (`providers[].triggers.leaseRenewal.renewAtFraction` равен 0), `saved` (кончилась в сохранённом хостом наборе до старта), `pending` (обновление с запросом ещё не завершилось). |
+| `provider_expired` | `provider`, `outbound`, `was_active`, `renewal` | Аренда пути кончилась. `was_active` - путь был выбран. `renewal` - почему не было продления: `refused` (бэкенд ответил без него), `failed` (последнее обновление с запросом не удалось), `off` (продление выключено: `providers[].triggers.leaseRenewal` задан как `{"isEnabled": false}`), `saved` (кончилась в сохранённом хостом наборе до старта), `pending` (обновление с запросом ещё не завершилось). |
 | `provider_auth_failed` | `provider`, `trigger`, `status`, `via`, `code` | Бэкенд отверг заголовки (`status` 401 или 403, `code` `unauthorized` или `forbidden`). Все поводы, включая хост, ждут новых заголовков или конца паузы. |
 | `provider_headers` | `provider`, `by`, `names` | Изменились заголовки запросов: `by` = `answer`, `initial` или `host`. `names` - имена изменённых заголовков, значения не выводятся. |
 | `provider_base_changed` | `provider`, `from`, `to` | Применённый ответ назвал другой базовый конфиг `to`, ядро работает с `from`. Пишется один раз на значение. |
 | `provider_urls` | `provider`, `count`, `generation` | Хост заменил зеркала (`SetProviderURLs`). Адреса не выводятся. |
-| `provider_drained` | `provider`, `outbound`, `is_replaced` | Закрыт outbound, ушедший из набора, или старый обработчик заменённого: по `providers[].apply.drainTimeout`, при снятии пина, сразу без соединений или раньше срока, чтобы закрывающихся было не больше `providers[].apply.maxOutbounds`. |
+| `provider_drained` | `provider`, `outbound`, `is_replaced` | Закрыт outbound, ушедший из набора, или старый обработчик заменённого: по `providers[].apply.drainTimeout`, при снятии закрепления, сразу без соединений или раньше срока, чтобы закрывающихся было не больше `providers[].apply.maxOutbounds`. |
 
 Значения `trigger`: `host`, `exhausted`, `expiry`, `min_healthy`, `cost_above`, `network_change`, `next_refresh`, `max_age`, `interval`, а у `provider_apply` ещё `initial` (стартовый набор).
 
@@ -409,7 +409,7 @@
 - `TakeReport(isFinal: true)` закрывает запуск. Отчёт с `report_reason: "stop"` выдаётся, если за весь запуск было хоть одно решение или сессия попала в выборку тихих сессий. Перед этим закрываются незавершённые сбои (`outcome: "open"`), UDP-потоки и прерывается перепись (`reason: close`). После этого вызова ни `TakeReport`, ни `PeekReport` ничего не возвращают.
 - `PeekReport` возвращает то, что сейчас вернул бы `TakeReport(isFinal: true)`, с `report_reason: "snapshot"`, и ничего не закрывает. Хост сохраняет снимок, чтобы отправить окно, если процесс убьют до остановки.
 
-Решения, которые делают окно достойным отчёта: `switch` с причиной не из стартовых, `exhausted`, `fallback_balancer`, `return_failed`, `pinned_down` не от стартового пина, `provider_apply` отвергнутый или изменивший набор (кроме `initial`), `provider_expired` с `renewal` не `saved`, `provider_auth_failed`, `provider_base_changed`, `census` (перепись завершилась или прервалась) и перехваченная паника.
+Решения, которые делают окно достойным отчёта: `switch` с причиной не из стартовых, `exhausted`, `fallback_balancer`, `return_failed`, `pinned_down` не от стартового закрепления, `provider_apply` отвергнутый или изменивший набор (кроме `initial`), `provider_expired` с `renewal` не `saved`, `provider_auth_failed`, `provider_base_changed`, `census` (перепись завершилась или прервалась) и перехваченная паника.
 
 `report_index` - номер отчёта в запуске с 1. Снимок несёт тот же номер, что получит следующий взятый отчёт. Получатель хранит одну запись на пару `health_run` + `report_index`: если пришли и снимок, и взятый отчёт, остаётся взятый. Ядро ставит только `stop`, `interval` и `snapshot`; другие значения `report_reason` может подставить хост.
 
@@ -444,8 +444,8 @@
 | `audit_count`, `audit_passed_count`, `audit_skipped_count` | целое | Начатые проверки решений `down`, проверки, доказавшие, что путь жив, и решения, проверку которых не удалось начать. |
 | `wake_probe_count`, `wake_probe_failed_count`, `wake_skipped_count` | целое | Начатые пробы по сигналу присутствия пользователя, неудачные из них (в том числе устаревшие) и пропущенные (свежее доказательство, интервал или лимит). |
 | `lone_probe_count`, `lone_probe_failed_count` | целое | Начатые и неудачные пробы одиночного отказа. |
-| `candidate_probes`, `candidate_probes_failed` | целое | Начатые и неудачные пробы кандидатов. |
-| `probe_only_promoted_count` | целое | Кандидаты, ставшие обычными путями. |
+| `candidate_probes`, `candidate_probes_failed` | целое | Начатые и неудачные пробы проверочных учёток. |
+| `probe_only_promoted_count` | целое | Проверочные учётки, ставшие обычными путями. |
 | `fresh_path_down_count` | целое | События `fresh_path_down`. |
 | `pending_closed_count`, `idle_closed_count` | целое | Сумма `connections` событий `pending_closed` и `idle_closed`. |
 | `probes`, `probes_failed`, `probe_bytes` | целое | События `probe_result` (без переписи), неудачные и сумма их `bytes`. |
