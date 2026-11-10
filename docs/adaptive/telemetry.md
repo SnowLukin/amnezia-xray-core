@@ -48,7 +48,7 @@
 | `is_network_up` | bool | `false`, пока решения стоят на паузе из-за потери сети. |
 | `connectivity` | строка, необязательная | Состояние проверки связи (`network.connectivity`): `ok`, `paused`, `doubt`, `ignored`. Без проверки поля нет. `ok` значит, что проверка включена и не видела отказа, а не что она прошла: сразу после старта, до первой проверки, тоже `ok`. |
 | `generation` | целое | Номер поколения сети: растёт при смене сети, на которую реагирует хотя бы один балансировщик. |
-| `is_idle` | bool | Пользовательского трафика нет дольше порога простоя. |
+| `is_idle` | bool | Пользовательского трафика нет дольше порога простоя. Выбор на старте по `startup.probe` считается спросом, как соединение пользователя. |
 | `is_memory_low` | bool | Хост сообщил о нехватке памяти. |
 | `probes_queued`, `probes_running` | целое | Пробы в очереди и выполняющиеся. |
 | `groups` | массив, необязательный | Явные группы балансировщиков, см. [groups](#groups). |
@@ -132,7 +132,7 @@
 
 Плоская карта флагов, которые действуют в этом запуске. Глобальные ключи: `census`, `trace`, `dial_failures`, `dial_timeout`, `server_unverified`, `first_reply`, `early_close`, `stalled_requests`, `partial_stalls`, `udp_replies`, `lone_failure_probe`, `step_profiles`, `candidates`, `probe_requests`, `udp_probe`, `connectivity`, `witnesses`, `network_memory`, `host_labels`, `label_request`, `pinning`, `view`, `user_present`, `memory_pressure`, `tunnel_sleep`, `close_unchosen_idle`, `events`, `report`, `quality`, `path_labels`, `probe_measurements`, `metrics`, `session_labels`.
 
-Для каждого балансировщика добавляются ключи `balancers.<тег>.fallback_balancer`, `.probe_before_switch`, `.close_pending`, `.close_silent`, `.down_audit`, `.groups`, `.return_to_cheaper`, `.return_on_network_change`, `.network_changes`, `.startup_pin`. Для каждого провайдера `providers.<тег>.is_enabled`, `.periodic`, `.min_healthy`, `.cost_above`, `.max_age`, `.network_change`, `.exhausted`, `.lease_renewal`, `.backend_schedule`, `.expired_lease_fallback`.
+Для каждого балансировщика добавляются ключи `balancers.<тег>.fallback_balancer`, `.probe_before_switch`, `.close_pending`, `.close_silent`, `.down_audit`, `.groups`, `.return_to_cheaper`, `.return_on_network_change`, `.network_changes`, `.startup_pin`, `.startup_probe`. Для каждого провайдера `providers.<тег>.is_enabled`, `.periodic`, `.min_healthy`, `.cost_above`, `.max_age`, `.network_change`, `.exhausted`, `.lease_renewal`, `.backend_schedule`, `.expired_lease_fallback`.
 
 ### Пример
 
@@ -153,7 +153,8 @@
     "balancers.auto.close_pending": true, "balancers.auto.close_silent": true,
     "balancers.auto.down_audit": false, "balancers.auto.groups": false,
     "balancers.auto.return_to_cheaper": false, "balancers.auto.return_on_network_change": false,
-    "balancers.auto.network_changes": false, "balancers.auto.startup_pin": false
+    "balancers.auto.network_changes": false, "balancers.auto.startup_pin": false,
+    "balancers.auto.startup_probe": false
   },
   "broken_subsystems": [],
   "run": "232c4c611bfbaee9",
@@ -241,7 +242,7 @@
 - после удержания с заданным `fallback_balancer` текущий outbound того балансировщика по тем же правилам (цепочка не длиннее 4 балансировщиков, считая исходный). `is_falling_back` становится `true` на первом соединении, которое ушло туда, а `outbound` показывает целевой путь сразу;
 - иначе `fallbackTag` балансировщика из `routing.balancers`. У него обычно нет меток, `outbound_labels` тогда отсутствует.
 
-До первого соединения через балансировщик он ещё не выбирал: `active` пуст, `is_exhausted: false`, а `outbound` по последнему правилу равен `fallbackTag`, хотя первое же соединение выберет путь. Поэтому `outbound`, равный `fallbackTag`, означает заглушку только при `is_exhausted: true` или непустом `active`. Команда `View` называет этот случай `state: ready`.
+До первого соединения через балансировщик он ещё не выбирал: `active` пуст, `is_exhausted: false`, а `outbound` по последнему правилу равен `fallbackTag`, хотя первое же соединение выберет путь. Поэтому `outbound`, равный `fallbackTag`, означает заглушку только при `is_exhausted: true` или непустом `active`. Команда `View` называет этот случай `state: connecting` с `phase: waiting`.
 
 `outbound` пуст только у балансировщика, чей `fallback_balancer` не `leastCost`: выбор такого балансировщика ядро не знает. Переназначение роутера через API (`xray api bo`) `outbound` не учитывает.
 
@@ -271,7 +272,7 @@
 
 Виды отказа пользовательского соединения (`kinds`, `failures_by_kind`, `evidence`): `dial_failed`, `dial_timeout`, `server_unverified`, `no_response`, `closed`, `stall`, `partial_stall`.
 
-Причины проб (`probe_start.reason`, `probe_result.reason`): `confirm`, `failover`, `wake`, `network_change`, `remembered`, `recheck`, `lone`, `candidate`, `audit`, `group_recheck`, `return`, `host`, `census`. У UDP-проб свои причины: `udp_switch`, `udp_suspect`, `host`.
+Причины проб (`probe_start.reason`, `probe_result.reason`): `confirm`, `failover`, `wake`, `network_change`, `remembered`, `recheck`, `lone`, `candidate`, `audit`, `group_recheck`, `return`, `host`, `census`, `startup`. Причина `startup` - проверка выбора балансировщика с блоком `startup.probe`, пока в этом запуске у него не было подтверждённого пути; её результат обрабатывается как результат `network_change`. У UDP-проб свои причины: `udp_switch`, `udp_suspect`, `host`.
 
 Классы ошибки пробы (`probe_result.error`, `steps[].error`, `connectivity.error`): `dial_failed`, `dial_timeout`, `server_unverified`, `no_progress`, `timeout`, `closed`, `status_<код HTTP>`, `short_body`, `other`. Текст ошибки в эти поля не попадает.
 

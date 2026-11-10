@@ -248,10 +248,25 @@ healthObservatory.telemetry.report.isEnabled is not supported; include the block
 | `pin` | object | нет | `outbound` обязателен | закрепить путь на старте |
 | `pin.outbound` | string | обязателен | как у `outbound` | закреплённый путь |
 | `pin.timeout` | dur | `0s`, бессрочно | >= 0 | через сколько закрепление снимается само |
+| `probe` | object | нет, выключено | `{}`, ключей внутри нет | выбрать путь сразу после запуска и проверить его пробой, не дожидаясь соединения пользователя |
 
 `startup.outbound` задаёт предпочтение на старте и не создаёт таймеров. Тег с `tagPrefix` провайдера нужен, чтобы стартовать с пути, который работал последним, из сохранённого набора. Если в наборе такого пути нет, ядро стартует как без `startup.outbound`. Такие теги принимает ядро с `rev` от 2.
 
 `startup.pin` требует `healthObservatory.host.pinning`. Закреплённый путь не покидается при отказе. Ядро сообщает хосту событие `pinned_down` и остаётся на пути, пока хост не вызовет `Release` или не истечёт `pin.timeout`. Без `timeout` закрепление бессрочное, и если приложение не обрабатывает `pinned_down`, пользователь остаётся на мёртвом пути до перезапуска. Задавайте конечный `timeout`.
+
+`startup.probe` нужен, когда приложение показывает «Подключено» по `View`. Его принимает ядро с `rev` от 5. Без блока ядро работает по требованию: балансировщик выбирает путь с первым соединением пользователя, а путь считается рабочим после первого удачного соединения. На устройстве без трафика этого не случится, и `View` останется в `connecting`. С блоком ядро сразу после запуска само делает то, что сделало бы первое соединение:
+
+1. Узнаёт кандидатов балансировщика и выбирает путь по обычным правилам старта (`startup.pin`, память сетей, `startup.outbound`, самый дешёвый). Это считается спросом пользователя: `is_idle` в Status и `View` становится `false`, поводы провайдера работают.
+2. Тут же проверяет выбранный путь пробой его профиля (`selection.probe`). Причина пробы в событиях и в `View` - `startup`.
+3. Удачная проба переводит путь в `up`, и `View` показывает `connected` без единого соединения пользователя.
+4. Неудачная проба обрабатывается как неудачная проба выбора в новой сети: путь уходит в карантин, и балансировщик уходит с него. По умолчанию он сначала проверяет замену пробой и переходит на ту, что прошла. Если `failover.shouldProbeBeforeSwitch` выключен, он берёт следующий путь сразу, и тот тоже тут же проверяется. Когда кончились все пути, балансировщик исчерпан как обычно.
+5. Если кандидатов нет или все отказали, срабатывает повод провайдера `exhausted`. Пути из пришедшего набора ядро само отдаёт балансировщику и проверяет выбранный из них.
+
+Так продолжается, пока у балансировщика в этом запуске не было ни одного подтверждённого пути, пробой или трафиком. После первого подтверждения ядро работает по требованию, как без блока.
+
+Остальное не меняется. Стартовая проба стоит в общей очереди и подчиняется лимитам `probes.limits`. Без сети она не запускается; в новой сети выбор проверяется заново. Путь, закреплённый через `startup.pin`, тоже проверяется; при отказе ядро остаётся на нём и пишет `pinned_down`. Соединение пользователя, пришедшее раньше пробы или во время неё, второго выбора и второй пробы не вызывает, а удачное соединение подтверждает путь само. Спрос на старте держится порог простоя, 2 минуты. Если за это время путь не подтверждён и трафика нет, ядро перестаёт перепроверять пути и запрашивать набор до первого соединения, как после любого простоя.
+
+Блок кладут в главный балансировщик, тот же, что в `host.view.balancer`. Вспомогательным балансировщикам (дороги к бэку) он не нужен. Ключей внутри нет, незнакомый ключ отклоняет конфиг.
 
 #### `networkChanges`
 
@@ -454,7 +469,7 @@ UDP-проба по STUN: измеряет доступность и задер�
   "routing": {
     "rules": [{"network": "tcp,udp", "balancerTag": "auto"}],
     "balancers": [
-      {"tag": "auto", "fallbackTag": "block", "strategy": {"type": "leastCost"}},
+      {"tag": "auto", "fallbackTag": "block", "strategy": {"type": "leastCost", "settings": {"startup": {"probe": {}}}}},
       {"tag": "roads", "fallbackTag": "block", "strategy": {"type": "leastCost"}}
     ]
   },
@@ -630,7 +645,7 @@ UDP-проба по STUN: измеряет доступность и задер�
             "failover": {"confirmWithProbe": "auto", "closeSilent": {"after": "8s"}},
             "groups": [{"name": "pool", "cost": 2, "probe": "basic", "failedInRowToLeave": 3}],
             "returnToCheaper": {"interval": "30m", "minHoldTime": "2m"},
-            "startup": {"outbound": "nl-1"},
+            "startup": {"outbound": "nl-1", "probe": {}},
             "networkChanges": {"action": "recheck"}
           }
         }
@@ -702,6 +717,7 @@ UDP-проба по STUN: измеряет доступность и задер�
 | `startup.outbound`, `startup.pin.outbound` | путь не `isProbeOnly` | `balancer auto: leastCost.settings.startup: outbound x is probe-only` |
 | `startup.pin` | `host.pinning` | `balancer auto.startup.pin requires healthObservatory.host.pinning` |
 | `startup.pin` | `outbound` | `balancer auto: leastCost.settings.startup.pin.outbound is required` |
+| `startup.probe` | пустой объект, без ключей | `leastCost.settings.startup.probe.timeout: unknown key` |
 | `host.view.balancer` | балансировщик `leastCost` с этим тегом | `healthObservatory.host.view.balancer udp must name a leastCost balancer` |
 | `host.view` без `balancer` | ровно один балансировщик `leastCost` в конфиге | `healthObservatory.host.view.balancer is required unless the config has exactly one leastCost balancer` |
 | `returnToCheaper.onNetworkChange` | `returnToCheaper` и `networkChanges` | `balancer auto: leastCost.settings.returnToCheaper.onNetworkChange requires returnToCheaper and networkChanges` |
@@ -781,6 +797,21 @@ UDP-проба по STUN: измеряет доступность и задер�
 }
 ```
 Ошибка: `balancer auto.startup.pin requires healthObservatory.host.pinning`.
+
+`startup.probe` с ключом внутри:
+
+<!-- example: config-rejected -->
+```json
+{
+  "outbounds": [
+    {"tag": "nl-1", "protocol": "vless", "settings": {"address": "nl-1.example.invalid", "port": 443, "id": "5783a3e7-e373-51cd-8642-c83782b807c5", "encryption": "none"}, "selection": {"balancer": "auto", "cost": 1, "probe": "basic"}},
+    {"tag": "block", "protocol": "blackhole"}
+  ],
+  "routing": {"balancers": [{"tag": "auto", "fallbackTag": "block", "strategy": {"type": "leastCost", "settings": {"startup": {"probe": {"timeout": "5s"}}}}}]},
+  "healthObservatory": {"probes": {"profiles": [{"name": "basic", "steps": [{"name": "transport", "destinations": ["https://probe.example.invalid/204"]}]}]}}
+}
+```
+Ошибка: `leastCost.settings.startup.probe.timeout: unknown key`.
 
 `host.view` без `balancer` при двух балансировщиках `leastCost`:
 
@@ -927,7 +958,7 @@ Xray-Adaptive: xray="26.10.31", api=2, rev=5, provider=1
 | 2 | `startup.outbound` и `startup.pin.outbound` с тегом провайдера этого балансировщика (с его `tagPrefix`) |
 | 3 | `healthObservatory.telemetry.trace` |
 | 4 | `outbounds[].speedLimit` в строгой форме; новые отказы при загрузке; ответ провайдера с неизвестными ключами и `null`; удержание пути при исчерпании. Подробно ниже |
-| 5 | `healthObservatory.host.view`: команда хоста `View`, снимок для экрана приложения (раздел 3.7) |
+| 5 | `healthObservatory.host.view`: команда хоста `View`, снимок для экрана приложения (раздел 3.7); `strategy.settings.startup.probe`: проверка выбора пробой сразу после запуска (раздел 3.3) |
 
 Ревизия 4 для автора конфига:
 
@@ -944,7 +975,7 @@ Xray-Adaptive: xray="26.10.31", api=2, rev=5, provider=1
 
 Для ручки провайдера ревизия 4 меняет разбор ответа и тело запроса, список в [provider-protocol.md](provider-protocol.md), раздел 14. Новые поля выходных данных: `Status.balancers[].outbound` и `outbound_labels` (имена действуют с ревизии 5), `ignored_keys` у `provider_apply`, `held` у `exhausted`, `evidence_ms` у подозрения `path_state`, классы вместо текстов в `provider_fetch.error`, хеш в `network_change.network` ([telemetry.md](telemetry.md)).
 
-Ревизия 5 добавляет один блок, `healthObservatory.host.view`, и больше ничего в конфиге не меняет: конфиг ревизии 4 загружается как раньше, ответ провайдера и запрос ядра прежние. В Status два поля получили новые имена, см. [changelog.md](changelog.md). Ядро до `rev=5` отклонит конфиг с этим блоком (`healthObservatory.host.view: unknown key`), поэтому блок кладут только клиентам с `rev` от 5.
+Ревизия 5 добавляет два блока, `healthObservatory.host.view` и `strategy.settings.startup.probe` балансировщика `leastCost`, и больше ничего в конфиге не меняет: конфиг ревизии 4 загружается как раньше, ответ провайдера и запрос ядра прежние. В Status два поля получили новые имена, см. [changelog.md](changelog.md). Ядро до `rev=5` отклонит конфиг с любым из этих блоков (`healthObservatory.host.view: unknown key`, `leastCost.settings.startup.probe: unknown key`), поэтому их кладут только клиентам с `rev` от 5.
 
 Ядро отвергает конфиг с незнакомым ключом в строгих блоках целиком, поэтому бэк выбирает конфиг по заголовку клиента:
 
