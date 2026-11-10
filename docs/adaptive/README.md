@@ -15,7 +15,8 @@
 |---|---|
 | Бэкенд-разработчик: генерирует конфиг и пишет ручку провайдера | [config.md](config.md) целиком, [provider-protocol.md](provider-protocol.md), раздел «Версии» в config.md для выбора шаблона по заголовку `Xray-Adaptive`, «Отчёт» в [telemetry.md](telemetry.md) для аналитики |
 | Разработчик приложения | [host-api.md](host-api.md): команды, обязанности хоста, сценарии; [telemetry.md](telemetry.md): Status, события, отчёт, трасса; в [config.md](config.md) блоки `network`, `host`, `resources`, `telemetry` |
-| Тот, кто чинит ядро | все четыре документа, код в `app/observatory/health`, разбор конфига в `infra/conf/health.go`, стратегия в `app/router/strategy_leastcost.go`, стенд в `testing/adaptive` |
+| Тот, кто переходит на новую сборку ядра | [changelog.md](changelog.md): что перестаёт загружаться, что появилось и что сделать бэку и приложению, по ревизиям |
+| Тот, кто чинит ядро | все документы, код в `app/observatory/health`, разбор конфига в `infra/conf/health.go`, стратегия в `app/router/strategy_leastcost.go`, стенд в `testing/adaptive` |
 
 Справочник описывает текущее поведение и сверяется с кодом тестами: помеченные примеры конфигов и ответов провайдера загружаются настоящим разбором, таблица событий и поля отчёта в telemetry.md сверяются с тем, что ядро пишет.
 
