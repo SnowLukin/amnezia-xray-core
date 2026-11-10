@@ -231,6 +231,10 @@ message SelectorConfig {
   // The balancer's fallbackTag, for Status only: the router sends there
   // what the balancer and its fallback balancer do not take.
   string fallback_tag = 16;
+  // The balancer's selector, the tag prefixes the router matches its
+  // outbounds with: startup_probe asks the outbound manager for the
+  // candidates the way the router does.
+  repeated string outbound_selector = 17;
 }
 
 enum ConfirmMode {
@@ -450,6 +454,9 @@ message SelectorFeatureConfig {
   optional bool return_on_network_change = 7;
   optional bool network_changes = 8;
   optional bool startup_pin = 9;
+  // Choose at the start without waiting for a connection and probe the
+  // choice until an outbound is proven.
+  optional bool startup_probe = 10;
 }
 
 message ProviderFeatureConfig {

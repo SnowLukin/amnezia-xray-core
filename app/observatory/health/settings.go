@@ -745,7 +745,10 @@ type selectorSettings struct {
 	startPinned      string
 	startPinTimeout  time.Duration
 	startOutbound    string
-	onNetworkChange  NetworkChangeMode
+	// The balancer chooses at the start and probes its choice until one is
+	// proven, see probeAtStart.
+	startProbe      bool
+	onNetworkChange NetworkChangeMode
 }
 
 type costEntrySettings struct {
@@ -826,6 +829,7 @@ func newSelectorSettings(c *SelectorConfig) *selectorSettings {
 		startPinned:     c.GetStartPinnedOutbound(),
 		startPinTimeout: time.Duration(max(c.GetStartPinTimeout(), 0)),
 		startOutbound:   c.GetStartOutbound(),
+		startProbe:      featureValue(f.StartupProbe, false),
 		onNetworkChange: c.GetNetworkChangeAction(),
 	}
 	if !featureValue(f.ReturnToCheaper, false) {

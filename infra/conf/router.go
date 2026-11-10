@@ -68,6 +68,7 @@ func (r *BalancingRule) Build() (*router.BalancingRule, error) {
 	}
 	if selector, ok := ts.(*health.SelectorConfig); ok {
 		selector.FallbackTag = r.FallbackTag
+		selector.OutboundSelector = r.Selectors
 	}
 
 	return &router.BalancingRule{

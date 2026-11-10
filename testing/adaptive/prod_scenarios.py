@@ -14,7 +14,10 @@ provider-protocol.md. The four entries are the ws addresses of the bench.
 Stand-made differences from production, all on loopback: the provider URL is
 plain http (isPlainHttpAllowed), DNS has hosts only, the geoip:private rule
 and the http inbound are left out, and direct refuses the backend port unless
-a scenario lets it through, as in a network that blocks the backend.
+a scenario lets it through, as in a network that blocks the backend. Every
+entry has the one address of loopback, so they share the probe budget of a
+server address: it is 4 a minute instead of 3, for the startup probe of the
+slot not to push the third probe credential a minute away.
 
 Importing the module opens no sockets.
 """
@@ -105,6 +108,7 @@ def prod_config(backend, connectivity=True, returns=None, direct=False):
     final = [{"action": "allow"}] if direct else [{"action": "block", "port": str(MOCK_PORT)}, {"action": "allow"}]
     sniffing = {"enabled": True, "destOverride": ["tls", "http"], "routeOnly": True}
     recheck = {"networkChanges": {"action": "recheck"}}
+    startup = {"startup": {"probe": {}}}
     returns = {"interval": "30m", "minHoldTime": "2m"} if returns is None else returns
 
     def profile(name):
@@ -126,7 +130,8 @@ def prod_config(backend, connectivity=True, returns=None, direct=False):
     }
     health = {
         "host": {"view": {"balancer": "auto"}},
-        "probes": {"candidates": {"keepVerified": 3}, "profiles": [profile("full"), profile("candidate")]},
+        "probes": {"candidates": {"keepVerified": 3}, "limits": {"perServerNamePerMinute": 4},
+                   "profiles": [profile("full"), profile("candidate")]},
         "telemetry": {"events": {"maxEvents": 500}, "report": {}, "quality": {}, "pathLabels": {}},
         "providers": [provider],
     }
@@ -156,7 +161,8 @@ def prod_config(backend, connectivity=True, returns=None, direct=False):
                       {"type": "field", "network": "tcp,udp", "balancerTag": "auto"}],
             "balancers": [
                 {"tag": "auto", "fallbackTag": "block",
-                 "strategy": {"type": "leastCost", "settings": recheck | ({"returnToCheaper": returns} if returns else {})}},
+                 "strategy": {"type": "leastCost",
+                              "settings": recheck | startup | ({"returnToCheaper": returns} if returns else {})}},
                 {"tag": "roads", "fallbackTag": "block", "strategy": {"type": "leastCost", "settings": dict(recheck)}}]},
         "policy": {"levels": {"8": {"bufferSize": 3, "connIdle": 300, "downlinkOnly": 4, "handshake": 3,
                                     "statsUserDownlink": False, "statsUserOnline": False, "statsUserUplink": False,
@@ -400,6 +406,53 @@ def prod_cold_start(stand, xray, work, name):
               [(r["body"] or {}).get("trigger") for r in reqs] + [(f.get("is_ok"), f.get("is_changed")) for f in host],
               len(reqs) == 1 and (reqs[0]["body"] or {}).get("trigger") == "host"
               and [(f.get("is_ok"), f.get("is_changed")) for f in host] == [(True, False)], "[host, (True, False)]"),
+    ] + protocol_checks(stand, c, backend, began)
+
+
+@prod
+def prod_startup_probe(stand, xray, work, name):
+    """With startup.probe the core proves its choice by itself: with no user
+    traffic at all View gets from connecting to connected on the slot of the
+    initialAnswer, by one probe with the reason startup."""
+    backend = stand.serve(strict_provider.Backend())
+    began = time.time()
+    with bench.Client(xray, prod_config(backend), work, name) as c:
+        clock = Clock()
+        screen = Screen(c)
+        wait_for(lambda: any(v["state"] == "connected" for v in screen.views), 30)
+        clock.until(15)
+        status = c.status()
+        screen.stop()
+    events = c.events
+    slot = full(backend, 0, "s")
+    seen = []
+    for v in screen.views:
+        if not seen or seen[-1] != (v["state"], v.get("phase")):
+            seen.append((v["state"], v.get("phase")))
+    last = screen.views[-1] if screen.views else {}
+    probes = [(f["outbound"], f["is_ok"]) for f in fields(events, "probe_result") if f.get("reason") == "startup"]
+    first = next(iter(bench.switches(events)), None)
+    proved = next((e for e in events if e["type"] == "path_state" and e["fields"].get("outbound") == slot
+                   and e["fields"].get("state") == "up"), None)
+    save(work, name, events=events, status=status, views=screen.views, requests=backend.requests,
+         violations=backend.violations)
+    return [
+        check("view states and phases on the screen (errors)", (seen, screen.errors[:3]),
+              not screen.errors and bool(seen) and seen[-1] == ("connected", None)
+              and {s for s, _ in seen} <= {"connecting", "connected"}, "connecting, then (connected, no phase)"),
+        check("connected on the slot, not idle", (last.get("outbound", {}).get("tag"), last.get("is_idle")),
+              last.get("outbound", {}).get("tag") == slot and last.get("is_idle") is False, "(slot, False)"),
+        check("startup probes (outbound, passed)", probes, probes == [(slot, True)], "[(slot, True)]"),
+        check("slot proven by the probe after the start, s (reason)",
+              proved and (round(proved["ts"] / 1000 - clock.start, 1), proved["fields"].get("reason")),
+              proved is not None and proved["fields"].get("reason") == "probe"
+              and proved["ts"] / 1000 - clock.start <= 10, "<= 10, probe"),
+        check("first switch (to, reason)", first and (first["fields"]["to"], first["fields"]["reason"]),
+              first is not None and first["fields"]["to"] == slot, "slot"),
+        check("no user connection and no first_success", (routed(c, clock.start), len(fields(events, "first_success"))),
+              not routed(c, clock.start) and not fields(events, "first_success"), "({}, 0)"),
+        check("Status names the feature", status.get("features", {}).get("balancers.auto.startup_probe"),
+              status.get("features", {}).get("balancers.auto.startup_probe") is True, "True"),
     ] + protocol_checks(stand, c, backend, began)
 
 

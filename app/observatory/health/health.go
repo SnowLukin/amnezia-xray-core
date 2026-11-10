@@ -368,6 +368,7 @@ func (o *Observer) loop(done chan struct{}) {
 		var downs []downMark
 		var sleeps []sleepJob
 		var unpinned bool
+		var asks []startAsk
 		func() {
 			o.mu.Lock()
 			defer o.mu.Unlock()
@@ -381,8 +382,10 @@ func (o *Observer) loop(done chan struct{}) {
 			downs = o.e.takeDowns()
 			sleeps = o.e.takeSleeps()
 			unpinned = o.e.takeUnpinned()
+			asks = o.e.startAsks()
 
 		}()
+		o.demandAtStart(asks)
 		// Ending a connection reports back to the observer, so it happens
 		// outside the lock.
 		for _, d := range downs {
@@ -424,6 +427,61 @@ func (o *Observer) loop(done chan struct{}) {
 			}
 		}
 	}
+}
+
+// demandAtStart is the first connection of a balancer that probes at the
+// start (startup.probe), played by the observer: it asks the outbound
+// manager for the candidates as the router does and hands them to the
+// balancer, which chooses. It counts as demand of the user. Until a choice
+// of the balancer is proven it comes again with every turn of the loop and
+// brings the candidates that changed, as a set of a provider does; a
+// connection of the user that came first has brought the same ones.
+func (o *Observer) demandAtStart(asks []startAsk) {
+	hs, ok := o.ohm.(outbound.HandlerSelector)
+	if !ok {
+		return
+	}
+	for _, a := range asks {
+		// Outside the lock, as every call into the outbound manager.
+		candidates := hs.Select(a.prefixes)
+		o.locked("app/observatory/health/health.go:Observer.demandAtStart", func() {
+			s := a.s
+			if o.e.selectors[s.tag] != s || (s.brought != nil && equalStrings(*s.brought, candidates)) {
+				return
+			}
+			if snap := s.snapshot.Load(); snap == nil || !equalStrings(*snap, candidates) {
+				o.e.noteDemand(o.now())
+				o.e.updateCandidates(s, candidates, o.now())
+				if s.snapshot.Load() == snap {
+					// A provider swaps a handler right now; the next turn
+					// brings the complete list.
+					return
+				}
+				// The probe of the choice starts with the next turn.
+				o.wake()
+			}
+			s.brought = &candidates
+		})
+	}
+}
+
+// startAsk is a balancer demandAtStart asks to choose, and its selector.
+type startAsk struct {
+	s        *selector
+	prefixes []string
+}
+
+// startAsks returns the balancers that probe at the start and have no
+// proven choice yet.
+func (e *engine) startAsks() []startAsk {
+	var asks []startAsk
+	for _, s := range e.selectors {
+		if s.cfg.startProbe && !s.confirmed {
+			asks = append(asks, startAsk{s, s.cfg.raw.GetOutboundSelector()})
+		}
+	}
+	sort.Slice(asks, func(i, j int) bool { return asks[i].s.tag < asks[j].s.tag })
+	return asks
 }
 
 func (o *Observer) runProbe(j *probeJob) {
@@ -1022,13 +1080,18 @@ func (o *Observer) OutboundSelector(balancerTag string, settings *serial.TypedMe
 		return nil, err
 	}
 	var s *selector
+	sc := newSelectorSettings(cfg)
 	func() {
 		o.mu.Lock()
 		defer o.mu.Unlock()
 
-		s = o.e.addSelectorAt(balancerTag, newSelectorSettings(cfg), o.now())
+		s = o.e.addSelectorAt(balancerTag, sc, o.now())
 
 	}()
+	if sc.startProbe {
+		// A balancer added while the core runs starts with the next turn.
+		o.wake()
+	}
 	return &selectorHandle{o: o, s: s}, nil
 }
 

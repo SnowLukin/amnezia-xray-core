@@ -366,6 +366,7 @@ func (e *engine) effectiveFeatures() map[string]bool {
 		flags[prefix+"return_on_network_change"] = s.cfg.returnToCheaper.onNetworkChange
 		flags[prefix+"network_changes"] = s.cfg.onNetworkChange != NetworkChangeMode_IGNORE
 		flags[prefix+"startup_pin"] = s.cfg.startPinned != ""
+		flags[prefix+"startup_probe"] = s.cfg.startProbe
 	}
 	for _, p := range e.providers {
 		prefix := "providers." + p.cfg.tag + "."

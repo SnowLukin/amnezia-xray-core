@@ -982,6 +982,7 @@ type strategyStartupPinConfig struct {
 type strategyStartupConfig struct {
 	Outbound string                   `json:"outbound"`
 	Pin      strategyStartupPinConfig `json:"pin"`
+	Probe    HealthFeatureConfig      `json:"probe"`
 }
 type strategyNetworkChangesConfig struct {
 	HealthFeatureConfig
@@ -1075,7 +1076,7 @@ func (v *strategyLeastCostConfig) Build() (proto.Message, error) {
 	default:
 		return nil, errors.New("leastCost.settings.returnToCheaper.onNetworkChange.scope must be unknown or all")
 	}
-	out := &health.SelectorConfig{Paths: v.Paths, FallbackBalancer: derefString(v.FallbackBalancer), Features: &health.SelectorFeatureConfig{ProbeBeforeSwitch: f.ShouldProbeBeforeSwitch, ClosePending: f.ClosePending.IsEnabled, CloseSilent: f.CloseSilent.IsEnabled, DownAudit: f.DownAudit.IsEnabled, Groups: featurePresence(v.Groups != nil), ReturnToCheaper: u.IsEnabled, ReturnOnNetworkChange: u.OnNetworkChange.IsEnabled, NetworkChanges: n.IsEnabled, StartupPin: s.Pin.IsEnabled}, CloseSilentAfter: optionalDuration(f.CloseSilent.After), MinHoldTime: durationPresence(u.MinHoldTime), StartOutbound: s.Outbound, StartPinTimeout: optionalDuration(s.Pin.Timeout), ReturnToCheaper: &health.ReturnToCheaperConfig{Interval: optionalDuration(u.Interval), TryOnAllNetworks: u.OnNetworkChange.Scope == "all"}}
+	out := &health.SelectorConfig{Paths: v.Paths, FallbackBalancer: derefString(v.FallbackBalancer), Features: &health.SelectorFeatureConfig{ProbeBeforeSwitch: f.ShouldProbeBeforeSwitch, ClosePending: f.ClosePending.IsEnabled, CloseSilent: f.CloseSilent.IsEnabled, DownAudit: f.DownAudit.IsEnabled, Groups: featurePresence(v.Groups != nil), ReturnToCheaper: u.IsEnabled, ReturnOnNetworkChange: u.OnNetworkChange.IsEnabled, NetworkChanges: n.IsEnabled, StartupPin: s.Pin.IsEnabled, StartupProbe: s.Probe.IsEnabled}, CloseSilentAfter: optionalDuration(f.CloseSilent.After), MinHoldTime: durationPresence(u.MinHoldTime), StartOutbound: s.Outbound, StartPinTimeout: optionalDuration(s.Pin.Timeout), ReturnToCheaper: &health.ReturnToCheaperConfig{Interval: optionalDuration(u.Interval), TryOnAllNetworks: u.OnNetworkChange.Scope == "all"}}
 	// Startup preference and pin presence are independent.
 	out.StartPinnedOutbound = s.Pin.Outbound
 	switch f.ConfirmWithProbe {

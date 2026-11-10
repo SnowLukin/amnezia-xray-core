@@ -250,6 +250,10 @@ func validateSelectorFeatures(c *SelectorConfig, f featureSettings) error {
 	if featureValue(sf.StartupPin, false) && !f.Pinning {
 		return fmt.Errorf("leastCost.settings.startup.pin requires healthObservatory.host.pinning")
 	}
+	if featureValue(sf.StartupProbe, false) && len(c.GetOutboundSelector()) == 0 {
+		// The JSON config always carries it; a config built by hand may not.
+		return fmt.Errorf("leastCost.settings.startup.probe requires the selector of the balancer in outbound_selector")
+	}
 	for i, p := range c.GetPaths() {
 		if p.GetGroup() != "" && !featureValue(sf.Groups, false) {
 			return fmt.Errorf("leastCost.settings.paths[%d].group requires groups", i)

@@ -39,10 +39,11 @@ const (
 	reasonUDPSwitch
 	reasonUDPSuspect
 	reasonCensus
+	reasonStartup
 )
 
 func (r probeReason) priority() probeReason {
-	if r == reasonWake {
+	if r == reasonWake || r == reasonStartup {
 		return reasonNetwork
 	}
 	return r
@@ -82,6 +83,8 @@ func (r probeReason) String() string {
 		return "udp_suspect"
 	case reasonCensus:
 		return "census"
+	case reasonStartup:
+		return "startup"
 	default:
 		return "unknown"
 	}
@@ -898,7 +901,11 @@ type selector struct {
 	started bool
 	// A choice of the balancer was proven to work in this run, by a probe
 	// or by traffic.
-	confirmed   bool
+	confirmed bool
+	// The candidates demandAtStart brought last, or found brought. The
+	// snapshot does not tell: a provider request through the balancer
+	// replaces it with every outbound there is.
+	brought     *[]string
 	activeSince time.Time
 	pinned      string
 	// The pin is startPinned, not one of the host.
@@ -1892,6 +1899,7 @@ func (e *engine) tick(now time.Time) ([]*probeJob, time.Time) {
 	}
 	if !e.networkDown {
 		for _, s := range e.sortedSelectors() {
+			e.probeAtStart(s, now)
 			if s.returnedTo != "" && now.Sub(s.returnedAt) >= s.cfg.returnToCheaper.penaltyWindow {
 				delete(s.penalty, s.returnedTo)
 				s.returnedTo = ""
@@ -1965,6 +1973,9 @@ func (e *engine) tick(now time.Time) ([]*probeJob, time.Time) {
 			continue
 		}
 		if j.reason == reasonWake && !e.wakeProbeCurrent(j, now) {
+			continue
+		}
+		if j.reason == reasonStartup && !e.unproven(e.selectors[j.selector], j.tag) {
 			continue
 		}
 		if j.reason == reasonLone && !e.loneFailureCurrent(j, now) {
@@ -2439,7 +2450,7 @@ func (e *engine) onProbeResult(j *probeJob, r probeResult, now time.Time) {
 		p.falseAlarms = 0
 		e.countDownEvidence(p, j.evidenceStrong, now)
 		e.markDown(p, "probe", now)
-	case reasonNetwork, reasonWake:
+	case reasonNetwork, reasonWake, reasonStartup:
 		if r.ok {
 			e.markProbeState(p, r, now)
 			if r.pathState() == statusDegraded {
@@ -2974,6 +2985,27 @@ func (e *engine) onNetworkChangeWithLabels(id string, labels map[string]string, 
 		if sel := e.selectors[old.selector]; sel != nil {
 			e.enqueue(old.tag, old.reason, old.selector, now)
 		}
+	}
+}
+
+// unproven tells whether the balancer probes at the start (startup.probe),
+// no choice of it was proven in this run yet, and tag is its choice that
+// nothing has judged.
+func (e *engine) unproven(s *selector, tag string) bool {
+	if s == nil || !s.cfg.startProbe || s.confirmed || tag == "" || s.current() != tag {
+		return false
+	}
+	p := e.paths[tag]
+	return p != nil && p.status == statusUnknown
+}
+
+// probeAtStart keeps a probe of an unproven choice on its way: of the first
+// one, of the next one after it failed, of one made when candidates came
+// later, and in a new network. It does not wait for a connection, as the
+// probes of a new network do; any result judges the choice and ends it.
+func (e *engine) probeAtStart(s *selector, now time.Time) {
+	if tag := s.current(); e.unproven(s, tag) && !e.paths[tag].probing {
+		e.enqueue(tag, reasonStartup, s.tag, now)
 	}
 }
 

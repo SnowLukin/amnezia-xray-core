@@ -1479,9 +1479,13 @@ type SelectorConfig struct {
 	FallbackBalancer string `protobuf:"bytes,15,opt,name=fallback_balancer,json=fallbackBalancer,proto3" json:"fallback_balancer,omitempty"`
 	// The balancer's fallbackTag, for Status only: the router sends there
 	// what the balancer and its fallback balancer do not take.
-	FallbackTag   string `protobuf:"bytes,16,opt,name=fallback_tag,json=fallbackTag,proto3" json:"fallback_tag,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	FallbackTag string `protobuf:"bytes,16,opt,name=fallback_tag,json=fallbackTag,proto3" json:"fallback_tag,omitempty"`
+	// The balancer's selector, the tag prefixes the router matches its
+	// outbounds with: startup_probe asks the outbound manager for the
+	// candidates the way the router does.
+	OutboundSelector []string `protobuf:"bytes,17,rep,name=outbound_selector,json=outboundSelector,proto3" json:"outbound_selector,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *SelectorConfig) Reset() {
@@ -1603,6 +1607,13 @@ func (x *SelectorConfig) GetFallbackTag() string {
 		return x.FallbackTag
 	}
 	return ""
+}
+
+func (x *SelectorConfig) GetOutboundSelector() []string {
+	if x != nil {
+		return x.OutboundSelector
+	}
+	return nil
 }
 
 // ReturnToCheaperConfig controls returns to cheaper outbounds while the current one
@@ -2716,8 +2727,11 @@ type SelectorFeatureConfig struct {
 	ReturnOnNetworkChange *bool                  `protobuf:"varint,7,opt,name=return_on_network_change,json=returnOnNetworkChange,proto3,oneof" json:"return_on_network_change,omitempty"`
 	NetworkChanges        *bool                  `protobuf:"varint,8,opt,name=network_changes,json=networkChanges,proto3,oneof" json:"network_changes,omitempty"`
 	StartupPin            *bool                  `protobuf:"varint,9,opt,name=startup_pin,json=startupPin,proto3,oneof" json:"startup_pin,omitempty"`
-	unknownFields         protoimpl.UnknownFields
-	sizeCache             protoimpl.SizeCache
+	// Choose at the start without waiting for a connection and probe the
+	// choice until an outbound is proven.
+	StartupProbe  *bool `protobuf:"varint,10,opt,name=startup_probe,json=startupProbe,proto3,oneof" json:"startup_probe,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *SelectorFeatureConfig) Reset() {
@@ -2809,6 +2823,13 @@ func (x *SelectorFeatureConfig) GetNetworkChanges() bool {
 func (x *SelectorFeatureConfig) GetStartupPin() bool {
 	if x != nil && x.StartupPin != nil {
 		return *x.StartupPin
+	}
+	return false
+}
+
+func (x *SelectorFeatureConfig) GetStartupProbe() bool {
+	if x != nil && x.StartupProbe != nil {
+		return *x.StartupProbe
 	}
 	return false
 }
@@ -3161,7 +3182,7 @@ const file_app_observatory_health_config_proto_rawDesc = "" +
 	"\vLabelsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01B\x14\n" +
-	"\x12_return_is_enabled\"\xef\x06\n" +
+	"\x12_return_is_enabled\"\x9c\a\n" +
 	"\x0eSelectorConfig\x12F\n" +
 	"\x05paths\x18\x01 \x03(\v20.xray.core.app.observatory.health.PathDefinitionR\x05paths\x12C\n" +
 	"\x06groups\x18\x02 \x03(\v2+.xray.core.app.observatory.health.PathGroupR\x06groups\x12[\n" +
@@ -3176,7 +3197,8 @@ const file_app_observatory_health_config_proto_rawDesc = "" +
 	"\bfeatures\x18\r \x01(\v27.xray.core.app.observatory.health.SelectorFeatureConfigR\bfeatures\x12,\n" +
 	"\x12close_silent_after\x18\x0e \x01(\x03R\x10closeSilentAfter\x12+\n" +
 	"\x11fallback_balancer\x18\x0f \x01(\tR\x10fallbackBalancer\x12!\n" +
-	"\ffallback_tag\x18\x10 \x01(\tR\vfallbackTagB\x10\n" +
+	"\ffallback_tag\x18\x10 \x01(\tR\vfallbackTag\x12+\n" +
+	"\x11outbound_selector\x18\x11 \x03(\tR\x10outboundSelectorB\x10\n" +
 	"\x0e_min_hold_timeJ\x04\b\x03\x10\x04J\x04\b\x04\x10\x05J\x04\b\f\x10\r\"h\n" +
 	"\x15ReturnToCheaperConfig\x12\x1a\n" +
 	"\binterval\x18\x01 \x01(\x03R\binterval\x12-\n" +
@@ -3322,7 +3344,7 @@ const file_app_observatory_health_config_proto_rawDesc = "" +
 	"\fdestinations\x18\x06 \x03(\tR\fdestinations\x1a9\n" +
 	"\vLabelsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01J\x04\b\x02\x10\x03\"\xce\x04\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01J\x04\b\x02\x10\x03\"\x8a\x05\n" +
 	"\x15SelectorFeatureConfig\x123\n" +
 	"\x13probe_before_switch\x18\x01 \x01(\bH\x00R\x11probeBeforeSwitch\x88\x01\x01\x12(\n" +
 	"\rclose_pending\x18\x02 \x01(\bH\x01R\fclosePending\x88\x01\x01\x12&\n" +
@@ -3334,7 +3356,9 @@ const file_app_observatory_health_config_proto_rawDesc = "" +
 	"\x18return_on_network_change\x18\a \x01(\bH\x06R\x15returnOnNetworkChange\x88\x01\x01\x12,\n" +
 	"\x0fnetwork_changes\x18\b \x01(\bH\aR\x0enetworkChanges\x88\x01\x01\x12$\n" +
 	"\vstartup_pin\x18\t \x01(\bH\bR\n" +
-	"startupPin\x88\x01\x01B\x16\n" +
+	"startupPin\x88\x01\x01\x12(\n" +
+	"\rstartup_probe\x18\n" +
+	" \x01(\bH\tR\fstartupProbe\x88\x01\x01B\x16\n" +
 	"\x14_probe_before_switchB\x10\n" +
 	"\x0e_close_pendingB\x0f\n" +
 	"\r_close_silentB\r\n" +
@@ -3343,7 +3367,8 @@ const file_app_observatory_health_config_proto_rawDesc = "" +
 	"\x12_return_to_cheaperB\x1b\n" +
 	"\x19_return_on_network_changeB\x12\n" +
 	"\x10_network_changesB\x0e\n" +
-	"\f_startup_pin\"\x9f\x04\n" +
+	"\f_startup_pinB\x10\n" +
+	"\x0e_startup_probe\"\x9f\x04\n" +
 	"\x15ProviderFeatureConfig\x12\x1f\n" +
 	"\bperiodic\x18\x01 \x01(\bH\x00R\bperiodic\x88\x01\x01\x12$\n" +
 	"\vmin_healthy\x18\x02 \x01(\bH\x01R\n" +

@@ -351,7 +351,10 @@ func (e *engine) setComing(chain []*selector, now time.Time) (coming, first bool
 			}
 			due := p.cfg.whenExhausted && p.cfg.balancer == s.tag && s.exhausted && p.expect == "" && p.failures == 0 &&
 				!now.Before(p.retryAfterUntil) && !p.hourSpent(now) && e.heldBack(p, triggerExhausted, expiryWant{}, idle, now) == ""
-			if p.fetching || due {
+			// The set is here and demandAtStart brings its outbounds to the
+			// balancer with the next turn of the loop.
+			arrived := p.expect != "" && s.cfg.startProbe && !s.confirmed
+			if p.fetching || due || arrived {
 				coming, first = true, first || p.failures == 0
 			}
 		}

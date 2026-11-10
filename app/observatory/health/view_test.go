@@ -392,6 +392,16 @@ func TestViewStateAndPhase(t *testing.T) {
 			p := feed(f)
 			p.failures, p.fetching = 1, true
 		}, viewBlocked, phaseRefreshing},
+		{"no path, set applied, startup.probe brings it", func(f *viewFixture) {
+			empty(f)
+			feed(f).expect = "p-x1"
+			f.auto.cfg.startProbe = true
+		}, viewConnecting, phaseRefreshing},
+		{"no path, set applied, waits for a connection", func(f *viewFixture) {
+			empty(f)
+			feed(f).expect = "p-x1"
+			f.o.e.noteDemand(f.now)
+		}, viewBlocked, phaseWaiting},
 		{"proven, new choice", func(f *viewFixture) {
 			proven(f)
 			f.o.e.switchTo(f.auto, "b1", "failover", f.now)
