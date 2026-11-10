@@ -294,6 +294,8 @@ type settings struct {
 	reportLabels map[string]string
 	features     featureSettings
 	trace        *traceSettings
+	// The balancer View tells of, see view.go.
+	viewBalancer string
 	witnesses    []string
 	udpProbe     *udpSettings
 	wake         wakeSettings
@@ -553,6 +555,9 @@ func newSettings(c *Config) *settings {
 		}
 		s.trace = &traceSettings{maxBytes: min(max(size, minTraceBytes), maxTraceBytes), connections: featureValue(tc.ConnectionsEnabled, true)}
 	}
+	if vc := c.GetView(); vc != nil {
+		s.features.View, s.viewBalancer = true, vc.Balancer
+	}
 	if cc := c.GetCensus(); cc != nil {
 		s.features.Census = true
 		s.census = &censusSettings{sampleFraction: cc.SampleFraction, startAfter: dur(cc.StartAfter, defaultCensusStartAfter), onDemand: make(map[string]bool, len(cc.OnDemand))}
@@ -753,6 +758,7 @@ type costEntrySettings struct {
 	returnEnabled  *bool
 	probe          string
 	isProbeOnly    bool
+	protocol       string
 }
 
 type returnToCheaperSettings struct {
@@ -780,7 +786,7 @@ func newSelectorSettings(c *SelectorConfig) *selectorSettings {
 	paths := map[string]*costEntrySettings{}
 	order := make([]string, 0, len(c.GetPaths()))
 	for _, p := range c.GetPaths() {
-		entry := &costEntrySettings{labels: filterLabels(p.Labels, 6), cost: float64(p.Cost), lazy: p.IsLazy, returnInterval: p.ReturnInterval, returnEnabled: p.ReturnIsEnabled, probe: p.Probe, isProbeOnly: p.IsProbeOnly}
+		entry := &costEntrySettings{labels: filterLabels(p.Labels, 6), cost: float64(p.Cost), lazy: p.IsLazy, returnInterval: p.ReturnInterval, returnEnabled: p.ReturnIsEnabled, probe: p.Probe, isProbeOnly: p.IsProbeOnly, protocol: p.Protocol}
 		if g := groups[p.Group]; g != nil && p.Group != "" {
 			entry.labels = mergeLabels(g.Labels, p.Labels)
 			entry.groupName = g.Name

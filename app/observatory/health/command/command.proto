@@ -45,8 +45,10 @@ message ExportTraceRequest {
  uint32 max_bytes = 2;
 }
 message AdaptiveHeaderRequest {}
+message ViewRequest {}
 service HealthService {
  rpc Status(StatusRequest) returns (Result) {}
+ rpc View(ViewRequest) returns (Result) {}
  rpc DrainEvents(DrainEventsRequest) returns (Result) {}
  rpc NetworkChanged(NetworkChangedRequest) returns (Result) {}
  rpc NetworkChangedWithLabels(NetworkChangedWithLabelsRequest) returns (Result) {}

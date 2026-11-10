@@ -127,10 +127,15 @@ type HealthWakeConfig struct {
 	Freshness   *duration.Duration `json:"freshness"`
 	MinInterval *duration.Duration `json:"minInterval"`
 }
+type HealthViewConfig struct {
+	HealthFeatureConfig
+	Balancer string `json:"balancer"`
+}
 type HealthHostConfig struct {
 	Pinning        HealthFeatureConfig `json:"pinning"`
 	UserPresent    HealthWakeConfig    `json:"userPresent"`
 	MemoryPressure HealthFeatureConfig `json:"memoryPressure"`
+	View           HealthViewConfig    `json:"view"`
 }
 type HealthSleepConfig struct {
 	HealthFeatureConfig
@@ -666,6 +671,9 @@ func (c *HealthObservatoryConfig) Build() (proto.Message, error) {
 	out.Schedule = &health.ScheduleConfig{MaxConcurrentProbes: count(p.Limits.MaxConcurrent), ProbesPerMinute: count(p.Limits.PerMinute), ProbesPerServerNamePerMinute: count(p.Limits.PerServerNamePerMinute), ProbeOnly: &health.ProbeOnlyConfig{KeepVerified: count(p.Candidates.KeepVerified), RecheckInterval: optionalDuration(p.Candidates.RecheckInterval)}, HostProbes: &health.HostProbesConfig{ProbesPerMinute: count(p.Limits.HostPerMinute), MaxOutbounds: count(p.Requests.MaxOutbounds), Timeout: optionalDuration(p.Requests.Timeout)}}
 	out.Network = &health.NetworkConfig{MaxNetworks: count(n.Memory.MaxNetworks)}
 	out.Wake = &health.WakeConfig{Freshness: optionalDuration(h.UserPresent.Freshness), MinInterval: optionalDuration(h.UserPresent.MinInterval)}
+	if enabled(h.View.IsEnabled, false) {
+		out.View = &health.ViewConfig{Balancer: h.View.Balancer}
+	}
 	out.Sleep = &health.SleepConfig{AfterLastUse: optionalDuration(r.TunnelSleep.AfterLastUse), CloseIdleAfter: optionalDuration(r.CloseUnchosenIdle.After)}
 	out.Events = &health.EventsConfig{MaxEvents: count(t.Events.MaxEvents), MaxBytes: sizeValue(t.Events.MaxBytes)}
 	if math.IsNaN(t.Report.QuietSampleFraction) || math.IsInf(t.Report.QuietSampleFraction, 0) || t.Report.QuietSampleFraction < 0 || t.Report.QuietSampleFraction > 1 {
@@ -1292,7 +1300,7 @@ func checkLeastCost(c *Config) error {
 				return errors.New(where, ".probe: unknown probe ", *p.Probe)
 			}
 		}
-		def := &health.PathDefinition{Tag: o.Tag, Balancer: p.Balancer, Group: group, Cost: floatValue(p.Cost), IsLazy: lazy, ReturnIsEnabled: ret, ReturnInterval: interval, Probe: derefString(p.Probe), IsProbeOnly: p.IsProbeOnly, Labels: p.Labels}
+		def := &health.PathDefinition{Tag: o.Tag, Balancer: p.Balancer, Protocol: strings.ToLower(o.Protocol), Group: group, Cost: floatValue(p.Cost), IsLazy: lazy, ReturnIsEnabled: ret, ReturnInterval: interval, Probe: derefString(p.Probe), IsProbeOnly: p.IsProbeOnly, Labels: p.Labels}
 		if group != "" {
 			g := groups[p.Balancer][group]
 			def.Probe = derefString(g.Probe)
@@ -1373,6 +1381,20 @@ func checkLeastCost(c *Config) error {
 	for tag, ps := range providers {
 		if parsed[tag] == nil {
 			return errors.New("healthObservatory.providers[", ps[0].Tag, "].apply.balancers ", tag, " must use leastCost")
+		}
+	}
+	if h := c.HealthObservatory; h != nil && enabled(h.Host.View.IsEnabled, false) {
+		view := &h.Host.View
+		if view.Balancer == "" && len(parsed) == 1 {
+			for tag := range parsed {
+				view.Balancer = tag
+			}
+		}
+		if view.Balancer == "" {
+			return errors.New("healthObservatory.host.view.balancer is required unless the config has exactly one leastCost balancer")
+		}
+		if parsed[view.Balancer] == nil {
+			return errors.New("healthObservatory.host.view.balancer ", view.Balancer, " must name a leastCost balancer")
 		}
 	}
 	if c.HealthObservatory != nil && c.HealthObservatory.Telemetry.Census != nil {

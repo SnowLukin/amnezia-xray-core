@@ -15,6 +15,7 @@ import (
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -63,7 +64,7 @@ func TestExplicitCommandMethods(t *testing.T) {
 			t.Fatalf("legacy alias %s remains", name)
 		}
 	}
-	for _, name := range []string{"Status", "PeekReport", "TakeReport", "Release", "NetworkLost", "SetMemoryLow", "ProbeResult", "RequestProbe", "RequestProviderRefresh", "ExportProviderSet", "SetProviderURLs", "ExportTrace", "AdaptiveHeader"} {
+	for _, name := range []string{"Status", "View", "PeekReport", "TakeReport", "Release", "NetworkLost", "SetMemoryLow", "ProbeResult", "RequestProbe", "RequestProviderRefresh", "ExportProviderSet", "SetProviderURLs", "ExportTrace", "AdaptiveHeader"} {
 		if descriptor.Methods().ByName(protoreflect.Name(name)) == nil {
 			t.Fatalf("missing method %s", name)
 		}
@@ -74,6 +75,7 @@ func TestJSONCommandsWithoutObservatory(t *testing.T) {
 	ctx := context.Background()
 	calls := []func() (*command.Result, error){
 		func() (*command.Result, error) { return s.Status(ctx, &command.StatusRequest{}) },
+		func() (*command.Result, error) { return s.View(ctx, &command.ViewRequest{}) },
 		func() (*command.Result, error) { return s.DrainEvents(ctx, &command.DrainEventsRequest{}) },
 		func() (*command.Result, error) { return s.PeekReport(ctx, &command.PeekReportRequest{}) },
 		func() (*command.Result, error) { return s.TakeReport(ctx, &command.TakeReportRequest{IsFinal: true}) },
@@ -143,6 +145,7 @@ func TestDisabledCommandsAndLocalStatus(t *testing.T) {
 	s, _ := service(t, `{"log":{"loglevel":"none"},"outbounds":[{"tag":"direct","protocol":"freedom"}],"healthObservatory":{}}`)
 	ctx := context.Background()
 	calls := []func() (*command.Result, error){
+		func() (*command.Result, error) { return s.View(ctx, &command.ViewRequest{}) },
 		func() (*command.Result, error) { return s.DrainEvents(ctx, &command.DrainEventsRequest{}) },
 		func() (*command.Result, error) { return s.PeekReport(ctx, &command.PeekReportRequest{}) },
 		func() (*command.Result, error) { return s.TakeReport(ctx, &command.TakeReportRequest{IsFinal: true}) },
@@ -168,6 +171,32 @@ func TestDisabledCommandsAndLocalStatus(t *testing.T) {
 	decodeData(t, r, err, &status)
 	if !status.IsLocalOnly || len(status.Features) < 29 || status.Features["quality"] || !status.Features["dial_failures"] {
 		t.Fatalf("status %+v", status)
+	}
+}
+
+// View answers from the config alone, before any connection: the paths of
+// the config and of the initial set with their protocols, and nothing a
+// screen must not show.
+func TestViewCommand(t *testing.T) {
+	s, _ := service(t, `{"log":{"loglevel":"none"},"outbounds":[{"tag":"direct","protocol":"freedom"},{"tag":"drop","protocol":"blackhole"},{"tag":"a1","protocol":"freedom","selection":{"balancer":"auto","cost":1.5,"probe":"check","labels":{"country":"nl"}}}],"routing":{"balancers":[{"tag":"auto","strategy":{"type":"leastCost"},"fallbackTag":"drop"}]},"healthObservatory":{"host":{"view":{}},"probes":{"profiles":[{"name":"check","steps":[{"name":"transport","destinations":["http://127.0.0.1:1/check"]}]}]},"providers":[{"tag":"fresh","urls":["https://provider.test/set"],"via":["direct"],"triggers":{"exhausted":{"isEnabled":false},"leaseRenewal":{"isEnabled":false},"backendSchedule":{"isEnabled":false}},"apply":{"balancers":["auto"],"tagPrefix":"p-","allowedProtocols":["freedom"]},"initialAnswer":{"protocol":1,"version":"v1","outbounds":[{"tag":"x1","protocol":"Freedom","selection":{"balancer":"auto","cost":3,"probe":"check"}}]}}]}}`)
+	r, err := s.View(context.Background(), &command.ViewRequest{})
+	var view map[string]any
+	decodeData(t, r, err, &view)
+	want := `{"seq":1,"run":"` + r.Run + `","state":"ok","since_ms":0,"needs":[],"doing":[],"balancer":"auto","exit":{"outbound":"","is_held":false},"network":{"is_up":true,"generation":0},"is_idle":true,` +
+		`"paths":[{"outbound":"a1","balancer":"auto","protocol":"freedom","cost":1.5,"is_probe_only":false,"state":"unknown","for_ms":0,"is_exit":false,"is_active":false,"labels":{"country":"nl"}},` +
+		`{"outbound":"p-x1","balancer":"auto","protocol":"freedom","cost":3,"is_probe_only":false,"state":"unknown","for_ms":0,"is_exit":false,"is_active":false}],` +
+		`"providers":[{"provider":"fresh","state":"idle","set_age_ms":0}]}`
+	var wanted map[string]any
+	if err := json.Unmarshal([]byte(want), &wanted); err != nil {
+		t.Fatal(err)
+	}
+	providers, _ := view["providers"].([]any)
+	if len(providers) == 1 {
+		providers[0].(map[string]any)["set_age_ms"] = 0.0
+		delete(providers[0].(map[string]any), "next_in_ms")
+	}
+	if !reflect.DeepEqual(view, wanted) {
+		t.Fatalf("view %s\nwant %s", r.Data, want)
 	}
 }
 func TestProbeRunAndWait(t *testing.T) {

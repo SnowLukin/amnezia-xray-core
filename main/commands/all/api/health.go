@@ -16,7 +16,7 @@ import (
 
 var cmdHealth = &base.Command{
 	CustomFlags: true,
-	UsageLine:   "{{.Exec}} api health [--server=127.0.0.1:8080] <status|events|network [id]|lost|present|pin <balancer> <outbound> [run]|release <balancer> [run]|refresh [provider]|report [take|final]|probe [--udp] <balancer> [outbound...]|headers <provider>|urls <provider>|set <provider> [after]|trace [after] [--max-bytes=N]|header|probe-result <run> <id>|memory --low=true>",
+	UsageLine:   "{{.Exec}} api health [--server=127.0.0.1:8080] <status|view|events|network [id]|lost|present|pin <balancer> <outbound> [run]|release <balancer> [run]|refresh [provider]|report [take|final]|probe [--udp] <balancer> [outbound...]|headers <provider>|urls <provider>|set <provider> [after]|trace [after] [--max-bytes=N]|header|probe-result <run> <id>|memory --low=true>",
 	Short:       "Query and control the health observatory",
 	Long: `
 Query and control the health observatory. Output is JSON.
@@ -26,6 +26,8 @@ Query and control the health observatory. Output is JSON.
 Commands:
 
 	status                      current state of outbounds and balancers
+	view                        what happens to the traffic of the user now,
+	                            for the screen of the application
 	events                      events since the previous call
 	network [id]                the device moved to another network
 	lost                        the device has no network
@@ -112,6 +114,8 @@ func executeHealth(cmd *base.Command, args []string) {
 	switch a[0] {
 	case "status":
 		response, err = client.Status(ctx, &healthService.StatusRequest{})
+	case "view":
+		response, err = client.View(ctx, &healthService.ViewRequest{})
 	case "events":
 		response, err = client.DrainEvents(ctx, &healthService.DrainEventsRequest{})
 	case "network":

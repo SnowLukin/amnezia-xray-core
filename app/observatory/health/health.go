@@ -71,6 +71,11 @@ type Observer struct {
 	// Names this run of the core, so that a host request meant for a
 	// previous run is told apart.
 	run string
+	// What View returned last, without its durations, the number of that
+	// snapshot, and when View first saw its state.
+	viewed      ViewData
+	viewSeq     uint64
+	viewedSince time.Time
 
 	providers []*providerRuntime
 	// Ends probes and provider requests still running when the observer closes.
@@ -1203,15 +1208,20 @@ func (o *Observer) Status() []byte {
 
 		o.collectPanicsLocked()
 		view = o.e.status(o.now())
-		_, _, view.BrokenSubsystems = safe.Snapshot(0)
-		if o.failed.Load() && !slices.Contains(view.BrokenSubsystems, "app/observatory/health") {
-			view.BrokenSubsystems = append(view.BrokenSubsystems, "app/observatory/health")
-		}
+		view.BrokenSubsystems = o.brokenSubsystems()
 		view.Run = o.run
 
 	}()
 	out, _ := json.Marshal(view)
 	return out
+}
+
+func (o *Observer) brokenSubsystems() []string {
+	_, _, broken := safe.Snapshot(0)
+	if o.failed.Load() && !slices.Contains(broken, "app/observatory/health") {
+		broken = append(broken, "app/observatory/health")
+	}
+	return broken
 }
 
 // TakeReport returns the report of the current window as JSON when one is

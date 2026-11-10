@@ -120,6 +120,7 @@ type probeJob struct {
 	wakeSuccess     time.Time
 	// The request of the host that asked for the probe.
 	request uint64
+	began   time.Time
 }
 
 // invalidate marks the result of the job as stale and ends its probe: a
@@ -921,6 +922,10 @@ type selector struct {
 	penalty    map[string]float64
 	returnedTo string
 	returnedAt time.Time
+
+	// The last switch, as its event told it.
+	switched   viewSwitch
+	switchedAt time.Time
 }
 
 func (s *selector) current() string {
@@ -1262,6 +1267,7 @@ func (e *engine) switchTo(s *selector, tag string, reason string, now time.Time)
 		s.returnedAt = now
 	}
 	e.scheduleReturnToCheaper(s, now, false)
+	s.switched, s.switchedAt = viewSwitch{From: from, To: tag, Reason: reason}, now
 	e.emit(now, "switch", map[string]any{
 		"balancer": s.tag, "from": from, "to": tag, "reason": reason,
 		"held_ms": held.Milliseconds(), "cost": e.cost(s, tag),
@@ -1333,15 +1339,21 @@ func (e *engine) handsOut(s *selector, now time.Time) string {
 // fallback balancer, else its fallbackTag. Empty when the fallback balancer
 // is not leastCost, whose choice the observer does not know.
 func (e *engine) exit(s *selector, now time.Time) string {
+	tag, _ := e.exitBy(s, now)
+	return tag
+}
+
+// exitBy is exit and the balancer that hands it out; nil for a fallbackTag.
+func (e *engine) exitBy(s *selector, now time.Time) (string, *selector) {
 	for depth := 0; ; depth++ {
 		if tag := e.handsOut(s, now); tag != "" {
-			return tag
+			return tag, s
 		}
 		if depth == 3 || s.cfg.fallbackBalancer == "" || !s.exhausted || s.pinned != "" {
-			return s.cfg.raw.GetFallbackTag()
+			return s.cfg.raw.GetFallbackTag(), nil
 		}
 		if s = e.selectors[s.cfg.fallbackBalancer]; s == nil {
-			return ""
+			return "", nil
 		}
 	}
 }
@@ -2063,6 +2075,7 @@ func (e *engine) sortedSelectors() []*selector {
 }
 
 func (e *engine) begin(j *probeJob, now time.Time) {
+	j.began = now
 	if j.reason == reasonCensus {
 		e.beginCensus(j, now)
 		return

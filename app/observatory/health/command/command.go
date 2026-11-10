@@ -36,6 +36,14 @@ func (s *service) Status(context.Context, *StatusRequest) (*Result, error) {
 	}
 	return result(s.observer, json.RawMessage(s.observer.Status()), nil), nil
 }
+func (s *service) View(context.Context, *ViewRequest) (*Result, error) {
+	o := s.observer
+	if o == nil {
+		return result(nil, nil, nil), nil
+	}
+	data, err := o.View()
+	return result(o, data, err), nil
+}
 func (s *service) DrainEvents(context.Context, *DrainEventsRequest) (*Result, error) {
 	o := s.observer
 	if err := o.FeatureError("events"); err != nil {

@@ -200,7 +200,9 @@ type Config struct {
 	// Presence enables a sampled, observational census of leastCost paths.
 	Census *CensusConfig `protobuf:"bytes,17,opt,name=census,proto3" json:"census,omitempty"`
 	// Presence keeps a trace of raw evidence for diagnostics.
-	Trace         *TraceConfig `protobuf:"bytes,18,opt,name=trace,proto3" json:"trace,omitempty"`
+	Trace *TraceConfig `protobuf:"bytes,18,opt,name=trace,proto3" json:"trace,omitempty"`
+	// Presence enables the View command.
+	View          *ViewConfig `protobuf:"bytes,19,opt,name=view,proto3" json:"view,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -354,6 +356,58 @@ func (x *Config) GetTrace() *TraceConfig {
 	return nil
 }
 
+func (x *Config) GetView() *ViewConfig {
+	if x != nil {
+		return x.View
+	}
+	return nil
+}
+
+type ViewConfig struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The leastCost balancer that carries the traffic of the user.
+	Balancer      string `protobuf:"bytes,1,opt,name=balancer,proto3" json:"balancer,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ViewConfig) Reset() {
+	*x = ViewConfig{}
+	mi := &file_app_observatory_health_config_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ViewConfig) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ViewConfig) ProtoMessage() {}
+
+func (x *ViewConfig) ProtoReflect() protoreflect.Message {
+	mi := &file_app_observatory_health_config_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ViewConfig.ProtoReflect.Descriptor instead.
+func (*ViewConfig) Descriptor() ([]byte, []int) {
+	return file_app_observatory_health_config_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *ViewConfig) GetBalancer() string {
+	if x != nil {
+		return x.Balancer
+	}
+	return ""
+}
+
 // User presence checks stale selected paths even while idle. Zero keeps the
 // default duration, a negative value removes the freshness or interval limit.
 type WakeConfig struct {
@@ -366,7 +420,7 @@ type WakeConfig struct {
 
 func (x *WakeConfig) Reset() {
 	*x = WakeConfig{}
-	mi := &file_app_observatory_health_config_proto_msgTypes[1]
+	mi := &file_app_observatory_health_config_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -378,7 +432,7 @@ func (x *WakeConfig) String() string {
 func (*WakeConfig) ProtoMessage() {}
 
 func (x *WakeConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_app_observatory_health_config_proto_msgTypes[1]
+	mi := &file_app_observatory_health_config_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -391,7 +445,7 @@ func (x *WakeConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WakeConfig.ProtoReflect.Descriptor instead.
 func (*WakeConfig) Descriptor() ([]byte, []int) {
-	return file_app_observatory_health_config_proto_rawDescGZIP(), []int{1}
+	return file_app_observatory_health_config_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *WakeConfig) GetFreshness() int64 {
@@ -439,7 +493,7 @@ type PassiveConfig struct {
 
 func (x *PassiveConfig) Reset() {
 	*x = PassiveConfig{}
-	mi := &file_app_observatory_health_config_proto_msgTypes[2]
+	mi := &file_app_observatory_health_config_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -451,7 +505,7 @@ func (x *PassiveConfig) String() string {
 func (*PassiveConfig) ProtoMessage() {}
 
 func (x *PassiveConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_app_observatory_health_config_proto_msgTypes[2]
+	mi := &file_app_observatory_health_config_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -464,7 +518,7 @@ func (x *PassiveConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PassiveConfig.ProtoReflect.Descriptor instead.
 func (*PassiveConfig) Descriptor() ([]byte, []int) {
-	return file_app_observatory_health_config_proto_rawDescGZIP(), []int{2}
+	return file_app_observatory_health_config_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *PassiveConfig) GetDialTimeout() int64 {
@@ -540,7 +594,7 @@ type ProbeProfile struct {
 
 func (x *ProbeProfile) Reset() {
 	*x = ProbeProfile{}
-	mi := &file_app_observatory_health_config_proto_msgTypes[3]
+	mi := &file_app_observatory_health_config_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -552,7 +606,7 @@ func (x *ProbeProfile) String() string {
 func (*ProbeProfile) ProtoMessage() {}
 
 func (x *ProbeProfile) ProtoReflect() protoreflect.Message {
-	mi := &file_app_observatory_health_config_proto_msgTypes[3]
+	mi := &file_app_observatory_health_config_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -565,7 +619,7 @@ func (x *ProbeProfile) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ProbeProfile.ProtoReflect.Descriptor instead.
 func (*ProbeProfile) Descriptor() ([]byte, []int) {
-	return file_app_observatory_health_config_proto_rawDescGZIP(), []int{3}
+	return file_app_observatory_health_config_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *ProbeProfile) GetName() string {
@@ -599,7 +653,7 @@ type ProbeStep struct {
 
 func (x *ProbeStep) Reset() {
 	*x = ProbeStep{}
-	mi := &file_app_observatory_health_config_proto_msgTypes[4]
+	mi := &file_app_observatory_health_config_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -611,7 +665,7 @@ func (x *ProbeStep) String() string {
 func (*ProbeStep) ProtoMessage() {}
 
 func (x *ProbeStep) ProtoReflect() protoreflect.Message {
-	mi := &file_app_observatory_health_config_proto_msgTypes[4]
+	mi := &file_app_observatory_health_config_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -624,7 +678,7 @@ func (x *ProbeStep) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ProbeStep.ProtoReflect.Descriptor instead.
 func (*ProbeStep) Descriptor() ([]byte, []int) {
-	return file_app_observatory_health_config_proto_rawDescGZIP(), []int{4}
+	return file_app_observatory_health_config_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *ProbeStep) GetName() string {
@@ -701,7 +755,7 @@ type ConnectivityConfig struct {
 
 func (x *ConnectivityConfig) Reset() {
 	*x = ConnectivityConfig{}
-	mi := &file_app_observatory_health_config_proto_msgTypes[5]
+	mi := &file_app_observatory_health_config_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -713,7 +767,7 @@ func (x *ConnectivityConfig) String() string {
 func (*ConnectivityConfig) ProtoMessage() {}
 
 func (x *ConnectivityConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_app_observatory_health_config_proto_msgTypes[5]
+	mi := &file_app_observatory_health_config_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -726,7 +780,7 @@ func (x *ConnectivityConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ConnectivityConfig.ProtoReflect.Descriptor instead.
 func (*ConnectivityConfig) Descriptor() ([]byte, []int) {
-	return file_app_observatory_health_config_proto_rawDescGZIP(), []int{5}
+	return file_app_observatory_health_config_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *ConnectivityConfig) GetOutbound() string {
@@ -775,7 +829,7 @@ type ScheduleConfig struct {
 
 func (x *ScheduleConfig) Reset() {
 	*x = ScheduleConfig{}
-	mi := &file_app_observatory_health_config_proto_msgTypes[6]
+	mi := &file_app_observatory_health_config_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -787,7 +841,7 @@ func (x *ScheduleConfig) String() string {
 func (*ScheduleConfig) ProtoMessage() {}
 
 func (x *ScheduleConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_app_observatory_health_config_proto_msgTypes[6]
+	mi := &file_app_observatory_health_config_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -800,7 +854,7 @@ func (x *ScheduleConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ScheduleConfig.ProtoReflect.Descriptor instead.
 func (*ScheduleConfig) Descriptor() ([]byte, []int) {
-	return file_app_observatory_health_config_proto_rawDescGZIP(), []int{6}
+	return file_app_observatory_health_config_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *ScheduleConfig) GetMaxConcurrentProbes() int32 {
@@ -850,7 +904,7 @@ type ProbeOnlyConfig struct {
 
 func (x *ProbeOnlyConfig) Reset() {
 	*x = ProbeOnlyConfig{}
-	mi := &file_app_observatory_health_config_proto_msgTypes[7]
+	mi := &file_app_observatory_health_config_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -862,7 +916,7 @@ func (x *ProbeOnlyConfig) String() string {
 func (*ProbeOnlyConfig) ProtoMessage() {}
 
 func (x *ProbeOnlyConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_app_observatory_health_config_proto_msgTypes[7]
+	mi := &file_app_observatory_health_config_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -875,7 +929,7 @@ func (x *ProbeOnlyConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ProbeOnlyConfig.ProtoReflect.Descriptor instead.
 func (*ProbeOnlyConfig) Descriptor() ([]byte, []int) {
-	return file_app_observatory_health_config_proto_rawDescGZIP(), []int{7}
+	return file_app_observatory_health_config_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *ProbeOnlyConfig) GetKeepVerified() int32 {
@@ -910,7 +964,7 @@ type HostProbesConfig struct {
 
 func (x *HostProbesConfig) Reset() {
 	*x = HostProbesConfig{}
-	mi := &file_app_observatory_health_config_proto_msgTypes[8]
+	mi := &file_app_observatory_health_config_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -922,7 +976,7 @@ func (x *HostProbesConfig) String() string {
 func (*HostProbesConfig) ProtoMessage() {}
 
 func (x *HostProbesConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_app_observatory_health_config_proto_msgTypes[8]
+	mi := &file_app_observatory_health_config_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -935,7 +989,7 @@ func (x *HostProbesConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HostProbesConfig.ProtoReflect.Descriptor instead.
 func (*HostProbesConfig) Descriptor() ([]byte, []int) {
-	return file_app_observatory_health_config_proto_rawDescGZIP(), []int{8}
+	return file_app_observatory_health_config_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *HostProbesConfig) GetProbesPerMinute() int32 {
@@ -971,7 +1025,7 @@ type EventsConfig struct {
 
 func (x *EventsConfig) Reset() {
 	*x = EventsConfig{}
-	mi := &file_app_observatory_health_config_proto_msgTypes[9]
+	mi := &file_app_observatory_health_config_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -983,7 +1037,7 @@ func (x *EventsConfig) String() string {
 func (*EventsConfig) ProtoMessage() {}
 
 func (x *EventsConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_app_observatory_health_config_proto_msgTypes[9]
+	mi := &file_app_observatory_health_config_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -996,7 +1050,7 @@ func (x *EventsConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EventsConfig.ProtoReflect.Descriptor instead.
 func (*EventsConfig) Descriptor() ([]byte, []int) {
-	return file_app_observatory_health_config_proto_rawDescGZIP(), []int{9}
+	return file_app_observatory_health_config_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *EventsConfig) GetMaxEvents() int32 {
@@ -1027,7 +1081,7 @@ type ReportConfig struct {
 
 func (x *ReportConfig) Reset() {
 	*x = ReportConfig{}
-	mi := &file_app_observatory_health_config_proto_msgTypes[10]
+	mi := &file_app_observatory_health_config_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1039,7 +1093,7 @@ func (x *ReportConfig) String() string {
 func (*ReportConfig) ProtoMessage() {}
 
 func (x *ReportConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_app_observatory_health_config_proto_msgTypes[10]
+	mi := &file_app_observatory_health_config_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1052,7 +1106,7 @@ func (x *ReportConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReportConfig.ProtoReflect.Descriptor instead.
 func (*ReportConfig) Descriptor() ([]byte, []int) {
-	return file_app_observatory_health_config_proto_rawDescGZIP(), []int{10}
+	return file_app_observatory_health_config_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *ReportConfig) GetInterval() int64 {
@@ -1087,7 +1141,7 @@ type SleepConfig struct {
 
 func (x *SleepConfig) Reset() {
 	*x = SleepConfig{}
-	mi := &file_app_observatory_health_config_proto_msgTypes[11]
+	mi := &file_app_observatory_health_config_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1099,7 +1153,7 @@ func (x *SleepConfig) String() string {
 func (*SleepConfig) ProtoMessage() {}
 
 func (x *SleepConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_app_observatory_health_config_proto_msgTypes[11]
+	mi := &file_app_observatory_health_config_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1112,7 +1166,7 @@ func (x *SleepConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SleepConfig.ProtoReflect.Descriptor instead.
 func (*SleepConfig) Descriptor() ([]byte, []int) {
-	return file_app_observatory_health_config_proto_rawDescGZIP(), []int{11}
+	return file_app_observatory_health_config_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *SleepConfig) GetAfterLastUse() int64 {
@@ -1139,7 +1193,7 @@ type NetworkConfig struct {
 
 func (x *NetworkConfig) Reset() {
 	*x = NetworkConfig{}
-	mi := &file_app_observatory_health_config_proto_msgTypes[12]
+	mi := &file_app_observatory_health_config_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1151,7 +1205,7 @@ func (x *NetworkConfig) String() string {
 func (*NetworkConfig) ProtoMessage() {}
 
 func (x *NetworkConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_app_observatory_health_config_proto_msgTypes[12]
+	mi := &file_app_observatory_health_config_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1164,7 +1218,7 @@ func (x *NetworkConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use NetworkConfig.ProtoReflect.Descriptor instead.
 func (*NetworkConfig) Descriptor() ([]byte, []int) {
-	return file_app_observatory_health_config_proto_rawDescGZIP(), []int{12}
+	return file_app_observatory_health_config_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *NetworkConfig) GetMaxNetworks() int32 {
@@ -1186,13 +1240,15 @@ type PathDefinition struct {
 	IsProbeOnly     bool                   `protobuf:"varint,8,opt,name=is_probe_only,json=isProbeOnly,proto3" json:"is_probe_only,omitempty"`
 	ReturnIsEnabled *bool                  `protobuf:"varint,9,opt,name=return_is_enabled,json=returnIsEnabled,proto3,oneof" json:"return_is_enabled,omitempty"`
 	Labels          map[string]string      `protobuf:"bytes,10,rep,name=labels,proto3" json:"labels,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	// The proxy protocol of the outbound, as its config names it; only shown.
+	Protocol      string `protobuf:"bytes,12,opt,name=protocol,proto3" json:"protocol,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *PathDefinition) Reset() {
 	*x = PathDefinition{}
-	mi := &file_app_observatory_health_config_proto_msgTypes[13]
+	mi := &file_app_observatory_health_config_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1204,7 +1260,7 @@ func (x *PathDefinition) String() string {
 func (*PathDefinition) ProtoMessage() {}
 
 func (x *PathDefinition) ProtoReflect() protoreflect.Message {
-	mi := &file_app_observatory_health_config_proto_msgTypes[13]
+	mi := &file_app_observatory_health_config_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1217,7 +1273,7 @@ func (x *PathDefinition) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PathDefinition.ProtoReflect.Descriptor instead.
 func (*PathDefinition) Descriptor() ([]byte, []int) {
-	return file_app_observatory_health_config_proto_rawDescGZIP(), []int{13}
+	return file_app_observatory_health_config_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *PathDefinition) GetTag() string {
@@ -1290,6 +1346,13 @@ func (x *PathDefinition) GetLabels() map[string]string {
 	return nil
 }
 
+func (x *PathDefinition) GetProtocol() string {
+	if x != nil {
+		return x.Protocol
+	}
+	return ""
+}
+
 type PathGroup struct {
 	state              protoimpl.MessageState `protogen:"open.v1"`
 	Name               string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
@@ -1306,7 +1369,7 @@ type PathGroup struct {
 
 func (x *PathGroup) Reset() {
 	*x = PathGroup{}
-	mi := &file_app_observatory_health_config_proto_msgTypes[14]
+	mi := &file_app_observatory_health_config_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1318,7 +1381,7 @@ func (x *PathGroup) String() string {
 func (*PathGroup) ProtoMessage() {}
 
 func (x *PathGroup) ProtoReflect() protoreflect.Message {
-	mi := &file_app_observatory_health_config_proto_msgTypes[14]
+	mi := &file_app_observatory_health_config_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1331,7 +1394,7 @@ func (x *PathGroup) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PathGroup.ProtoReflect.Descriptor instead.
 func (*PathGroup) Descriptor() ([]byte, []int) {
-	return file_app_observatory_health_config_proto_rawDescGZIP(), []int{14}
+	return file_app_observatory_health_config_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *PathGroup) GetName() string {
@@ -1423,7 +1486,7 @@ type SelectorConfig struct {
 
 func (x *SelectorConfig) Reset() {
 	*x = SelectorConfig{}
-	mi := &file_app_observatory_health_config_proto_msgTypes[15]
+	mi := &file_app_observatory_health_config_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1435,7 +1498,7 @@ func (x *SelectorConfig) String() string {
 func (*SelectorConfig) ProtoMessage() {}
 
 func (x *SelectorConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_app_observatory_health_config_proto_msgTypes[15]
+	mi := &file_app_observatory_health_config_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1448,7 +1511,7 @@ func (x *SelectorConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SelectorConfig.ProtoReflect.Descriptor instead.
 func (*SelectorConfig) Descriptor() ([]byte, []int) {
-	return file_app_observatory_health_config_proto_rawDescGZIP(), []int{15}
+	return file_app_observatory_health_config_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *SelectorConfig) GetPaths() []*PathDefinition {
@@ -1556,7 +1619,7 @@ type ReturnToCheaperConfig struct {
 
 func (x *ReturnToCheaperConfig) Reset() {
 	*x = ReturnToCheaperConfig{}
-	mi := &file_app_observatory_health_config_proto_msgTypes[16]
+	mi := &file_app_observatory_health_config_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1568,7 +1631,7 @@ func (x *ReturnToCheaperConfig) String() string {
 func (*ReturnToCheaperConfig) ProtoMessage() {}
 
 func (x *ReturnToCheaperConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_app_observatory_health_config_proto_msgTypes[16]
+	mi := &file_app_observatory_health_config_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1581,7 +1644,7 @@ func (x *ReturnToCheaperConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReturnToCheaperConfig.ProtoReflect.Descriptor instead.
 func (*ReturnToCheaperConfig) Descriptor() ([]byte, []int) {
-	return file_app_observatory_health_config_proto_rawDescGZIP(), []int{16}
+	return file_app_observatory_health_config_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *ReturnToCheaperConfig) GetInterval() int64 {
@@ -1640,7 +1703,7 @@ type ProviderConfig struct {
 
 func (x *ProviderConfig) Reset() {
 	*x = ProviderConfig{}
-	mi := &file_app_observatory_health_config_proto_msgTypes[17]
+	mi := &file_app_observatory_health_config_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1652,7 +1715,7 @@ func (x *ProviderConfig) String() string {
 func (*ProviderConfig) ProtoMessage() {}
 
 func (x *ProviderConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_app_observatory_health_config_proto_msgTypes[17]
+	mi := &file_app_observatory_health_config_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1665,7 +1728,7 @@ func (x *ProviderConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ProviderConfig.ProtoReflect.Descriptor instead.
 func (*ProviderConfig) Descriptor() ([]byte, []int) {
-	return file_app_observatory_health_config_proto_rawDescGZIP(), []int{17}
+	return file_app_observatory_health_config_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *ProviderConfig) GetTag() string {
@@ -1791,7 +1854,7 @@ type ProviderTriggers struct {
 
 func (x *ProviderTriggers) Reset() {
 	*x = ProviderTriggers{}
-	mi := &file_app_observatory_health_config_proto_msgTypes[18]
+	mi := &file_app_observatory_health_config_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1803,7 +1866,7 @@ func (x *ProviderTriggers) String() string {
 func (*ProviderTriggers) ProtoMessage() {}
 
 func (x *ProviderTriggers) ProtoReflect() protoreflect.Message {
-	mi := &file_app_observatory_health_config_proto_msgTypes[18]
+	mi := &file_app_observatory_health_config_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1816,7 +1879,7 @@ func (x *ProviderTriggers) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ProviderTriggers.ProtoReflect.Descriptor instead.
 func (*ProviderTriggers) Descriptor() ([]byte, []int) {
-	return file_app_observatory_health_config_proto_rawDescGZIP(), []int{18}
+	return file_app_observatory_health_config_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *ProviderTriggers) GetInterval() *DurationRange {
@@ -1897,7 +1960,7 @@ type ExpiryTrigger struct {
 
 func (x *ExpiryTrigger) Reset() {
 	*x = ExpiryTrigger{}
-	mi := &file_app_observatory_health_config_proto_msgTypes[19]
+	mi := &file_app_observatory_health_config_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1909,7 +1972,7 @@ func (x *ExpiryTrigger) String() string {
 func (*ExpiryTrigger) ProtoMessage() {}
 
 func (x *ExpiryTrigger) ProtoReflect() protoreflect.Message {
-	mi := &file_app_observatory_health_config_proto_msgTypes[19]
+	mi := &file_app_observatory_health_config_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1922,7 +1985,7 @@ func (x *ExpiryTrigger) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExpiryTrigger.ProtoReflect.Descriptor instead.
 func (*ExpiryTrigger) Descriptor() ([]byte, []int) {
-	return file_app_observatory_health_config_proto_rawDescGZIP(), []int{19}
+	return file_app_observatory_health_config_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *ExpiryTrigger) GetRenewAtFraction() float64 {
@@ -1950,7 +2013,7 @@ type DurationRange struct {
 
 func (x *DurationRange) Reset() {
 	*x = DurationRange{}
-	mi := &file_app_observatory_health_config_proto_msgTypes[20]
+	mi := &file_app_observatory_health_config_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1962,7 +2025,7 @@ func (x *DurationRange) String() string {
 func (*DurationRange) ProtoMessage() {}
 
 func (x *DurationRange) ProtoReflect() protoreflect.Message {
-	mi := &file_app_observatory_health_config_proto_msgTypes[20]
+	mi := &file_app_observatory_health_config_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1975,7 +2038,7 @@ func (x *DurationRange) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DurationRange.ProtoReflect.Descriptor instead.
 func (*DurationRange) Descriptor() ([]byte, []int) {
-	return file_app_observatory_health_config_proto_rawDescGZIP(), []int{20}
+	return file_app_observatory_health_config_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *DurationRange) GetMin() int64 {
@@ -2002,7 +2065,7 @@ type CostTrigger struct {
 
 func (x *CostTrigger) Reset() {
 	*x = CostTrigger{}
-	mi := &file_app_observatory_health_config_proto_msgTypes[21]
+	mi := &file_app_observatory_health_config_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2014,7 +2077,7 @@ func (x *CostTrigger) String() string {
 func (*CostTrigger) ProtoMessage() {}
 
 func (x *CostTrigger) ProtoReflect() protoreflect.Message {
-	mi := &file_app_observatory_health_config_proto_msgTypes[21]
+	mi := &file_app_observatory_health_config_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2027,7 +2090,7 @@ func (x *CostTrigger) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CostTrigger.ProtoReflect.Descriptor instead.
 func (*CostTrigger) Descriptor() ([]byte, []int) {
-	return file_app_observatory_health_config_proto_rawDescGZIP(), []int{21}
+	return file_app_observatory_health_config_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *CostTrigger) GetCost() float32 {
@@ -2059,7 +2122,7 @@ type ProviderLimits struct {
 
 func (x *ProviderLimits) Reset() {
 	*x = ProviderLimits{}
-	mi := &file_app_observatory_health_config_proto_msgTypes[22]
+	mi := &file_app_observatory_health_config_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2071,7 +2134,7 @@ func (x *ProviderLimits) String() string {
 func (*ProviderLimits) ProtoMessage() {}
 
 func (x *ProviderLimits) ProtoReflect() protoreflect.Message {
-	mi := &file_app_observatory_health_config_proto_msgTypes[22]
+	mi := &file_app_observatory_health_config_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2084,7 +2147,7 @@ func (x *ProviderLimits) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ProviderLimits.ProtoReflect.Descriptor instead.
 func (*ProviderLimits) Descriptor() ([]byte, []int) {
-	return file_app_observatory_health_config_proto_rawDescGZIP(), []int{22}
+	return file_app_observatory_health_config_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *ProviderLimits) GetMinInterval() int64 {
@@ -2134,7 +2197,7 @@ type ProviderApply struct {
 
 func (x *ProviderApply) Reset() {
 	*x = ProviderApply{}
-	mi := &file_app_observatory_health_config_proto_msgTypes[23]
+	mi := &file_app_observatory_health_config_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2146,7 +2209,7 @@ func (x *ProviderApply) String() string {
 func (*ProviderApply) ProtoMessage() {}
 
 func (x *ProviderApply) ProtoReflect() protoreflect.Message {
-	mi := &file_app_observatory_health_config_proto_msgTypes[23]
+	mi := &file_app_observatory_health_config_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2159,7 +2222,7 @@ func (x *ProviderApply) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ProviderApply.ProtoReflect.Descriptor instead.
 func (*ProviderApply) Descriptor() ([]byte, []int) {
-	return file_app_observatory_health_config_proto_rawDescGZIP(), []int{23}
+	return file_app_observatory_health_config_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *ProviderApply) GetBalancers() []string {
@@ -2224,7 +2287,7 @@ type UDPProbeConfig struct {
 
 func (x *UDPProbeConfig) Reset() {
 	*x = UDPProbeConfig{}
-	mi := &file_app_observatory_health_config_proto_msgTypes[24]
+	mi := &file_app_observatory_health_config_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2236,7 +2299,7 @@ func (x *UDPProbeConfig) String() string {
 func (*UDPProbeConfig) ProtoMessage() {}
 
 func (x *UDPProbeConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_app_observatory_health_config_proto_msgTypes[24]
+	mi := &file_app_observatory_health_config_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2249,7 +2312,7 @@ func (x *UDPProbeConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UDPProbeConfig.ProtoReflect.Descriptor instead.
 func (*UDPProbeConfig) Descriptor() ([]byte, []int) {
-	return file_app_observatory_health_config_proto_rawDescGZIP(), []int{24}
+	return file_app_observatory_health_config_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *UDPProbeConfig) GetDestinations() []string {
@@ -2327,7 +2390,7 @@ type FeatureConfig struct {
 
 func (x *FeatureConfig) Reset() {
 	*x = FeatureConfig{}
-	mi := &file_app_observatory_health_config_proto_msgTypes[25]
+	mi := &file_app_observatory_health_config_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2339,7 +2402,7 @@ func (x *FeatureConfig) String() string {
 func (*FeatureConfig) ProtoMessage() {}
 
 func (x *FeatureConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_app_observatory_health_config_proto_msgTypes[25]
+	mi := &file_app_observatory_health_config_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2352,7 +2415,7 @@ func (x *FeatureConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FeatureConfig.ProtoReflect.Descriptor instead.
 func (*FeatureConfig) Descriptor() ([]byte, []int) {
-	return file_app_observatory_health_config_proto_rawDescGZIP(), []int{25}
+	return file_app_observatory_health_config_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *FeatureConfig) GetDialFailures() bool {
@@ -2579,7 +2642,7 @@ type LabelRequestConfig struct {
 
 func (x *LabelRequestConfig) Reset() {
 	*x = LabelRequestConfig{}
-	mi := &file_app_observatory_health_config_proto_msgTypes[26]
+	mi := &file_app_observatory_health_config_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2591,7 +2654,7 @@ func (x *LabelRequestConfig) String() string {
 func (*LabelRequestConfig) ProtoMessage() {}
 
 func (x *LabelRequestConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_app_observatory_health_config_proto_msgTypes[26]
+	mi := &file_app_observatory_health_config_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2604,7 +2667,7 @@ func (x *LabelRequestConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LabelRequestConfig.ProtoReflect.Descriptor instead.
 func (*LabelRequestConfig) Descriptor() ([]byte, []int) {
-	return file_app_observatory_health_config_proto_rawDescGZIP(), []int{26}
+	return file_app_observatory_health_config_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *LabelRequestConfig) GetOutbound() string {
@@ -2659,7 +2722,7 @@ type SelectorFeatureConfig struct {
 
 func (x *SelectorFeatureConfig) Reset() {
 	*x = SelectorFeatureConfig{}
-	mi := &file_app_observatory_health_config_proto_msgTypes[27]
+	mi := &file_app_observatory_health_config_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2671,7 +2734,7 @@ func (x *SelectorFeatureConfig) String() string {
 func (*SelectorFeatureConfig) ProtoMessage() {}
 
 func (x *SelectorFeatureConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_app_observatory_health_config_proto_msgTypes[27]
+	mi := &file_app_observatory_health_config_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2684,7 +2747,7 @@ func (x *SelectorFeatureConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SelectorFeatureConfig.ProtoReflect.Descriptor instead.
 func (*SelectorFeatureConfig) Descriptor() ([]byte, []int) {
-	return file_app_observatory_health_config_proto_rawDescGZIP(), []int{27}
+	return file_app_observatory_health_config_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *SelectorFeatureConfig) GetProbeBeforeSwitch() bool {
@@ -2767,7 +2830,7 @@ type ProviderFeatureConfig struct {
 
 func (x *ProviderFeatureConfig) Reset() {
 	*x = ProviderFeatureConfig{}
-	mi := &file_app_observatory_health_config_proto_msgTypes[28]
+	mi := &file_app_observatory_health_config_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2779,7 +2842,7 @@ func (x *ProviderFeatureConfig) String() string {
 func (*ProviderFeatureConfig) ProtoMessage() {}
 
 func (x *ProviderFeatureConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_app_observatory_health_config_proto_msgTypes[28]
+	mi := &file_app_observatory_health_config_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2792,7 +2855,7 @@ func (x *ProviderFeatureConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ProviderFeatureConfig.ProtoReflect.Descriptor instead.
 func (*ProviderFeatureConfig) Descriptor() ([]byte, []int) {
-	return file_app_observatory_health_config_proto_rawDescGZIP(), []int{28}
+	return file_app_observatory_health_config_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *ProviderFeatureConfig) GetPeriodic() bool {
@@ -2871,7 +2934,7 @@ type TraceConfig struct {
 
 func (x *TraceConfig) Reset() {
 	*x = TraceConfig{}
-	mi := &file_app_observatory_health_config_proto_msgTypes[29]
+	mi := &file_app_observatory_health_config_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2883,7 +2946,7 @@ func (x *TraceConfig) String() string {
 func (*TraceConfig) ProtoMessage() {}
 
 func (x *TraceConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_app_observatory_health_config_proto_msgTypes[29]
+	mi := &file_app_observatory_health_config_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2896,7 +2959,7 @@ func (x *TraceConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TraceConfig.ProtoReflect.Descriptor instead.
 func (*TraceConfig) Descriptor() ([]byte, []int) {
-	return file_app_observatory_health_config_proto_rawDescGZIP(), []int{29}
+	return file_app_observatory_health_config_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *TraceConfig) GetMaxBytes() int64 {
@@ -2926,7 +2989,7 @@ type CensusConfig struct {
 
 func (x *CensusConfig) Reset() {
 	*x = CensusConfig{}
-	mi := &file_app_observatory_health_config_proto_msgTypes[30]
+	mi := &file_app_observatory_health_config_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2938,7 +3001,7 @@ func (x *CensusConfig) String() string {
 func (*CensusConfig) ProtoMessage() {}
 
 func (x *CensusConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_app_observatory_health_config_proto_msgTypes[30]
+	mi := &file_app_observatory_health_config_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2951,7 +3014,7 @@ func (x *CensusConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CensusConfig.ProtoReflect.Descriptor instead.
 func (*CensusConfig) Descriptor() ([]byte, []int) {
-	return file_app_observatory_health_config_proto_rawDescGZIP(), []int{30}
+	return file_app_observatory_health_config_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *CensusConfig) GetSampleFraction() float64 {
@@ -2979,8 +3042,7 @@ var File_app_observatory_health_config_proto protoreflect.FileDescriptor
 
 const file_app_observatory_health_config_proto_rawDesc = "" +
 	"\n" +
-	"#app/observatory/health/config.proto\x12 xray.core.app.observatory.health\"\xed\n" +
-	"\n" +
+	"#app/observatory/health/config.proto\x12 xray.core.app.observatory.health\"\xaf\v\n" +
 	"\x06Config\x12I\n" +
 	"\apassive\x18\x02 \x01(\v2/.xray.core.app.observatory.health.PassiveConfigR\apassive\x12F\n" +
 	"\x06probes\x18\x03 \x03(\v2..xray.core.app.observatory.health.ProbeProfileR\x06probes\x12X\n" +
@@ -2999,10 +3061,14 @@ const file_app_observatory_health_config_proto_rawDesc = "" +
 	"\x0esession_labels\x18\x0f \x03(\v2;.xray.core.app.observatory.health.Config.SessionLabelsEntryR\rsessionLabels\x12Y\n" +
 	"\rlabel_request\x18\x10 \x01(\v24.xray.core.app.observatory.health.LabelRequestConfigR\flabelRequest\x12F\n" +
 	"\x06census\x18\x11 \x01(\v2..xray.core.app.observatory.health.CensusConfigR\x06census\x12C\n" +
-	"\x05trace\x18\x12 \x01(\v2-.xray.core.app.observatory.health.TraceConfigR\x05trace\x1a@\n" +
+	"\x05trace\x18\x12 \x01(\v2-.xray.core.app.observatory.health.TraceConfigR\x05trace\x12@\n" +
+	"\x04view\x18\x13 \x01(\v2,.xray.core.app.observatory.health.ViewConfigR\x04view\x1a@\n" +
 	"\x12SessionLabelsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01J\x04\b\x01\x10\x02\"M\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01J\x04\b\x01\x10\x02\"(\n" +
+	"\n" +
+	"ViewConfig\x12\x1a\n" +
+	"\bbalancer\x18\x01 \x01(\tR\bbalancer\"M\n" +
 	"\n" +
 	"WakeConfig\x12\x1c\n" +
 	"\tfreshness\x18\x01 \x01(\x03R\tfreshness\x12!\n" +
@@ -3065,7 +3131,7 @@ const file_app_observatory_health_config_proto_rawDesc = "" +
 	"\x0eafter_last_use\x18\x01 \x01(\x03R\fafterLastUse\x12(\n" +
 	"\x10close_idle_after\x18\x02 \x01(\x03R\x0ecloseIdleAfter\"8\n" +
 	"\rNetworkConfig\x12!\n" +
-	"\fmax_networks\x18\x02 \x01(\x05R\vmaxNetworksJ\x04\b\x01\x10\x02\"\xc2\x03\n" +
+	"\fmax_networks\x18\x02 \x01(\x05R\vmaxNetworksJ\x04\b\x01\x10\x02\"\xde\x03\n" +
 	"\x0ePathDefinition\x12\x10\n" +
 	"\x03tag\x18\x01 \x01(\tR\x03tag\x12\x1a\n" +
 	"\bbalancer\x18\x02 \x01(\tR\bbalancer\x12\x14\n" +
@@ -3077,7 +3143,8 @@ const file_app_observatory_health_config_proto_rawDesc = "" +
 	"\ris_probe_only\x18\b \x01(\bR\visProbeOnly\x12/\n" +
 	"\x11return_is_enabled\x18\t \x01(\bH\x00R\x0freturnIsEnabled\x88\x01\x01\x12T\n" +
 	"\x06labels\x18\n" +
-	" \x03(\v2<.xray.core.app.observatory.health.PathDefinition.LabelsEntryR\x06labels\x1a9\n" +
+	" \x03(\v2<.xray.core.app.observatory.health.PathDefinition.LabelsEntryR\x06labels\x12\x1a\n" +
+	"\bprotocol\x18\f \x01(\tR\bprotocol\x1a9\n" +
 	"\vLabelsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01B\x14\n" +
@@ -3340,96 +3407,98 @@ func file_app_observatory_health_config_proto_rawDescGZIP() []byte {
 }
 
 var file_app_observatory_health_config_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
-var file_app_observatory_health_config_proto_msgTypes = make([]protoimpl.MessageInfo, 36)
+var file_app_observatory_health_config_proto_msgTypes = make([]protoimpl.MessageInfo, 37)
 var file_app_observatory_health_config_proto_goTypes = []any{
 	(ConfirmMode)(0),              // 0: xray.core.app.observatory.health.ConfirmMode
 	(NetworkChangeMode)(0),        // 1: xray.core.app.observatory.health.NetworkChangeMode
 	(RefreshOnNetwork)(0),         // 2: xray.core.app.observatory.health.RefreshOnNetwork
 	(*Config)(nil),                // 3: xray.core.app.observatory.health.Config
-	(*WakeConfig)(nil),            // 4: xray.core.app.observatory.health.WakeConfig
-	(*PassiveConfig)(nil),         // 5: xray.core.app.observatory.health.PassiveConfig
-	(*ProbeProfile)(nil),          // 6: xray.core.app.observatory.health.ProbeProfile
-	(*ProbeStep)(nil),             // 7: xray.core.app.observatory.health.ProbeStep
-	(*ConnectivityConfig)(nil),    // 8: xray.core.app.observatory.health.ConnectivityConfig
-	(*ScheduleConfig)(nil),        // 9: xray.core.app.observatory.health.ScheduleConfig
-	(*ProbeOnlyConfig)(nil),       // 10: xray.core.app.observatory.health.ProbeOnlyConfig
-	(*HostProbesConfig)(nil),      // 11: xray.core.app.observatory.health.HostProbesConfig
-	(*EventsConfig)(nil),          // 12: xray.core.app.observatory.health.EventsConfig
-	(*ReportConfig)(nil),          // 13: xray.core.app.observatory.health.ReportConfig
-	(*SleepConfig)(nil),           // 14: xray.core.app.observatory.health.SleepConfig
-	(*NetworkConfig)(nil),         // 15: xray.core.app.observatory.health.NetworkConfig
-	(*PathDefinition)(nil),        // 16: xray.core.app.observatory.health.PathDefinition
-	(*PathGroup)(nil),             // 17: xray.core.app.observatory.health.PathGroup
-	(*SelectorConfig)(nil),        // 18: xray.core.app.observatory.health.SelectorConfig
-	(*ReturnToCheaperConfig)(nil), // 19: xray.core.app.observatory.health.ReturnToCheaperConfig
-	(*ProviderConfig)(nil),        // 20: xray.core.app.observatory.health.ProviderConfig
-	(*ProviderTriggers)(nil),      // 21: xray.core.app.observatory.health.ProviderTriggers
-	(*ExpiryTrigger)(nil),         // 22: xray.core.app.observatory.health.ExpiryTrigger
-	(*DurationRange)(nil),         // 23: xray.core.app.observatory.health.DurationRange
-	(*CostTrigger)(nil),           // 24: xray.core.app.observatory.health.CostTrigger
-	(*ProviderLimits)(nil),        // 25: xray.core.app.observatory.health.ProviderLimits
-	(*ProviderApply)(nil),         // 26: xray.core.app.observatory.health.ProviderApply
-	(*UDPProbeConfig)(nil),        // 27: xray.core.app.observatory.health.UDPProbeConfig
-	(*FeatureConfig)(nil),         // 28: xray.core.app.observatory.health.FeatureConfig
-	(*LabelRequestConfig)(nil),    // 29: xray.core.app.observatory.health.LabelRequestConfig
-	(*SelectorFeatureConfig)(nil), // 30: xray.core.app.observatory.health.SelectorFeatureConfig
-	(*ProviderFeatureConfig)(nil), // 31: xray.core.app.observatory.health.ProviderFeatureConfig
-	(*TraceConfig)(nil),           // 32: xray.core.app.observatory.health.TraceConfig
-	(*CensusConfig)(nil),          // 33: xray.core.app.observatory.health.CensusConfig
-	nil,                           // 34: xray.core.app.observatory.health.Config.SessionLabelsEntry
-	nil,                           // 35: xray.core.app.observatory.health.PathDefinition.LabelsEntry
-	nil,                           // 36: xray.core.app.observatory.health.PathGroup.LabelsEntry
-	nil,                           // 37: xray.core.app.observatory.health.ProviderConfig.HeadersEntry
-	nil,                           // 38: xray.core.app.observatory.health.LabelRequestConfig.LabelsEntry
+	(*ViewConfig)(nil),            // 4: xray.core.app.observatory.health.ViewConfig
+	(*WakeConfig)(nil),            // 5: xray.core.app.observatory.health.WakeConfig
+	(*PassiveConfig)(nil),         // 6: xray.core.app.observatory.health.PassiveConfig
+	(*ProbeProfile)(nil),          // 7: xray.core.app.observatory.health.ProbeProfile
+	(*ProbeStep)(nil),             // 8: xray.core.app.observatory.health.ProbeStep
+	(*ConnectivityConfig)(nil),    // 9: xray.core.app.observatory.health.ConnectivityConfig
+	(*ScheduleConfig)(nil),        // 10: xray.core.app.observatory.health.ScheduleConfig
+	(*ProbeOnlyConfig)(nil),       // 11: xray.core.app.observatory.health.ProbeOnlyConfig
+	(*HostProbesConfig)(nil),      // 12: xray.core.app.observatory.health.HostProbesConfig
+	(*EventsConfig)(nil),          // 13: xray.core.app.observatory.health.EventsConfig
+	(*ReportConfig)(nil),          // 14: xray.core.app.observatory.health.ReportConfig
+	(*SleepConfig)(nil),           // 15: xray.core.app.observatory.health.SleepConfig
+	(*NetworkConfig)(nil),         // 16: xray.core.app.observatory.health.NetworkConfig
+	(*PathDefinition)(nil),        // 17: xray.core.app.observatory.health.PathDefinition
+	(*PathGroup)(nil),             // 18: xray.core.app.observatory.health.PathGroup
+	(*SelectorConfig)(nil),        // 19: xray.core.app.observatory.health.SelectorConfig
+	(*ReturnToCheaperConfig)(nil), // 20: xray.core.app.observatory.health.ReturnToCheaperConfig
+	(*ProviderConfig)(nil),        // 21: xray.core.app.observatory.health.ProviderConfig
+	(*ProviderTriggers)(nil),      // 22: xray.core.app.observatory.health.ProviderTriggers
+	(*ExpiryTrigger)(nil),         // 23: xray.core.app.observatory.health.ExpiryTrigger
+	(*DurationRange)(nil),         // 24: xray.core.app.observatory.health.DurationRange
+	(*CostTrigger)(nil),           // 25: xray.core.app.observatory.health.CostTrigger
+	(*ProviderLimits)(nil),        // 26: xray.core.app.observatory.health.ProviderLimits
+	(*ProviderApply)(nil),         // 27: xray.core.app.observatory.health.ProviderApply
+	(*UDPProbeConfig)(nil),        // 28: xray.core.app.observatory.health.UDPProbeConfig
+	(*FeatureConfig)(nil),         // 29: xray.core.app.observatory.health.FeatureConfig
+	(*LabelRequestConfig)(nil),    // 30: xray.core.app.observatory.health.LabelRequestConfig
+	(*SelectorFeatureConfig)(nil), // 31: xray.core.app.observatory.health.SelectorFeatureConfig
+	(*ProviderFeatureConfig)(nil), // 32: xray.core.app.observatory.health.ProviderFeatureConfig
+	(*TraceConfig)(nil),           // 33: xray.core.app.observatory.health.TraceConfig
+	(*CensusConfig)(nil),          // 34: xray.core.app.observatory.health.CensusConfig
+	nil,                           // 35: xray.core.app.observatory.health.Config.SessionLabelsEntry
+	nil,                           // 36: xray.core.app.observatory.health.PathDefinition.LabelsEntry
+	nil,                           // 37: xray.core.app.observatory.health.PathGroup.LabelsEntry
+	nil,                           // 38: xray.core.app.observatory.health.ProviderConfig.HeadersEntry
+	nil,                           // 39: xray.core.app.observatory.health.LabelRequestConfig.LabelsEntry
 }
 var file_app_observatory_health_config_proto_depIdxs = []int32{
-	5,  // 0: xray.core.app.observatory.health.Config.passive:type_name -> xray.core.app.observatory.health.PassiveConfig
-	6,  // 1: xray.core.app.observatory.health.Config.probes:type_name -> xray.core.app.observatory.health.ProbeProfile
-	8,  // 2: xray.core.app.observatory.health.Config.connectivity:type_name -> xray.core.app.observatory.health.ConnectivityConfig
-	9,  // 3: xray.core.app.observatory.health.Config.schedule:type_name -> xray.core.app.observatory.health.ScheduleConfig
-	12, // 4: xray.core.app.observatory.health.Config.events:type_name -> xray.core.app.observatory.health.EventsConfig
-	15, // 5: xray.core.app.observatory.health.Config.network:type_name -> xray.core.app.observatory.health.NetworkConfig
-	20, // 6: xray.core.app.observatory.health.Config.providers:type_name -> xray.core.app.observatory.health.ProviderConfig
-	13, // 7: xray.core.app.observatory.health.Config.report:type_name -> xray.core.app.observatory.health.ReportConfig
-	14, // 8: xray.core.app.observatory.health.Config.sleep:type_name -> xray.core.app.observatory.health.SleepConfig
-	16, // 9: xray.core.app.observatory.health.Config.paths:type_name -> xray.core.app.observatory.health.PathDefinition
-	4,  // 10: xray.core.app.observatory.health.Config.wake:type_name -> xray.core.app.observatory.health.WakeConfig
-	27, // 11: xray.core.app.observatory.health.Config.udp_probe:type_name -> xray.core.app.observatory.health.UDPProbeConfig
-	28, // 12: xray.core.app.observatory.health.Config.features:type_name -> xray.core.app.observatory.health.FeatureConfig
-	34, // 13: xray.core.app.observatory.health.Config.session_labels:type_name -> xray.core.app.observatory.health.Config.SessionLabelsEntry
-	29, // 14: xray.core.app.observatory.health.Config.label_request:type_name -> xray.core.app.observatory.health.LabelRequestConfig
-	33, // 15: xray.core.app.observatory.health.Config.census:type_name -> xray.core.app.observatory.health.CensusConfig
-	32, // 16: xray.core.app.observatory.health.Config.trace:type_name -> xray.core.app.observatory.health.TraceConfig
-	7,  // 17: xray.core.app.observatory.health.ProbeProfile.steps:type_name -> xray.core.app.observatory.health.ProbeStep
-	11, // 18: xray.core.app.observatory.health.ScheduleConfig.host_probes:type_name -> xray.core.app.observatory.health.HostProbesConfig
-	10, // 19: xray.core.app.observatory.health.ScheduleConfig.probe_only:type_name -> xray.core.app.observatory.health.ProbeOnlyConfig
-	35, // 20: xray.core.app.observatory.health.PathDefinition.labels:type_name -> xray.core.app.observatory.health.PathDefinition.LabelsEntry
-	36, // 21: xray.core.app.observatory.health.PathGroup.labels:type_name -> xray.core.app.observatory.health.PathGroup.LabelsEntry
-	16, // 22: xray.core.app.observatory.health.SelectorConfig.paths:type_name -> xray.core.app.observatory.health.PathDefinition
-	17, // 23: xray.core.app.observatory.health.SelectorConfig.groups:type_name -> xray.core.app.observatory.health.PathGroup
-	0,  // 24: xray.core.app.observatory.health.SelectorConfig.confirm_with_probe:type_name -> xray.core.app.observatory.health.ConfirmMode
-	19, // 25: xray.core.app.observatory.health.SelectorConfig.return_to_cheaper:type_name -> xray.core.app.observatory.health.ReturnToCheaperConfig
-	1,  // 26: xray.core.app.observatory.health.SelectorConfig.network_change_action:type_name -> xray.core.app.observatory.health.NetworkChangeMode
-	30, // 27: xray.core.app.observatory.health.SelectorConfig.features:type_name -> xray.core.app.observatory.health.SelectorFeatureConfig
-	37, // 28: xray.core.app.observatory.health.ProviderConfig.headers:type_name -> xray.core.app.observatory.health.ProviderConfig.HeadersEntry
-	21, // 29: xray.core.app.observatory.health.ProviderConfig.triggers:type_name -> xray.core.app.observatory.health.ProviderTriggers
-	25, // 30: xray.core.app.observatory.health.ProviderConfig.limits:type_name -> xray.core.app.observatory.health.ProviderLimits
-	26, // 31: xray.core.app.observatory.health.ProviderConfig.apply:type_name -> xray.core.app.observatory.health.ProviderApply
-	31, // 32: xray.core.app.observatory.health.ProviderConfig.features:type_name -> xray.core.app.observatory.health.ProviderFeatureConfig
-	23, // 33: xray.core.app.observatory.health.ProviderTriggers.interval:type_name -> xray.core.app.observatory.health.DurationRange
-	24, // 34: xray.core.app.observatory.health.ProviderTriggers.when_cost_above:type_name -> xray.core.app.observatory.health.CostTrigger
-	2,  // 35: xray.core.app.observatory.health.ProviderTriggers.network_change_mode:type_name -> xray.core.app.observatory.health.RefreshOnNetwork
-	22, // 36: xray.core.app.observatory.health.ProviderTriggers.expiry:type_name -> xray.core.app.observatory.health.ExpiryTrigger
-	23, // 37: xray.core.app.observatory.health.ProviderTriggers.network_settle:type_name -> xray.core.app.observatory.health.DurationRange
-	23, // 38: xray.core.app.observatory.health.ProviderTriggers.exhausted_delay:type_name -> xray.core.app.observatory.health.DurationRange
-	23, // 39: xray.core.app.observatory.health.ProviderTriggers.min_healthy_delay:type_name -> xray.core.app.observatory.health.DurationRange
-	23, // 40: xray.core.app.observatory.health.CostTrigger.after:type_name -> xray.core.app.observatory.health.DurationRange
-	38, // 41: xray.core.app.observatory.health.LabelRequestConfig.labels:type_name -> xray.core.app.observatory.health.LabelRequestConfig.LabelsEntry
-	42, // [42:42] is the sub-list for method output_type
-	42, // [42:42] is the sub-list for method input_type
-	42, // [42:42] is the sub-list for extension type_name
-	42, // [42:42] is the sub-list for extension extendee
-	0,  // [0:42] is the sub-list for field type_name
+	6,  // 0: xray.core.app.observatory.health.Config.passive:type_name -> xray.core.app.observatory.health.PassiveConfig
+	7,  // 1: xray.core.app.observatory.health.Config.probes:type_name -> xray.core.app.observatory.health.ProbeProfile
+	9,  // 2: xray.core.app.observatory.health.Config.connectivity:type_name -> xray.core.app.observatory.health.ConnectivityConfig
+	10, // 3: xray.core.app.observatory.health.Config.schedule:type_name -> xray.core.app.observatory.health.ScheduleConfig
+	13, // 4: xray.core.app.observatory.health.Config.events:type_name -> xray.core.app.observatory.health.EventsConfig
+	16, // 5: xray.core.app.observatory.health.Config.network:type_name -> xray.core.app.observatory.health.NetworkConfig
+	21, // 6: xray.core.app.observatory.health.Config.providers:type_name -> xray.core.app.observatory.health.ProviderConfig
+	14, // 7: xray.core.app.observatory.health.Config.report:type_name -> xray.core.app.observatory.health.ReportConfig
+	15, // 8: xray.core.app.observatory.health.Config.sleep:type_name -> xray.core.app.observatory.health.SleepConfig
+	17, // 9: xray.core.app.observatory.health.Config.paths:type_name -> xray.core.app.observatory.health.PathDefinition
+	5,  // 10: xray.core.app.observatory.health.Config.wake:type_name -> xray.core.app.observatory.health.WakeConfig
+	28, // 11: xray.core.app.observatory.health.Config.udp_probe:type_name -> xray.core.app.observatory.health.UDPProbeConfig
+	29, // 12: xray.core.app.observatory.health.Config.features:type_name -> xray.core.app.observatory.health.FeatureConfig
+	35, // 13: xray.core.app.observatory.health.Config.session_labels:type_name -> xray.core.app.observatory.health.Config.SessionLabelsEntry
+	30, // 14: xray.core.app.observatory.health.Config.label_request:type_name -> xray.core.app.observatory.health.LabelRequestConfig
+	34, // 15: xray.core.app.observatory.health.Config.census:type_name -> xray.core.app.observatory.health.CensusConfig
+	33, // 16: xray.core.app.observatory.health.Config.trace:type_name -> xray.core.app.observatory.health.TraceConfig
+	4,  // 17: xray.core.app.observatory.health.Config.view:type_name -> xray.core.app.observatory.health.ViewConfig
+	8,  // 18: xray.core.app.observatory.health.ProbeProfile.steps:type_name -> xray.core.app.observatory.health.ProbeStep
+	12, // 19: xray.core.app.observatory.health.ScheduleConfig.host_probes:type_name -> xray.core.app.observatory.health.HostProbesConfig
+	11, // 20: xray.core.app.observatory.health.ScheduleConfig.probe_only:type_name -> xray.core.app.observatory.health.ProbeOnlyConfig
+	36, // 21: xray.core.app.observatory.health.PathDefinition.labels:type_name -> xray.core.app.observatory.health.PathDefinition.LabelsEntry
+	37, // 22: xray.core.app.observatory.health.PathGroup.labels:type_name -> xray.core.app.observatory.health.PathGroup.LabelsEntry
+	17, // 23: xray.core.app.observatory.health.SelectorConfig.paths:type_name -> xray.core.app.observatory.health.PathDefinition
+	18, // 24: xray.core.app.observatory.health.SelectorConfig.groups:type_name -> xray.core.app.observatory.health.PathGroup
+	0,  // 25: xray.core.app.observatory.health.SelectorConfig.confirm_with_probe:type_name -> xray.core.app.observatory.health.ConfirmMode
+	20, // 26: xray.core.app.observatory.health.SelectorConfig.return_to_cheaper:type_name -> xray.core.app.observatory.health.ReturnToCheaperConfig
+	1,  // 27: xray.core.app.observatory.health.SelectorConfig.network_change_action:type_name -> xray.core.app.observatory.health.NetworkChangeMode
+	31, // 28: xray.core.app.observatory.health.SelectorConfig.features:type_name -> xray.core.app.observatory.health.SelectorFeatureConfig
+	38, // 29: xray.core.app.observatory.health.ProviderConfig.headers:type_name -> xray.core.app.observatory.health.ProviderConfig.HeadersEntry
+	22, // 30: xray.core.app.observatory.health.ProviderConfig.triggers:type_name -> xray.core.app.observatory.health.ProviderTriggers
+	26, // 31: xray.core.app.observatory.health.ProviderConfig.limits:type_name -> xray.core.app.observatory.health.ProviderLimits
+	27, // 32: xray.core.app.observatory.health.ProviderConfig.apply:type_name -> xray.core.app.observatory.health.ProviderApply
+	32, // 33: xray.core.app.observatory.health.ProviderConfig.features:type_name -> xray.core.app.observatory.health.ProviderFeatureConfig
+	24, // 34: xray.core.app.observatory.health.ProviderTriggers.interval:type_name -> xray.core.app.observatory.health.DurationRange
+	25, // 35: xray.core.app.observatory.health.ProviderTriggers.when_cost_above:type_name -> xray.core.app.observatory.health.CostTrigger
+	2,  // 36: xray.core.app.observatory.health.ProviderTriggers.network_change_mode:type_name -> xray.core.app.observatory.health.RefreshOnNetwork
+	23, // 37: xray.core.app.observatory.health.ProviderTriggers.expiry:type_name -> xray.core.app.observatory.health.ExpiryTrigger
+	24, // 38: xray.core.app.observatory.health.ProviderTriggers.network_settle:type_name -> xray.core.app.observatory.health.DurationRange
+	24, // 39: xray.core.app.observatory.health.ProviderTriggers.exhausted_delay:type_name -> xray.core.app.observatory.health.DurationRange
+	24, // 40: xray.core.app.observatory.health.ProviderTriggers.min_healthy_delay:type_name -> xray.core.app.observatory.health.DurationRange
+	24, // 41: xray.core.app.observatory.health.CostTrigger.after:type_name -> xray.core.app.observatory.health.DurationRange
+	39, // 42: xray.core.app.observatory.health.LabelRequestConfig.labels:type_name -> xray.core.app.observatory.health.LabelRequestConfig.LabelsEntry
+	43, // [43:43] is the sub-list for method output_type
+	43, // [43:43] is the sub-list for method input_type
+	43, // [43:43] is the sub-list for extension type_name
+	43, // [43:43] is the sub-list for extension extendee
+	0,  // [0:43] is the sub-list for field type_name
 }
 
 func init() { file_app_observatory_health_config_proto_init() }
@@ -3437,20 +3506,20 @@ func file_app_observatory_health_config_proto_init() {
 	if File_app_observatory_health_config_proto != nil {
 		return
 	}
-	file_app_observatory_health_config_proto_msgTypes[13].OneofWrappers = []any{}
 	file_app_observatory_health_config_proto_msgTypes[14].OneofWrappers = []any{}
 	file_app_observatory_health_config_proto_msgTypes[15].OneofWrappers = []any{}
-	file_app_observatory_health_config_proto_msgTypes[25].OneofWrappers = []any{}
-	file_app_observatory_health_config_proto_msgTypes[27].OneofWrappers = []any{}
+	file_app_observatory_health_config_proto_msgTypes[16].OneofWrappers = []any{}
+	file_app_observatory_health_config_proto_msgTypes[26].OneofWrappers = []any{}
 	file_app_observatory_health_config_proto_msgTypes[28].OneofWrappers = []any{}
 	file_app_observatory_health_config_proto_msgTypes[29].OneofWrappers = []any{}
+	file_app_observatory_health_config_proto_msgTypes[30].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_app_observatory_health_config_proto_rawDesc), len(file_app_observatory_health_config_proto_rawDesc)),
 			NumEnums:      3,
-			NumMessages:   36,
+			NumMessages:   37,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

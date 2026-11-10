@@ -31,6 +31,13 @@ message Config {
   CensusConfig census = 17;
   // Presence keeps a trace of raw evidence for diagnostics.
   TraceConfig trace = 18;
+  // Presence enables the View command.
+  ViewConfig view = 19;
+}
+
+message ViewConfig {
+  // The leastCost balancer that carries the traffic of the user.
+  string balancer = 1;
 }
 
 // User presence checks stale selected paths even while idle. Zero keeps the
@@ -182,6 +189,8 @@ message PathDefinition {
   optional bool return_is_enabled = 9;
   map<string, string> labels = 10;
   reserved 11;
+  // The proxy protocol of the outbound, as its config names it; only shown.
+  string protocol = 12;
 }
 
 message PathGroup {

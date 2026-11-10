@@ -362,8 +362,8 @@ func TestHealthV2JSONAndDirectProtobufDefaults(t *testing.T) {
 	}
 	jsonFlags := configFeatureStatus(t, built)
 	essential := map[string]bool{"dial_failures": true, "dial_timeout": true, "server_unverified": true, "first_reply": true, "early_close": true, "stalled_requests": true, "balancers.auto.probe_before_switch": true, "balancers.auto.close_pending": true, "balancers.auto.close_silent": true}
-	// fallbackBalancer, census and trace are enabled by config presence, outside the boolean feature DTO.
-	if len(jsonFlags) != (&health.FeatureConfig{}).ProtoReflect().Descriptor().Fields().Len()+(&health.SelectorFeatureConfig{}).ProtoReflect().Descriptor().Fields().Len()+3 {
+	// fallbackBalancer, census, trace and view are enabled by config presence, outside the boolean feature DTO.
+	if len(jsonFlags) != (&health.FeatureConfig{}).ProtoReflect().Descriptor().Fields().Len()+(&health.SelectorFeatureConfig{}).ProtoReflect().Descriptor().Fields().Len()+4 {
 		t.Fatalf("unexpected feature count %d: %v", len(jsonFlags), jsonFlags)
 	}
 	for key, value := range jsonFlags {

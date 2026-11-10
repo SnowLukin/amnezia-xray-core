@@ -20,6 +20,7 @@ const _ = grpc.SupportPackageIsVersion9
 
 const (
 	HealthService_Status_FullMethodName                   = "/xray.core.app.observatory.health.command.HealthService/Status"
+	HealthService_View_FullMethodName                     = "/xray.core.app.observatory.health.command.HealthService/View"
 	HealthService_DrainEvents_FullMethodName              = "/xray.core.app.observatory.health.command.HealthService/DrainEvents"
 	HealthService_NetworkChanged_FullMethodName           = "/xray.core.app.observatory.health.command.HealthService/NetworkChanged"
 	HealthService_NetworkChangedWithLabels_FullMethodName = "/xray.core.app.observatory.health.command.HealthService/NetworkChangedWithLabels"
@@ -45,6 +46,7 @@ const (
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type HealthServiceClient interface {
 	Status(ctx context.Context, in *StatusRequest, opts ...grpc.CallOption) (*Result, error)
+	View(ctx context.Context, in *ViewRequest, opts ...grpc.CallOption) (*Result, error)
 	DrainEvents(ctx context.Context, in *DrainEventsRequest, opts ...grpc.CallOption) (*Result, error)
 	NetworkChanged(ctx context.Context, in *NetworkChangedRequest, opts ...grpc.CallOption) (*Result, error)
 	NetworkChangedWithLabels(ctx context.Context, in *NetworkChangedWithLabelsRequest, opts ...grpc.CallOption) (*Result, error)
@@ -78,6 +80,16 @@ func (c *healthServiceClient) Status(ctx context.Context, in *StatusRequest, opt
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(Result)
 	err := c.cc.Invoke(ctx, HealthService_Status_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *healthServiceClient) View(ctx context.Context, in *ViewRequest, opts ...grpc.CallOption) (*Result, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(Result)
+	err := c.cc.Invoke(ctx, HealthService_View_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -269,6 +281,7 @@ func (c *healthServiceClient) AdaptiveHeader(ctx context.Context, in *AdaptiveHe
 // for forward compatibility.
 type HealthServiceServer interface {
 	Status(context.Context, *StatusRequest) (*Result, error)
+	View(context.Context, *ViewRequest) (*Result, error)
 	DrainEvents(context.Context, *DrainEventsRequest) (*Result, error)
 	NetworkChanged(context.Context, *NetworkChangedRequest) (*Result, error)
 	NetworkChangedWithLabels(context.Context, *NetworkChangedWithLabelsRequest) (*Result, error)
@@ -300,6 +313,9 @@ type UnimplementedHealthServiceServer struct{}
 
 func (UnimplementedHealthServiceServer) Status(context.Context, *StatusRequest) (*Result, error) {
 	return nil, status.Error(codes.Unimplemented, "method Status not implemented")
+}
+func (UnimplementedHealthServiceServer) View(context.Context, *ViewRequest) (*Result, error) {
+	return nil, status.Error(codes.Unimplemented, "method View not implemented")
 }
 func (UnimplementedHealthServiceServer) DrainEvents(context.Context, *DrainEventsRequest) (*Result, error) {
 	return nil, status.Error(codes.Unimplemented, "method DrainEvents not implemented")
@@ -390,6 +406,24 @@ func _HealthService_Status_Handler(srv interface{}, ctx context.Context, dec fun
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(HealthServiceServer).Status(ctx, req.(*StatusRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _HealthService_View_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ViewRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(HealthServiceServer).View(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: HealthService_View_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(HealthServiceServer).View(ctx, req.(*ViewRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -728,6 +762,10 @@ var HealthService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Status",
 			Handler:    _HealthService_Status_Handler,
+		},
+		{
+			MethodName: "View",
+			Handler:    _HealthService_View_Handler,
 		},
 		{
 			MethodName: "DrainEvents",

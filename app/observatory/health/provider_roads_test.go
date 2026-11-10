@@ -150,7 +150,7 @@ func TestProviderRoadGroupsRequireTheirOwnBalancerFeature(t *testing.T) {
 
 func TestAdaptiveHeaderOwnership(t *testing.T) {
 	name, value := AdaptiveHeader()
-	if name != "Xray-Adaptive" || value != `xray="`+core.Version()+`", api=2, rev=4, provider=1` {
+	if name != "Xray-Adaptive" || value != `xray="`+core.Version()+`", api=2, rev=5, provider=1` {
 		t.Fatal(name, value)
 	}
 	for _, name := range []string{"Xray-Adaptive", "xray-adaptive", "XRAY-ADAPTIVE"} {

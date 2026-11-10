@@ -36,6 +36,7 @@ type featureSettings struct {
 	HostLabels        bool
 	LabelRequest      bool
 	Pinning           bool
+	View              bool
 	UserPresent       bool
 	MemoryPressure    bool
 	TunnelSleep       bool
@@ -133,6 +134,7 @@ func (f featureSettings) status() map[string]bool {
 		"host_labels":         f.HostLabels,
 		"label_request":       f.LabelRequest,
 		"pinning":             f.Pinning,
+		"view":                f.View,
 		"user_present":        f.UserPresent,
 		"memory_pressure":     f.MemoryPressure,
 		"tunnel_sleep":        f.TunnelSleep,

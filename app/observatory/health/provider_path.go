@@ -6,6 +6,7 @@ import (
 	"maps"
 	"math"
 	"slices"
+	"strings"
 	"time"
 )
 
@@ -188,7 +189,7 @@ func validateAnswerPaths(cfg *providerSettings, a *providerAnswer) error {
 		if _, present := obj["group"]; present && group == "" {
 			return fmt.Errorf("%s.group needs name of at most 128 bytes including its prefix", where)
 		}
-		p := &PathDefinition{Tag: cfg.prefix + head.Tag, Balancer: balancer}
+		p := &PathDefinition{Tag: cfg.prefix + head.Tag, Balancer: balancer, Protocol: strings.ToLower(head.Protocol)}
 		if raw := obj["isProbeOnly"]; len(raw) > 0 {
 			if json.Unmarshal(raw, &p.IsProbeOnly) != nil {
 				return fmt.Errorf("%s.isProbeOnly must be a boolean", where)

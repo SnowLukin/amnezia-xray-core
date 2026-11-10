@@ -90,6 +90,8 @@ func (o *Observer) FeatureEnabled(name string) bool {
 		return f.UdpProbes
 	case "pinning":
 		return f.Pinning
+	case "view":
+		return f.View
 	case "user_present":
 		return f.UserPresent
 	case "memory_pressure":
