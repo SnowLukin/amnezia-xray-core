@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 
+	"github.com/xtls/xray-core/app/observatory/health"
 	"github.com/xtls/xray-core/app/router"
 	"github.com/xtls/xray-core/common/errors"
 	"github.com/xtls/xray-core/common/geodata"
@@ -64,6 +65,9 @@ func (r *BalancingRule) Build() (*router.BalancingRule, error) {
 		if err != nil {
 			return nil, err
 		}
+	}
+	if selector, ok := ts.(*health.SelectorConfig); ok {
+		selector.FallbackTag = r.FallbackTag
 	}
 
 	return &router.BalancingRule{

@@ -50,9 +50,6 @@ func TestMeasurementV2MetadataCombinationsWithoutUserQuality(t *testing.T) {
 			if (status.Network != nil && len(status.Network.IP) > 0) != (mask&2 != 0) {
 				t.Fatal("IP gate")
 			}
-			if (len(o.s.pathLabels("a1")) > 0) != (mask&4 != 0) {
-				t.Fatal("pathLabels gate")
-			}
 			if (len(o.s.reportLabels) > 0) != (mask&8 != 0) {
 				t.Fatal("sessionLabels gate")
 			}
@@ -82,12 +79,13 @@ func TestMeasurementV2DisabledHostLabelsStillChangesNetwork(t *testing.T) {
 	o := newObserver(context.Background(), &Config{Features: v2NoEvidence()})
 	defer o.Close()
 	before := o.e.qualityEpoch
-	for _, raw := range []string{`{"type":"wifi"}`, `{broken`, string(make([]byte, 9000))} {
-		if err := o.NetworkChangedWithLabels("changed", raw); err != nil {
+	for i, raw := range []string{`{"type":"wifi"}`, `{broken`, string(make([]byte, 9000))} {
+		id := string(rune('a' + i))
+		if err := o.NetworkChangedWithLabels(id, raw); err != nil {
 			t.Fatal("metadata-off signal rejected", err)
 		}
 		before++
-		if o.e.networkID != "changed" || o.e.qualityEpoch != before || o.e.hostLabels != nil {
+		if o.e.networkID != id || o.e.qualityEpoch != before || o.e.hostLabels != nil {
 			t.Fatal("metadata-off lost base signal")
 		}
 	}

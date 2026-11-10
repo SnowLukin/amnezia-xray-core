@@ -1046,21 +1046,19 @@ func (h *selectorHandle) Select(candidates []string) string {
 		h.o.locked("app/observatory/health/health.go:selectorHandle.Select", func() { h.o.e.updateCandidates(h.s, candidates, now) })
 		h.o.wake()
 	}
-	tag := h.s.current()
-	if h.o.s.isProbeOnly(tag) {
-		return ""
-	}
-	var usable bool
-	h.o.locked("app/observatory/health/health.go:selectorHandle.Select", func() {
-		if tag == "" {
-			tag = h.o.e.holding(h.s, now)
-		}
-		usable = h.o.e.expiredLeaseUsable(tag)
-	})
-	if !usable {
-		return ""
-	}
+	var tag string
+	h.o.locked("app/observatory/health/health.go:selectorHandle.Select", func() { tag = h.o.e.handsOut(h.s, now) })
 	return tag
+}
+
+// Current is what Select would return, without counting as demand.
+func (h *selectorHandle) Current() string {
+	if h.o.failed.Load() {
+		return h.s.current()
+	}
+	h.o.mu.Lock()
+	defer h.o.mu.Unlock()
+	return h.o.e.handsOut(h.s, h.o.now())
 }
 
 // FallbackBalancer implements the optional router hook. Selection keeps the

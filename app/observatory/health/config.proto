@@ -287,6 +287,9 @@ message SelectorConfig {
   int64 close_silent_after = 14;
   // When exhausted, delegate new connections to this balancer's choice.
   string fallback_balancer = 15;
+  // The balancer's fallbackTag, for Status only: the router sends there
+  // what the balancer and its fallback balancer do not take.
+  string fallback_tag = 16;
 }
 
 enum ConfirmMode {

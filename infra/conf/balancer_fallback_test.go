@@ -7,6 +7,8 @@ import (
 	"testing"
 
 	"github.com/xtls/xray-core/app/observatory/health"
+	"github.com/xtls/xray-core/app/router"
+	. "github.com/xtls/xray-core/infra/conf"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -91,4 +93,29 @@ func TestFallbackBalancerProtobufContract(t *testing.T) {
 	if err := proto.Unmarshal(raw, &restored); err != nil || restored.GetFallbackBalancer() != "main" {
 		t.Fatalf("lost fallback target: %v, %v", restored, err)
 	}
+}
+
+// The observer reads fallbackTag from the selector settings to tell where
+// connections go when the balancer has nothing to hand out.
+func TestFallbackTagReachesTheSelector(t *testing.T) {
+	var c Config
+	if err := json.Unmarshal([]byte(fallbackBalancerConfig(map[string]string{"ai": ""}, "")), &c); err != nil {
+		t.Fatal(err)
+	}
+	built, err := c.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, app := range built.App {
+		if msg, _ := app.GetInstance(); msg != nil {
+			if r, ok := msg.(*router.Config); ok {
+				selector, _ := r.BalancingRule[0].StrategySettings.GetInstance()
+				if got := selector.(*health.SelectorConfig).GetFallbackTag(); got != "block" {
+					t.Fatalf("fallback tag %q", got)
+				}
+				return
+			}
+		}
+	}
+	t.Fatal("no router config")
 }

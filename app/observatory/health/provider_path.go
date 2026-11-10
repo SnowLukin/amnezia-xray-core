@@ -106,20 +106,8 @@ func answerLabels(obj map[string]json.RawMessage, where string) (map[string]stri
 	if json.Unmarshal(obj["labels"], &labels) != nil || labels == nil || len(labels) > 6 {
 		return nil, fmt.Errorf("%s.labels must have at most 6 string labels", where)
 	}
-	for k, v := range labels {
-		if len(k) < 1 || len(k) > 24 || len(v) < 1 || len(v) > 32 {
-			return nil, fmt.Errorf("%s.labels has invalid bounded label", where)
-		}
-		for _, c := range k {
-			if !((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_') {
-				return nil, fmt.Errorf("%s.labels has invalid key", where)
-			}
-		}
-		for _, c := range v {
-			if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '.' || c == '_' || c == ':' || c == '-') {
-				return nil, fmt.Errorf("%s.labels has invalid value", where)
-			}
-		}
+	if err := ValidateLabels(labels, 6); err != nil {
+		return nil, fmt.Errorf("%s.labels.%w", where, err)
 	}
 	return labels, nil
 }

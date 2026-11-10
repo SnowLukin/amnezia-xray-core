@@ -609,6 +609,7 @@ func TestUnknownNetworkSchedulesReturnToCheaperKnownDoesNot(t *testing.T) {
 	sc.ReturnToCheaper.TryOnAllNetworks = true
 	sc.Paths = pathSpecs("a1", 1, "b1", 3)
 	te.addSelector("auto", legacyScenarioSelector(sc, nil))
+	te.onNetworkLost(at(4 * time.Minute))
 	te.onNetworkChange("cafe", at(4*time.Minute))
 	if !soon(at(4 * time.Minute)) {
 		t.Fatalf("with allNetworks a known network did not schedule an returnToCheaper at once")

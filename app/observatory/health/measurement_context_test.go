@@ -74,15 +74,11 @@ func TestMeasurementHostAPIAndClosedSegments(t *testing.T) {
 	if o.e.status(o.now()).Network.Host["type"] != "wifi" {
 		t.Fatal("host labels absent")
 	}
-	epoch, generation := o.e.qualityEpoch, o.e.generation
-	network, host := o.e.labelNetwork, maps.Clone(o.e.hostLabels)
-	o.e.labelProof = true
-	for _, bad := range []string{`null`, `[]`, `{"type":3}`, `{`} {
-		if o.NetworkChangedWithLabels("unchanged", bad) == nil || o.e.networkID != "opaque" {
-			t.Fatal("malformed call mutated network")
-		}
-		if o.e.qualityEpoch != epoch || o.qualityEpoch.Load() != epoch || o.e.generation != generation || o.generation.Load() != generation || o.e.labelNetwork != network || !o.e.labelProof || !reflect.DeepEqual(o.e.hostLabels, host) {
-			t.Fatal("malformed call mutated network epoch or metadata proof")
+	// Labels that cannot be read are dropped and reported; the change stays.
+	for i, bad := range []string{`null`, `[]`, `{"type":3}`, `{`, `{"type":"` + strings.Repeat("a", 8192) + `"}`} {
+		id := fmt.Sprint("bad", i)
+		if o.NetworkChangedWithLabels(id, bad) == nil || o.e.networkID != id || o.e.hostLabels != nil {
+			t.Fatalf("labels %.12s: network %q, labels %v", bad, o.e.networkID, o.e.hostLabels)
 		}
 	}
 	o.NetworkChanged("next")
@@ -341,7 +337,7 @@ func TestMeasurementDisabledFlags(t *testing.T) {
 	if err := o.NetworkChangedWithLabels("home", `{"type":"wifi"}`); err != nil {
 		t.Fatal(err)
 	}
-	if o.s.labelRequest != nil || o.e.networkLabels() != nil || o.s.pathLabels("a1") != nil || len(o.s.reportLabels) != 0 {
+	if o.s.labelRequest != nil || o.e.networkLabels() != nil || o.e.reportView(reportSnapshot, o.now(), false).PathLabels != nil || len(o.s.reportLabels) != 0 {
 		t.Fatal("metadata enabled without own flag")
 	}
 	raw, _ := o.DrainEvents()

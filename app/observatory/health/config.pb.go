@@ -1725,8 +1725,11 @@ type SelectorConfig struct {
 	CloseSilentAfter    int64                  `protobuf:"varint,14,opt,name=close_silent_after,json=closeSilentAfter,proto3" json:"close_silent_after,omitempty"`
 	// When exhausted, delegate new connections to this balancer's choice.
 	FallbackBalancer string `protobuf:"bytes,15,opt,name=fallback_balancer,json=fallbackBalancer,proto3" json:"fallback_balancer,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	// The balancer's fallbackTag, for Status only: the router sends there
+	// what the balancer and its fallback balancer do not take.
+	FallbackTag   string `protobuf:"bytes,16,opt,name=fallback_tag,json=fallbackTag,proto3" json:"fallback_tag,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *SelectorConfig) Reset() {
@@ -1853,6 +1856,13 @@ func (x *SelectorConfig) GetCloseSilentAfter() int64 {
 func (x *SelectorConfig) GetFallbackBalancer() string {
 	if x != nil {
 		return x.FallbackBalancer
+	}
+	return ""
+}
+
+func (x *SelectorConfig) GetFallbackTag() string {
+	if x != nil {
+		return x.FallbackTag
 	}
 	return ""
 }
@@ -3615,7 +3625,7 @@ const file_app_observatory_health_config_proto_rawDesc = "" +
 	"\vLabelsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01B\x14\n" +
-	"\x12_return_is_enabled\"\xae\a\n" +
+	"\x12_return_is_enabled\"\xd1\a\n" +
 	"\x0eSelectorConfig\x12F\n" +
 	"\x05paths\x18\x01 \x03(\v20.xray.core.app.observatory.health.PathDefinitionR\x05paths\x12C\n" +
 	"\x06groups\x18\x02 \x03(\v2+.xray.core.app.observatory.health.PathGroupR\x06groups\x127\n" +
@@ -3631,7 +3641,8 @@ const file_app_observatory_health_config_proto_rawDesc = "" +
 	"\x16should_skip_down_audit\x18\f \x01(\bR\x13shouldSkipDownAudit\x12S\n" +
 	"\bfeatures\x18\r \x01(\v27.xray.core.app.observatory.health.SelectorFeatureConfigR\bfeatures\x12,\n" +
 	"\x12close_silent_after\x18\x0e \x01(\x03R\x10closeSilentAfter\x12+\n" +
-	"\x11fallback_balancer\x18\x0f \x01(\tR\x10fallbackBalancerB\x10\n" +
+	"\x11fallback_balancer\x18\x0f \x01(\tR\x10fallbackBalancer\x12!\n" +
+	"\ffallback_tag\x18\x10 \x01(\tR\vfallbackTagB\x10\n" +
 	"\x0e_min_hold_timeJ\x04\b\x03\x10\x04\"\x9d\x03\n" +
 	"\x15ReturnToCheaperConfig\x12\x1a\n" +
 	"\binterval\x18\x01 \x01(\x03R\binterval\x12*\n" +

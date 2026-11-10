@@ -156,6 +156,7 @@ func TestPinnedOutboundIsNotRememberedForTheNetwork(t *testing.T) {
 	te.onNetworkChange("home", at(0))
 	te.run(t, at(time.Second), nil)
 	te.pin("auto", "b1", at(time.Minute))
+	te.onNetworkLost(at(2 * time.Minute))
 	te.onNetworkChange("home", at(2*time.Minute))
 	te.onSuccess("b1", at(2*time.Minute+time.Second))
 	te.release("auto", at(3*time.Minute))

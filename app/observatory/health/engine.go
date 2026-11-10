@@ -1304,6 +1304,40 @@ func (e *engine) holding(s *selector, now time.Time) string {
 	return s.held
 }
 
+// handsOut is what Select returns: the choice or the held outbound, unless it
+// may not take connections now.
+func (e *engine) handsOut(s *selector, now time.Time) string {
+	tag := s.current()
+	if e.s.isProbeOnly(tag) {
+		return ""
+	}
+	if tag == "" {
+		tag = e.holding(s, now)
+	}
+	if !e.expiredLeaseUsable(tag) {
+		return ""
+	}
+	return tag
+}
+
+// exit is where the router sends new connections of the balancer, as
+// Balancer.pickOutbound does: what it hands out, else the exit of its
+// fallback balancer, else its fallbackTag. Empty when the fallback balancer
+// is not leastCost, whose choice the observer does not know.
+func (e *engine) exit(s *selector, now time.Time) string {
+	for depth := 0; ; depth++ {
+		if tag := e.handsOut(s, now); tag != "" {
+			return tag
+		}
+		if depth == 3 || s.cfg.fallbackBalancer == "" || !s.exhausted || s.pinned != "" {
+			return s.cfg.raw.GetFallbackTag()
+		}
+		if s = e.selectors[s.cfg.fallbackBalancer]; s == nil {
+			return ""
+		}
+	}
+}
+
 func (e *engine) beginFallback(s *selector, now time.Time) {
 	if s.fallingBack || !s.exhausted || s.pinned != "" || s.cfg.fallbackBalancer == "" {
 		return
@@ -2720,6 +2754,15 @@ func (e *engine) onNetworkChange(id string, now time.Time) {
 }
 
 func (e *engine) onNetworkChangeWithLabels(id string, labels map[string]string, now time.Time) {
+	// Hosts report the same network again when only its labels change; a
+	// reset needs NetworkLost first.
+	if id != "" && id == e.networkID && !e.networkDown {
+		if e.s.features.HostLabels {
+			e.hostLabels = filterLabels(labels, 8)
+			e.updateQualityLabels()
+		}
+		return
+	}
 	e.censusNetworkChanged(id, now)
 	e.resetUDPNetwork(now)
 	e.candidateEpoch++

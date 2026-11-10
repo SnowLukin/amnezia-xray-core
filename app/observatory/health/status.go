@@ -66,18 +66,19 @@ type pathStatusView struct {
 }
 
 type balancerStatusView struct {
-	FallbackBalancer      string   `json:"fallback_balancer,omitempty"`
-	IsFallingBack         bool     `json:"is_falling_back"`
-	Balancer              string   `json:"balancer"`
-	Active                string   `json:"active"`
-	Pinned                string   `json:"pinned,omitempty"`
-	IsExhausted           bool     `json:"is_exhausted"`
-	// The outbound an exhausted balancer still hands out, see holding.
-	Held                  string   `json:"held,omitempty"`
-	ActiveForMs           int64    `json:"active_for_ms,omitempty"`
-	ReturnToCheaperInMs   *int64   `json:"return_in_ms,omitempty"`
-	ReturnToCheaperTarget string   `json:"return_target,omitempty"`
-	Candidates            []string `json:"candidates"`
+	FallbackBalancer string `json:"fallback_balancer,omitempty"`
+	IsFallingBack    bool   `json:"is_falling_back"`
+	Balancer         string `json:"balancer"`
+	Active           string `json:"active"`
+	Pinned           string `json:"pinned,omitempty"`
+	IsExhausted      bool   `json:"is_exhausted"`
+	// Where new connections go now, see engine.exit, and its labels.
+	Exit                  string            `json:"exit"`
+	ExitLabels            map[string]string `json:"exit_labels,omitempty"`
+	ActiveForMs           int64             `json:"active_for_ms,omitempty"`
+	ReturnToCheaperInMs   *int64            `json:"return_in_ms,omitempty"`
+	ReturnToCheaperTarget string            `json:"return_target,omitempty"`
+	Candidates            []string          `json:"candidates"`
 }
 
 type providerStatusView struct {
@@ -174,12 +175,13 @@ func (e *engine) status(now time.Time) statusView {
 			Active:                s.current(),
 			Pinned:                s.pinned,
 			IsExhausted:           s.exhausted,
-			Held:                  e.holding(s, now),
+			Exit:                  e.exit(s, now),
 			FallbackBalancer:      s.cfg.fallbackBalancer,
 			IsFallingBack:         s.fallingBack,
 			ReturnToCheaperTarget: s.returnToCheaperTarget,
 			Candidates:            s.candidates,
 		}
+		b.ExitLabels = e.s.pathLabels(b.Exit)
 		if !s.activeSince.IsZero() {
 			b.ActiveForMs = now.Sub(s.activeSince).Milliseconds()
 			active[s.current()] += now.Sub(s.activeSince)

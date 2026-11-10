@@ -668,7 +668,7 @@ func (e *engine) reportView(reason string, now time.Time, take bool) *reportView
 			loneProbesFailed: p.stats.loneProbesFailed,
 		}
 		if i < reportPaths {
-			if labels := e.s.pathLabels(tag); len(labels) > 0 {
+			if labels := e.s.pathLabels(tag); len(labels) > 0 && e.s.features.PathLabels {
 				if v.PathLabels == nil {
 					v.PathLabels = make(map[string]map[string]string)
 				}

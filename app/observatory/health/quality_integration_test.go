@@ -89,10 +89,11 @@ func TestQualityIntegrationIgnoreChangesEpochWithoutRoutingReset(t *testing.T) {
 	read.Add(512)
 	tr.Finished(nil)
 	qualitySummaryInt(t, qualitySummaryPath(t, o.e.quality.currentView(clk.now()), "a1").BytesDown, 512)
+	// The same network again is no change; an empty id after it is.
 	o.NetworkChanged("wifi:next")
 	o.NetworkChanged("")
-	if o.e.generation != beforeGeneration || o.e.qualityEpoch != 3 || o.qualityEpoch.Load() != 3 {
-		t.Fatal("repeat/empty changes failed to preserve IGNORE routing and advance quality")
+	if o.e.generation != beforeGeneration || o.e.qualityEpoch != 2 || o.qualityEpoch.Load() != 2 {
+		t.Fatal("repeat/empty changes failed to preserve IGNORE routing and advance quality once")
 	}
 }
 

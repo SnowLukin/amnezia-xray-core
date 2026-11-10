@@ -34,6 +34,7 @@ func TestMeasurementConfigLabels(t *testing.T) {
 	}
 	for _, tc := range []struct{ old, new string }{
 		{`"node":"n1"`, `"node":"bad value"`}, {`"cohort":"a"`, `"COHORT":"a"`},
+		{`"node":"n1"`, `"node":"192.168.1.10"`}, {`"location":"NL"`, `"location":"fe80::1"`}, {`"cohort":"a"`, `"cohort":"203.0.113.7:443"`},
 		{`"X-Network-Asn"`, `"bad header"`}, {`"http://127.0.0.1/whoami"`, `"ftp://host/a"`},
 		{`"destinations":["http://127.0.0.1/whoami"]`, `"destinations":["http://127.0.0.1/whoami"],"timeout":"0s"`},
 		{`"destinations":["http://127.0.0.1/whoami"]`, `"destinations":["http://127.0.0.1/whoami"],"requestsPerHour":0`},

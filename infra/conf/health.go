@@ -533,15 +533,8 @@ func validateLabels(where string, labels map[string]string, limit int) error {
 	if len(labels) > limit {
 		return errors.New(where, " must contain at most ", limit, " labels")
 	}
-	for name, value := range labels {
-		if !validLabelName(name) || len(value) < 1 || len(value) > 32 {
-			return errors.New(where, ".", name, ": invalid label length or name")
-		}
-		for _, c := range value {
-			if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || strings.ContainsRune("._:-", c)) {
-				return errors.New(where, ".", name, ": invalid label value")
-			}
-		}
+	if err := health.ValidateLabels(labels, limit); err != nil {
+		return errors.New(where, ".", err)
 	}
 	return nil
 }

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"net/netip"
 	"slices"
 )
 
@@ -20,6 +21,7 @@ func validLabelName(s string) bool {
 	return true
 }
 
+// Labels go to analytics, so a value that is an address is refused.
 func validLabelValue(s string) bool {
 	if len(s) < 1 || len(s) > 32 {
 		return false
@@ -29,17 +31,23 @@ func validLabelValue(s string) bool {
 			return false
 		}
 	}
-	return true
+	_, err := netip.ParseAddr(s)
+	_, errPort := netip.ParseAddrPort(s)
+	return err != nil && errPort != nil
 }
 
-// ValidateLabels is shared by the JSON loader and protobuf/provider validation.
+// ValidateLabels checks labels of the config, of provider answers and of
+// protobuf configs alike.
 func ValidateLabels(labels map[string]string, limit int) error {
 	if len(labels) > limit {
 		return fmt.Errorf("at most %d labels are allowed", limit)
 	}
-	for key, value := range labels {
-		if !validLabelName(key) || !validLabelValue(value) {
-			return fmt.Errorf("invalid label %q", key)
+	for _, key := range slices.Sorted(maps.Keys(labels)) {
+		if !validLabelName(key) {
+			return fmt.Errorf("%s: invalid label name", key)
+		}
+		if !validLabelValue(labels[key]) {
+			return fmt.Errorf("%s: invalid label value", key)
 		}
 	}
 	return nil
@@ -124,10 +132,9 @@ func (e *engine) labelQualityPath(tag string, epoch uint64) {
 	}
 }
 
+// pathLabels are always in Status; pathLabels of telemetry only decides
+// whether they go to the report and to quality.
 func (s *settings) pathLabels(tag string) map[string]string {
-	if !s.features.PathLabels {
-		return nil
-	}
 	if p, ok := s.paths.Load(tag); ok {
 		return maps.Clone(p.(pathSettings).labels)
 	}
@@ -135,24 +142,23 @@ func (s *settings) pathLabels(tag string) map[string]string {
 }
 
 // NetworkChangedWithLabels has the same routing semantics as NetworkChanged.
-// labels is a JSON object of strings. Malformed JSON is an error; malformed
-// entries are discarded, with at most eight valid entries retained by key.
+// labels is a JSON object of strings. Malformed JSON drops the labels, not
+// the change, and is reported as an error; malformed entries are discarded,
+// with at most eight valid entries retained by key.
 func (o *Observer) NetworkChangedWithLabels(id, labels string) error {
 	if !o.s.features.HostLabels {
 		o.networkChanged(id, nil)
 		return nil
 	}
 	var values map[string]string
-	if labels != "" {
-		if len(labels) > 8192 {
-			return fmt.Errorf("network labels JSON is too large")
-		}
-		if err := json.Unmarshal([]byte(labels), &values); err != nil || values == nil {
-			return fmt.Errorf("network labels must be a JSON object of strings")
-		}
+	var err error
+	if len(labels) > 8192 {
+		err = fmt.Errorf("network labels JSON is too large")
+	} else if labels != "" && (json.Unmarshal([]byte(labels), &values) != nil || values == nil) {
+		values, err = nil, fmt.Errorf("network labels must be a JSON object of strings")
 	}
 	o.networkChanged(id, values)
-	return nil
+	return err
 }
 
 func (o *Observer) networkChanged(id string, labels map[string]string) {

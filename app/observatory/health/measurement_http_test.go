@@ -127,7 +127,7 @@ func TestMeasurementHTTPDirectAndCache(t *testing.T) {
 }
 
 func TestMeasurementHTTPFailureClasses(t *testing.T) {
-	for _, kind := range []string{"no_labels", "status_503", "invalid", "redirect"} {
+	for _, kind := range []string{"no_labels", "status_503", "invalid", "address", "redirect"} {
 		t.Run(kind, func(t *testing.T) {
 			var requests atomic.Int32
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -140,6 +140,9 @@ func TestMeasurementHTTPFailureClasses(t *testing.T) {
 					w.WriteHeader(302)
 				case "invalid":
 					w.Header().Set("X-Network-Asn", "bad value")
+					w.WriteHeader(200)
+				case "address":
+					w.Header().Set("X-Network-Asn", "203.0.113.7")
 					w.WriteHeader(200)
 				default:
 					w.WriteHeader(204)
@@ -158,7 +161,7 @@ func TestMeasurementHTTPFailureClasses(t *testing.T) {
 				return strings.Contains(all, "network_labels")
 			})
 			expected := kind
-			if kind == "invalid" {
+			if kind == "invalid" || kind == "address" {
 				expected = "no_labels"
 			}
 			if kind == "redirect" {
