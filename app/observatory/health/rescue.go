@@ -87,6 +87,7 @@ func (e *engine) rescue(p *path, m *rescueMark, now time.Time) {
 	p.setStatus(statusUp, "rescued", now)
 	p.rescuedBy = m.by
 	e.emitPath(p, now)
+	e.confirm(p.tag)
 	e.remember(p.tag)
 	// Silence proves nothing about a path that works; the checks would
 	// find it up and keep everything, but each would cost a wake.

@@ -543,7 +543,17 @@ func (e *engine) onSuccess(tag string, now time.Time) {
 			e.emitPath(p, now)
 		}
 	}
+	e.confirm(tag)
 	e.remember(tag)
+}
+
+// confirm notes for the balancers that chose tag that it was proven to work.
+func (e *engine) confirm(tag string) {
+	for _, s := range e.selectors {
+		if s.current() == tag {
+			s.confirmed = true
+		}
+	}
 }
 
 func (e *engine) emitPath(p *path, now time.Time) {
@@ -577,6 +587,7 @@ func (e *engine) suspect(p *path, v verdict, now time.Time) {
 		}
 		return
 	}
+	p.suspectProven = p.status == statusUp || p.status == statusDegraded
 	p.setStatus(statusSuspect, "traffic", now)
 	f := map[string]any{
 		"outbound": p.tag, "state": "suspect", "reason": "traffic",
@@ -829,6 +840,7 @@ func (e *engine) markUp(p *path, reason string, now time.Time) {
 	if p.setStatus(statusUp, reason, now) {
 		e.emitPath(p, now)
 	}
+	e.confirm(p.tag)
 	e.remember(p.tag)
 }
 
@@ -843,6 +855,7 @@ func (e *engine) markDegraded(p *path, r probeResult, now time.Time) {
 	if p.setStatus(statusDegraded, r.degradedReason(), now) || p.reason != previousReason {
 		e.emitPath(p, now)
 	}
+	e.confirm(p.tag)
 	e.remember(p.tag)
 }
 
@@ -882,7 +895,10 @@ type selector struct {
 	snapshot        atomic.Pointer[[]string]
 	active          atomic.Pointer[string]
 
-	started     bool
+	started bool
+	// A choice of the balancer was proven to work in this run, by a probe
+	// or by traffic.
+	confirmed   bool
 	activeSince time.Time
 	pinned      string
 	// The pin is startPinned, not one of the host.
@@ -1253,6 +1269,9 @@ func (e *engine) switchTo(s *selector, tag string, reason string, now time.Time)
 	}
 	e.used(tag, now)
 	s.setActive(tag)
+	if st := e.path(tag).status; st == statusUp || st == statusDegraded {
+		s.confirmed = true
+	}
 	e.noteUDPSwitch(e.path(tag))
 	s.activeSince = now
 	s.awaitSuccess, s.awaitReason = true, reason

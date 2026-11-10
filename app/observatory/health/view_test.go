@@ -93,26 +93,26 @@ func currents(v ViewData) []string {
 }
 
 // The state follows where new connections of the user balancer go: its
-// choice, the choice it knows is down while it probes the others, the
-// outbound it holds once it ran out, and its fallbackTag after the hold. A
-// lost network comes before all of them.
+// choice once that is proven, the choice it knows is down while it probes
+// the others, the outbound it holds once it ran out, and its fallbackTag
+// after the hold. A lost network comes before all of them.
 func TestViewStateFollowsTheCurrentOutbound(t *testing.T) {
 	f := newViewFixture(t, &SelectorConfig{})
 	// Before the first connection the balancer has not chosen; its paths
 	// are known from the config.
 	v := f.view(t)
-	if v.State != "ready" || v.Outbound.Tag != "" || len(v.Paths) != 3 || currents(v) != nil || v.LastSwitch != nil ||
+	if v.State != viewConnecting || v.Phase != phaseWaiting || v.Outbound.Tag != "" || len(v.Paths) != 3 || currents(v) != nil || v.LastSwitch != nil ||
 		viewPathOf(t, v, "a1").State != "unknown" || viewPathOf(t, v, "a1").IsActive {
 		t.Fatalf("before the first connection: %+v", v)
 	}
 	f.o.NetworkLost()
-	if v = f.view(t); v.State != "no_network" {
+	if v = f.view(t); v.State != viewNoNetwork || v.Phase != "" {
 		t.Fatalf("no network before the first connection: %+v", v)
 	}
 	f.o.NetworkChanged("wifi")
 	f.connect()
 	v = f.view(t)
-	if v.State != "ok" || v.Balancer != "auto" || v.Run != f.o.run || !v.Network.IsUp ||
+	if v.State != viewConnecting || v.Phase != phaseVerifying || v.Balancer != "auto" || v.Run != f.o.run || !v.Network.IsUp ||
 		!reflect.DeepEqual(v.Outbound, viewOutbound{Tag: "a1", Protocol: "vless", Labels: map[string]string{"country": "nl"}}) {
 		t.Fatalf("chosen: %+v", v)
 	}
@@ -128,10 +128,16 @@ func TestViewStateFollowsTheCurrentOutbound(t *testing.T) {
 		t.Fatalf("last switch %+v", v.LastSwitch)
 	}
 
+	// The first connection that works proves the choice.
+	f.o.e.onSuccess("a1", f.now)
+	if v = f.view(t); v.State != viewConnected || v.Phase != "" || v.Outbound.Tag != "a1" || viewPathOf(t, v, "a1").State != "up" {
+		t.Fatalf("proven: %+v", v)
+	}
+
 	// The choice failed; the balancer stays on it and probes b1.
 	f.wait(time.Second)
 	f.o.e.markDown(f.o.e.path("a1"), "traffic", f.now)
-	if v = f.view(t); v.State != "searching" || v.Outbound.Tag != "a1" || v.Outbound.IsHeld || viewPathOf(t, v, "a1").State != "down" {
+	if v = f.view(t); v.State != viewReconnecting || v.Phase != phaseSearching || v.Outbound.Tag != "a1" || v.Outbound.IsHeld || viewPathOf(t, v, "a1").State != "down" {
 		t.Fatalf("choice down: %+v", v)
 	}
 	jobs, _ := f.o.e.tick(f.now)
@@ -150,7 +156,7 @@ func TestViewStateFollowsTheCurrentOutbound(t *testing.T) {
 	// The probe failed: nothing is left, the last outbound is held.
 	f.o.e.onProbeResult(jobs[0], probeResult{}, f.now)
 	v = f.view(t)
-	if v.State != "searching" || v.Outbound.Tag != "a1" || !v.Outbound.IsHeld || viewPathOf(t, v, "b1").Probing != nil || len(v.Doing) != 0 {
+	if v.State != viewReconnecting || v.Phase != phaseSearching || v.Outbound.Tag != "a1" || !v.Outbound.IsHeld || viewPathOf(t, v, "b1").Probing != nil || len(v.Doing) != 0 {
 		t.Fatalf("held: %+v", v)
 	}
 	if a1 = viewPathOf(t, v, "a1"); !a1.IsCurrent || a1.IsActive || a1.QuarantineMs <= 0 {
@@ -158,21 +164,22 @@ func TestViewStateFollowsTheCurrentOutbound(t *testing.T) {
 	}
 
 	f.wait(exhaustedHold)
-	if v = f.view(t); v.State != "blocked" || !reflect.DeepEqual(v.Outbound, viewOutbound{Tag: "block"}) || currents(v) != nil {
+	if v = f.view(t); v.State != viewBlocked || v.Phase != phaseWaiting || !reflect.DeepEqual(v.Outbound, viewOutbound{Tag: "block"}) || currents(v) != nil {
 		t.Fatalf("after the hold: %+v", v)
 	}
 
 	f.o.NetworkLost()
-	if v = f.view(t); v.State != "no_network" || v.Network.IsUp {
+	if v = f.view(t); v.State != viewNoNetwork || v.Phase != "" || v.Network.IsUp {
 		t.Fatalf("network lost: %+v", v)
 	}
 	f.o.NetworkChanged("wifi")
-	if v = f.view(t); v.State != "blocked" || !v.Network.IsUp {
+	if v = f.view(t); v.State != viewBlocked || !v.Network.IsUp {
 		t.Fatalf("network back: %+v", v)
 	}
 
 	// The user keeps trying and the recheck of a resting outbound passes.
-	seq := v.Seq
+	// The state stays while the recheck runs; the phase tells of it.
+	seq, since := v.Seq, v.SinceMs
 	for range 120 {
 		if f.auto.current() != "" {
 			break
@@ -180,36 +187,46 @@ func TestViewStateFollowsTheCurrentOutbound(t *testing.T) {
 		f.wait(time.Second)
 		f.o.e.noteDemand(f.now)
 		jobs, _ = f.o.e.tick(f.now)
+		if len(jobs) > 0 {
+			if v = f.view(t); v.State != viewBlocked || v.Phase != phaseSearching || v.Seq <= seq || v.SinceMs <= since {
+				t.Fatalf("recheck under way: %+v", v)
+			}
+		}
 		for _, j := range jobs {
 			f.o.e.onProbeResult(j, probeResult{ok: true}, f.now)
 		}
 	}
 	v = f.view(t)
-	if v.State != "ok" || v.Outbound.Tag != f.auto.current() || v.Outbound.IsHeld || v.Seq <= seq ||
+	if v.State != viewConnected || v.Phase != "" || v.Outbound.Tag != f.auto.current() || v.Outbound.IsHeld || v.Seq <= seq ||
 		v.LastSwitch == nil || v.LastSwitch.From != "" || v.LastSwitch.To != v.Outbound.Tag {
 		t.Fatalf("recovered: %+v, last switch %+v", v, v.LastSwitch)
 	}
 }
 
-// A balancer that ran out and has a fallbackBalancer is ok while that one
-// has a choice, searching while it holds its last outbound, blocked after.
+// A balancer that ran out and has a fallbackBalancer follows the choice of
+// that one: connecting until it is proven, connected then, reconnecting
+// while it holds its last outbound, blocked after.
 func TestViewStateThroughFallbackBalancer(t *testing.T) {
 	f := newViewFixture(t, &SelectorConfig{FallbackBalancer: "spare"}).connect()
 	f.exhaust(f.auto)
-	if v := f.view(t); v.State != "searching" || !v.Outbound.IsHeld {
+	if v := f.view(t); v.State != viewConnecting || v.Phase != phaseSearching || !v.Outbound.IsHeld {
 		t.Fatalf("held: %+v", v)
 	}
 	f.wait(exhaustedHold)
+	if v := f.view(t); v.State != viewConnecting || v.Phase != phaseVerifying || v.Outbound.Tag != "s1" {
+		t.Fatalf("fallback balancer, not proven: %+v", v)
+	}
+	f.o.e.onSuccess("s1", f.now)
 	v := f.view(t)
-	if v.State != "ok" || !reflect.DeepEqual(v.Outbound, viewOutbound{Tag: "s1", Protocol: "trojan"}) || !slices.Equal(currents(v), []string{"s1"}) || v.Balancer != "auto" {
+	if v.State != viewConnected || !reflect.DeepEqual(v.Outbound, viewOutbound{Tag: "s1", Protocol: "trojan"}) || !slices.Equal(currents(v), []string{"s1"}) || v.Balancer != "auto" {
 		t.Fatalf("fallback balancer: %+v", v)
 	}
 	f.exhaust(f.spare)
-	if v = f.view(t); v.State != "searching" || v.Outbound.Tag != "s1" || !v.Outbound.IsHeld {
+	if v = f.view(t); v.State != viewReconnecting || v.Phase != phaseSearching || v.Outbound.Tag != "s1" || !v.Outbound.IsHeld {
 		t.Fatalf("fallback balancer holds: %+v", v)
 	}
 	f.wait(exhaustedHold)
-	if v = f.view(t); v.State != "blocked" || v.Outbound.Tag != "direct" {
+	if v = f.view(t); v.State != viewBlocked || v.Phase != phaseWaiting || v.Outbound.Tag != "direct" {
 		t.Fatalf("fallback tag of the fallback balancer: %+v", v)
 	}
 }
@@ -221,7 +238,7 @@ func TestViewPinnedDownIsBlocked(t *testing.T) {
 		t.Fatal("pin refused")
 	}
 	f.o.e.markDown(f.o.e.path("a1"), "traffic", f.now)
-	if v := f.view(t); v.State != "blocked" || v.Outbound.Tag != "a1" || v.Outbound.IsHeld {
+	if v := f.view(t); v.State != viewBlocked || v.Phase != phaseWaiting || v.Outbound.Tag != "a1" || v.Outbound.IsHeld {
 		t.Fatalf("pinned down: %+v", v)
 	}
 }
@@ -256,7 +273,7 @@ func TestViewNeedsAndDoing(t *testing.T) {
 
 	p.authFailed, p.baseReported = true, "v2"
 	f.o.failed.Store(true)
-	if v = f.view(t); !slices.Equal(v.Needs, []string{"restart", "session", "config"}) || v.Providers[0].State != "refused" || v.State != "ok" {
+	if v = f.view(t); !slices.Equal(v.Needs, []string{"restart", "session", "config"}) || v.Providers[0].State != "refused" || v.State != viewConnecting {
 		t.Fatalf("needs %v providers %+v state %s", v.Needs, v.Providers, v.State)
 	}
 }
@@ -264,6 +281,8 @@ func TestViewNeedsAndDoing(t *testing.T) {
 // seq stays while only durations change and grows by one with the choice.
 func TestViewSeqCountsChanges(t *testing.T) {
 	f := newViewFixture(t, &SelectorConfig{}).connect()
+	f.o.e.onSuccess("a1", f.now)
+	f.o.e.markUp(f.o.e.path("b1"), "probe", f.now)
 	first := f.view(t)
 	f.wait(5 * time.Second)
 	second := f.view(t)
@@ -281,8 +300,136 @@ func TestViewSeqCountsChanges(t *testing.T) {
 	}
 	f.exhaust(f.auto)
 	f.wait(2 * time.Second)
-	if held := f.view(t); held.Seq != 3 || held.State != "searching" || held.SinceMs != 0 {
+	if held := f.view(t); held.Seq != 3 || held.State != viewReconnecting || held.SinceMs != 0 {
 		t.Fatalf("held: seq %d since %d", held.Seq, held.SinceMs)
+	}
+}
+
+// A new phase is a new snapshot of the same state: seq grows, since_ms
+// goes on.
+func TestViewPhaseIsNoNewState(t *testing.T) {
+	f := newViewFixture(t, &SelectorConfig{}).connect()
+	f.exhaust(f.auto)
+	f.wait(exhaustedHold)
+	waiting := f.view(t)
+	f.o.e.running[1] = &probeJob{id: 1, tag: "a1", reason: reasonRecheck, selector: "auto"}
+	f.wait(time.Second)
+	if v := f.view(t); waiting.State != viewBlocked || waiting.Phase != phaseWaiting || v.State != viewBlocked || v.Phase != phaseSearching ||
+		v.Seq != waiting.Seq+1 || v.SinceMs != waiting.SinceMs+1000 {
+		t.Fatalf("phase: %+v then %+v", waiting, v)
+	}
+}
+
+// Every situation of the user balancer has one state and one phase.
+func TestViewStateAndPhase(t *testing.T) {
+	feed := func(f *viewFixture) *provider {
+		p := newProvider(&providerSettings{tag: "fresh", balancers: []string{"auto"}, balancer: "auto", whenExhausted: true})
+		f.o.e.providers = []*provider{p}
+		return p
+	}
+	// The config has no path that works: the balancer runs out at once.
+	empty := func(f *viewFixture) { f.o.e.updateCandidates(f.auto, nil, f.now) }
+	proven := func(f *viewFixture) { f.connect(); f.o.e.onSuccess("a1", f.now) }
+	stub := func(f *viewFixture) { f.exhaust(f.auto); f.wait(exhaustedHold) }
+	for _, c := range []struct {
+		name         string
+		play         func(f *viewFixture)
+		state, phase string
+	}{
+		{"not asked yet", func(f *viewFixture) {}, viewConnecting, phaseWaiting},
+		{"no network", func(f *viewFixture) { proven(f); f.o.NetworkLost() }, viewNoNetwork, ""},
+		{"chosen", func(f *viewFixture) { f.connect() }, viewConnecting, phaseVerifying},
+		{"chosen and probed", func(f *viewFixture) {
+			f.connect()
+			f.o.e.running[1] = &probeJob{id: 1, tag: "a1", reason: reasonNetwork, selector: "auto"}
+		}, viewConnecting, phaseVerifying},
+		{"up", proven, viewConnected, ""},
+		{"degraded", func(f *viewFixture) {
+			f.connect()
+			f.o.e.markDegraded(f.o.e.path("a1"), probeResult{ok: true, state: statusDegraded}, f.now)
+		}, viewConnected, ""},
+		{"suspect after up", func(f *viewFixture) {
+			proven(f)
+			f.o.e.suspect(f.o.e.path("a1"), verdict{suspect: true}, f.now)
+		}, viewConnected, ""},
+		{"suspect before any proof", func(f *viewFixture) {
+			f.connect()
+			f.o.e.suspect(f.o.e.path("a1"), verdict{suspect: true}, f.now)
+		}, viewConnecting, phaseVerifying},
+		{"choice down, others probed", func(f *viewFixture) {
+			f.connect()
+			f.o.e.markDown(f.o.e.path("a1"), "probe", f.now)
+		}, viewConnecting, phaseSearching},
+		{"held", func(f *viewFixture) { f.connect(); f.exhaust(f.auto) }, viewConnecting, phaseSearching},
+		{"fallbackTag", func(f *viewFixture) { f.connect(); stub(f) }, viewBlocked, phaseWaiting},
+		{"fallbackTag, recheck runs", func(f *viewFixture) {
+			f.connect()
+			stub(f)
+			f.o.e.running[1] = &probeJob{id: 1, tag: "a1", reason: reasonRecheck, selector: "auto"}
+		}, viewBlocked, phaseSearching},
+		{"pinned down", func(f *viewFixture) {
+			f.connect()
+			f.o.Pin("auto", "a1", "")
+			f.o.e.markDown(f.o.e.path("a1"), "traffic", f.now)
+		}, viewBlocked, phaseWaiting},
+		{"no path, no provider", empty, viewBlocked, phaseWaiting},
+		{"no path, first set requested", func(f *viewFixture) { empty(f); feed(f).fetching = true }, viewConnecting, phaseRefreshing},
+		{"no path, first request due", func(f *viewFixture) { empty(f); feed(f); f.o.e.noteDemand(f.now) }, viewConnecting, phaseRefreshing},
+		{"no path, request due, no demand", func(f *viewFixture) { empty(f); feed(f) }, viewBlocked, phaseWaiting},
+		{"no path, request due, token refused", func(f *viewFixture) {
+			empty(f)
+			feed(f).authFailed = true
+			f.o.e.noteDemand(f.now)
+		}, viewBlocked, phaseWaiting},
+		{"no path, request failed", func(f *viewFixture) {
+			empty(f)
+			p := feed(f)
+			p.failures, p.backoffUntil = 1, f.now.Add(time.Minute)
+			f.o.e.noteDemand(f.now)
+		}, viewBlocked, phaseWaiting},
+		{"no path, request repeated", func(f *viewFixture) {
+			empty(f)
+			p := feed(f)
+			p.failures, p.fetching = 1, true
+		}, viewBlocked, phaseRefreshing},
+		{"proven, new choice", func(f *viewFixture) {
+			proven(f)
+			f.o.e.switchTo(f.auto, "b1", "failover", f.now)
+		}, viewReconnecting, phaseVerifying},
+		{"proven, choice down", func(f *viewFixture) {
+			proven(f)
+			f.o.e.markDown(f.o.e.path("a1"), "traffic", f.now)
+		}, viewReconnecting, phaseSearching},
+		{"proven, held", func(f *viewFixture) { proven(f); f.exhaust(f.auto) }, viewReconnecting, phaseSearching},
+		{"proven, fallbackTag", func(f *viewFixture) { proven(f); stub(f) }, viewBlocked, phaseWaiting},
+		{"proven, fallbackTag, set requested", func(f *viewFixture) {
+			proven(f)
+			stub(f)
+			feed(f).fetching = true
+		}, viewBlocked, phaseRefreshing},
+		{"proven, fallbackTag, request due", func(f *viewFixture) {
+			proven(f)
+			stub(f)
+			feed(f)
+			f.o.e.noteDemand(f.now)
+		}, viewBlocked, phaseRefreshing},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := newViewFixture(t, &SelectorConfig{})
+			c.play(f)
+			if v := f.view(t); v.State != c.state || v.Phase != c.phase {
+				t.Fatalf("state %s phase %q, want %s %q: %+v", v.State, v.Phase, c.state, c.phase, v)
+			}
+		})
+	}
+}
+
+// Applications read the names: they change only together with the docs.
+func TestViewNames(t *testing.T) {
+	got := []string{viewNoNetwork, viewConnecting, viewConnected, viewReconnecting, viewBlocked, phaseVerifying, phaseSearching, phaseRefreshing, phaseWaiting}
+	want := []string{"no_network", "connecting", "connected", "reconnecting", "blocked", "verifying", "searching", "refreshing", "waiting"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("names %v", got)
 	}
 }
 

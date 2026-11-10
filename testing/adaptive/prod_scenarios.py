@@ -322,10 +322,10 @@ class Screen:
 
     def states(self):
         """The states in the order seen, each run of one state once, without
-        the ready before the first connection."""
+        the connecting before the first proven outbound."""
         out = []
         for v in self.views:
-            if v["state"] != "ready" and (not out or out[-1] != v["state"]):
+            if (out or v["state"] != "connecting") and (not out or out[-1] != v["state"]):
                 out.append(v["state"])
         return out
 
@@ -540,8 +540,9 @@ def prod_all_entries_dead(stand, xray, work, name):
          report=c.final_report, marks=m, traffic=sorted(tr.records), views=screen.samples())
     return [
         check("view states on the screen (errors)", (states, screen.errors[:3]),
-              not screen.errors and states[:1] == ["ok"] and states[-1:] == ["ok"]
-              and bool({"searching", "blocked"} & set(states[1:-1])), "ok, searching or blocked, ok"),
+              not screen.errors and states[:1] == ["connected"] and states[-1:] == ["connected"]
+              and bool({"reconnecting", "blocked"} & set(states[1:-1])),
+              "connected, reconnecting or blocked, connected"),
         check("attempts while every entry was dead (refresh, via, outbound, error)", during[:12], True, "info"),
         check("roads of the first refresh after the entries died", first,
               {"auto", "roads", "direct"} <= set(first), "every via, direct among them"),

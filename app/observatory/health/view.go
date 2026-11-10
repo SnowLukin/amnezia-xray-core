@@ -16,6 +16,9 @@ type ViewData struct {
 	Seq   uint64 `json:"seq"`
 	Run   string `json:"run"`
 	State string `json:"state"`
+	// What the core does now to get to connected; none once there and
+	// without a network.
+	Phase string `json:"phase,omitempty"`
 	// Since View first saw the state.
 	SinceMs    int64          `json:"since_ms"`
 	Needs      []string       `json:"needs"`
@@ -80,6 +83,23 @@ type viewSwitch struct {
 	AgoMs  int64  `json:"ago_ms"`
 }
 
+// The states of the view, see viewState.
+const (
+	viewNoNetwork    = "no_network"
+	viewConnecting   = "connecting"
+	viewConnected    = "connected"
+	viewReconnecting = "reconnecting"
+	viewBlocked      = "blocked"
+)
+
+// The phases of the view, see viewState.
+const (
+	phaseVerifying  = "verifying"
+	phaseSearching  = "searching"
+	phaseRefreshing = "refreshing"
+	phaseWaiting    = "waiting"
+)
+
 // timeless is the view without its durations.
 func (v ViewData) timeless() ViewData {
 	v.Seq, v.SinceMs = 0, 0
@@ -137,12 +157,11 @@ func (e *engine) view(now time.Time) ViewData {
 		Providers: []viewProvider{},
 	}
 	main := e.selectors[e.s.viewBalancer]
-	// No connection asked the balancer yet: it chooses with the first one.
-	fresh := main != nil && !main.started
 	// The balancer whose choice or held outbound the current outbound is;
-	// nil when the connections go to a fallbackTag or nobody knows where.
+	// nil when the connections go to a fallbackTag or nobody knows where,
+	// and before the first connection asked the balancer to choose.
 	var by *selector
-	if main != nil && !fresh {
+	if main != nil && main.started {
 		v.Outbound.Tag, by = e.outboundNowBy(main, now)
 		if !main.switchedAt.IsZero() {
 			last := main.switched
@@ -150,31 +169,14 @@ func (e *engine) view(now time.Time) ViewData {
 			v.LastSwitch = &last
 		}
 	}
-	down := false
 	if by != nil {
 		v.Outbound.IsHeld = by.current() == ""
 		v.Outbound.Labels = e.s.pathLabels(v.Outbound.Tag)
 		if c := by.cfg.paths[v.Outbound.Tag]; c != nil {
 			v.Outbound.Protocol = c.protocol
 		}
-		if p := e.paths[v.Outbound.Tag]; p != nil {
-			down = p.status == statusDown
-		}
 	}
-	switch {
-	case e.networkDown:
-		v.State = "no_network"
-	case fresh:
-		v.State = "ready"
-	case by == nil || down && by.pinned != "":
-		v.State = "blocked"
-	case v.Outbound.IsHeld || down:
-		// The balancer hands out an outbound it knows is down while it
-		// looks for another.
-		v.State = "searching"
-	default:
-		v.State = "ok"
-	}
+	v.State, v.Phase = e.viewState(main, by, v.Outbound.Tag, now)
 
 	probing := map[string]*probeJob{}
 	checking := false
@@ -253,4 +255,117 @@ func (e *engine) view(now time.Time) ViewData {
 	add(&v.Doing, returning, "returning")
 	add(&v.Doing, checking, "checking_network")
 	return v
+}
+
+// viewState is the state of the view and its phase. main is the balancer of
+// the user, by the one that hands out tag, nil for a fallbackTag. Until an
+// outbound was proven in this run the state is connecting while the core
+// has something left to try, after that reconnecting; the phase names what
+// it tries.
+func (e *engine) viewState(main, by *selector, tag string, now time.Time) (string, string) {
+	if e.networkDown {
+		return viewNoNetwork, ""
+	}
+	chain := e.fallbackChain(main)
+	trying := viewConnecting
+	for _, s := range chain {
+		if s.confirmed {
+			trying = viewReconnecting
+		}
+	}
+	switch {
+	case main == nil:
+		return viewBlocked, phaseWaiting
+	case !main.started:
+		return trying, phaseWaiting
+	case by == nil:
+		coming, first := e.setComing(chain, now)
+		phase := phaseWaiting
+		switch {
+		case e.probingFor(chain):
+			phase = phaseSearching
+		case coming:
+			phase = phaseRefreshing
+		}
+		if first && trying == viewConnecting {
+			// A config without a working path starts on the set of its
+			// provider: that is still the way to the first connection.
+			return viewConnecting, phase
+		}
+		return viewBlocked, phase
+	case by.current() == "":
+		// The balancer hands out its last outbound while it looks for
+		// another.
+		return trying, phaseSearching
+	}
+	status, proven := statusUnknown, false
+	if p := e.paths[tag]; p != nil {
+		status, proven = p.status, p.suspectProven
+	}
+	switch {
+	case status == statusUp || status == statusDegraded || status == statusSuspect && proven:
+		// A doubt about an outbound that worked does not blink on the screen.
+		return viewConnected, ""
+	case status != statusDown:
+		return trying, phaseVerifying
+	case by.pinned != "":
+		// A pinned balancer does not leave a dead outbound.
+		return viewBlocked, phaseWaiting
+	}
+	return trying, phaseSearching
+}
+
+// fallbackChain is the balancer and the fallback balancers its connections
+// may reach, as outboundNowBy follows them.
+func (e *engine) fallbackChain(s *selector) []*selector {
+	var chain []*selector
+	for ; s != nil && len(chain) <= 3; s = e.selectors[s.cfg.fallbackBalancer] {
+		chain = append(chain, s)
+	}
+	return chain
+}
+
+// probingFor tells whether a probe one of the balancers asked for runs now.
+func (e *engine) probingFor(chain []*selector) bool {
+	for _, j := range e.running {
+		for _, s := range chain {
+			if j.selector == s.tag && !j.invalidated {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// setComing tells whether a set for one of the balancers is on its way: a
+// request of a provider that feeds it runs, or the request for a balancer
+// that ran out is due and nothing holds it back. first: it is, and no
+// request failed or brought the same set since the last one that helped.
+// Unlike wantedRefresh it changes nothing.
+func (e *engine) setComing(chain []*selector, now time.Time) (coming, first bool) {
+	idle := e.idle(now)
+	for _, p := range e.providers {
+		for _, s := range chain {
+			if !p.cfg.feeds(s.tag) {
+				continue
+			}
+			due := p.cfg.whenExhausted && p.cfg.balancer == s.tag && s.exhausted && p.expect == "" && p.failures == 0 &&
+				!now.Before(p.retryAfterUntil) && !p.hourSpent(now) && e.heldBack(p, triggerExhausted, expiryWant{}, idle, now) == ""
+			if p.fetching || due {
+				coming, first = true, first || p.failures == 0
+			}
+		}
+	}
+	return coming, first
+}
+
+// hourSpent tells whether maxPerHour holds the next refresh back.
+func (p *provider) hourSpent(now time.Time) bool {
+	recent := 0
+	for _, t := range p.attempts {
+		if now.Sub(t) < time.Hour {
+			recent++
+		}
+	}
+	return p.cfg.maxPerHour > 0 && recent >= p.cfg.maxPerHour
 }

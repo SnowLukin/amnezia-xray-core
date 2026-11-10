@@ -94,6 +94,8 @@ type path struct {
 	status      pathStatus
 	statusSince time.Time
 	reason      string
+	// The path was up or degraded when it became suspect.
+	suspectProven bool
 
 	// Failures since the last proof that the path works.
 	failures    []failure
