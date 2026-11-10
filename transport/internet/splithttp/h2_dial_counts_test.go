@@ -82,7 +82,7 @@ func TestXHTTP2TCPDialCounts(t *testing.T) {
 				addr := listener.Addr().(*net.TCPAddr)
 				config := &Config{Xmux: &XmuxConfig{MaxConnections: &RangeConfig{From: clients, To: clients}}}
 				settings := &internet.MemoryStreamConfig{ProtocolName: "splithttp", ProtocolSettings: config, SecurityType: "tls", SecuritySettings: &xtls.Config{ServerName: "example.com", Certificate: []*xtls.Certificate{{Usage: xtls.Certificate_AUTHORITY_VERIFY, Certificate: pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw})}}, NextProtocol: []string{"h2"}, Fingerprint: "chrome"}}
-				manager := NewXmuxManager(*config.Xmux, func() XmuxConn {
+				manager := NewXmuxManager(XmuxConfig{MaxConnections: config.Xmux.MaxConnections}, func() XmuxConn {
 					return createHTTPClient(xnet.TCPDestination(xnet.LocalHostIP, xnet.Port(addr.Port)), settings)
 				})
 				const requests = 30

@@ -102,8 +102,7 @@ jobs:
           key: xray-geodat-
       - name: Vet
         # unreachable and lostcancel are off for warnings that exist outside the adaptive code.
-        # infra/conf is left out until its copylocks warning in balancer_fallback_test.go is fixed.
-        run: go vet -unreachable=false -lostcancel=false ./app/observatory/health/... ./app/proxyman/... ./app/router/... ./proxy/wireguard/... ./common/safe/...
+        run: go vet -unreachable=false -lostcancel=false ./app/observatory/health/... ./app/proxyman/... ./app/router/... ./proxy/wireguard/... ./common/safe/... ./infra/conf/...
       - name: Race tests
         run: go test -race -timeout 30m ./app/observatory/health/... ./app/proxyman/... ./app/router/... ./proxy/wireguard/... ./common/safe/... ./infra/conf/...
 

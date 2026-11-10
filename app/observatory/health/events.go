@@ -8,7 +8,7 @@ import (
 
 // Event is one decision or observation, kept until the host drains it.
 // Fields holds event specific values; keys are stable and documented in
-// README.md next to this file.
+// docs/adaptive/telemetry.md.
 type Event struct {
 	Seq    uint64         `json:"seq"`
 	Time   int64          `json:"ts"`

@@ -76,7 +76,7 @@
 | `conns_ok`, `conns_failed` | целое | Пользовательские соединения за жизнь пути. |
 | `bytes_up`, `bytes_down` | целое | Байты пользовательских соединений за жизнь пути. |
 | `failures_by_kind` | объект, необязательный | Число неудачных соединений по виду отказа (виды в [Общие значения](#общие-значения)). |
-| `ttfb_p50_ms`, `ttfb_p90_ms` | целое | Время до первого байта за жизнь пути по старой сетке корзин (50, 100, 200, 300, 500, 750, 1000, 1500, 2000, 3000, 5000, 8000 мс). Считается только при `telemetry.report` или `telemetry.metrics`, без замеров равно 0. |
+| `ttfb_p50_ms`, `ttfb_p90_ms` | целое | Время до первого байта за жизнь пути по грубой сетке корзин (50, 100, 200, 300, 500, 750, 1000, 1500, 2000, 3000, 5000, 8000 мс). Считается только при `telemetry.report` или `telemetry.metrics`, без замеров равно 0. |
 | `probes`, `probes_failed`, `probe_bytes` | целое | Пробы пути за жизнь и их трафик в обе стороны. |
 | `probe` | объект, необязательный | Последняя завершённая проба: `profile`, `reason`, `state`, `ago_ms`, `steps[]` с полями `name`, `is_passed`, `connect_ms`, `ms`, `bytes` и `destination` (индекс адреса при успехе) или `error` (класс при отказе). |
 | `udp` | объект | Последняя UDP-проба: `state` (`unknown` без пробы, иначе `ok`, `lossy`, `dead`, `unsupported`), `answered`, `sent`, `rtt_ms`, `jitter_ms`, `age_ms`, `reason`. |
@@ -111,7 +111,7 @@
 | `provider`, `method`, `version` | Тег, HTTP-метод, версия последнего применённого набора. |
 | `members`, `probe_only_verified`, `draining` | Outbound в наборе, проверенные кандидаты среди них, старые обработчики, которые ещё закрываются. |
 | `is_fetching`, `refreshes`, `failures` | Запрос идёт сейчас; число успешных обновлений; неудачи подряд. |
-| `last_error` | Последняя ошибка: класс неудачного запроса (`timeout`, `tls`, `network`, `status`, `too_large`), причина пропуска дороги или причина, по которой ответ отклонён. |
+| `last_error` | Последняя ошибка: класс неудачного запроса (`timeout`, `tls`, `network`, `status`), `answer larger than <N> bytes` у слишком большого ответа, `provider request exceeds 256 KiB` у слишком большого запроса, причина пропуска дороги или причина, по которой ответ или набор отклонён. |
 | `set_age_ms` | Возраст набора. |
 | `next_trigger`, `next_in_ms` | Ближайший повод обновления и когда он наступит (может быть отрицательным, если ждёт). |
 | `backoff_ms`, `retry_after_ms`, `attempts_last_hour` | Остаток паузы после неудач, остаток паузы `Retry-After`, попытки за последний час. |
@@ -236,7 +236,7 @@
 `balancers[].exit` называет outbound, в который роутер отправляет новые соединения балансировщика прямо сейчас, а `exit_labels` его метки (`selection.labels` пути или набора провайдера). Уже открытые соединения остаются на том пути, где открылись. `exit` выводится по тем же правилам, что роутер:
 
 - выбор балансировщика (`active`, в том числе закреплённый `pinned`), если он может принимать соединения. Путь с истёкшей арендой без `expiredLease.fallback` и путь только для проверки не могут: тогда `active` не пуст, а `exit` равен `fallbackTag`;
-- при исчерпании (`is_exhausted: true`, `active` пуст) путь, который балансировщик ещё держит (удержание, config.md раздел 3.3): ядро ещё не знает, пропала сеть или пути;
+- при исчерпании (`is_exhausted: true`, `active` пуст) путь, который балансировщик ещё держит (удержание, см. `fallbackBalancer` в [config.md](config.md)): ядро ещё не знает, пропала сеть или пути;
 - после удержания с заданным `fallback_balancer` выход того балансировщика по тем же правилам (цепочка не длиннее четырёх). `is_falling_back` становится `true` на первом соединении, которое ушло туда, а `exit` показывает целевой путь сразу;
 - иначе `fallbackTag` балансировщика из `routing.balancers`. У него обычно нет меток, `exit_labels` тогда отсутствует.
 
@@ -279,8 +279,7 @@
 | Событие | Поля | Когда |
 | --- | --- | --- |
 | `switch` | `balancer`, `from`, `to`, `reason`, `held_ms`, `cost` | Новые соединения пошли через другой путь. `held_ms` - сколько держался прежний, `cost` - цена нового. Значения `reason` ниже. |
-| `path_state` | `outbound`, `state`, `reason`, [`by`], [`evidence_ms`], [`quarantine_ms`, `quarantine_level`], [`is_provisional`] | Путь сменил состояние. Подробно ниже. |
-| `path_state` (подозрение) | `outbound`, `state` = `suspect`, `reason` = `traffic`, `failures`, `targets`, `kinds`, `is_strong`, [`evidence_ms`] | Пассивные улики против выбранного пути. `failures` - неудачные соединения, `targets` - разных адресатов, `kinds` - объект `вид отказа -> число`, `is_strong` - улика сильная (отказ установки соединения или проверки сервера). |
+| `path_state` | `outbound`, `state`, `reason`, [`by`], [`evidence_ms`], [`quarantine_ms`, `quarantine_level`], [`is_provisional`], [`failures`, `targets`, `kinds`, `is_strong`] | Путь сменил состояние. Подробно ниже. |
 | `first_success` | `balancer`, `outbound`, `after` | Первое удачное пользовательское соединение через последний выбор балансировщика. `after` - `reason` того `switch`. Завершает старт ядра или сбой (`start_ms` и `incidents` отчёта). |
 | `exhausted` | `balancer`, `from`, `candidates`, [`fallback_balancer`], [`held`] | Пригодных кандидатов не осталось. `from` - прежний выбор, `candidates` - число кандидатов. `held` (равен `from`, если тот не пуст) - путь, который балансировщик пока держит для новых соединений; когда удержание кончается, отдельного события нет, видно по `Status.balancers[].exit`. |
 | `fallback_balancer` | `balancer`, `to`, `is_active` | `is_active: true` - первое соединение ушло в балансировщик `to`; `false` - переход закончился, балансировщик снова выбрал свой путь. |
@@ -320,7 +319,7 @@
 | `down` | `traffic`, `probe`, `return_probe`, `host_probe`, `candidate` |
 | `unknown` | `network_up`, `replaced` (провайдер изменил настройки пути), `probe_changed` (провайдер изменил профиль пробы неизменённого пути) |
 
-`by` есть только при `reason: rescued`: `confirm` (подтверждающая проба, уже бежавшая к моменту решения), `audit` (проверка решения `down`) или `traffic` (сработало соединение пользователя, начатое после решения `down`). `evidence_ms` есть у `suspect` и `down`: сколько прошло с момента, когда пользователь начал ждать самое раннее неудачное соединение с последнего успеха пути. Для соединения без ответа это его начало, для замершего - последняя запись или чтение. `quarantine_ms` и `quarantine_level` есть у каждого `down`, `is_provisional: true` - у временного карантина. Смены состояния при потере сети (подозрение снимается в `unknown`) и при смене сети событий не пишут.
+Подозрение (`state: suspect`, `reason: traffic`) пишется по пассивным уликам против выбранного пути и несёт `failures` (неудачные соединения), `targets` (разных адресатов), `kinds` (объект `вид отказа -> число`) и `is_strong` (улика сильная: отказ установки соединения или проверки сервера). `by` есть только при `reason: rescued`: `confirm` (подтверждающая проба, уже бежавшая к моменту решения), `audit` (проверка решения `down`) или `traffic` (сработало соединение пользователя, начатое после решения `down`). `evidence_ms` есть у `suspect` и `down`: сколько прошло с момента, когда пользователь начал ждать самое раннее неудачное соединение с последнего успеха пути. Для соединения без ответа это его начало, для замершего - последняя запись или чтение. `quarantine_ms` и `quarantine_level` есть у каждого `down`, `is_provisional: true` - у временного карантина. Смены состояния при потере сети (подозрение снимается в `unknown`) и при смене сети событий не пишут.
 
 ### Пробы
 
@@ -361,7 +360,7 @@
 | Событие | Поля | Когда |
 | --- | --- | --- |
 | `provider_fetch` | `provider`, `trigger`, `retry`, `attempt`, `mirror`, `via`, `outbound`, `method`, `refresh`, `is_ok`, `status`, `ms`, `bytes`, [`code`], [`retry_after_ms`], [`error`] | Один запрос обновления через одну запись `via` к одному зеркалу. Варианты и поля ниже. |
-| `provider_apply` | см. ниже | Ответ применён, совпал с действующим набором или отвергнут. |
+| `provider_apply` | `provider`, `trigger`, `is_ok`, [`version`], [`is_changed`], [`added`, `replaced`, `removed`, `was_exhausted`], [`unchanged`], [`error`], [`ignored_keys`], [`leases`, `renewed`, `expired`, `skew_ms`, `clock`], [`headers`, `is_headers_stale`], [`base_version`] | Ответ применён, совпал с действующим набором или отвергнут. Варианты ниже. |
 | `provider_skip` | `provider`, `trigger`, `reason`, [`wait_ms`] | Повод требует обновления, но начать его нельзя. `reason`: `min_interval`, `backoff`, `retry_after`, `max_per_hour`, `idle`, `network_down`, `pinned`, `memory`, `auth`. Пишется один раз на пару повод и причина до начала обновления. |
 | `provider_expired` | `provider`, `outbound`, `was_active`, `renewal` | Аренда пути кончилась. `was_active` - путь был выбран. `renewal` - почему не было продления: `refused` (бэкенд ответил без него), `failed` (последнее обновление с запросом не удалось), `off` (`providers[].triggers.leaseRenewal.renewAtFraction` равен 0), `saved` (кончилась в сохранённом хостом наборе до старта), `pending` (обновление с запросом ещё не завершилось). |
 | `provider_auth_failed` | `provider`, `trigger`, `status`, `via`, `code` | Бэкенд отверг заголовки (`status` 401 или 403, `code` `unauthorized` или `forbidden`). Все поводы, включая хост, ждут новых заголовков или конца паузы. |
@@ -374,7 +373,7 @@
 
 `provider_fetch` бывает трёх видов:
 
-- обычный запрос: все поля из таблицы. `mirror` - номер зеркала с 1, `outbound` - путь, через который пошёл запрос, `refresh` - номер обновления, `retry` - уровень паузы после неудач, `bytes` - размер ответа. `code` - код ошибки из тела ответа по протоколу, `retry_after_ms` - пауза `Retry-After` после ограничения сверху. `is_ok: true` означает, что бэкенд ответил, в том числе ответом с нарушением протокола; отказ такого ответа пишет `provider_apply`. `error` при неудаче - класс: `timeout`, `tls`, `network`, `status` (код в `status`), `too_large`; у ответа, который не разобран как JSON, причина вида `invalid answer: ...` без адресов;
+- обычный запрос: все поля из таблицы. `mirror` - номер зеркала с 1, `outbound` - путь, через который пошёл запрос, `refresh` - номер обновления, `retry` - уровень паузы после неудач, `bytes` - размер ответа. `code` - код ошибки из тела ответа по протоколу, `retry_after_ms` - пауза `Retry-After` после ограничения сверху. `is_ok: true` означает, что бэкенд ответил, в том числе ответом с нарушением протокола; отказ такого ответа пишет `provider_apply`. `error` при неудаче - класс `timeout`, `tls`, `network` или `status` (код в `status`); у ответа сверх предела размера текст `answer larger than <N> bytes`, у ответа, который не разобран как JSON, причина вида `invalid answer: ...` без адресов;
 - пропущенная запись `via`: `provider`, `trigger`, `retry`, `attempt`, `via`, `outbound`, `method`, `refresh`, `is_ok: false` и `error` со значением `balancer_exhausted`, `current_outbound_down`, `probe_only_outbound`, `outbound_down` или `no_such_outbound`;
 - запрос больше 256 КиБ: `provider`, `trigger`, `is_ok: false`, `code: "request_too_large"`.
 
@@ -392,7 +391,7 @@
 
 | Событие | Поля | Когда |
 | --- | --- | --- |
-| `census` | объект снимка переписи | Перепись завершилась или прервалась. Поля как у `census` в отчёте, без `additional`, см. [Перепись путей](#перепись-путей). |
+| `census` | `network`, `started_ms_ago`, `duration_ms`, `is_complete`, `paths`, [`path_labels`] | Перепись завершилась или прервалась. Поля как у `census` в отчёте, без `additional`, см. [Перепись путей](#перепись-путей). |
 | `panic_recovered` | `scope`, `where` | Перехвачена паника в рабочей горутине. `scope`: `connection` или `subsystem` (только у наблюдателя). `where` - статическое имя функции в исходниках. Значение паники и аргументы не пишутся. Та же строка уходит в лог ошибок Xray. |
 
 Паника подсистемы вне наблюдателя завершает процесс, как и 20 паник соединений с одного места за минуту; места наблюдателя в этот счёт не входят. Отказ самого наблюдателя (паника его цикла, его кода на пути соединения или применения стартового набора после регистрации outbound) отменяет его пробы и работу провайдера, сохраняет последний применённый набор и замораживает текущий выбор путей. Новые и уже открытые соединения после этого не меняют состояние путей и не попадают в счётчики отчёта.
@@ -407,7 +406,7 @@
 - `TakeReport(isFinal: true)` закрывает запуск. Отчёт с `report_reason: "stop"` выдаётся, если за весь запуск было хоть одно решение или сессия попала в выборку тихих сессий. Перед этим закрываются незавершённые сбои (`outcome: "open"`), UDP-потоки и прерывается перепись (`reason: close`). После этого вызова ни `TakeReport`, ни `PeekReport` ничего не возвращают.
 - `PeekReport` возвращает то, что сейчас вернул бы `TakeReport(isFinal: true)`, с `report_reason: "snapshot"`, и ничего не закрывает. Хост сохраняет снимок, чтобы отправить окно, если процесс убьют до остановки.
 
-Решения, которые делают окно достойным отчёта: `switch` с причиной не из стартовых, `exhausted`, `fallback_balancer`, `return_failed`, `pinned_down` не от стартового пина, `provider_apply` отвергнутый или изменивший набор (кроме `initial`), `provider_expired` с `renewal` не `saved`, `provider_auth_failed`, `provider_base_changed`, завершённая перепись и перехваченная паника.
+Решения, которые делают окно достойным отчёта: `switch` с причиной не из стартовых, `exhausted`, `fallback_balancer`, `return_failed`, `pinned_down` не от стартового пина, `provider_apply` отвергнутый или изменивший набор (кроме `initial`), `provider_expired` с `renewal` не `saved`, `provider_auth_failed`, `provider_base_changed`, `census` (перепись завершилась или прервалась) и перехваченная паника.
 
 `report_index` - номер отчёта в запуске с 1. Снимок несёт тот же номер, что получит следующий взятый отчёт. Получатель хранит одну запись на пару `health_run` + `report_index`: если пришли и снимок, и взятый отчёт, остаётся взятый. Ядро ставит только `stop`, `interval` и `snapshot`; другие значения `report_reason` может подставить хост.
 
@@ -456,8 +455,8 @@
 | `provider_expired` | целое | `provider_expired`. |
 | `provider_renewals` | целое | `provider_apply` с `is_ok` и `renewed > 0`, кроме `initial`. |
 | `provider_auth_failed`, `provider_base_changed`, `provider_urls_set` | целое | События `provider_auth_failed`, `provider_base_changed`, `provider_urls`. |
-| `provider_refreshes`, `provider_refreshes_dropped` | массив, целое | Обновления провайдера, закончившиеся в окне (не больше 10), и сколько ещё не поместилось. |
-| `incidents`, `incidents_dropped` | массив, целое | Сбои, закончившиеся в окне (не больше 10), и сколько ещё не поместилось. |
+| `provider_refreshes`, `provider_refreshes_dropped` | массив, целое | Первые 10 обновлений провайдера, закончившихся в окне, и сколько ещё не поместилось. |
+| `incidents`, `incidents_dropped` | массив, целое | Первые 10 сбоев, закончившихся в окне, и сколько ещё не поместилось. |
 | `start_ms` | целое, необязательное | От старта ядра до первого удачного пользовательского соединения. Есть только в окне, где оно произошло. |
 | `evidence` | объект, необязательный | Точность пассивных улик по видам, см. ниже. |
 | `pins`, `releases` | целое | События `pin` и `release`. |
@@ -481,7 +480,7 @@
 | Поле | Что значит |
 | --- | --- |
 | `state` | Состояние на момент отчёта. |
-| `ttfb_life_p50_ms` | Медиана времени до первого байта за всю жизнь пути, по старой сетке корзин с шагом от 50 мс (как `Status.paths[].ttfb_p50_ms`), 0 без замеров. Не путать с `quality[].paths.<tag>.ttfb_p50_ms`, которое считается за сегмент по сетке от 10 мс. |
+| `ttfb_life_p50_ms` | Медиана времени до первого байта за всю жизнь пути, по грубой сетке корзин от 50 мс (как `Status.paths[].ttfb_p50_ms`), 0 без замеров. Не путать с `quality[].paths.<tag>.ttfb_p50_ms`, которое считается за сегмент по сетке от 10 мс. |
 | `active_ms`, `degraded_ms` | Время, когда путь был выбран и когда был в `degraded`, в окне. |
 | `bytes_up`, `bytes_down`, `conns_ok`, `conns_failed` | Пользовательский трафик и соединения в окне. TCP и UDP вместе, на уровне транспорта. |
 | `probes`, `probe_bytes` | Пробы пути и их трафик в окне. |
@@ -490,7 +489,7 @@
 | `audits`, `audits_passed` | Проверки решений `down` этого пути и успешные из них. |
 | `lone_probes`, `lone_probes_failed` | Пробы одиночного отказа этого пути и неудачные из них. |
 | `udp_probes`, `udp_probes_dead` | UDP-пробы пути и мёртвые из них. |
-| `udp_rtt_p50_ms`, `udp_jitter_p50_ms` | Медианы RTT и джиттера ответов UDP-проб в окне по старой сетке, 0 без замеров. |
+| `udp_rtt_p50_ms`, `udp_jitter_p50_ms` | Медианы RTT и джиттера ответов UDP-проб в окне по той же грубой сетке от 50 мс, 0 без замеров. |
 | `udp_state` | Последний результат UDP-пробы или `unknown`. |
 | `udp_flows`, `udp_flows_unanswered` | UDP-потоки, закончившиеся в окне; без ответа - хотя бы один отправленный буфер и ни одного полученного байта. Открытый поток относится к окну, в котором закончится; финальный отчёт закрывает все. |
 | `udp_bytes_up`, `udp_bytes_down`, `udp_writes`, `udp_reads` | Полезная нагрузка UDP и непустые буферы (примерно пакеты) на уровне outbound, без обрамления прокси. |
@@ -774,7 +773,7 @@ UDP-потоки считаются при `telemetry.report` или `evidence.u
 
 ### Качество в Status и в запросе провайдера
 
-`Status.paths[].quality` и `Status.witness_quality` показывают текущую сеть с момента её смены, не сбрасываются взятием отчёта и охватывают все принятые пути (до 64). Формат тот же, что у пути в сегменте отчёта: snake_case, со всеми полями, включая `probe_*` и гистограммы. На 64 путях это десятки килобайт.
+`Status.paths[].quality` и `Status.witness_quality` показывают текущую сеть с момента её смены, не сбрасываются взятием отчёта и охватывают все принятые пути (до 64). Формат тот же, что у пути в сегменте отчёта (snake_case, с полями `probe_*`), но без гистограмм `*_hist`. На 64 путях это десятки килобайт.
 
 В запрос провайдера качество каждого outbound идёт в camelCase без гистограмм и без полей `probe_*`: `bytesDown`, `bytesDownOverflow`, `ttfbCount`, `ttfbP50Ms`, `ttfbP90Ms`, `dialCount`, `dialP50Ms`, `dialP90Ms`, `tcpCount`, `tcpRttP50Ms`, `tcpRttP90Ms`, `tcpRttMinMs`, `bulkCount`, `bulkKbpsP50`, `bulkKbpsP90`, `bulkKbpsMax`, `bulkPeakCount`, `bulkPeakKbpsP50`, `bulkPeakKbpsP90`, `bulkSaturatedCount`, `bulkUnsaturatedCount`, `bulkSaturatedKbpsP50`, `bulkSaturatedKbpsP90`, `bulkPolicedCount`, `bulkPolicedKbpsP50`, `bulkPolicedKbpsP90`, те же `upload*`, `bulkRttP50Ms`, `bulkSplicedCount`, `rxOutOfOrderFraction`, `txRetransmitFraction`, `speedLimitDownKbps`, `speedLimitUpKbps`. Значения и правила присутствия совпадают с полями snake_case. Где именно они лежат в запросе, см. [provider-protocol.md](provider-protocol.md).
 
@@ -803,7 +802,7 @@ UDP-потоки считаются при `telemetry.report` или `evidence.u
 | `result` | `ok`, `failed`, `skipped`. `ok` ставится и при `degraded`. |
 | `source` | `probe` (проверено пробой) или `recent` (засчитан свежий успех выбранного пути). Необязательное. |
 | `reason` | Почему `skipped`: `on_demand` (путь по запросу не перечислен в `onDemand`), `limit` (исчерпан лимит 16 проб), `priority` (проба вытеснена более важной), `interrupted` (проба отменена), `network_change`, `network_lost`, `idle`, `memory`, `close` (остановка ядра), `path_changed` (путь изменился). |
-| `error` | Класс ошибки пробы у `failed`, без класса `other`. |
+| `error` | Класс ошибки пробы у `failed`, как в `probe_result.error` (`other`, если класса нет). |
 | `member` | Проверенный участник группы. |
 | `observed_state` | Состояние пути по мнению наблюдателя в момент проверки. |
 | `is_selected` | Путь был выбран балансировщиком. Выводится только `true`. |
@@ -888,8 +887,8 @@ UDP-потоки считаются при `telemetry.report` или `evidence.u
 | Трасса | от 65536 до 2097152 байт, по умолчанию 262144 |
 | Пути в отчёте (`paths`) и учёт шагов проб | 64 пути, первые по тегу |
 | `switch_history` | 10 последних |
-| `incidents` | 10 на окно, остальное в `incidents_dropped` |
-| `provider_refreshes` | 10 на окно, остальное в `provider_refreshes_dropped` |
+| `incidents` | первые 10 за окно, остальное в `incidents_dropped` |
+| `provider_refreshes` | первые 10 за окно, до 16 попыток в каждом, остальное в `provider_refreshes_dropped` |
 | `recent` | 64 последних исхода, окно 1 минута |
 | Сегменты качества | 4 непустых на отчёт, по 4 пути в каждом |
 | Принятые пути качества | 64 тега и 16 КиБ их имён на сеть (отдельно для `Status` и для окна отчёта) |

@@ -91,7 +91,7 @@ func TestFallbackBalancerProtobufContract(t *testing.T) {
 	}
 	var restored health.SelectorConfig
 	if err := proto.Unmarshal(raw, &restored); err != nil || restored.GetFallbackBalancer() != "main" {
-		t.Fatalf("lost fallback target: %v, %v", restored, err)
+		t.Fatalf("lost fallback target: %v, %v", &restored, err)
 	}
 }
 

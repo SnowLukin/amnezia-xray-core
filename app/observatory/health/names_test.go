@@ -15,7 +15,12 @@ var productWords = regexp.MustCompile(`(?i)\b(extra|whitelist|white-list|cdn|rel
 func TestNoProductNames(t *testing.T) {
 	files, _ := filepath.Glob("*")
 	more, _ := filepath.Glob("command/*")
-	for _, f := range append(files, more...) {
+	docs, _ := filepath.Glob("../../../docs/adaptive/*.md")
+	if len(docs) == 0 {
+		t.Fatal("no docs/adaptive/*.md")
+	}
+	files = append(append(files, more...), docs...)
+	for _, f := range files {
 		if strings.HasSuffix(f, "_test.go") || strings.HasSuffix(f, ".pb.go") {
 			continue
 		}

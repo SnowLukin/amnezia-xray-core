@@ -689,24 +689,40 @@ func TestObserverReport(t *testing.T) {
 	}
 }
 
-// readmeEventRow is the row of the events table of the README for typ.
-func readmeEventRow(t *testing.T, typ string) string {
+// telemetrySection is the text of the docs/adaptive/telemetry.md section that
+// starts at the heading from and ends at the next one of its level.
+func telemetrySection(t *testing.T, from string) string {
 	t.Helper()
-	readme, err := os.ReadFile("README.md")
+	doc, err := os.ReadFile("../../../docs/adaptive/telemetry.md")
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, line := range strings.Split(string(readme), "\n") {
+	text := string(doc)
+	start := strings.Index(text, "\n"+from+"\n")
+	if start < 0 {
+		t.Fatalf("telemetry.md has no section %q", from)
+	}
+	text = text[start+len(from)+2:]
+	if end := strings.Index(text, "\n## "); end >= 0 {
+		text = text[:end]
+	}
+	return text
+}
+
+// eventRow is the row of the events table of telemetry.md for typ.
+func eventRow(t *testing.T, typ string) string {
+	t.Helper()
+	for _, line := range strings.Split(telemetrySection(t, "## Журнал событий"), "\n") {
 		if strings.HasPrefix(line, "| `"+typ+"` |") {
 			return line
 		}
 	}
-	t.Fatalf("README has no row for %s", typ)
+	t.Fatalf("telemetry.md has no event row for %s", typ)
 	return ""
 }
 
 // A network change no balancer forgets on keeps the generation and tells
-// so, as the README describes.
+// so, as telemetry.md describes.
 func TestIgnoredNetworkChangeDocumented(t *testing.T) {
 	te := newTestEngine(t, nil, &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3), NetworkChangeAction: NetworkChangeMode_IGNORE}, "a1", "b1")
 	gen := te.generation
@@ -715,20 +731,17 @@ func TestIgnoredNetworkChangeDocumented(t *testing.T) {
 	if ev.Fields["is_ignored"] != true || te.generation != gen {
 		t.Fatalf("network_change %v at generation %d, want it ignored at %d", ev.Fields, te.generation, gen)
 	}
-	row := readmeEventRow(t, "network_change")
+	row := eventRow(t, "network_change")
 	for k := range ev.Fields {
 		if !strings.Contains(row, "`"+k+"`") {
-			t.Errorf("README does not describe %q of network_change", k)
+			t.Errorf("telemetry.md does not describe %q of network_change", k)
 		}
 	}
 }
 
-// Every key of the report is described in the README.
+// Every key of the report is described in the report section of telemetry.md.
 func TestReportFieldsDocumented(t *testing.T) {
-	readme, err := os.ReadFile("README.md")
-	if err != nil {
-		t.Fatal(err)
-	}
+	doc := telemetrySection(t, "## Отчёт")
 	te := newReportEngine(t, connectivityConfig(), nil, "a1", "b1")
 	failoverEvent(te, at(time.Second))
 	te.emit(at(time.Second), "provider_fetch", map[string]any{"trigger": "host", "is_ok": true})
@@ -753,8 +766,8 @@ func TestReportFieldsDocumented(t *testing.T) {
 		t.Errorf("paths without ttfb_life_p50_ms: %v", paths["a1"])
 	}
 	for _, k := range keys {
-		if !strings.Contains(string(readme), "`"+k+"`") {
-			t.Errorf("README does not describe %q", k)
+		if !strings.Contains(doc, "`"+k+"`") {
+			t.Errorf("telemetry.md does not describe %q", k)
 		}
 	}
 }
