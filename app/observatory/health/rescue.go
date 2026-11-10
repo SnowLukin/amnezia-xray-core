@@ -77,7 +77,7 @@ func (e *engine) rescue(p *path, m *rescueMark, now time.Time) {
 	if m.by == "confirm" {
 		// The next weak suspicion waits longer after a false alarm.
 		e.backOffWeakEvidence(p, now)
-	} else {
+	} else if m.by == "audit" {
 		p.stats.auditsPassed++
 	}
 	p.success(now)

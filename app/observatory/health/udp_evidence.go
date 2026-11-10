@@ -31,17 +31,13 @@ func (o *Observer) currentUDPFlow(f *udpFlow) bool {
 
 func (o *Observer) udpFirstWrite(f *udpFlow, now time.Time) {
 	var current bool
-	func() {
-		o.mu.Lock()
-		defer o.mu.Unlock()
-
+	o.locked("app/observatory/health/udp_evidence.go:Observer.udpFirstWrite", func() {
 		current = o.currentUDPFlow(f)
 		if current {
 			o.pruneUDPEvidenceLocked(f.path, now)
 			o.e.onUDPUserWrite(f.path, now)
 		}
-
-	}()
+	})
 	if current {
 		if o.s.passive.udpReplyTimeout > 0 {
 			o.watchUDPEvidence()

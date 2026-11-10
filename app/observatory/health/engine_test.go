@@ -398,14 +398,11 @@ func TestExhaustedThenRecheckRecovers(t *testing.T) {
 	if !te.sel.exhausted || te.sel.current() != "" {
 		t.Fatalf("want exhausted, active %q", te.sel.current())
 	}
-	// Users keep trying, so the engine is not idle; quarantine is still running.
-	te.noteDemand(at(10 * time.Second))
-	if jobs, _ := te.tick(at(10 * time.Second)); len(jobs) != 0 {
-		t.Fatalf("rechecked during quarantine")
-	}
-	// The quarantine is 30 s with the default 30% spread.
-	te.noteDemand(at(40 * time.Second))
-	jobs := te.run(t, at(40*time.Second), map[string]bool{"a1": true, "b1": true})
+	// Users keep trying, so the engine is not idle. Past the quarantine of
+	// 30 s with its 30% spread and past the probe budget that the rechecks
+	// during it spent (exhaustion_test.go), the cheapest is rechecked first.
+	te.noteDemand(at(90 * time.Second))
+	jobs := te.run(t, at(90*time.Second), map[string]bool{"a1": true, "b1": true})
 	if len(jobs) == 0 || jobs[0].reason != reasonRecheck || jobs[0].tag != "a1" {
 		t.Fatalf("want recheck of the cheapest, got %+v", jobs)
 	}

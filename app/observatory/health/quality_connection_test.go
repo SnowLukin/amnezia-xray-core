@@ -584,7 +584,7 @@ func TestQualityWitnessMeasurementsDoNotChangeNetworkEvidence(t *testing.T) {
 	if _, ok := tr.quality.takeInitial(); ok {
 		t.Fatal("witness initial sample consumed twice")
 	}
-	if o.e.networkDown != baseline.e.networkDown || o.e.lastSuccess != baseline.e.lastSuccess || !reflect.DeepEqual(o.e.queue, baseline.e.queue) || !reflect.DeepEqual(o.e.events.events, baseline.e.events.events) || tr.bytes.Load() != plain.bytes.Load() {
+	if o.e.networkDown != baseline.e.networkDown || o.e.workedSinceCheck != baseline.e.workedSinceCheck || !reflect.DeepEqual(o.e.queue, baseline.e.queue) || !reflect.DeepEqual(o.e.events.events, baseline.e.events.events) || tr.bytes.Load() != plain.bytes.Load() {
 		t.Fatal("quality measurements changed network decisions, witness evidence, or events")
 	}
 }
@@ -630,7 +630,7 @@ func TestQualityWitnessSuccessfulDialWithoutAnswer(t *testing.T) {
 	if _, ok := tr.quality.takeInitial(); ok {
 		t.Fatal("unanswered witness dial contributed twice")
 	}
-	if !o.e.networkDown || tr.done.Load() || !o.e.lastSuccess.IsZero() || len(o.e.queue) != 0 {
+	if !o.e.networkDown || tr.done.Load() || o.e.workedSinceCheck || len(o.e.queue) != 0 {
 		t.Fatal("witness dial timing became network evidence without a reply")
 	}
 }

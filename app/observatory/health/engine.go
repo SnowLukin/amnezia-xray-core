@@ -138,6 +138,10 @@ const staleAfter = 30 * time.Minute
 // While memory is low a network check in doubt is repeated at most this often.
 const lowMemoryRecheck = 2 * time.Minute
 
+// The network check is taken as wrong in this network after this many
+// failed checks in a row, each after a success.
+const checkContradictions = 3
+
 // engine makes every decision. It never blocks and never reads the clock:
 // the caller passes the time and runs the probes the engine asks for.
 // It is not safe for concurrent use; the observer guards it with a mutex.
@@ -199,7 +203,8 @@ type engine struct {
 	doubt bool
 	// The check failed while outbounds worked; it is not used in this network.
 	connectivityIgnored bool
-	lastSuccess         time.Time
+	workedSinceCheck    bool
+	checkContradicted   int
 	pendingSuspicion    map[string]verdict
 	// Outbounds found down whose waiting connections the observer is to end.
 	downs []downMark
@@ -482,6 +487,16 @@ func (e *engine) noteFailStart(tag string, started time.Time) {
 	if p := e.paths[tag]; p != nil && (p.failStart.IsZero() || started.Before(p.failStart)) {
 		p.failStart = started
 	}
+}
+
+// onConnSuccess is onSuccess of a user connection that began at started. One
+// begun after the outbound was found down proves the down wrong, as an audit
+// that passes would: the probes may have failed only to reach their target.
+func (e *engine) onConnSuccess(tag string, started, now time.Time) {
+	if p := e.paths[tag]; p != nil && p.quarantined(now) && started.After(p.statusSince) && !e.isProbeOnly(tag) {
+		e.rescue(p, &rescueMark{by: "traffic", level: max(p.quarantineLevel-1, 0)}, now)
+	}
+	e.onSuccess(tag, now)
 }
 
 func (e *engine) onSuccess(tag string, now time.Time) {
@@ -866,6 +881,12 @@ type selector struct {
 	// The start pin releases itself at this time; zero waits for the host.
 	pinnedUntil time.Time
 	exhausted   bool
+	// The outbound an exhausted balancer still hands out, see holding.
+	held      string
+	heldUntil time.Time
+	// The next recheck of an exhausted balancer, and how many went before.
+	recheckAt time.Time
+	rechecks  int
 	// The first user connection that succeeds through the outbound chosen
 	// last is told as first_success, with the reason of that choice: the
 	// end of an outage, or of the start.
@@ -1222,7 +1243,7 @@ func (e *engine) switchTo(s *selector, tag string, reason string, now time.Time)
 	e.noteUDPSwitch(e.path(tag))
 	s.activeSince = now
 	s.awaitSuccess, s.awaitReason = true, reason
-	s.exhausted = false
+	s.exhausted, s.held = false, ""
 	s.failoverTried = nil
 	s.failoverProbing = nil
 	e.dropUnclaimedFailover()
@@ -1256,11 +1277,31 @@ func (e *engine) exhaust(s *selector, now time.Time) {
 	s.failoverProbing = nil
 	e.dropUnclaimedFailover()
 	s.returnToCheaperTarget = ""
+	s.recheckAt, s.rechecks = now.Add(exhaustedRecheck), 0
 	f := map[string]any{"balancer": s.tag, "from": from, "candidates": len(s.candidates)}
 	if s.cfg.fallbackBalancer != "" {
 		f["fallback_balancer"] = s.cfg.fallbackBalancer
 	}
+	if from != "" {
+		// Every outbound failing at once may be the network failing: the
+		// last one stays chosen until the check finds the network there.
+		s.held, s.heldUntil = from, now.Add(exhaustedHold)
+		f["held"] = from
+		if e.s.connectivity != nil && !e.connectivityIgnored && !e.networkDown {
+			e.enqueueConnectivity(now)
+		}
+	}
 	e.emit(now, "exhausted", f)
+}
+
+// holding returns the outbound the exhausted balancer still hands out, or ""
+// once its connections go to the fallback: the hold lasts exhaustedHold, and
+// longer while decisions pause for the network, and a passing check ends it.
+func (e *engine) holding(s *selector, now time.Time) string {
+	if !s.exhausted || s.pinned != "" || !s.hasCandidate(s.held) || !e.expiredLeaseUsable(s.held) || (!e.networkDown && !now.Before(s.heldUntil)) {
+		return ""
+	}
+	return s.held
 }
 
 func (e *engine) beginFallback(s *selector, now time.Time) {
@@ -2030,6 +2071,17 @@ func (e *engine) begin(j *probeJob, now time.Time) {
 	e.emit(now, "probe_start", f)
 }
 
+// An exhausted balancer has nowhere else to go, so it does not wait for the
+// quarantines: while the user keeps trying it also probes every outbound
+// still in quarantine, in rounds from exhaustedRecheck apart doubling up to
+// exhaustedRecheckMax. The connections wait meanwhile on the outbound held
+// for exhaustedHold, or on the fallback.
+const (
+	exhaustedRecheck    = 5 * time.Second
+	exhaustedRecheckMax = time.Minute
+	exhaustedHold       = time.Minute
+)
+
 func (e *engine) recheckExhausted(s *selector, now time.Time) time.Time {
 	var wake time.Time
 	var ranked []string
@@ -2038,8 +2090,13 @@ func (e *engine) recheckExhausted(s *selector, now time.Time) time.Time {
 	} else {
 		ranked = e.rankedAt(s, now, time.Unix(1<<40, 0), nil)
 	}
+	var resting []string
 	for _, c := range ranked {
 		p := e.path(c)
+		if e.queued(c, reasonRecheck) {
+			return time.Time{}
+		}
+		resting = append(resting, c)
 		reason := reasonRecheck
 		if g := s.groupFor(c); g != nil && g.down {
 			reason = reasonGroup
@@ -2057,15 +2114,25 @@ func (e *engine) recheckExhausted(s *selector, now time.Time) time.Time {
 			return time.Time{}
 		}
 		if now.Before(p.quarantineUntil) {
-			if wake.IsZero() || p.quarantineUntil.Before(wake) {
-				wake = p.quarantineUntil
-			}
+			wake = soonestOf(wake, p.quarantineUntil)
 			continue
 		}
 		e.enqueue(c, reason, s.tag, now)
 		return time.Time{}
 	}
-	return wake
+	if len(resting) == 0 || e.doubt {
+		// A check that keeps failing says the network is likely gone.
+		return wake
+	}
+	if now.Before(s.recheckAt) {
+		return soonestOf(wake, s.recheckAt)
+	}
+	for _, c := range resting {
+		e.enqueue(c, reasonRecheck, s.tag, now)
+	}
+	s.recheckAt = now.Add(min(exhaustedRecheck<<min(s.rechecks, 4), exhaustedRecheckMax))
+	s.rechecks++
+	return time.Time{}
 }
 
 func (e *engine) maybeReturnToCheaper(s *selector, now time.Time) time.Time {
@@ -2462,11 +2529,20 @@ func (e *engine) onConnectivity(r probeResult, now time.Time) {
 		e.resumePending(now)
 		return
 	}
+	// Something worked since the last failed check. A network that flickers
+	// does that now and then, a check that cannot reach its destination here
+	// every time.
+	if !e.checkFailingSince.IsZero() && e.workedSinceCheck {
+		e.checkContradicted++
+	} else {
+		e.checkContradicted = 0
+	}
+	e.workedSinceCheck = false
 	if e.checkFailingSince.IsZero() {
 		e.checkFailingSince = now
 	}
 	e.checkFails++
-	if e.lastSuccess.After(e.checkFailingSince) {
+	if e.checkContradicted >= checkContradictions {
 		e.ignoreConnectivity(now)
 		return
 	}
@@ -2502,7 +2578,7 @@ func (e *engine) onConnectivity(r probeResult, now time.Time) {
 
 // sawSuccess handles proof that some outbound works.
 func (e *engine) sawSuccess(how string, now time.Time) {
-	e.lastSuccess = now
+	e.workedSinceCheck = true
 	if e.endPause(now) {
 		e.emit(now, "network_up", map[string]any{"by": how})
 	}
@@ -2537,6 +2613,10 @@ func (e *engine) connectivityPassed(now time.Time) {
 	e.checkFails = 0
 	e.checkFailingSince = time.Time{}
 	e.nextConnectivity = time.Time{}
+	// The network is there: the outbounds failed, not it.
+	for _, s := range e.selectors {
+		s.held = ""
+	}
 	if !resumed {
 		e.restoreProvisional(now)
 		return
@@ -2841,6 +2921,10 @@ func (e *engine) onNetworkLost(now time.Time) {
 	e.networkDown = true
 	e.doubt = false
 	e.nextConnectivity = time.Time{}
+	if e.s.connectivity != nil && !e.connectivityIgnored {
+		// The host may not tell when the network is back; the check does.
+		e.nextConnectivity = now.Add(e.jitter(e.s.connectivity.recheck.delay(0), e.s.connectivity.recheck.jitter))
+	}
 	e.pendingSuspicion = map[string]verdict{}
 }
 

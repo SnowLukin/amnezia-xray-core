@@ -252,10 +252,18 @@ func (o *Observer) applyInitial() {
 // applyInitialSet refuses a set whose outbound panics while it is built or
 // registered. The host passes the set it kept at every start, so a panic
 // that ended the start would end every start until the host dropped it.
-// applySet has rolled back by then, and its locks are released.
+// applySet has rolled back by then, and its locks are released. Once the
+// set is registered, what panics is the engine taking it, which may have
+// left it half changed: that freezes the observer as a panic of the loop.
 func (o *Observer) applyInitialSet(rt *providerRuntime, a *providerAnswer) (applied bool) {
 	defer func() {
-		if recover() != nil {
+		if p := recover(); p != nil {
+			if rt.hash == a.hash {
+				func() {
+					defer safe.Recover(safe.Subsystem, "app/observatory/health/health.go:Observer.applyInitial", o.fail)
+					panic(p)
+				}()
+			}
 			applied = false
 			o.emit("provider_apply", map[string]any{"provider": rt.cfg.tag, "trigger": triggerInitial.String(),
 				"version": a.version, "is_ok": false, "error": "panic"})
@@ -536,17 +544,16 @@ func (o *Observer) StartDial(ctx context.Context, tag string, server net.Destina
 	var connectionEpoch uint64
 	var udpEpoch uint64
 	var udpIncarnation uint64
-	func() {
-		o.mu.Lock()
-		defer o.mu.Unlock()
-
+	o.locked("app/observatory/health/health.go:Observer.StartDial", func() {
 		connectionPath = o.e.path(tag)
 		connectionEpoch = connectionPath.controllerEpoch
 		udpEpoch, udpIncarnation = o.e.udpEpoch, connectionPath.udpIncarnation
 		o.e.noteDemand(o.now())
 		o.e.used(tag, o.now())
-
-	}()
+	})
+	if o.failed.Load() {
+		return nil
+	}
 	if o.s.census != nil {
 		o.wake()
 	}
@@ -583,16 +590,12 @@ func (o *Observer) StartDial(ctx context.Context, tag string, server net.Destina
 		o.e.lastServer.Store(tag, t.server)
 	}
 
-	func() {
-		o.mu.Lock()
-		defer o.mu.Unlock()
-
+	o.locked("app/observatory/health/health.go:Observer.StartDial", func() {
 		t.udpPath = connectionPath
 		t.udpEpoch = udpEpoch
 		t.udpIncarnation = udpIncarnation
 		o.e.pathAt(tag, o.now())
-
-	}()
+	})
 	o.track(t)
 	return t
 }
@@ -811,10 +814,7 @@ func (o *Observer) failure(t *connTracker, kind failureKind) {
 		return
 	}
 	var stale bool
-	func() {
-		o.mu.Lock()
-		defer o.mu.Unlock()
-
+	o.locked("app/observatory/health/health.go:Observer.failure", func() {
 		o.e.used(t.tag, o.now())
 		stale = false
 		if kind.pathLevel() {
@@ -826,8 +826,7 @@ func (o *Observer) failure(t *connTracker, kind failureKind) {
 			o.e.noteFailStart(t.tag, o.base.Add(time.Duration(t.waitedSince(kind))))
 			o.e.onFailure(t.tag, kind, t.target, t.conn, o.now())
 		}
-
-	}()
+	})
 	o.wake()
 }
 
@@ -835,17 +834,12 @@ func (o *Observer) answered(t *connTracker) {
 	if o.failed.Load() {
 		return
 	}
-
-	func() {
-		o.mu.Lock()
-		defer o.mu.Unlock()
-
+	o.locked("app/observatory/health/health.go:Observer.answered", func() {
 		o.collectQualityInitial(t.quality, t.tag, false)
 		if t.proof || o.s.features.passiveTCP() {
 			o.noteControllerReplyLocked(t.tag, t.started, t.network, t.udpPath)
 		}
-
-	}()
+	})
 }
 
 func (o *Observer) success(t *connTracker) {
@@ -870,9 +864,7 @@ func (o *Observer) connectionSuccess(tag string, started int64, epoch uint64, sn
 		return
 	}
 	var counted, more bool
-	func() {
-		o.mu.Lock()
-		defer o.mu.Unlock()
+	o.locked("app/observatory/health/health.go:Observer.connectionSuccess", func() {
 		p := o.e.paths[tag]
 		if p == nil || (snapshot != nil && p != snapshot) || p.controllerEpoch != epoch {
 			return
@@ -884,10 +876,10 @@ func (o *Observer) connectionSuccess(tag string, started int64, epoch uint64, sn
 			o.sweepUDPEvidenceLocked(o.now())
 		}
 		if controllerProof {
-			o.e.onSuccess(tag, o.now())
+			o.e.onConnSuccess(tag, o.base.Add(time.Duration(started)), o.now())
 		}
 		more = len(o.e.queue) > queued
-	}()
+	})
 	if !counted {
 		return
 	}
@@ -902,16 +894,12 @@ func (o *Observer) witnessed(labelEpoch uint64) {
 	}
 	var queued int
 	var more bool
-	func() {
-		o.mu.Lock()
-		defer o.mu.Unlock()
-
+	o.locked("app/observatory/health/health.go:Observer.witnessed", func() {
 		o.e.noteLabelSuccess(labelEpoch)
 		queued = len(o.e.queue)
 		o.e.sawSuccess("witness", o.now())
 		more = len(o.e.queue) > queued
-
-	}()
+	})
 	if more || o.s.labelRequest != nil {
 		o.wake()
 	}
@@ -923,10 +911,7 @@ func (o *Observer) finished(t *connTracker) {
 	}
 	var now time.Time
 	var woke bool
-	func() {
-		o.mu.Lock()
-		defer o.mu.Unlock()
-
+	o.locked("app/observatory/health/health.go:Observer.finished", func() {
 		o.collectQualityEnd(t.quality, t.tag, false, &t.bytesRead)
 		now = o.now()
 		if o.s.features.Report || o.s.features.Metrics {
@@ -948,8 +933,7 @@ func (o *Observer) finished(t *connTracker) {
 		// now: the use starts its retries afresh, and the loop asks at once
 		// rather than when a retry that had grown is due.
 		woke = o.e.used(t.tag, now)
-
-	}()
+	})
 	if woke || t.has(reportedAborted) {
 		o.wake()
 	}
@@ -964,13 +948,7 @@ var _ outbound.ProcessObserver = (*Observer)(nil)
 // whatever routed it there.
 func (o *Observer) ProcessStarted(tag string) {
 	var woke bool
-	func() {
-		o.mu.Lock()
-		defer o.mu.Unlock()
-
-		woke = o.e.processStarted(tag, o.now())
-
-	}()
+	o.locked("app/observatory/health/health.go:Observer.ProcessStarted", func() { woke = o.e.processStarted(tag, o.now()) })
 	if woke {
 		o.wake()
 	}
@@ -979,13 +957,7 @@ func (o *Observer) ProcessStarted(tag string) {
 // ProcessEnded implements outbound.ProcessObserver.
 func (o *Observer) ProcessEnded(tag string) {
 	var last bool
-	func() {
-		o.mu.Lock()
-		defer o.mu.Unlock()
-
-		last = o.e.processEnded(tag, o.now())
-
-	}()
+	o.locked("app/observatory/health/health.go:Observer.ProcessEnded", func() { last = o.e.processEnded(tag, o.now()) })
 	if last {
 		o.wake()
 	}
@@ -1071,11 +1043,7 @@ func (h *selectorHandle) Select(candidates []string) string {
 		h.o.wake()
 	}
 	if snap := h.s.snapshot.Load(); snap == nil || !equalStrings(*snap, candidates) {
-		func() {
-			h.o.mu.Lock()
-			defer h.o.mu.Unlock()
-			h.o.e.updateCandidates(h.s, candidates, now)
-		}()
+		h.o.locked("app/observatory/health/health.go:selectorHandle.Select", func() { h.o.e.updateCandidates(h.s, candidates, now) })
 		h.o.wake()
 	}
 	tag := h.s.current()
@@ -1083,11 +1051,12 @@ func (h *selectorHandle) Select(candidates []string) string {
 		return ""
 	}
 	var usable bool
-	func() {
-		h.o.mu.Lock()
-		defer h.o.mu.Unlock()
+	h.o.locked("app/observatory/health/health.go:selectorHandle.Select", func() {
+		if tag == "" {
+			tag = h.o.e.holding(h.s, now)
+		}
 		usable = h.o.e.expiredLeaseUsable(tag)
-	}()
+	})
 	if !usable {
 		return ""
 	}
@@ -1112,11 +1081,11 @@ func (h *selectorHandle) FallbackSelected(to string) {
 	if h.o.failed.Load() {
 		return
 	}
-	h.o.mu.Lock()
-	defer h.o.mu.Unlock()
-	if !h.o.failed.Load() && h.o.e.selectors[h.s.tag] == h.s && h.s.cfg.fallbackBalancer == to {
-		h.o.e.beginFallback(h.s, h.o.now())
-	}
+	h.o.locked("app/observatory/health/health.go:selectorHandle.FallbackSelected", func() {
+		if !h.o.failed.Load() && h.o.e.selectors[h.s.tag] == h.s && h.s.cfg.fallbackBalancer == to {
+			h.o.e.beginFallback(h.s, h.o.now())
+		}
+	})
 }
 
 func equalStrings(a, b []string) bool {

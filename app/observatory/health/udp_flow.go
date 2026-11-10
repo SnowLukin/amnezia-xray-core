@@ -184,9 +184,7 @@ func (f *udpFlow) Downlink(bytes, packets int64) {
 }
 
 func (f *udpFlow) Finished() {
-	f.o.mu.Lock()
-	defer f.o.mu.Unlock()
-	f.finishLocked()
+	f.o.locked("app/observatory/health/udp_flow.go:udpFlow.Finished", f.finishLocked)
 }
 
 // finishLocked runs with Observer.mu held, including when a final report

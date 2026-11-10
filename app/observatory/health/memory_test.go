@@ -108,6 +108,12 @@ func TestMemoryLowKeepsFailureDetection(t *testing.T) {
 	}
 	te.onProbeResult(jobs[0], probeResult{ok: true}, at(16*time.Second))
 	te.exhaust(te.sel, at(20*time.Second))
+	// Exhaustion asks whether the network is there first.
+	jobs, _ = te.tick(at(21 * time.Second))
+	if !slices.Equal(reasons(jobs), []string{"connectivity:"}) {
+		t.Fatalf("probes %v at exhaustion, want the network check", reasons(jobs))
+	}
+	te.onProbeResult(jobs[0], probeResult{ok: true}, at(21*time.Second))
 	te.noteDemand(at(5 * time.Minute))
 	if jobs, _ := te.tick(at(5 * time.Minute)); len(jobs) == 0 || jobs[0].reason != reasonRecheck {
 		t.Fatalf("probes %v of an exhausted balancer, want a recheck", reasons(jobs))

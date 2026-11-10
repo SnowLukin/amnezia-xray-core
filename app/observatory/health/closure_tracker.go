@@ -111,11 +111,7 @@ func (t *closureTracker) Finished(error) {
 		return
 	}
 	var woke bool
-	func() {
-		t.o.mu.Lock()
-		defer t.o.mu.Unlock()
-		woke = t.o.e.used(t.tag, t.o.now())
-	}()
+	t.o.locked("app/observatory/health/closure_tracker.go:closureTracker.Finished", func() { woke = t.o.e.used(t.tag, t.o.now()) })
 	if woke || t.aborted.Load() {
 		t.o.wake()
 	}
@@ -186,11 +182,9 @@ func (c *closureReadCounter) Add(n int64) int64 {
 			c.t.o.e.lastDemand.Store(c.t.o.now().UnixNano())
 		}
 		if c.t.proof && c.t.answered.CompareAndSwap(false, true) && !c.t.o.failed.Load() {
-			func() {
-				c.t.o.mu.Lock()
-				defer c.t.o.mu.Unlock()
+			c.t.o.locked("app/observatory/health/closure_tracker.go:closureReadCounter.Add", func() {
 				c.t.o.noteControllerReplyLocked(c.t.tag, c.t.started, c.t.network, c.t.proofPath)
-			}()
+			})
 		}
 		if (c.t.tcpProof || c.t.proof || c.t.labels) && total >= c.t.o.s.passive.successBytes && c.t.proved.CompareAndSwap(false, true) {
 			if c.t.labels {

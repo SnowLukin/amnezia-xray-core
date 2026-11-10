@@ -22,6 +22,17 @@ func (o *Observer) fail() {
 	o.wake()
 }
 
+// locked runs fn under the observer lock for a connection or the router. A
+// panic there may leave the engine half changed: like one of a worker, it
+// freezes the observer, and the caller goes on. where is a constant: a
+// string built here would cost every connection an allocation.
+func (o *Observer) locked(where string, fn func()) {
+	defer safe.Recover(safe.Subsystem, where, o.fail)
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	fn()
+}
+
 // collectPanicsLocked runs on a healthy caller of Status/report or the loop.
 // Recovery itself must not reenter a lock held by the panicking worker.
 func (o *Observer) collectPanicsLocked() {
@@ -49,8 +60,8 @@ func (o *Observer) collectPanicsLocked() {
 // choice, without copying atomic objects or undoing concurrent traffic counters.
 func rememberSelector(s *selector) func() {
 	state := struct {
-		active, pinned, returnTarget, returnedTo                                                    string
-		activeSince, pinnedUntil, fallbackSince, returnAt, returnedAt                               time.Time
+		active, pinned, returnTarget, returnedTo, held                                              string
+		activeSince, pinnedUntil, fallbackSince, returnAt, returnedAt, heldUntil                    time.Time
 		started, startPin, exhausted, fallingBack, probeOnlyActive, recheckOnRelease, penaltyServed bool
 		returnSuccesses                                                                             int
 		failoverTried, failoverProbing                                                              map[string]bool
@@ -58,7 +69,7 @@ func rememberSelector(s *selector) func() {
 		inventory, candidates                                                                       []string
 		snapshot                                                                                    *[]string
 	}{
-		active: s.current(), pinned: s.pinned, returnTarget: s.returnToCheaperTarget, returnedTo: s.returnedTo,
+		active: s.current(), pinned: s.pinned, returnTarget: s.returnToCheaperTarget, returnedTo: s.returnedTo, held: s.held, heldUntil: s.heldUntil,
 		activeSince: s.activeSince, pinnedUntil: s.pinnedUntil, fallbackSince: s.fallbackSince, returnAt: s.returnToCheaperAt, returnedAt: s.returnedAt,
 		started: s.started, startPin: s.startPin, exhausted: s.exhausted, fallingBack: s.fallingBack, probeOnlyActive: s.probeOnlyActive,
 		recheckOnRelease: s.recheckOnRelease, penaltyServed: s.penaltyServed, returnSuccesses: s.returnToCheaperSuccesses,
@@ -69,6 +80,7 @@ func rememberSelector(s *selector) func() {
 		s.setActive(state.active)
 		s.pinned, s.startPin, s.pinnedUntil = state.pinned, state.startPin, state.pinnedUntil
 		s.activeSince, s.started, s.exhausted = state.activeSince, state.started, state.exhausted
+		s.held, s.heldUntil = state.held, state.heldUntil
 		s.fallingBack, s.fallbackSince = state.fallingBack, state.fallbackSince
 		s.probeOnlyActive, s.recheckOnRelease = state.probeOnlyActive, state.recheckOnRelease
 		s.returnToCheaperTarget, s.returnToCheaperAt, s.returnToCheaperSuccesses = state.returnTarget, state.returnAt, state.returnSuccesses

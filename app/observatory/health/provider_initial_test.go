@@ -1,8 +1,10 @@
 package health
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/xtls/xray-core/common/safe"
 	"github.com/xtls/xray-core/core"
 	"github.com/xtls/xray-core/features/outbound"
 	"google.golang.org/protobuf/proto"
@@ -107,6 +109,41 @@ func TestInitialBuildPanicRefusesTheSet(t *testing.T) {
 	if f.o.failed.Load() || f.m.tags() != "" {
 		t.Fatalf("failed %v, outbounds %s after a refused initial set", f.o.failed.Load(), f.m.tags())
 	}
+}
+
+// breakingManager registers a handler and then leaves the engine broken.
+type breakingManager struct {
+	*fakeManager
+	brk func()
+}
+
+func (m *breakingManager) AddHandler(ctx context.Context, h outbound.Handler) error {
+	err := m.fakeManager.AddHandler(ctx, h)
+	m.brk()
+	return err
+}
+
+// A panic of the engine taking the initial set, once its outbounds are
+// registered, freezes the observer as one of its loop: the start goes on.
+func TestInitialEnginePanicFreezesTheObserver(t *testing.T) {
+	safe.Reset()
+	defer safe.Reset()
+	f, _ := initialFixture(t, `{"outbounds":[{"tag":"x1","protocol":"vless","v":1}]}`)
+	f.rt.cfg.initial = fixtureAnswerBody(f.rt.cfg.initial)
+	f.o.ohm = &breakingManager{fakeManager: f.m, brk: func() { f.o.e.selectors["broken"] = nil }}
+	if panics(func() {
+		if err := f.o.Start(); err != nil {
+			t.Error(err)
+		}
+	}) {
+		t.Fatal("a panic of the engine taking the initial set ended the start")
+	}
+	if !f.o.failed.Load() || !safe.Broken("app/observatory/health") {
+		t.Fatal("a panic of the engine taking the initial set left the observer running")
+	}
+	f.o.mu.Lock()
+	delete(f.o.e.selectors, "broken")
+	f.o.mu.Unlock()
 }
 
 // The leases of the initial set count by the clock it came with: a set the

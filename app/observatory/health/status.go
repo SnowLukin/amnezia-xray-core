@@ -72,6 +72,8 @@ type balancerStatusView struct {
 	Active                string   `json:"active"`
 	Pinned                string   `json:"pinned,omitempty"`
 	IsExhausted           bool     `json:"is_exhausted"`
+	// The outbound an exhausted balancer still hands out, see holding.
+	Held                  string   `json:"held,omitempty"`
 	ActiveForMs           int64    `json:"active_for_ms,omitempty"`
 	ReturnToCheaperInMs   *int64   `json:"return_in_ms,omitempty"`
 	ReturnToCheaperTarget string   `json:"return_target,omitempty"`
@@ -172,6 +174,7 @@ func (e *engine) status(now time.Time) statusView {
 			Active:                s.current(),
 			Pinned:                s.pinned,
 			IsExhausted:           s.exhausted,
+			Held:                  e.holding(s, now),
 			FallbackBalancer:      s.cfg.fallbackBalancer,
 			IsFallingBack:         s.fallingBack,
 			ReturnToCheaperTarget: s.returnToCheaperTarget,

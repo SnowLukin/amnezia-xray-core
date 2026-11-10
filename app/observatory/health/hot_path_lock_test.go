@@ -34,13 +34,25 @@ func within(t *testing.T, what string, fn func()) {
 	}
 }
 
+// frozenBy tells that fn froze the observer on a panic of the engine and
+// returned to its caller, which goes on.
+func frozenBy(t *testing.T, o *Observer, what string, fn func()) {
+	t.Helper()
+	if panics(fn) {
+		t.Fatalf("a panic in %s reached the connection", what)
+	}
+	if !o.failed.Load() || !safe.Broken("app/observatory/health") {
+		t.Fatalf("a panic in %s left the observer running", what)
+	}
+}
+
 func TestSelectPanicReleasesObserverLock(t *testing.T) {
+	safe.Reset()
+	defer safe.Reset()
 	o, s, _ := v2Observer(&FeatureConfig{}, nil)
 	o.e.providers = append(o.e.providers, nil)
 	h := &selectorHandle{o: o, s: s}
-	if !panics(func() { h.Select([]string{"b"}) }) {
-		t.Fatal("broken engine state did not panic in updateCandidates")
-	}
+	frozenBy(t, o, "updateCandidates", func() { h.Select([]string{"b"}) })
 	within(t, "observer lock", func() {
 		o.mu.Lock()
 		defer o.mu.Unlock()
@@ -56,14 +68,14 @@ func TestSelectPanicReleasesObserverLock(t *testing.T) {
 }
 
 func TestConnectionSuccessPanicReleasesObserverLock(t *testing.T) {
+	safe.Reset()
+	defer safe.Reset()
 	o, _, _ := v2Observer(&FeatureConfig{}, nil)
 	p := o.e.path("a")
 	o.e.selectors["broken"] = nil
-	if !panics(func() {
+	frozenBy(t, o, "onSuccess", func() {
 		o.connectionSuccess("a", o.nowNano(), p.controllerEpoch, nil, o.e.udpEpoch, p.udpIncarnation, false, true)
-	}) {
-		t.Fatal("broken engine state did not panic in onSuccess")
-	}
+	})
 	within(t, "observer lock", func() {
 		o.mu.Lock()
 		defer o.mu.Unlock()
