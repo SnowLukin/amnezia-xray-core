@@ -72,9 +72,9 @@ type balancerStatusView struct {
 	Active           string `json:"active"`
 	Pinned           string `json:"pinned,omitempty"`
 	IsExhausted      bool   `json:"is_exhausted"`
-	// Where new connections go now, see engine.exit, and its labels.
-	Exit                  string            `json:"exit"`
-	ExitLabels            map[string]string `json:"exit_labels,omitempty"`
+	// Where new connections go now, see engine.outboundNow, and its labels.
+	Outbound              string            `json:"outbound"`
+	OutboundLabels        map[string]string `json:"outbound_labels,omitempty"`
 	ActiveForMs           int64             `json:"active_for_ms,omitempty"`
 	ReturnToCheaperInMs   *int64            `json:"return_in_ms,omitempty"`
 	ReturnToCheaperTarget string            `json:"return_target,omitempty"`
@@ -178,13 +178,13 @@ func (e *engine) status(now time.Time) statusView {
 			Active:                s.current(),
 			Pinned:                s.pinned,
 			IsExhausted:           s.exhausted,
-			Exit:                  e.exit(s, now),
+			Outbound:              e.outboundNow(s, now),
 			FallbackBalancer:      s.cfg.fallbackBalancer,
 			IsFallingBack:         s.fallingBack,
 			ReturnToCheaperTarget: s.returnToCheaperTarget,
 			Candidates:            s.candidates,
 		}
-		b.ExitLabels = e.s.pathLabels(b.Exit)
+		b.OutboundLabels = e.s.pathLabels(b.Outbound)
 		if !s.activeSince.IsZero() {
 			b.ActiveForMs = now.Sub(s.activeSince).Milliseconds()
 			active[s.current()] += now.Sub(s.activeSince)

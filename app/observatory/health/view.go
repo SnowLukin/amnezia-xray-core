@@ -21,7 +21,7 @@ type ViewData struct {
 	Needs      []string       `json:"needs"`
 	Doing      []string       `json:"doing"`
 	Balancer   string         `json:"balancer"`
-	Exit       viewExit       `json:"exit"`
+	Outbound   viewOutbound   `json:"outbound"`
 	Network    viewNetwork    `json:"network"`
 	IsIdle     bool           `json:"is_idle"`
 	Paths      []viewPath     `json:"paths"`
@@ -29,8 +29,8 @@ type ViewData struct {
 	LastSwitch *viewSwitch    `json:"last_switch,omitempty"`
 }
 
-type viewExit struct {
-	Outbound string            `json:"outbound"`
+type viewOutbound struct {
+	Tag      string            `json:"tag"`
 	Protocol string            `json:"protocol,omitempty"`
 	Labels   map[string]string `json:"labels,omitempty"`
 	IsHeld   bool              `json:"is_held"`
@@ -51,7 +51,7 @@ type viewPath struct {
 	IsProbeOnly  bool              `json:"is_probe_only"`
 	State        string            `json:"state"`
 	ForMs        int64             `json:"for_ms"`
-	IsExit       bool              `json:"is_exit"`
+	IsCurrent    bool              `json:"is_current"`
 	IsActive     bool              `json:"is_active"`
 	RTTMs        int64             `json:"rtt_ms,omitempty"`
 	Probing      *viewProbing      `json:"probing,omitempty"`
@@ -139,11 +139,11 @@ func (e *engine) view(now time.Time) ViewData {
 	main := e.selectors[e.s.viewBalancer]
 	// No connection asked the balancer yet: it chooses with the first one.
 	fresh := main != nil && !main.started
-	// The balancer whose choice or held outbound the exit is; nil when the
-	// connections go to a fallbackTag or nobody knows where.
+	// The balancer whose choice or held outbound the current outbound is;
+	// nil when the connections go to a fallbackTag or nobody knows where.
 	var by *selector
 	if main != nil && !fresh {
-		v.Exit.Outbound, by = e.exitBy(main, now)
+		v.Outbound.Tag, by = e.outboundNowBy(main, now)
 		if !main.switchedAt.IsZero() {
 			last := main.switched
 			last.AgoMs = now.Sub(main.switchedAt).Milliseconds()
@@ -152,12 +152,12 @@ func (e *engine) view(now time.Time) ViewData {
 	}
 	down := false
 	if by != nil {
-		v.Exit.IsHeld = by.current() == ""
-		v.Exit.Labels = e.s.pathLabels(v.Exit.Outbound)
-		if c := by.cfg.paths[v.Exit.Outbound]; c != nil {
-			v.Exit.Protocol = c.protocol
+		v.Outbound.IsHeld = by.current() == ""
+		v.Outbound.Labels = e.s.pathLabels(v.Outbound.Tag)
+		if c := by.cfg.paths[v.Outbound.Tag]; c != nil {
+			v.Outbound.Protocol = c.protocol
 		}
-		if p := e.paths[v.Exit.Outbound]; p != nil {
+		if p := e.paths[v.Outbound.Tag]; p != nil {
 			down = p.status == statusDown
 		}
 	}
@@ -168,7 +168,7 @@ func (e *engine) view(now time.Time) ViewData {
 		v.State = "ready"
 	case by == nil || down && by.pinned != "":
 		v.State = "blocked"
-	case v.Exit.IsHeld || down:
+	case v.Outbound.IsHeld || down:
 		// The balancer hands out an outbound it knows is down while it
 		// looks for another.
 		v.State = "searching"
@@ -194,7 +194,7 @@ func (e *engine) view(now time.Time) ViewData {
 				Outbound: tag, Balancer: s.tag, Group: c.groupName, Protocol: c.protocol, Cost: float32(c.cost),
 				IsProbeOnly: c.isProbeOnly || e.isProbeOnly(tag),
 				State:       statusUnknown.String(),
-				IsExit:      by != nil && tag == v.Exit.Outbound,
+				IsCurrent:   by != nil && tag == v.Outbound.Tag,
 				IsActive:    tag == s.current(),
 				Labels:      e.s.pathLabels(tag),
 			}

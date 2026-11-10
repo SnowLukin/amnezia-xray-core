@@ -1334,17 +1334,18 @@ func (e *engine) handsOut(s *selector, now time.Time) string {
 	return tag
 }
 
-// exit is where the router sends new connections of the balancer, as
-// Balancer.pickOutbound does: what it hands out, else the exit of its
+// outboundNow is where the router sends new connections of the balancer, as
+// Balancer.pickOutbound does: what it hands out, else the outboundNow of its
 // fallback balancer, else its fallbackTag. Empty when the fallback balancer
 // is not leastCost, whose choice the observer does not know.
-func (e *engine) exit(s *selector, now time.Time) string {
-	tag, _ := e.exitBy(s, now)
+func (e *engine) outboundNow(s *selector, now time.Time) string {
+	tag, _ := e.outboundNowBy(s, now)
 	return tag
 }
 
-// exitBy is exit and the balancer that hands it out; nil for a fallbackTag.
-func (e *engine) exitBy(s *selector, now time.Time) (string, *selector) {
+// outboundNowBy is outboundNow and the balancer that hands it out; nil for a
+// fallbackTag.
+func (e *engine) outboundNowBy(s *selector, now time.Time) (string, *selector) {
 	for depth := 0; ; depth++ {
 		if tag := e.handsOut(s, now); tag != "" {
 			return tag, s

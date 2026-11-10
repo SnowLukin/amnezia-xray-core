@@ -182,9 +182,9 @@ func TestViewCommand(t *testing.T) {
 	r, err := s.View(context.Background(), &command.ViewRequest{})
 	var view map[string]any
 	decodeData(t, r, err, &view)
-	want := `{"seq":1,"run":"` + r.Run + `","state":"ready","since_ms":0,"needs":[],"doing":[],"balancer":"auto","exit":{"outbound":"","is_held":false},"network":{"is_up":true,"generation":0},"is_idle":true,` +
-		`"paths":[{"outbound":"a1","balancer":"auto","protocol":"freedom","cost":1.5,"is_probe_only":false,"state":"unknown","for_ms":0,"is_exit":false,"is_active":false,"labels":{"country":"nl"}},` +
-		`{"outbound":"p-x1","balancer":"auto","protocol":"freedom","cost":3,"is_probe_only":false,"state":"unknown","for_ms":0,"is_exit":false,"is_active":false}],` +
+	want := `{"seq":1,"run":"` + r.Run + `","state":"ready","since_ms":0,"needs":[],"doing":[],"balancer":"auto","outbound":{"tag":"","is_held":false},"network":{"is_up":true,"generation":0},"is_idle":true,` +
+		`"paths":[{"outbound":"a1","balancer":"auto","protocol":"freedom","cost":1.5,"is_probe_only":false,"state":"unknown","for_ms":0,"is_current":false,"is_active":false,"labels":{"country":"nl"}},` +
+		`{"outbound":"p-x1","balancer":"auto","protocol":"freedom","cost":3,"is_probe_only":false,"state":"unknown","for_ms":0,"is_current":false,"is_active":false}],` +
 		`"providers":[{"provider":"fresh","state":"ok","set_age_ms":0}]}`
 	var wanted map[string]any
 	if err := json.Unmarshal([]byte(want), &wanted); err != nil {

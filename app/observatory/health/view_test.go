@@ -82,10 +82,10 @@ func viewPathOf(t *testing.T, v ViewData, tag string) viewPath {
 	return viewPath{}
 }
 
-func exits(v ViewData) []string {
+func currents(v ViewData) []string {
 	var out []string
 	for _, p := range v.Paths {
-		if p.IsExit {
+		if p.IsCurrent {
 			out = append(out, p.Outbound)
 		}
 	}
@@ -96,12 +96,12 @@ func exits(v ViewData) []string {
 // choice, the choice it knows is down while it probes the others, the
 // outbound it holds once it ran out, and its fallbackTag after the hold. A
 // lost network comes before all of them.
-func TestViewStateFollowsTheExit(t *testing.T) {
+func TestViewStateFollowsTheCurrentOutbound(t *testing.T) {
 	f := newViewFixture(t, &SelectorConfig{})
 	// Before the first connection the balancer has not chosen; its paths
 	// are known from the config.
 	v := f.view(t)
-	if v.State != "ready" || v.Exit.Outbound != "" || len(v.Paths) != 3 || exits(v) != nil || v.LastSwitch != nil ||
+	if v.State != "ready" || v.Outbound.Tag != "" || len(v.Paths) != 3 || currents(v) != nil || v.LastSwitch != nil ||
 		viewPathOf(t, v, "a1").State != "unknown" || viewPathOf(t, v, "a1").IsActive {
 		t.Fatalf("before the first connection: %+v", v)
 	}
@@ -113,15 +113,15 @@ func TestViewStateFollowsTheExit(t *testing.T) {
 	f.connect()
 	v = f.view(t)
 	if v.State != "ok" || v.Balancer != "auto" || v.Run != f.o.run || !v.Network.IsUp ||
-		!reflect.DeepEqual(v.Exit, viewExit{Outbound: "a1", Protocol: "vless", Labels: map[string]string{"country": "nl"}}) {
+		!reflect.DeepEqual(v.Outbound, viewOutbound{Tag: "a1", Protocol: "vless", Labels: map[string]string{"country": "nl"}}) {
 		t.Fatalf("chosen: %+v", v)
 	}
 	if got := []string{v.Paths[0].Outbound, v.Paths[1].Outbound, v.Paths[2].Outbound}; !slices.Equal(got, []string{"a1", "b1", "s1"}) {
 		t.Fatalf("paths %v", got)
 	}
 	a1, s1 := viewPathOf(t, v, "a1"), viewPathOf(t, v, "s1")
-	if !a1.IsExit || !a1.IsActive || a1.Balancer != "auto" || a1.Protocol != "vless" || a1.Cost != 1 || a1.Labels["country"] != "nl" ||
-		s1.IsExit || !s1.IsActive || s1.Balancer != "spare" || s1.State != "unknown" {
+	if !a1.IsCurrent || !a1.IsActive || a1.Balancer != "auto" || a1.Protocol != "vless" || a1.Cost != 1 || a1.Labels["country"] != "nl" ||
+		s1.IsCurrent || !s1.IsActive || s1.Balancer != "spare" || s1.State != "unknown" {
 		t.Fatalf("a1 %+v, s1 %+v", a1, s1)
 	}
 	if v.LastSwitch == nil || *v.LastSwitch != (viewSwitch{To: "a1", Reason: "start"}) {
@@ -131,7 +131,7 @@ func TestViewStateFollowsTheExit(t *testing.T) {
 	// The choice failed; the balancer stays on it and probes b1.
 	f.wait(time.Second)
 	f.o.e.markDown(f.o.e.path("a1"), "traffic", f.now)
-	if v = f.view(t); v.State != "searching" || v.Exit.Outbound != "a1" || v.Exit.IsHeld || viewPathOf(t, v, "a1").State != "down" {
+	if v = f.view(t); v.State != "searching" || v.Outbound.Tag != "a1" || v.Outbound.IsHeld || viewPathOf(t, v, "a1").State != "down" {
 		t.Fatalf("choice down: %+v", v)
 	}
 	jobs, _ := f.o.e.tick(f.now)
@@ -150,15 +150,15 @@ func TestViewStateFollowsTheExit(t *testing.T) {
 	// The probe failed: nothing is left, the last outbound is held.
 	f.o.e.onProbeResult(jobs[0], probeResult{}, f.now)
 	v = f.view(t)
-	if v.State != "searching" || v.Exit.Outbound != "a1" || !v.Exit.IsHeld || viewPathOf(t, v, "b1").Probing != nil || len(v.Doing) != 0 {
+	if v.State != "searching" || v.Outbound.Tag != "a1" || !v.Outbound.IsHeld || viewPathOf(t, v, "b1").Probing != nil || len(v.Doing) != 0 {
 		t.Fatalf("held: %+v", v)
 	}
-	if a1 = viewPathOf(t, v, "a1"); !a1.IsExit || a1.IsActive || a1.QuarantineMs <= 0 {
+	if a1 = viewPathOf(t, v, "a1"); !a1.IsCurrent || a1.IsActive || a1.QuarantineMs <= 0 {
 		t.Fatalf("held a1 %+v", a1)
 	}
 
 	f.wait(exhaustedHold)
-	if v = f.view(t); v.State != "blocked" || !reflect.DeepEqual(v.Exit, viewExit{Outbound: "block"}) || exits(v) != nil {
+	if v = f.view(t); v.State != "blocked" || !reflect.DeepEqual(v.Outbound, viewOutbound{Tag: "block"}) || currents(v) != nil {
 		t.Fatalf("after the hold: %+v", v)
 	}
 
@@ -185,8 +185,8 @@ func TestViewStateFollowsTheExit(t *testing.T) {
 		}
 	}
 	v = f.view(t)
-	if v.State != "ok" || v.Exit.Outbound != f.auto.current() || v.Exit.IsHeld || v.Seq <= seq ||
-		v.LastSwitch == nil || v.LastSwitch.From != "" || v.LastSwitch.To != v.Exit.Outbound {
+	if v.State != "ok" || v.Outbound.Tag != f.auto.current() || v.Outbound.IsHeld || v.Seq <= seq ||
+		v.LastSwitch == nil || v.LastSwitch.From != "" || v.LastSwitch.To != v.Outbound.Tag {
 		t.Fatalf("recovered: %+v, last switch %+v", v, v.LastSwitch)
 	}
 }
@@ -196,20 +196,20 @@ func TestViewStateFollowsTheExit(t *testing.T) {
 func TestViewStateThroughFallbackBalancer(t *testing.T) {
 	f := newViewFixture(t, &SelectorConfig{FallbackBalancer: "spare"}).connect()
 	f.exhaust(f.auto)
-	if v := f.view(t); v.State != "searching" || !v.Exit.IsHeld {
+	if v := f.view(t); v.State != "searching" || !v.Outbound.IsHeld {
 		t.Fatalf("held: %+v", v)
 	}
 	f.wait(exhaustedHold)
 	v := f.view(t)
-	if v.State != "ok" || !reflect.DeepEqual(v.Exit, viewExit{Outbound: "s1", Protocol: "trojan"}) || !slices.Equal(exits(v), []string{"s1"}) || v.Balancer != "auto" {
+	if v.State != "ok" || !reflect.DeepEqual(v.Outbound, viewOutbound{Tag: "s1", Protocol: "trojan"}) || !slices.Equal(currents(v), []string{"s1"}) || v.Balancer != "auto" {
 		t.Fatalf("fallback balancer: %+v", v)
 	}
 	f.exhaust(f.spare)
-	if v = f.view(t); v.State != "searching" || v.Exit.Outbound != "s1" || !v.Exit.IsHeld {
+	if v = f.view(t); v.State != "searching" || v.Outbound.Tag != "s1" || !v.Outbound.IsHeld {
 		t.Fatalf("fallback balancer holds: %+v", v)
 	}
 	f.wait(exhaustedHold)
-	if v = f.view(t); v.State != "blocked" || v.Exit.Outbound != "direct" {
+	if v = f.view(t); v.State != "blocked" || v.Outbound.Tag != "direct" {
 		t.Fatalf("fallback tag of the fallback balancer: %+v", v)
 	}
 }
@@ -221,7 +221,7 @@ func TestViewPinnedDownIsBlocked(t *testing.T) {
 		t.Fatal("pin refused")
 	}
 	f.o.e.markDown(f.o.e.path("a1"), "traffic", f.now)
-	if v := f.view(t); v.State != "blocked" || v.Exit.Outbound != "a1" || v.Exit.IsHeld {
+	if v := f.view(t); v.State != "blocked" || v.Outbound.Tag != "a1" || v.Outbound.IsHeld {
 		t.Fatalf("pinned down: %+v", v)
 	}
 }
@@ -273,7 +273,7 @@ func TestViewSeqCountsChanges(t *testing.T) {
 	f.o.e.switchTo(f.auto, "b1", "failover", f.now)
 	f.wait(time.Second)
 	third := f.view(t)
-	if third.Seq != 2 || third.SinceMs != 6000 || third.Exit.Outbound != "b1" || *third.LastSwitch != (viewSwitch{From: "a1", To: "b1", Reason: "failover", AgoMs: 1000}) {
+	if third.Seq != 2 || third.SinceMs != 6000 || third.Outbound.Tag != "b1" || *third.LastSwitch != (viewSwitch{From: "a1", To: "b1", Reason: "failover", AgoMs: 1000}) {
 		t.Fatalf("after the switch: seq %d since %d %+v", third.Seq, third.SinceMs, third.LastSwitch)
 	}
 	if again := f.view(t); again.Seq != 2 {

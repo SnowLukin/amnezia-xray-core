@@ -187,7 +187,7 @@ def fallback_balancer_chain(stand, xray, work, name):
         for host in ('t4.test', 't5.test', 't6.test'):
             _request(host)
         # The exhausted target holds its last path for a minute, then routes to its fallbackTag.
-        _poll(lambda: _balancer(client, 'main').get('exit') == 'block', 80)
+        _poll(lambda: _balancer(client, 'main').get('outbound') == 'block', 80)
         began = time.monotonic(); terminal = _request(); elapsed = time.monotonic()-began
         checks += [check('exhausted target refuses via terminal block', terminal,
                          not terminal['is_ok'] and elapsed < 2, '<2s; failure'),

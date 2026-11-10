@@ -44,7 +44,7 @@ func pathOf(t *testing.T, v statusView, tag string) pathStatusView {
 // Status shows where new connections of a balancer leave and the labels of
 // that outbound: its choice, the outbound it holds when exhausted, the choice
 // of its fallbackBalancer, or its fallbackTag. Labels need no pathLabels.
-func TestStatusExitFollowsTheTraffic(t *testing.T) {
+func TestStatusOutboundFollowsTheTraffic(t *testing.T) {
 	now := t0
 	paths := []*PathDefinition{
 		{Tag: "ai1", Balancer: "ai", Cost: 1, Probe: "check", Labels: map[string]string{"country": "nl"}},
@@ -64,12 +64,12 @@ func TestStatusExitFollowsTheTraffic(t *testing.T) {
 		p.quarantineUntil = now.Add(time.Hour)
 		o.e.exhaust(s, now)
 	}
-	check := func(step, exit, country string) {
+	check := func(step, outbound, country string) {
 		t.Helper()
 		v := statusOf(t, o)
 		b := balancerOf(t, v, "ai")
-		if b.Exit != exit || b.ExitLabels["country"] != country {
-			t.Fatalf("%s: exit %q labels %v, want %q %q", step, b.Exit, b.ExitLabels, exit, country)
+		if b.Outbound != outbound || b.OutboundLabels["country"] != country {
+			t.Fatalf("%s: outbound %q labels %v, want %q %q", step, b.Outbound, b.OutboundLabels, outbound, country)
 		}
 		if p := pathOf(t, v, "ai1"); p.Labels["country"] != "nl" {
 			t.Fatalf("%s: path labels %v without pathLabels", step, p.Labels)
@@ -90,7 +90,7 @@ func TestStatusExitFollowsTheTraffic(t *testing.T) {
 	exhaust(target, "main1")
 	now = at(4 * time.Minute)
 	check("fallback tag of the fallback balancer", "direct", "")
-	if b := balancerOf(t, statusOf(t, o), "main"); b.Exit != "direct" || b.ExitLabels != nil {
+	if b := balancerOf(t, statusOf(t, o), "main"); b.Outbound != "direct" || b.OutboundLabels != nil {
 		t.Fatalf("target %+v", b)
 	}
 	source.cfg.fallbackBalancer = ""
