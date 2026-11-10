@@ -7,6 +7,7 @@
 | Данные | Как получить | Включается | Назначение |
 | --- | --- | --- | --- |
 | `Status` | команда `Status`, по запросу | всегда, пока работает `healthObservatory` | локальная диагностика |
+| `View` | команда `View`, по запросу | `host.view` | снимок для экрана приложения, поля в [host-api.md](host-api.md) |
 | Журнал событий | `DrainEvents` | `telemetry.events` | локальная диагностика |
 | Отчёт | `PeekReport`, `TakeReport(isFinal)` | `telemetry.report` | единственное, что предназначено для аналитики |
 | Качество | внутри отчёта (`quality`), `Status` и запроса провайдера | `telemetry.quality`, `telemetry.probeMeasurements`, метки сети | см. [Качество](#качество) |
@@ -129,7 +130,7 @@
 
 ### features
 
-Плоская карта флагов, которые действуют в этом запуске. Глобальные ключи: `census`, `trace`, `dial_failures`, `dial_timeout`, `server_unverified`, `first_reply`, `early_close`, `stalled_requests`, `partial_stalls`, `udp_replies`, `lone_failure_probe`, `step_profiles`, `candidates`, `probe_requests`, `udp_probe`, `connectivity`, `witnesses`, `network_memory`, `host_labels`, `label_request`, `pinning`, `user_present`, `memory_pressure`, `tunnel_sleep`, `close_unchosen_idle`, `events`, `report`, `quality`, `path_labels`, `probe_measurements`, `metrics`, `session_labels`.
+Плоская карта флагов, которые действуют в этом запуске. Глобальные ключи: `census`, `trace`, `dial_failures`, `dial_timeout`, `server_unverified`, `first_reply`, `early_close`, `stalled_requests`, `partial_stalls`, `udp_replies`, `lone_failure_probe`, `step_profiles`, `candidates`, `probe_requests`, `udp_probe`, `connectivity`, `witnesses`, `network_memory`, `host_labels`, `label_request`, `pinning`, `view`, `user_present`, `memory_pressure`, `tunnel_sleep`, `close_unchosen_idle`, `events`, `report`, `quality`, `path_labels`, `probe_measurements`, `metrics`, `session_labels`.
 
 Для каждого балансировщика добавляются ключи `balancers.<тег>.fallback_balancer`, `.probe_before_switch`, `.close_pending`, `.close_silent`, `.down_audit`, `.groups`, `.return_to_cheaper`, `.return_on_network_change`, `.network_changes`, `.startup_pin`. Для каждого провайдера `providers.<тег>.is_enabled`, `.periodic`, `.min_healthy`, `.cost_above`, `.max_age`, `.network_change`, `.exhausted`, `.lease_renewal`, `.backend_schedule`, `.expired_lease_fallback`.
 
@@ -145,7 +146,7 @@
     "udp_replies": false, "lone_failure_probe": false, "step_profiles": false, "candidates": false,
     "probe_requests": false, "udp_probe": false, "connectivity": true, "witnesses": false,
     "network_memory": false, "host_labels": true, "label_request": false, "pinning": false,
-    "user_present": false, "memory_pressure": true, "tunnel_sleep": false, "close_unchosen_idle": false,
+    "view": true, "user_present": false, "memory_pressure": true, "tunnel_sleep": false, "close_unchosen_idle": false,
     "events": true, "report": true, "quality": true, "path_labels": true, "probe_measurements": false,
     "metrics": false, "session_labels": true,
     "balancers.auto.fallback_balancer": false, "balancers.auto.probe_before_switch": true,

@@ -435,8 +435,33 @@ UDP-проба по STUN: измеряет доступность и задер�
 | `pinning` | нет | | разрешает хосту `Pin` и `Release`; нужен для `startup.pin` |
 | `userPresent` | `freshness`, `minInterval` | `1m`, `3h` | после сигнала `UserPresent` проверить выбранные пути, чьё последнее подтверждение старше `freshness`, не чаще `minInterval` на путь |
 | `memoryPressure` | нет | | хост сообщает о нехватке памяти (`SetMemoryLow`), ядро урезает фоновую работу |
+| `view` | `balancer` | единственный балансировщик `leastCost` | включает команду `View`, снимок для экрана приложения. `balancer` - тег балансировщика `leastCost`, который несёт трафик пользователя; состояние и выход в снимке считаются по нему |
 
 Длительности > 0. Команды описаны в [host-api.md](host-api.md); без блока соответствующая команда возвращает `feature_disabled` или `false`.
+
+`view.balancer` можно не задавать, когда в конфиге ровно один балансировщик `leastCost`. При нескольких (отдельный для UDP, для дорог к бэку) ключ обязателен:
+
+<!-- example: config -->
+```json
+{
+  "outbounds": [
+    {"tag": "nl-1", "protocol": "vless", "settings": {"address": "nl-1.example.invalid", "port": 443, "id": "5783a3e7-e373-51cd-8642-c83782b807c5", "encryption": "none"}, "selection": {"balancer": "auto", "cost": 1, "probe": "basic"}},
+    {"tag": "road-1", "protocol": "vless", "settings": {"address": "road-1.example.invalid", "port": 443, "id": "5783a3e7-e373-51cd-8642-c83782b807c5", "encryption": "none"}, "selection": {"balancer": "roads", "cost": 1, "probe": "basic"}},
+    {"tag": "block", "protocol": "blackhole"}
+  ],
+  "routing": {
+    "rules": [{"network": "tcp,udp", "balancerTag": "auto"}],
+    "balancers": [
+      {"tag": "auto", "fallbackTag": "block", "strategy": {"type": "leastCost"}},
+      {"tag": "roads", "fallbackTag": "block", "strategy": {"type": "leastCost"}}
+    ]
+  },
+  "healthObservatory": {
+    "host": {"view": {"balancer": "auto"}},
+    "probes": {"profiles": [{"name": "basic", "steps": [{"name": "transport", "destinations": ["https://probe.example.invalid/204"]}]}]}
+  }
+}
+```
 
 ### 3.8 `healthObservatory.resources`
 
@@ -673,6 +698,8 @@ UDP-проба по STUN: измеряет доступность и задер�
 | `startup.outbound`, `startup.pin.outbound` | путь не `isProbeOnly` | `balancer auto: leastCost.settings.startup: outbound x is probe-only` |
 | `startup.pin` | `host.pinning` | `balancer auto.startup.pin requires healthObservatory.host.pinning` |
 | `startup.pin` | `outbound` | `balancer auto: leastCost.settings.startup.pin.outbound is required` |
+| `host.view.balancer` | балансировщик `leastCost` с этим тегом | `healthObservatory.host.view.balancer udp must name a leastCost balancer` |
+| `host.view` без `balancer` | ровно один балансировщик `leastCost` в конфиге | `healthObservatory.host.view.balancer is required unless the config has exactly one leastCost balancer` |
 | `returnToCheaper.onNetworkChange` | `returnToCheaper` и `networkChanges` | `balancer auto: leastCost.settings.returnToCheaper.onNetworkChange requires returnToCheaper and networkChanges` |
 | `returnToCheaper.onNetworkChange` | `networkChanges.action: recheck` | `balancer auto: leastCost.settings.returnToCheaper.onNetworkChange requires networkChanges.action:recheck` |
 | `returnToCheaper.onNetworkChange` со `scope: unknown` | `network.memory` | `balancer auto.returnToCheaper.onNetworkChange.scope:unknown requires healthObservatory.network.memory` |
@@ -751,6 +778,22 @@ UDP-проба по STUN: измеряет доступность и задер�
 ```
 Ошибка: `balancer auto.startup.pin requires healthObservatory.host.pinning`.
 
+`host.view` без `balancer` при двух балансировщиках `leastCost`:
+
+<!-- example: config-rejected -->
+```json
+{
+  "outbounds": [
+    {"tag": "nl-1", "protocol": "vless", "settings": {"address": "nl-1.example.invalid", "port": 443, "id": "5783a3e7-e373-51cd-8642-c83782b807c5", "encryption": "none"}, "selection": {"balancer": "auto", "cost": 1, "probe": "basic"}},
+    {"tag": "road-1", "protocol": "vless", "settings": {"address": "road-1.example.invalid", "port": 443, "id": "5783a3e7-e373-51cd-8642-c83782b807c5", "encryption": "none"}, "selection": {"balancer": "roads", "cost": 1, "probe": "basic"}},
+    {"tag": "block", "protocol": "blackhole"}
+  ],
+  "routing": {"balancers": [{"tag": "auto", "fallbackTag": "block", "strategy": {"type": "leastCost"}}, {"tag": "roads", "fallbackTag": "block", "strategy": {"type": "leastCost"}}]},
+  "healthObservatory": {"host": {"view": {}}, "probes": {"profiles": [{"name": "basic", "steps": [{"name": "transport", "destinations": ["https://probe.example.invalid/204"]}]}]}}
+}
+```
+Ошибка: `healthObservatory.host.view.balancer is required unless the config has exactly one leastCost balancer`.
+
 ## 5. Ограничения и потолки
 
 Значение вне диапазона отвергает конфиг целиком, молча ничего не обрезается. Ошибка называет ключ и диапазон: `healthObservatory.probes.limits.perMinute must be from 1 to 60`, `... must be at least 10s`. `> 0` у длительности здесь означает от 1 нс.
@@ -792,6 +835,7 @@ UDP-проба по STUN: измеряет доступность и задер�
 | `labelRequest.labels` | 1..6 |
 | `labelRequest.requestsPerHour` | 1..60 |
 | `userPresent.freshness`, `minInterval` | > 0 |
+| `host.view.balancer` | тег балансировщика `leastCost` из конфига; пусто только при единственном |
 | `tunnelSleep.afterLastUse` | >= 10s |
 | `closeUnchosenIdle.after` | 10s..10m |
 | `events.maxEvents` | 1..4096 |
@@ -855,7 +899,7 @@ UDP-проба по STUN: измеряет доступность и задер�
 Ядро ставит в каждый запрос провайдера заголовок-словарь RFC 8941:
 
 ```http
-Xray-Adaptive: xray="26.10.31", api=2, rev=4, provider=1
+Xray-Adaptive: xray="26.10.31", api=2, rev=5, provider=1
 ```
 
 | Поле | Смысл |
@@ -875,6 +919,7 @@ Xray-Adaptive: xray="26.10.31", api=2, rev=4, provider=1
 | 2 | `startup.outbound` и `startup.pin.outbound` с тегом провайдера этого балансировщика (с его `tagPrefix`) |
 | 3 | `healthObservatory.telemetry.trace` |
 | 4 | `outbounds[].speedLimit` в строгой форме; новые отказы при загрузке; ответ провайдера с неизвестными ключами и `null`; удержание пути при исчерпании. Подробно ниже |
+| 5 | `healthObservatory.host.view`: команда хоста `View`, снимок для экрана приложения (раздел 3.7) |
 
 Ревизия 4 для автора конфига:
 
@@ -890,6 +935,8 @@ Xray-Adaptive: xray="26.10.31", api=2, rev=4, provider=1
 - умолчание `telemetry.trace.maxBytes` - 256 КиБ.
 
 Для ручки провайдера ревизия 4 меняет разбор ответа и тело запроса, список в [provider-protocol.md](provider-protocol.md), раздел 14. Новые поля выходных данных: `Status.balancers[].exit` и `exit_labels`, `ignored_keys` у `provider_apply`, `held` у `exhausted`, `evidence_ms` у подозрения `path_state`, классы вместо текстов в `provider_fetch.error`, хеш в `network_change.network` ([telemetry.md](telemetry.md)).
+
+Ревизия 5 добавляет один блок, `healthObservatory.host.view`, и больше ничего не меняет: конфиг ревизии 4 загружается как раньше, ответ провайдера и запрос ядра прежние. Ядро до `rev=5` отклонит конфиг с этим блоком (`healthObservatory.host.view: unknown key`), поэтому блок кладут только клиентам с `rev` от 5.
 
 Ядро отвергает конфиг с незнакомым ключом в строгих блоках целиком, поэтому бэк выбирает конфиг по заголовку клиента:
 

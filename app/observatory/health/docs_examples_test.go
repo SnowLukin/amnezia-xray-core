@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -98,6 +99,33 @@ func TestDocProviderExamples(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// The View answer the docs show is one the core gives: every field of the
+// snapshot by its name in the code, and none the snapshot does not have.
+func TestDocViewExample(t *testing.T) {
+	found := 0
+	for _, ex := range docExamples(t) {
+		if ex.kind != "view" {
+			continue
+		}
+		found++
+		var shown struct {
+			Data json.RawMessage `json:"data"`
+		}
+		var view health.ViewData
+		var want, got any
+		if json.Unmarshal([]byte(ex.body), &shown) != nil || json.Unmarshal(shown.Data, &view) != nil || json.Unmarshal(shown.Data, &want) != nil {
+			t.Fatalf("%s: not a result with a view", ex.where)
+		}
+		raw, _ := json.Marshal(view)
+		if json.Unmarshal(raw, &got); !reflect.DeepEqual(got, want) {
+			t.Errorf("%s: the core would give\n%s", ex.where, raw)
+		}
+	}
+	if found == 0 {
+		t.Fatal("docs show no view answer")
 	}
 }
 
