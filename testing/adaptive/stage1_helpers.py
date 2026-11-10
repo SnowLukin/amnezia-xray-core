@@ -96,7 +96,7 @@ def prime(client):
 def config(mode="auto", schedule=None, strategy=None, health=None, slow_reserve=False):
     h = {"passive": {"loneFailureAfter": "0s", "dialTimeout": "3s"},
          "report": {"interval": "0s", "quietShare": 1},
-         "events": {"maxEvents": 10000, "maxBytes": 1048576},
+         "events": {"maxEvents": 4096, "maxBytes": 262144},
          "schedule": {"idleAfter": "1h", "minProbeInterval": "1s",
                       "probeJitterFraction": 1e-6, "quarantine": {
                           "initialDelay": "10m", "maxDelay": "30m", "multiplier": 2,

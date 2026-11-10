@@ -121,7 +121,7 @@ def provider_path_rejection(stand, xray, work, name):
     fresh = [("x1", "reality", 2), ("x2", "reality", 3)]
     stand.answer(fresh, {"x1": 1, "x2": 1}, version="valid")
     provider = bench.provider_config(["direct"], limits={
-        "minInterval": "1s", "exhaustedMinInterval": "1s", "maxRefreshesPerHour": 3600,
+        "minInterval": "1s", "exhaustedMinInterval": "1s", "maxRefreshesPerHour": 60,
         "backoff": {"initialDelay": "1s", "maxDelay": "1s", "jitterFraction": 0}})
     cfg = bench.client_config([], {}, providers=[provider], strategy={"groups": []})
     marks = {}

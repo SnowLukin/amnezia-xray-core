@@ -192,8 +192,8 @@ def observation_config(path="reality", *, destinations=None, blackhole=False, fa
     health["report"] = {"interval": "0s", "quietShare": 1}
     health["schedule"] = {"idleAfter": "1h", "maxConcurrentProbes": 1,
         "minProbeInterval": "0s" if fast else "100ms", "probeJitterFraction": 0.000001,
-        "probesPerMinute": 120, "probesPerServerNamePerMinute": 120,
-        "hostProbes": {"probesPerMinute": 60, "reuseWindow": "0s", "timeout": "500ms" if fast else "15s"}}
+        "probesPerMinute": 60, "probesPerServerNamePerMinute": 10,
+        "hostProbes": {"probesPerMinute": 30, "reuseWindow": "0s", "timeout": "500ms" if fast else "15s"}}
     cfg["dns"]["hosts"].update(dict.fromkeys(bench.UDP_STUN_DOMAINS, "198.18.0.2"))
     if blackhole:
         next(o for o in cfg["outbounds"] if o.get("tag") == tag)["settings"]["vnext"][0]["users"][0]["id"] = bench.UDP_DROP_UUID

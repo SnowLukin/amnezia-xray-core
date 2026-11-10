@@ -9,7 +9,7 @@ GET /control?mode=<mode>     changes how /set answers:
   ok            the answer file
   garbage       a cut JSON document
   status:N[:R]  HTTP status N with an empty body; with R, Retry-After: R
-  error:N:code  HTTP status N with an error body of the protocol
+  error:N:code[:R]  HTTP status N with an error body of the protocol; with R, Retry-After: R
   rotate:T      the answer file with "headers": {"Authorization": "Bearer T"}
   require:T     401 with the error body unauthorized unless the request
                 carries Authorization: Bearer T; with it the answer file
@@ -152,9 +152,9 @@ class Handler(BaseHTTPRequestHandler):
             parts = mode.split(":")
             self.reply(int(parts[1]), headers={"Retry-After": parts[2]} if len(parts) > 2 else None)
         elif mode.startswith("error:"):
-            _, status, code = mode.split(":")
-            body = json.dumps({"protocol": 1, "code": code, "message": "bench"}).encode()
-            self.reply(int(status), body)
+            parts = mode.split(":")
+            body = json.dumps({"protocol": 1, "code": parts[2], "message": "bench"}).encode()
+            self.reply(int(parts[1]), body, headers={"Retry-After": parts[3]} if len(parts) > 3 else None)
         elif mode == "garbage":
             self.reply(200, b'{"outbounds": [{"tag": ')
         elif mode.startswith("require:") and self.headers.get("Authorization") != "Bearer " + mode.split(":", 1)[1]:

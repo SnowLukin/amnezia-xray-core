@@ -74,8 +74,10 @@ def _receipt(work, name, **value):
     Path(work, name + '-proof.json').write_text(json.dumps(value, indent=2))
 
 
-def _wait_fallback(client, source, host='t1.test', seconds=20):
+def _wait_fallback(client, source, host='t1.test', seconds=80):
     # is_falling_back becomes true on routed demand, not merely exhaustion.
+    # Without network.connectivity an exhausted balancer holds its last path
+    # for a minute before it falls back.
     deadline = time.monotonic() + seconds
     while time.monotonic() < deadline:
         _request(host)
@@ -149,8 +151,9 @@ def fallback_balancer_recheck(stand, xray, work, name):
         bench.chaos(str(bench.address_port('tcp_tls', 0)), 'pass')
         start = time.monotonic()
         passed = attempts = 0
-        # Real demand stays on the source for more than the fixed two-minute
-        # idle window. Its first quarantine has the production 30% jitter.
+        # Real demand goes through the fallback until a recheck round of the
+        # exhausted source finds the node alive; the rounds do not wait for
+        # the end of its quarantine.
         while time.monotonic() - start < 180 and _balancer(client, 'ai')['active'] != 'special':
             result = _request()
             attempts += 1; passed += int(result['is_ok'])
@@ -158,8 +161,8 @@ def fallback_balancer_recheck(stand, xray, work, name):
         restored = _balancer(client, 'ai')
         probe_results = _events(client, 'probe_result', outbound='special')
         ends = _events(client, 'fallback_balancer', balancer='ai', to='main', is_active=False)
-        checks += [check('fallback user demand succeeds during quarantine', f'{passed}/{attempts}',
-                         passed == attempts and attempts > 20, 'all; > 20 real requests'),
+        checks += [check('fallback user demand succeeds until the recheck', f'{passed}/{attempts}',
+                         passed == attempts and attempts > 0, 'all; at least one real request'),
                    check('ordinary quarantine recheck restores dedicated path without reset', restored,
                          restored['active'] == 'special' and not restored.get('is_falling_back'), 'special / false'),
                    check('source receives real recheck probe result', probe_results, bool(probe_results), 'nonempty'),
@@ -183,7 +186,8 @@ def fallback_balancer_chain(stand, xray, work, name):
         bench.chaos(str(bench.address_port('reality', 0)), 'refuse')
         for host in ('t4.test', 't5.test', 't6.test'):
             _request(host)
-        _poll(lambda: _balancer(client, 'main')['active'] == '', 20)
+        # The exhausted target holds its last path for a minute, then routes to its fallbackTag.
+        _poll(lambda: _balancer(client, 'main').get('exit') == 'block', 80)
         began = time.monotonic(); terminal = _request(); elapsed = time.monotonic()-began
         checks += [check('exhausted target refuses via terminal block', terminal,
                          not terminal['is_ok'] and elapsed < 2, '<2s; failure'),

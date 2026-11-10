@@ -27,8 +27,8 @@ def _config(members=None, census=True, sample=1, limits=None):
     h['host'] = {'memoryPressure': {}}
     h['probes'].pop('candidates', None)
     h['probes'].pop('udp', None)
-    h['probes']['limits'] = limits or {'maxConcurrent': 1, 'perMinute': 120,
-                                     'perServerNamePerMinute': 60}
+    h['probes']['limits'] = limits or {'maxConcurrent': 1, 'perMinute': 60,
+                                     'perServerNamePerMinute': 10}
     h['telemetry'] = {'events': {'maxEvents': 4096, 'maxBytes': 262144},
                       'report': {'quietSampleFraction': 1}, 'quality': {}}
     if census:

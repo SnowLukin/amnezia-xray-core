@@ -625,7 +625,7 @@ def stage1_report_three_real_windows(stand, xray, work, name):
     ledger, actions, checks = [], [], []
     with NodeHTTP() as target:
         cfg = h.config(slow_reserve=True, schedule={"maxConcurrentProbes": 1,
-            "probesPerServerNamePerMinute": 60, "probesPerMinute": 120}, health={
+            "probesPerServerNamePerMinute": 10, "probesPerMinute": 60}, health={
             "probes": [{"name": "default", "steps": [
                 {"name": "transport", "destinations": ["http://127.0.0.1:%s/check-32k" % target.port],
                  "minBytes": 32768, "timeout": "6s", "progressTimeout": "3s"},

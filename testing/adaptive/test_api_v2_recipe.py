@@ -46,9 +46,14 @@ class RecipeBoundaryTest(unittest.TestCase):
         self.assertEqual(got['triggers']['whenCostAbove']['after'], '0s')
         self.assertNotIn('isEnabled', got['triggers']['whenCostAbove'])
 
-    def test_zero_provider_limits_stay_unlimited(self):
+    def test_zero_provider_limits_take_the_loosest_allowed(self):
         got = v2.provider({'limits': {'minInterval': '0s', 'exhaustedMinInterval': '0s', 'maxRefreshesPerHour': 0}})
-        self.assertEqual(got['limits'], {'minInterval': '1ms', 'urgentMinInterval': '1ms', 'maxRefreshesPerHour': 1000000})
+        self.assertEqual(got['limits'], {'minInterval': '1ms', 'urgentMinInterval': '1ms', 'maxRefreshesPerHour': 60})
+
+    def test_forget_on_network_change_turns_off_the_return_on_change(self):
+        got = v2.strategy({'networkChangeAction': 'forget'})
+        self.assertEqual(got['networkChanges'], {'isEnabled': True, 'action': 'forget'})
+        self.assertEqual(got['returnToCheaper']['onNetworkChange'], {'isEnabled': False})
 
     def test_result_data_and_errors_are_unwrapped_once(self):
         self.assertEqual(v2.result_payload({'success': True, 'data': {'seq': 1, 'set': {}}}), {'seq': 1, 'set': {}})

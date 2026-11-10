@@ -68,7 +68,7 @@ def checks_main(xray, work):
         # The same local target serves the three reserve paths. Allow the
         # focused fixture to exercise real returns without spending a minute
         # waiting on the shared SNI quota. Core timing constants stay intact.
-        health["probes"]["limits"].update(perServerNamePerMinute=60, perMinute=120)
+        health["probes"]["limits"].update(perServerNamePerMinute=10, perMinute=60)
         if enabled:
             health["network"]["labelRequest"] = {
                 "outbound": "direct", "destinations": [endpoint], "timeout": "1s",

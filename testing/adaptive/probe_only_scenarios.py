@@ -29,7 +29,7 @@ def fixture(name, real_tags, capacity, promote=True, delay=0, count=3):
 def client_config(document, threshold):
     real = [o["tag"] for o in document["outbounds"] if not o["path"]["isProbeOnly"]]
     prov = bench.provider_config(["direct"], triggers={"minHealthyOutbounds": threshold},
-        limits={"minInterval": "1s", "exhaustedMinInterval": "1s", "maxRefreshesPerHour": 100},
+        limits={"minInterval": "1s", "exhaustedMinInterval": "1s", "maxRefreshesPerHour": 60},
         apply={"drainTimeout": f"{DRAIN_SECONDS}s"})
     prov["timeout"] = "8s"
     cfg = bench.client_config([], {}, providers=[prov], loglevel="info", strategy={
@@ -39,8 +39,8 @@ def client_config(document, threshold):
         "report": {"interval": "0s", "quietShare": 1},
         "events": {"maxEvents": 4096, "maxBytes": 262144},
         "schedule": {"idleAfter": "1h", "maxConcurrentProbes": 1, "minProbeInterval": "1s",
-                     "probeJitterFraction": 0.000001, "probesPerMinute": 120,
-                     "probesPerServerNamePerMinute": 60,
+                     "probeJitterFraction": 0.000001, "probesPerMinute": 60,
+                     "probesPerServerNamePerMinute": 10,
                      "quarantine": {"initialDelay": "10m", "maxDelay": "10m", "jitterFraction": 0},
                      "hostProbes": {"reuseWindow": f"{HOST_REUSE_SECONDS}s"},
                      "probeOnly": {"keepVerified": 1, "recheckInterval": "15m"}},

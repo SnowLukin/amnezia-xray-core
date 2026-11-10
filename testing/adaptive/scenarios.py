@@ -1437,7 +1437,7 @@ def probe_spacing(stand, xray, work, name):
     strategy = {"minHoldTime": "10s"}
     # The return probes and the failover probe of one server name would meet the budget of three
     # a minute; that is not what this scenario looks at.
-    health = {"schedule": {"probesPerServerNamePerMinute": 30, "probesPerMinute": 60}}
+    health = {"schedule": {"probesPerServerNamePerMinute": 10, "probesPerMinute": 60}}
     cfg = bench.client_config(CHEAP_EXPENSIVE, CHEAP_EXPENSIVE_COSTS, strategy=strategy, health=health)
     m = Marks()
     back = None
@@ -1627,7 +1627,13 @@ def hybrid_pin_release(stand, xray, work, name):
         run = c.status()["run"]
         other_run = run[:-1] + ("1" if run[-1] == "0" else "0")
         m["stale"] = time.time()
-        seen["stale"] = c.accepts("release", "auto", other_run)
+        # The API refuses a release with the run of another core as stale_run.
+        try:
+            seen["stale"] = c.accepts("release", "auto", other_run)
+        except RuntimeError as e:
+            if not (e.args and isinstance(e.args[0], dict) and e.args[0].get("code") == "stale_run"):
+                raise
+            seen["stale"] = False
         time.sleep(1.5)
         seen["after_stale"] = c.status()["balancers"][0]
         m["release"] = time.time()
@@ -2030,7 +2036,7 @@ def provider_subnet_ban(stand, xray, work, name):
               t_ex is not None and t_ex - m["ban"] <= 20, "<= 20"),
         check("refresh trigger", first.get("trigger"), first.get("trigger") == "exhausted", "exhausted"),
         check("exhausted balancer skipped as via", first.get("error"),
-              first.get("via") == "auto" and first.get("error") == "balancer exhausted", "balancer exhausted"),
+              first.get("via") == "auto" and first.get("error") == "balancer_exhausted", "balancer_exhausted"),
         check("set fetched via", ok_via, ok_via == "direct", "direct"),
         check("outbounds added", applied and applied[0]["fields"].get("added"),
               bool(applied) and applied[0]["fields"].get("added") == len(FRESH), f"== {len(FRESH)}"),
@@ -2202,15 +2208,16 @@ def provider_invalid_answer(stand, xray, work, name):
 
 @scenario()
 def provider_strict_answer(stand, xray, work, name):
-    """An answer with a key protocol 1 does not know is refused whole: the set
-    stays, and the second via is not asked, since it leads to the same backend."""
+    """An answer with routing, which a provider may not set, is refused whole:
+    the set stays, and the second via is not asked, since it leads to the same
+    backend."""
     stand.answer(FRESH, {"x1": 1, "x2": 1}, version="v1")
     prov = bench.provider_config(["direct", "net"], limits={"exhaustedMinInterval": "1s"})
     cfg = bench.client_config(BANNED[:1], {"a1": 1}, providers=[prov])
     m = Marks()
 
     def strict():
-        answer_body(stand, {"protocol": 1, "version": "v2", "dns": {"servers": ["1.1.1.1"]},
+        answer_body(stand, {"protocol": 1, "version": "v2", "routing": {"rules": []},
                             "outbounds": bench.path_members(FRESH[:1], {"x1": 1})})
         refresh(c)
 
@@ -2224,8 +2231,9 @@ def provider_strict_answer(stand, xray, work, name):
     refused = applies[0] if applies else {}
     failed = sum(1 for r in tr.records if not r[1])
     return [
-        check("answer with dns refused", refused.get("error"),
-              refused.get("is_ok") is False and 'unknown key "dns"' in (refused.get("error") or ""), 'unknown key "dns"'),
+        check("answer with routing refused", refused.get("error"),
+              refused.get("is_ok") is False and "routing is not accepted" in (refused.get("error") or ""),
+              "routing is not accepted"),
         check("provider requests for it", len(reqs), len(reqs) == 1, "== 1"),
         check("attempts (via, ok)", [(f.get("via"), f.get("is_ok")) for f in fetches],
               [(f.get("via"), f.get("is_ok")) for f in fetches] == [("direct", True)], "[direct ok]"),
@@ -2237,18 +2245,26 @@ def provider_strict_answer(stand, xray, work, name):
 
 @scenario()
 def provider_retry_after(stand, xray, work, name):
-    """A busy provider answers 429 with Retry-After: the host request is asked
-    again after that pause, spread upward, without a growing backoff and
-    without the second via. An error body of the protocol ends the attempts too."""
+    """A busy backend answers 429 with Retry-After and an error body of the
+    protocol: the host request is asked again after that pause, spread upward,
+    without a growing backoff and without the second via. An error body of the
+    protocol ends the attempts on other statuses too. A 429 without the body,
+    which a proxy in front of the backend may give, sends the request on to the
+    next via."""
     stand.answer(FRESH, {"x1": 1, "x2": 1})
     # exhaustedMinInterval would otherwise hold the retry of the host request
     # for 30 s, longer than Retry-After. Three busy requests fit before the
     # provider answers again: the third comes 12-15.6 s after the first.
-    prov = bench.provider_config(["direct", "net"], limits={"exhaustedMinInterval": "1s"})
+    # Seven refreshes in all exceed the default of six an hour.
+    prov = bench.provider_config(["direct", "net"], limits={"exhaustedMinInterval": "1s", "maxRefreshesPerHour": 60})
     cfg = bench.client_config(BANNED[:1], {"a1": 1}, providers=[prov])
     m = Marks()
 
     def busy():
+        bench.provider_mode("error:429:rate_limited:6")
+        refresh(c)
+
+    def proxy_busy():
         bench.provider_mode("status:429:6")
         refresh(c)
 
@@ -2259,15 +2275,20 @@ def provider_retry_after(stand, xray, work, name):
     with bench.Client(xray, cfg, work, name) as c:
         tr = bench.Traffic(rate=1, big=0)
         run_timeline(tr, [(2, m.at("busy", busy)), (19.5, m.at("ok", lambda: bench.provider_mode("ok"))),
-                          (30, m.at("failing", failing))], 34)
+                          (24, m.at("proxy", proxy_busy)), (26, lambda: bench.provider_mode("ok")),
+                          (33, m.at("failing", failing))], 37)
     reqs = [t for t, _, _ in stand.provider_requests(m["busy"])]
     busy_reqs = [t for t in reqs if t < m["ok"]]
     g = gaps(busy_reqs)[:2]
-    fetches = [e["fields"] for e in bench.events_of(c.events, "provider_fetch", m["busy"])]
+    fetch_events = bench.events_of(c.events, "provider_fetch", m["busy"])
+    proxy_window = [e for e in fetch_events if m["proxy"] <= e["ts"] / 1000 < m["failing"]
+                    and e["fields"].get("status") == 429]
+    proxy_fetches = [e["fields"] for e in proxy_window]
+    fetches = [e["fields"] for e in fetch_events if e not in proxy_window]
     busy_fetches = [f for f in fetches if f.get("status") == 429]
     skips = [e for e in bench.events_of(c.events, "provider_skip", m["busy"]) if e["fields"]["reason"] == "retry_after"]
     applied = [e["fields"] for e in bench.events_of(c.events, "provider_apply", m["ok"]) if e["fields"].get("is_changed")]
-    failed = [f for f in fetches if f.get("code")]
+    failed = [f for f in fetches if f.get("code") and f.get("status") != 429]
     counted = sum(r.get("provider_retry_after", 0) for r in c.reports)
     return [
         # Retry-After 6 spread by up to 30% upward is 6 .. 7.8 s; the timer
@@ -2285,6 +2306,10 @@ def provider_retry_after(stand, xray, work, name):
               bool(applied) and applied[0].get("added") == len(FRESH), f"== {len(FRESH)}"),
         check("error body ends the attempts", [(f.get("via"), f.get("code")) for f in failed],
               [(f.get("via"), f.get("code")) for f in failed] == [("direct", "internal")], "[direct internal]"),
+        check("429 without the body goes on to the next via",
+              [(f.get("via"), f.get("status")) for f in proxy_fetches],
+              [(f.get("via"), f.get("status")) for f in proxy_fetches] == [("direct", 429), ("net", 429)],
+              "[direct 429, net 429]"),
         check("report provider_retry_after", counted, counted >= 1, ">= 1"),
     ]
 
@@ -2352,7 +2377,7 @@ def provider_limits(stand, xray, work, name):
     a failing provider is asked again after growing, spread pauses."""
     stand.answer(FRESH, {"x1": 1, "x2": 1}, version="v1")
     prov = bench.provider_config(["direct"], triggers={"interval": "1s", "jitterFraction": 0},
-                                 limits={"minInterval": "4s", "maxRefreshesPerHour": 3600,
+                                 limits={"minInterval": "4s", "maxRefreshesPerHour": 60,
                                          "backoff": {"initialDelay": "5s", "multiplier": 2, "maxDelay": "1m", "jitterFraction": 0.3}})
     cfg = bench.client_config(BANNED[:1], {"a1": 1}, providers=[prov])
     m = Marks()
@@ -2445,7 +2470,7 @@ def provider_all_expired(stand, xray, work, name):
     asked again with a growing backoff."""
     stand.answer([("x1", "reality", 1)], {"x1": 1}, expires={"x1": "@+10s"}, server_time="@+0s")
     prov = bench.provider_config(["direct"], limits={
-        "exhaustedMinInterval": "1s", "maxRefreshesPerHour": 3600,
+        "exhaustedMinInterval": "1s", "maxRefreshesPerHour": 60,
         "backoff": {"initialDelay": "2s", "multiplier": 2, "maxDelay": "16s", "jitterFraction": 0.3}})
     cfg = bench.client_config([("p-x1", "reality", 1)], {"p-x1": 1}, providers=[prov])
     m = Marks()
@@ -2547,7 +2572,7 @@ def provider_token_rotation(stand, xray, work, name):
     token shows in events, Status or reports."""
     stand.answer(FRESH, {"x1": 1, "x2": 1}, version="v1")
     prov = bench.provider_config(["direct"], triggers={"interval": "1s", "jitterFraction": 0},
-                                 limits={"minInterval": "1s", "exhaustedMinInterval": "1s", "maxRefreshesPerHour": 3600})
+                                 limits={"minInterval": "1s", "exhaustedMinInterval": "1s", "maxRefreshesPerHour": 60})
     cfg = bench.client_config(BANNED[:1], {"a1": 1}, providers=[prov])
     m = Marks()
     tokens = ["bench-token", "answer-t2", "host-t3"]
@@ -2748,7 +2773,7 @@ def provider_slots_flow(stand, xray, work, name):
     initial = slot_set(SLOTS, {"s1": 1, "s2": 2, "s3": 3}, 300, "v1")
     # minHealthyOutbounds 4: a1 of the config and the three slots; the ban leaves three.
     prov = bench.provider_config(["direct", "net"], triggers={"minHealthyOutbounds": 4},
-                                 limits={"minInterval": "1s", "exhaustedMinInterval": "1s", "maxRefreshesPerHour": 3600}) | {
+                                 limits={"minInterval": "1s", "exhaustedMinInterval": "1s", "maxRefreshesPerHour": 60}) | {
         "initialAnswer": initial}
     cfg = bench.client_config(BANNED[:1], {"a1": 5}, providers=[prov])
     fresh = [("s4", "reality", 0), ("s2", "reality", 2), ("s3", "reality", 3)]
@@ -2770,7 +2795,7 @@ def provider_slots_flow(stand, xray, work, name):
         m["ok"] = time.time()
         bench.provider_mode("rotate:slot-t2")
 
-    bench.provider_mode("status:429:6")
+    bench.provider_mode("error:429:rate_limited:6")
     with bench.Client(xray, cfg, work, name + "-first") as c:
         tr = bench.Traffic(rate=2, big=0.5)
         busy = threading.Thread(target=answer_after_busy, daemon=True)
@@ -2862,7 +2887,7 @@ def provider_slots_last_resort(stand, xray, work, name):
     initial = slot_set(slots, {"s1": 1, "s2": 2}, 300, "v1")
     initial["expiresAt"]["s2"] = rfc3339(time.time() + 12)
     prov = bench.provider_config(["direct"], limits={"minInterval": "1s", "exhaustedMinInterval": "1s",
-                                                     "maxRefreshesPerHour": 3600, "backoff": {"initialDelay": "2s", "maxDelay": "4s"}})
+                                                     "maxRefreshesPerHour": 60, "backoff": {"initialDelay": "2s", "maxDelay": "4s"}})
     prov["initialAnswer"] = initial
     cfg = bench.client_config(BANNED[:1], {"a1": 5}, providers=[prov])
     banned = ",".join(str(address_port(k, i)) for k, i in [("reality", 0), ("reality", 1)])
@@ -3141,7 +3166,7 @@ def awg_wake_by_probe(stand, xray, work, name):
     wakes = []
     cfg = awg_config()
     # A host probe of w1 every sleep.afterLastUse: room in the budgets of its server name and of the host.
-    cfg["healthObservatory"]["schedule"] |= {"probesPerServerNamePerMinute": 30, "probesPerMinute": 60,
+    cfg["healthObservatory"]["schedule"] |= {"probesPerServerNamePerMinute": 10, "probesPerMinute": 60,
                                              "hostProbes": {"reuseWindow": "1s", "probesPerMinute": 30}}
     with bench.Client(xray, cfg, work, name) as c, bench.ConnSampler(period=0.1) as cs:
         tr = bench.Traffic(rate=2, big=0.5, timeout=5)

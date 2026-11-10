@@ -83,7 +83,7 @@ def provider(recipe):
     # A zero limit in a recipe meant no limit; v2 takes only positive limits.
     for key in ("minInterval", "urgentMinInterval"):
         if key in limits and not nonzero(limits[key]): limits[key] = "1ms"
-    if limits.get("maxRefreshesPerHour") == 0: limits["maxRefreshesPerHour"] = 1000000
+    if limits.get("maxRefreshesPerHour") == 0: limits["maxRefreshesPerHour"] = 60  # the loader's ceiling
     for key in ("backoff", "authRetryDelay"): limits.pop(key, None)
     result.pop("maxBytes", None)
     apply = result.setdefault("apply", {})
@@ -121,7 +121,8 @@ def strategy(recipe):
     action = result.pop("networkChangeAction", "recheck")
     result["networkChanges"] = on(action != "ignore")
     if action != "ignore": result["networkChanges"]["action"] = action
-    if not returns["isEnabled"] or action == "ignore": returns["onNetworkChange"] = on(False)
+    # The loader refuses a return on network change when changes are ignored or forget the paths.
+    if not returns["isEnabled"] or action in ("ignore", "forget"): returns["onNetworkChange"] = on(False)
     result["returnToCheaper"] = returns
     startup = {"outbound": result.pop("startOutbound", "")}
     pin = result.pop("startPinnedOutbound", "")
