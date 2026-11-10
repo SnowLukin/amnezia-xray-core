@@ -1,6 +1,7 @@
 """Runs bench scenarios and checks them against the acceptance thresholds.
 
     python3 run.py <xray binary> [scenario ...]
+    python3 run.py <xray binary> --prod [scenario ...]   the production-shaped suite of prod_scenarios.py
 
 Prints one line per check and writes a JSON report next to the logs.
 """
@@ -20,22 +21,28 @@ import probe_only_scenarios
 import udp_probe_scenarios
 import fallback_balancer_scenarios
 import census_scenarios
+import prod_scenarios
 
 
 def main():
     xray = os.path.abspath(sys.argv[1])
     wanted = sys.argv[2:]
-    unknown = sorted(set(wanted) - {s.name for s in scenarios.ALL})
+    prod = "--prod" in wanted
+    if prod:
+        wanted.remove("--prod")
+    suite = prod_scenarios.ALL if prod else scenarios.ALL
+    unknown = sorted(set(wanted) - {s.name for s in suite})
     if unknown:
         raise SystemExit(f"unknown scenarios: {', '.join(unknown)}")
     work = bench.workdir()
     print(f"workdir {work}", flush=True)
     results = []
-    with bench.Stand(xray, work, probe_credentials=not wanted or any(
+    stand = prod_scenarios.ProdStand(xray, work) if prod else bench.Stand(xray, work, probe_credentials=not wanted or any(
             name.startswith("probe_only_") or name.startswith("census_") or name == "udp_probe_credentials" for name in wanted),
             udp_observation=os.environ.get("BENCH_UDP_PROBE") == "1" or not wanted or any(
-                name.startswith("udp_probe_") for name in wanted)) as stand:
-        for sc in scenarios.ALL:
+                name.startswith("udp_probe_") for name in wanted))
+    with stand:
+        for sc in suite:
             if wanted and sc.name not in wanted:
                 continue
             if not wanted and sc.slow and not os.environ.get("BENCH_SLOW"):
