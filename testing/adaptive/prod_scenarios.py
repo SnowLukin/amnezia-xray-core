@@ -125,6 +125,7 @@ def prod_config(backend, connectivity=True, returns=None, direct=False):
         "initialAnswer": backend.initial_answer(),
     }
     health = {
+        "host": {"view": {"balancer": "auto"}},
         "probes": {"candidates": {"keepVerified": 3}, "profiles": [profile("full"), profile("candidate")]},
         "telemetry": {"events": {"maxEvents": 500}, "report": {}, "quality": {}, "pathLabels": {}},
         "providers": [provider],
@@ -297,6 +298,42 @@ def incident_checks(report, frm, kind, outcome, total=None):
         checks.append(check("incident total_ms against the bench clock, s", round(inc["total_ms"] / 1000, 1),
                             abs(inc["total_ms"] / 1000 - total) <= 10, f"{round(total, 1)} +- 10"))
     return checks
+
+
+class Screen:
+    """Polls View once a second, as the screen of an application does."""
+
+    def __init__(self, client):
+        self.client, self.views, self.errors = client, [], []
+        self._stop = threading.Event()
+        self.thread = threading.Thread(target=self._run, daemon=True)
+        self.thread.start()
+
+    def _run(self):
+        while not self._stop.wait(1):
+            try:
+                self.views.append(self.client.api("view"))
+            except Exception as e:
+                self.errors.append(repr(e))
+
+    def stop(self):
+        self._stop.set()
+        self.thread.join(timeout=15)
+
+    def states(self):
+        """The states in the order seen, each run of one state once."""
+        out = []
+        for v in self.views:
+            if not out or out[-1] != v["state"]:
+                out.append(v["state"])
+        return out
+
+    def samples(self):
+        """The first view of every state."""
+        out = {}
+        for v in self.views:
+            out.setdefault(v["state"], v)
+        return out
 
 
 def slot_after_move(backend, events, since):
@@ -474,6 +511,7 @@ def prod_all_entries_dead(stand, xray, work, name):
     with bench.Client(xray, prod_config(backend), work, name) as c:
         clock = Clock()
         tr = bench.Traffic(rate=2, big=0.5, timeout=5).start()
+        screen = Screen(c)
         clock.until(WARMUP)
         m["fault"] = time.time()
         backend.kill(0, 1, 2, 3)
@@ -485,6 +523,7 @@ def prod_all_entries_dead(stand, xray, work, name):
         wait_recovery(tr, m["revive"], 240)
         time.sleep(5)
         m["status"] = c.status()
+        screen.stop()
         tr.stop()
     events = c.events
     rec, fails = bench.recovery(tr.records, m["revive"], 5)
@@ -495,9 +534,13 @@ def prod_all_entries_dead(stand, xray, work, name):
     new = full(backend, 2, "s")
     switched = first_switch_to(events, new, m["revive"])
     first = [via for refresh, via, _, _ in during if during and refresh == during[0][0]]
+    states = screen.states()
     save(work, name, events=events, requests=backend.requests, violations=backend.violations,
-         report=c.final_report, marks=m, traffic=sorted(tr.records))
+         report=c.final_report, marks=m, traffic=sorted(tr.records), views=screen.samples())
     return [
+        check("view states on the screen (errors)", (states, screen.errors[:3]),
+              not screen.errors and states[:1] == ["ok"] and states[-1:] == ["ok"]
+              and bool({"searching", "blocked"} & set(states[1:-1])), "ok, searching or blocked, ok"),
         check("attempts while every entry was dead (refresh, via, outbound, error)", during[:12], True, "info"),
         check("roads of the first refresh after the entries died", first,
               {"auto", "roads", "direct"} <= set(first), "every via, direct among them"),
