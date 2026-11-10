@@ -12,7 +12,7 @@ import (
 
 func udpEngineFixture(t *testing.T) *testEngine {
 	t.Helper()
-	te := newTestEngine(t, &Config{Schedule: &ScheduleConfig{IdleAfter: int64(time.Hour)}}, nil, "a1", "a2")
+	te := newTestEngine(t, &Config{Schedule: tune(&ScheduleConfig{}, scheduleKnobs{idleAfter: time.Hour})}, nil, "a1", "a2")
 	te.s.udpProbe = &udpSettings{requests: 5, interval: time.Millisecond, timeout: time.Second, perHour: 6}
 	te.s.schedule.spacing = 0
 	te.s.schedule.perMinute = 100

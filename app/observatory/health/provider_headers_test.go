@@ -3,6 +3,7 @@ package health
 import (
 	"context"
 	"fmt"
+	"google.golang.org/protobuf/proto"
 	"strings"
 	"testing"
 	"time"
@@ -246,7 +247,7 @@ func TestHostHeadersWinOverAnAnswerInFlight(t *testing.T) {
 // grows no backoff.
 func TestAuthFailureHoldsAllButTheHost(t *testing.T) {
 	te := newProviderEngine(t, quietProvider(func(p *ProviderConfig) {
-		p.Triggers.SkipRefreshWhenExhausted = false
+		p.Features.Exhausted = proto.Bool(true)
 		p.Limits.ExhaustedMinInterval = int64(time.Second)
 	}), nil, "a1")
 	te.exhaust(te.sel, t0)
@@ -322,10 +323,10 @@ func TestAuthRetryOnceAfterTheHold(t *testing.T) {
 // With authRetry off only new headers end the pause.
 func TestAuthRetryOffWaitsForNewHeaders(t *testing.T) {
 	te := newProviderEngine(t, quietProvider(func(p *ProviderConfig) {
-		p.Triggers.Interval = int64(time.Minute)
-		p.Triggers.JitterFraction = -1
+		p.Triggers.Interval = fixed(time.Minute)
+		knobsOf[providerKnobs](p).jitter = -1
 		p.Limits.MinInterval = -1
-		p.Limits.AuthRetryDelay = -1
+		knobsOf[providerKnobs](p).authRetry = -1
 	}), nil, "a1")
 	j := expectRefresh(t, te, at(time.Minute), "interval")
 	te.onRefreshDone(j, refused, at(time.Minute))
@@ -369,8 +370,8 @@ func TestStale401RetriesWithNewHeaders(t *testing.T) {
 // backend asked for, and start no refresh by themselves.
 func TestSetProviderHeadersClearsAuthButNotRetryAfter(t *testing.T) {
 	te := newProviderEngine(t, quietProvider(func(p *ProviderConfig) {
-		p.Triggers.Interval = int64(time.Minute)
-		p.Triggers.JitterFraction = -1
+		p.Triggers.Interval = fixed(time.Minute)
+		knobsOf[providerKnobs](p).jitter = -1
 		p.Limits.MinInterval = -1
 	}), nil, "a1")
 	j := expectRefresh(t, te, at(time.Minute), "interval")

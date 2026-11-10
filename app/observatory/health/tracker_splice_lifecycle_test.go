@@ -33,7 +33,7 @@ func TestTrackerSpliceSetupOvertakenByFinishReleasesSocket(t *testing.T) {
 	if rx, ok := kernelReceived(raw); !ok || rx == 0 {
 		t.Skip("socket has no positive receive baseline")
 	}
-	o := newObserver(context.Background(), &Config{Paths: observed("a1"), Passive: &PassiveConfig{ShouldSkipQuality: true}})
+	o := newObserver(context.Background(), &Config{Paths: observed("a1")})
 	defer o.Close()
 	c := &pausedSpliceConn{Conn: client, entered: make(chan struct{}), release: make(chan struct{})}
 	tr := o.StartDial(context.Background(), "a1", net.Destination{}, nil).(*connTracker)

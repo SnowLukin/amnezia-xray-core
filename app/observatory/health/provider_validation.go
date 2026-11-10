@@ -12,11 +12,8 @@ import (
 // defaults; none of these values may remove an admission guard.
 func validateProviderConfigurations(c *Config) error {
 	for _, p := range c.GetProviders() {
-		if p == nil || !featureValue(p.IsEnabled, false) {
-			continue
-		}
 		where := fmt.Sprintf("healthObservatory.providers[%s]", p.GetTag())
-		urls := configuredAddresses(p.GetUrls(), p.GetUrl())
+		urls := p.GetUrls()
 		if len(urls) < 1 || len(urls) > 4 {
 			return fmt.Errorf("%s.urls must contain 1 to 4 addresses", where)
 		}
@@ -51,16 +48,8 @@ func validateProviderConfigurations(c *Config) error {
 				return fmt.Errorf("%s.apply.acceptedHeaders: %w", where, err)
 			}
 		}
-		for _, r := range []*DurationRange{t.GetExhaustedDelay(), t.GetMinHealthyDelay()} {
+		for _, r := range []*DurationRange{t.GetExhaustedDelay(), t.GetMinHealthyDelay(), t.GetInterval(), t.GetNetworkSettle(), t.GetWhenCostAbove().GetAfter()} {
 			if r != nil && (r.Min < 0 || r.Max < r.Min) {
-				return fmt.Errorf("%s: invalid delay range", where)
-			}
-		}
-		for _, r := range []struct {
-			low  int64
-			high *int64
-		}{{t.GetInterval(), t.IntervalMax}, {t.GetNetworkSettleDelay(), t.NetworkSettleMax}, {t.GetWhenCostAbove().GetAfter(), costAfterMax(t.GetWhenCostAbove())}} {
-			if r.high != nil && (r.low < 0 || *r.high < r.low) {
 				return fmt.Errorf("%s: invalid delay range", where)
 			}
 		}
@@ -73,7 +62,7 @@ func validateProviderConfigurations(c *Config) error {
 		if f == nil {
 			f = &ProviderFeatureConfig{}
 		}
-		if featureValue(f.Periodic, false) && t.GetInterval() < 0 {
+		if featureValue(f.Periodic, false) && t.GetInterval() != nil && t.GetInterval().Max <= 0 {
 			return fmt.Errorf("%s.triggers.periodic.interval must be positive or omitted", where)
 		}
 		if featureValue(f.MinHealthy, false) && t.GetMinHealthyOutbounds() < 0 {
@@ -84,12 +73,12 @@ func validateProviderConfigurations(c *Config) error {
 		}
 		if featureValue(f.CostAbove, false) {
 			cost := t.GetWhenCostAbove().GetCost()
-			if cost <= 0 || math.IsNaN(float64(cost)) || math.IsInf(float64(cost), 0) || t.GetWhenCostAbove().GetAfter() < 0 {
-				return fmt.Errorf("%s.triggers.whenCostAbove requires positive cost and nonnegative after", where)
+			if cost <= 0 || math.IsNaN(float64(cost)) || math.IsInf(float64(cost), 0) {
+				return fmt.Errorf("%s.triggers.whenCostAbove requires positive cost", where)
 			}
 		}
-		if featureValue(f.NetworkChange, false) && (t.GetNetworkSettleDelay() < 0 || t.GetNetworkChangeMode() > RefreshOnNetwork_REFRESH_NEVER || t.GetNetworkChangeMode() < 0) {
-			return fmt.Errorf("%s.triggers.networkChange requires a valid mode and nonnegative settleDelay", where)
+		if featureValue(f.NetworkChange, false) && (t.GetNetworkChangeMode() > RefreshOnNetwork_REFRESH_NEVER || t.GetNetworkChangeMode() < 0) {
+			return fmt.Errorf("%s.triggers.networkChange requires a valid mode", where)
 		}
 		if featureValue(f.LeaseRenewal, true) {
 			ex := t.GetExpiry()
@@ -100,11 +89,4 @@ func validateProviderConfigurations(c *Config) error {
 		}
 	}
 	return nil
-}
-
-func costAfterMax(c *CostTrigger) *int64 {
-	if c == nil {
-		return nil
-	}
-	return c.AfterMax
 }

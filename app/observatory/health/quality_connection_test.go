@@ -43,7 +43,6 @@ func qualityWitnessObserver(skip bool) (*Observer, *fakeClock) {
 	o.s = newSettings(&Config{
 		Features: &FeatureConfig{Quality: proto.Bool(!skip), Report: proto.Bool(true), Events: proto.Bool(true), Connectivity: proto.Bool(true), Witnesses: proto.Bool(true)},
 		Paths:    observed("a1", "a2"),
-		Passive:  &PassiveConfig{ShouldSkipQuality: skip},
 		Connectivity: &ConnectivityConfig{
 			Outbound: "direct", Destinations: []string{"https://x.test/204"}, Witnesses: []string{"direct"},
 		},

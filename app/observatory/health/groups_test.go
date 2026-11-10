@@ -53,7 +53,7 @@ func TestGroupClientPositionsSpread(t *testing.T) {
 func readyGroupEngine(t *testing.T) *testEngine {
 	t.Helper()
 	cfg := groupConfig()
-	cfg.ReturnToCheaper = &ReturnToCheaperConfig{Interval: int64(10 * time.Minute), SkipRandomPhase: true, ProbesToReturn: 2, ProbeInterval: int64(time.Second)}
+	cfg.ReturnToCheaper = tune(&ReturnToCheaperConfig{Interval: int64(10 * time.Minute)}, returnKnobs{fixedPhase: true, successes: 2, spacing: time.Second})
 	te := newTestEngine(t, &Config{Schedule: quarantine(time.Minute)}, cfg, "a1", "a2", "a3", "a4", "a5", "b1")
 	te.s.schedule.spacing = 0
 	te.s.schedule.spacingJitter = 0

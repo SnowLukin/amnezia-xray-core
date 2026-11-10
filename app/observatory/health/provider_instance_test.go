@@ -126,7 +126,7 @@ func TestProviderRefreshInRunningCore(t *testing.T) {
 	      "triggers":{"exhausted":{"isEnabled":false},"leaseRenewal":{},"backendSchedule":{"isEnabled":false}},
 	      "limits": {"urgentMinInterval": "10ms"},
 	      "isPlainHttpAllowed": true,
-	      "apply": {"balancers":["auto"], "tagPrefix": "p-", "drainTimeout": "300ms", "allowedProtocols": ["freedom", "blackhole", "vless", "nosuch"]}
+	      "apply": {"balancers":["auto"], "tagPrefix": "p-", "drainTimeout": "300ms", "allowedProtocols": ["freedom", "blackhole", "vless"]}
 	    }]
 	  }
 	}`
@@ -208,7 +208,7 @@ func TestProviderRefreshInRunningCore(t *testing.T) {
 	}
 	// A set that does not build changes nothing either. The failed host
 	// request is retried after the backoff without another request.
-	srv.set(`{"outbounds": [{"tag": "x4", "selection": {"balancer": "auto", "probe": "check", "cost": 1}, "protocol": "freedom"}, {"tag": "x5", "selection": {"balancer": "auto", "probe": "check", "cost": 1}, "protocol": "nosuch"}]}`)
+	srv.set(`{"outbounds": [{"tag": "x4", "selection": {"balancer": "auto", "probe": "check", "cost": 1}, "protocol": "freedom"}, {"tag": "x5", "selection": {"balancer": "auto", "probe": "check", "cost": 1}, "protocol": "vless"}]}`)
 	ev = w.until("provider_apply", nil)
 	if ev.Fields["is_ok"] != false || !strings.Contains(ev.Fields["error"].(string), "build") {
 		t.Fatalf("apply of a set that does not build %v", ev.Fields)

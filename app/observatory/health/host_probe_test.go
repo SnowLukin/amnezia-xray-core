@@ -59,8 +59,8 @@ func eventsOf(evs []Event, typ string) []Event {
 }
 
 func hostConfig(hp *HostProbesConfig) *Config {
-	return &Config{Schedule: &ScheduleConfig{IdleAfter: int64(time.Hour), Quarantine: &Backoff{InitialDelay: int64(time.Minute)},
-		HostProbes: hp}}
+	return &Config{Schedule: tune(&ScheduleConfig{
+		HostProbes: hp}, scheduleKnobs{idleAfter: time.Hour, quarantine: backoff{initial: time.Minute}})}
 }
 
 // A request without outbounds covers the chosen outbound, the usable
@@ -300,7 +300,7 @@ func TestHostProbeFailureKeepsThePin(t *testing.T) {
 // A host probe that passes while the outbound is suspected is a false alarm.
 func TestHostProbeClearsASuspicion(t *testing.T) {
 	cfg := hostConfig(nil)
-	cfg.Schedule.SuspectCooldown = int64(time.Minute)
+	knobsOf[scheduleKnobs](cfg.Schedule).suspectCooldown = time.Minute
 	te := newTestEngine(t, cfg, &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3)}, "a1", "b1")
 	te.ask(t, at(0), "a1")
 	jobs, _ := te.tick(at(0))
@@ -320,7 +320,7 @@ func TestHostProbeClearsASuspicion(t *testing.T) {
 // An exhausted balancer comes back once a host probe finds a candidate
 // working, here while no user traffic brings a recheck.
 func TestHostProbeRecoversAnExhaustedBalancer(t *testing.T) {
-	te := newTestEngine(t, &Config{Schedule: &ScheduleConfig{Quarantine: &Backoff{InitialDelay: int64(time.Minute)}}},
+	te := newTestEngine(t, &Config{Schedule: tune(&ScheduleConfig{}, scheduleKnobs{quarantine: backoff{initial: time.Minute}})},
 		&SelectorConfig{Paths: pathSpecs("a", 1, "b", 3)}, "a1", "b1")
 	te.failN(3, "a1", failDial, at(0))
 	te.run(t, at(time.Second), map[string]bool{"a1": false, "b1": false})
@@ -360,8 +360,9 @@ func TestHostProbeOfACheaperOutboundDoesNotReturn(t *testing.T) {
 // returnConfig lets host probes of an outbound run right after the probes of
 // a return to it.
 func returnConfig() *Config {
-	cfg := hostConfig(&HostProbesConfig{ReuseWindow: int64(time.Second)})
-	cfg.Schedule.Quarantine = &Backoff{InitialDelay: int64(30 * time.Second)}
+	cfg := hostConfig(nil)
+	k := knobsOf[scheduleKnobs](cfg.Schedule)
+	k.hostReuse, k.quarantine = time.Second, backoff{initial: 30 * time.Second}
 	cfg.Schedule.ProbesPerServerNamePerMinute = 20
 	cfg.Schedule.ProbesPerMinute = 60
 	return cfg
@@ -412,7 +413,7 @@ func TestHostProbeFailureAfterAReturnIsPenalized(t *testing.T) {
 // host probe changes nothing.
 func TestHostProbeFailureWaitsForTheNetworkCheck(t *testing.T) {
 	cfg := connectivityConfig()
-	cfg.Schedule = &ScheduleConfig{MaxConcurrentProbes: 2, IdleAfter: int64(time.Hour)}
+	cfg.Schedule = tune(&ScheduleConfig{MaxConcurrentProbes: 2}, scheduleKnobs{idleAfter: time.Hour})
 	te := newTestEngine(t, cfg, &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3)}, "a1", "b1")
 	suspectWeak(te, "a1", 0)
 	te.ask(t, at(3*time.Second), "a1")

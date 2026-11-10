@@ -15,7 +15,7 @@ func measurementFeatures() *FeatureConfig {
 	return &FeatureConfig{HostLabels: qualityScalar(true), LabelRequest: qualityScalar(true), PathLabels: qualityScalar(true), SessionLabels: qualityScalar(true), ProbeMeasurements: qualityScalar(true), Quality: qualityScalar(true), Events: qualityScalar(true), Report: qualityScalar(true), NetworkMemory: qualityScalar(true), MemoryPressure: qualityScalar(true), ProbeRequests: qualityScalar(true)}
 }
 func measurementConfig() *Config {
-	return &Config{Features: measurementFeatures(), Network: &NetworkConfig{MaxNetworks: 2}, LabelRequest: &LabelRequestConfig{Outbound: "direct", Destinations: []string{"http://127.0.0.1/whoami"}, Labels: map[string]string{"asn": "X-Network-Asn"}, RequestsPerHour: 6}, Schedule: &ScheduleConfig{IdleAfter: int64(time.Hour)}}
+	return &Config{Features: measurementFeatures(), Network: &NetworkConfig{MaxNetworks: 2}, LabelRequest: &LabelRequestConfig{Outbound: "direct", Destinations: []string{"http://127.0.0.1/whoami"}, Labels: map[string]string{"asn": "X-Network-Asn"}, RequestsPerHour: 6}, Schedule: tune(&ScheduleConfig{}, scheduleKnobs{idleAfter: time.Hour})}
 }
 func measurementEngine(t *testing.T) *testEngine {
 	e := newTestEngine(t, measurementConfig(), &SelectorConfig{NetworkChangeAction: NetworkChangeMode_IGNORE}, "a1", "b1")
@@ -288,7 +288,7 @@ func TestMeasurementBlockedRequestDoesNotDelayFailover(t *testing.T) {
 			cfg.Features = measurementFeatures()
 			cfg.LabelRequest = measurementConfig().LabelRequest
 		}
-		e := newTestEngine(t, cfg, &SelectorConfig{Paths: pathSpecs("a1", 1, "b1", 2), SkipProbeBeforeSwitch: true, NetworkChangeAction: NetworkChangeMode_IGNORE}, "a1", "b1")
+		e := newTestEngine(t, cfg, &SelectorConfig{Paths: pathSpecs("a1", 1, "b1", 2), Features: probeFirst(false), NetworkChangeAction: NetworkChangeMode_IGNORE}, "a1", "b1")
 		// The same salt in both runs, so the hashed network compares.
 		e.networkSalt = [16]byte{}
 		e.onNetworkChange("home", t0)

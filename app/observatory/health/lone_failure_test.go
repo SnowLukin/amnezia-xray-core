@@ -7,9 +7,9 @@ import (
 
 func newLoneEngine(t *testing.T) *testEngine {
 	t.Helper()
-	te := newTestEngine(t, &Config{Schedule: &ScheduleConfig{IdleAfter: int64(time.Hour)}},
-		&SelectorConfig{Paths: pathSpecs("a", 1, "b", 3), SkipProbeBeforeSwitch: true,
-			ReturnToCheaper: &ReturnToCheaperConfig{Interval: int64(time.Hour), SkipRandomPhase: true}}, "a1", "b1")
+	te := newTestEngine(t, &Config{Schedule: tune(&ScheduleConfig{}, scheduleKnobs{idleAfter: time.Hour})},
+		&SelectorConfig{Paths: pathSpecs("a", 1, "b", 3), Features: probeFirst(false),
+			ReturnToCheaper: tune(&ReturnToCheaperConfig{Interval: int64(time.Hour)}, returnKnobs{fixedPhase: true})}, "a1", "b1")
 	te.onSuccess("a1", at(0))
 	return te
 }
@@ -229,7 +229,7 @@ func TestLoneFailureOrdinaryStrongEvidenceWins(t *testing.T) {
 
 func TestLoneFailureSelectedByAnotherBalancerAndIdle(t *testing.T) {
 	te := newLoneEngine(t)
-	other := te.addSelector("other", legacyScenarioSelector(&SelectorConfig{Paths: []*PathDefinition{{Tag: "a1", Cost: 1}}, SkipProbeBeforeSwitch: true}, nil))
+	other := te.addSelector("other", legacyScenarioSelector(&SelectorConfig{Paths: []*PathDefinition{{Tag: "a1", Cost: 1}}, Features: probeFirst(false)}, nil))
 	te.updateCandidates(other, []string{"a1"}, at(0))
 	te.switchTo(te.sel, "b1", "host", at(time.Minute))
 	te.s.schedule.idleAfter = time.Minute
@@ -245,7 +245,7 @@ func TestLoneFailureSettingsPresence(t *testing.T) {
 		want time.Duration
 	}{
 		{&Config{}, 0},
-		{&Config{Features: &FeatureConfig{LoneFailureProbe: v2Bool(true)}, Passive: &PassiveConfig{}}, 2 * time.Minute},
+		{&Config{Features: &FeatureConfig{LoneFailureProbe: v2Bool(true)}}, 2 * time.Minute},
 		{&Config{Features: &FeatureConfig{LoneFailureProbe: v2Bool(false)}, Passive: &PassiveConfig{LoneFailureAfter: int64(time.Minute)}}, 0},
 		{&Config{Features: &FeatureConfig{LoneFailureProbe: v2Bool(true)}, Passive: &PassiveConfig{LoneFailureAfter: int64(4 * time.Minute)}}, 4 * time.Minute},
 	} {
@@ -298,7 +298,7 @@ func TestLoneFailureReportWindows(t *testing.T) {
 }
 
 func TestLoneFailurePriorityAndBudgets(t *testing.T) {
-	te := newTestEngine(t, parallelConfig(3), &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3, "c", 5), SkipProbeBeforeSwitch: true}, "a1", "b1", "c1")
+	te := newTestEngine(t, parallelConfig(3), &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3, "c", 5), Features: probeFirst(false)}, "a1", "b1", "c1")
 	te.onSuccess("a1", at(0))
 	te.fail("a1", failDial, "", at(3*time.Minute))
 	te.enqueue("b1", reasonRecheck, "", at(3*time.Minute))
@@ -317,7 +317,7 @@ func TestLoneFailurePriorityAndBudgets(t *testing.T) {
 		t.Fatalf("lone ignored rate budget: jobs %+v, next %v", jobs, next)
 	}
 
-	shared := newTestEngine(t, parallelConfig(2), &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3), SkipProbeBeforeSwitch: true}, "a1", "b1")
+	shared := newTestEngine(t, parallelConfig(2), &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3), Features: probeFirst(false)}, "a1", "b1")
 	shared.serverNames(map[string]string{"a1": "same", "b1": "same"})
 	shared.onSuccess("a1", at(0))
 	shared.fail("a1", failDial, "", at(3*time.Minute))

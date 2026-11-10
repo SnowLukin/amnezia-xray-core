@@ -55,12 +55,11 @@ func TestRequestProbeInRunningCore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	tuneInstanceProbeSpacing(t, cfg)
 	inst, err := core.New(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := health.TuneInstanceScenario(inst, cfg); err != nil {
+	if err := health.TuneInstance(inst, health.InstanceKnobs{ProbeSpacing: 10 * time.Millisecond}); err != nil {
 		t.Fatal(err)
 	}
 	if err := inst.Start(); err != nil {

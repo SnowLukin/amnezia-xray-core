@@ -19,11 +19,9 @@ func probeOnlyTestEngine(t *testing.T, keep int, paths ...*PathDefinition) *test
 	for _, p := range paths {
 		tags = append(tags, p.Tag)
 	}
-	te := newTestEngine(t, &Config{Schedule: &ScheduleConfig{
-		MaxConcurrentProbes: 4, MinProbeInterval: int64(time.Second), ProbeJitterFraction: -1,
-		IdleAfter: int64(time.Hour), ProbesPerMinute: 100, ProbesPerServerNamePerMinute: 100,
-		ProbeOnly: &ProbeOnlyConfig{KeepVerified: int32(keep), RecheckInterval: int64(15 * time.Minute)},
-	}}, &SelectorConfig{Paths: paths}, tags...)
+	te := newTestEngine(t, &Config{Schedule: tune(&ScheduleConfig{
+		MaxConcurrentProbes: 4, ProbesPerMinute: 100, ProbesPerServerNamePerMinute: 100,
+		ProbeOnly: &ProbeOnlyConfig{KeepVerified: int32(keep), RecheckInterval: int64(15 * time.Minute)}}, scheduleKnobs{spacing: time.Second, spacingJitter: -1, idleAfter: time.Hour})}, &SelectorConfig{Paths: paths}, tags...)
 	te.providers = append(te.providers, newProvider(&providerSettings{tag: "source", balancer: "auto", minHealthy: 2}))
 	return te
 }

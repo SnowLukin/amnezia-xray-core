@@ -206,17 +206,6 @@ func (o *Observer) probe(tag string, ps *probeSettings) probeResult {
 
 func (o *Observer) probeWithContext(ctx context.Context, tag string, ps *probeSettings) probeResult {
 	steps := ps.steps
-	if len(steps) == 0 {
-		name := ps.name
-		if name == "" {
-			name = "default"
-		}
-		steps = []probeStepSettings{{
-			name: name, destinations: []string{ps.destination}, method: ps.method,
-			expectStatus: ps.expectStatus, minBytes: ps.minBytes,
-			timeout: ps.timeout, progressTimeout: ps.progressTimeout,
-		}}
-	}
 	result := probeResult{profile: ps.name, state: statusUp}
 	for i := range steps {
 		step, attempt := o.probeStepWithContext(ctx, tag, &steps[i])

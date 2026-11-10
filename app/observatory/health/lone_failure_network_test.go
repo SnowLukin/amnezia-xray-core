@@ -8,9 +8,9 @@ import (
 func newNetworkLoneEngine(t *testing.T, concurrent int32) *testEngine {
 	t.Helper()
 	cfg := connectivityConfig()
-	cfg.Schedule = &ScheduleConfig{IdleAfter: int64(time.Hour), MaxConcurrentProbes: concurrent}
+	cfg.Schedule = tune(&ScheduleConfig{MaxConcurrentProbes: concurrent}, scheduleKnobs{idleAfter: time.Hour})
 	return newTestEngine(t, cfg, &SelectorConfig{
-		Paths: pathSpecs("a1", 1, "b1", 3), SkipProbeBeforeSwitch: true,
+		Paths: pathSpecs("a1", 1, "b1", 3), Features: probeFirst(false),
 		NetworkChangeAction: NetworkChangeMode_FORGET,
 	}, "a1", "b1")
 }

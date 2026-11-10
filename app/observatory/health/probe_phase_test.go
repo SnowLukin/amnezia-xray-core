@@ -73,13 +73,14 @@ func probePhaseObserver(dialTimeout time.Duration, d *probePhaseDispatcher) *Obs
 }
 
 func probePhaseSettings(progress, timeout time.Duration, minBytes int64) *probeSettings {
-	return &probeSettings{
-		destination:     "http://example.test/check",
+	return &probeSettings{steps: []probeStepSettings{{
+		name:            "default",
+		destinations:    []string{"http://example.test/check"},
 		method:          http.MethodGet,
 		minBytes:        minBytes,
 		progressTimeout: progress,
 		timeout:         timeout,
-	}
+	}}}
 }
 
 func serveProbeChunks(c gonet.Conn, firstByteDelay, chunkDelay time.Duration, chunks int) {

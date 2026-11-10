@@ -154,18 +154,14 @@ func (r *testRelay) waitQuiet(t testing.TB, d time.Duration) {
 	}
 }
 
-// testPassive judges with little traffic and much patience: under load, the
-// race detector slows the cryptography of the tunnel down to seconds a
-// handshake. A test shortens the timeout it is about. A path never turns
-// suspect, so the observer ends no connection of the tests.
+// testPassive judges with much patience: under load, the race detector slows
+// the cryptography of the tunnel down to seconds a handshake. A test shortens
+// the timeout it is about.
 func testPassive() *health.PassiveConfig {
 	return &health.PassiveConfig{
-		DialTimeout:       int64(8 * time.Second),
-		FirstByteTimeout:  int64(10 * time.Second),
-		StallTimeout:      int64(10 * time.Second),
-		SuccessBytes:      testSuccessBytes,
-		SweepInterval:     int64(50 * time.Millisecond),
-		FailuresToSuspect: 100,
+		DialTimeout:      int64(8 * time.Second),
+		FirstByteTimeout: int64(10 * time.Second),
+		StallTimeout:     int64(10 * time.Second),
 	}
 }
 

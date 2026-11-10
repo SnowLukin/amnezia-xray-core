@@ -121,12 +121,9 @@ const (
 	maxBaseVersion = 256
 
 	defaultProviderTimeout      = 10 * time.Second
-	defaultRefreshInterval      = 2 * time.Hour
 	defaultRefreshJitter        = 0.2
 	defaultMinHealthy           = 2
-	defaultCostAboveAfter       = 15 * time.Minute
 	defaultMaxSetAge            = 6 * time.Hour
-	defaultNetworkSettle        = 30 * time.Second
 	defaultRefreshMinInterval   = 5 * time.Minute
 	defaultExhaustedMinInterval = 30 * time.Second
 	defaultRefreshesPerHour     = 6
@@ -172,7 +169,6 @@ var (
 	// that long.
 	defaultQuarantine   = backoff{initial: 2 * time.Minute, multiplier: 2, max: 30 * time.Minute, jitter: 0.3}
 	defaultConnRecheck  = backoff{initial: 2 * time.Second, multiplier: 2, max: 30 * time.Second, jitter: 0.2}
-	defaultExpectStatus = []int32{}
 	defaultRefreshRetry = backoff{initial: 30 * time.Second, multiplier: 2, max: 30 * time.Minute, jitter: 0.3}
 )
 
@@ -213,21 +209,13 @@ type passiveSettings struct {
 	partialStallAge    time.Duration
 	stallMinWrite      int64
 	partialMinBytes    int64
-	keepPending        bool
-	keepSilent         bool
 	skipQuality        bool
 }
 
 type probeSettings struct {
-	isProbeOnly     bool
-	name            string
-	destination     string
-	method          string
-	expectStatus    []int32
-	minBytes        int64
-	timeout         time.Duration
-	progressTimeout time.Duration
-	steps           []probeStepSettings
+	isProbeOnly bool
+	name        string
+	steps       []probeStepSettings
 }
 
 type probeStepSettings struct {
@@ -243,34 +231,19 @@ type probeStepSettings struct {
 	isRace bool
 }
 
-func (p *probeSettings) statusOK(code int) bool {
-	return probeStatusOK(p.expectStatus, code)
-}
-
 func (p *probeStepSettings) statusOK(code int) bool {
-	return probeStatusOK(p.expectStatus, code)
-}
-
-func probeStatusOK(expected []int32, code int) bool {
-	if len(expected) == 0 {
+	if len(p.expectStatus) == 0 {
 		return code >= 200 && code < 300
 	}
-	for _, s := range expected {
-		if int(s) == code {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(p.expectStatus, int32(code))
 }
 
 type connectivitySettings struct {
 	destinations []string
 	outbound     string
-	destination  string
 	timeout      time.Duration
 	recheck      backoff
 	maxPause     time.Duration
-	witnesses    []string
 }
 
 type scheduleSettings struct {
@@ -316,26 +289,25 @@ type censusSettings struct {
 }
 
 type settings struct {
-	census            *censusSettings
-	labelRequest      *labelRequestSettings
-	reportLabels      map[string]string
-	disabledProviders map[string]bool
-	features          featureSettings
-	trace             *traceSettings
-	witnesses         []string
-	udpProbe          *udpSettings
-	wake              wakeSettings
-	paths             sync.Map
-	baseOrder         map[string][]string
-	passive           passiveSettings
-	probes            []probeSettings
-	connectivity      *connectivitySettings
-	schedule          scheduleSettings
-	maxEvents         int
-	maxBytes          int
-	remember          bool
-	maxNetworks       int
-	providers         []*providerSettings
+	census       *censusSettings
+	labelRequest *labelRequestSettings
+	reportLabels map[string]string
+	features     featureSettings
+	trace        *traceSettings
+	witnesses    []string
+	udpProbe     *udpSettings
+	wake         wakeSettings
+	paths        sync.Map
+	baseOrder    map[string][]string
+	passive      passiveSettings
+	probes       []probeSettings
+	connectivity *connectivitySettings
+	schedule     scheduleSettings
+	maxEvents    int
+	maxBytes     int
+	remember     bool
+	maxNetworks  int
+	providers    []*providerSettings
 	// Zero turns the periodic report off.
 	reportInterval   time.Duration
 	reportQuietShare float64
@@ -352,7 +324,6 @@ type providerSettings struct {
 	probeOnlyRoads  bool
 	plainHTTP       bool
 	leaseRenewal    bool
-	enabled         bool
 	backendSchedule bool
 	expiredFallback bool
 	tag             string
@@ -427,18 +398,6 @@ func optionalNum(v int32, def int) int {
 	return num(v, def)
 }
 
-// Singular protobuf carriers are retained for in-process callers; JSON only
-// exposes lists. Copy lists so normalization cannot alias caller-owned slices.
-func configuredAddresses(values []string, legacy string) []string {
-	if len(values) > 0 {
-		return slices.Clone(values)
-	}
-	if legacy != "" {
-		return []string{legacy}
-	}
-	return nil
-}
-
 func newProviderSettings(c *ProviderConfig) *providerSettings {
 	f := c.GetFeatures()
 	if f == nil {
@@ -454,13 +413,11 @@ func newProviderSettings(c *ProviderConfig) *providerSettings {
 	p := &providerSettings{
 		probeOnlyRoads:  c.GetProbeOnlyRoads(),
 		plainHTTP:       c.GetIsPlainHttpAllowed(),
-		enabled:         featureValue(c.IsEnabled, false),
 		periodic:        featureValue(f.Periodic, false),
 		backendSchedule: featureValue(f.BackendSchedule, true),
 		leaseRenewal:    featureValue(f.LeaseRenewal, true),
 		expiredFallback: featureValue(f.ExpiredLeaseFallback, true),
 		tag:             c.GetTag(),
-		url:             c.GetUrl(),
 		urls:            slices.Clone(c.GetUrls()),
 		method:          http.MethodPost,
 		headers:         c.GetHeaders(),
@@ -471,12 +428,10 @@ func newProviderSettings(c *ProviderConfig) *providerSettings {
 		// The JSON loader refuses a longer one; an answer cannot name it.
 		baseVersion: cutText(c.GetBaseVersion(), maxBaseVersion),
 
-		interval:      optional(t.GetInterval(), defaultRefreshInterval),
 		minHealthy:    optionalNum(t.GetMinHealthyOutbounds(), defaultMinHealthy),
 		whenExhausted: featureValue(f.Exhausted, true),
 		maxAge:        optional(t.GetMaxAge(), defaultMaxSetAge),
 		onNetwork:     t.GetNetworkChangeMode(),
-		networkSettle: presentDelay(t.NetworkSettleDelay, defaultNetworkSettle),
 
 		minInterval:          optional(l.GetMinInterval(), defaultRefreshMinInterval),
 		exhaustedMinInterval: optional(l.GetExhaustedMinInterval(), defaultExhaustedMinInterval),
@@ -493,17 +448,10 @@ func newProviderSettings(c *ProviderConfig) *providerSettings {
 	if len(p.balancers) > 0 {
 		p.balancer = p.balancers[0]
 	}
-	p.interval, p.intervalMax = configuredRange(t.GetInterval(), t.IntervalMax, durationRange{96 * time.Minute, 144 * time.Minute})
-	p.networkSettle, p.networkSettleMax = configuredRange(t.GetNetworkSettleDelay(), t.NetworkSettleMax, durationRange{30 * time.Second, 90 * time.Second})
-	if t.NetworkSettleDelay != nil && t.NetworkSettleMax == nil {
-		p.networkSettle = time.Duration(*t.NetworkSettleDelay)
-		p.networkSettleMax = p.networkSettle
-	}
+	p.interval, p.intervalMax = protoRange(t.GetInterval(), durationRange{96 * time.Minute, 144 * time.Minute}).bounds()
+	p.networkSettle, p.networkSettleMax = protoRange(t.GetNetworkSettle(), durationRange{30 * time.Second, 90 * time.Second}).bounds()
 	p.exhaustedDelay = protoRange(t.GetExhaustedDelay(), durationRange{0, 10 * time.Second})
 	p.minHealthyDelay = protoRange(t.GetMinHealthyDelay(), durationRange{0, 30 * time.Second})
-	if len(p.urls) == 0 && p.url != "" {
-		p.urls = []string{p.url}
-	}
 	if len(p.urls) > 0 {
 		p.url = p.urls[0]
 	}
@@ -523,21 +471,14 @@ func newProviderSettings(c *ProviderConfig) *providerSettings {
 	if ca := t.GetWhenCostAbove(); ca != nil {
 		p.costAbove = true
 		p.costThreshold = float64(ca.GetCost())
-		p.costAboveAfter, p.costAboveAfterMax = configuredRange(ca.GetAfter(), ca.AfterMax, durationRange{15 * time.Minute, 25 * time.Minute})
-		if ca.After != nil {
-			p.costAboveAfter = time.Duration(max(ca.GetAfter(), 0))
-			if ca.AfterMax == nil {
-				p.costAboveAfterMax = p.costAboveAfter
-			}
-		}
+		p.costAboveAfter, p.costAboveAfterMax = protoRange(ca.GetAfter(), durationRange{15 * time.Minute, 25 * time.Minute}).bounds()
 	}
 	if ex := t.GetExpiry(); ex.GetRenewAtFraction() >= 0 {
 		p.renewAt = min(fnum(ex.GetRenewAtFraction(), defaultRenewAt), maxRenewAt)
 		p.urgentAt = min(max(fnum(ex.GetUrgentAtFraction(), defaultUrgentAt), p.renewAt), maxRenewAt)
 		p.renewJitter = defaultRenewJitter
 	}
-	if !featureValue(f.Periodic, false) || (t.GetInterval() < 0 && t.IntervalMax == nil) {
-		p.periodic = false
+	if !p.periodic {
 		p.interval, p.intervalMax = 0, 0
 	}
 	if !featureValue(f.MinHealthy, false) {
@@ -602,18 +543,6 @@ func jitter(v float64, def float64) float64 {
 	return v
 }
 
-func toBackoff(b *Backoff, def backoff) backoff {
-	if b == nil {
-		return def
-	}
-	return backoff{
-		initial:    dur(b.InitialDelay, def.initial),
-		multiplier: fnum(b.Multiplier, def.multiplier),
-		max:        dur(b.MaxDelay, def.max),
-		jitter:     jitter(b.JitterFraction, def.jitter),
-	}
-}
-
 func newSettings(c *Config) *settings {
 	s := &settings{baseOrder: map[string][]string{}, features: newFeatureSettings(c.GetFeatures())}
 	if tc := c.GetTrace(); tc != nil {
@@ -635,7 +564,7 @@ func newSettings(c *Config) *settings {
 		s.reportLabels = filterLabels(c.GetSessionLabels(), 8)
 	}
 	if lr := c.GetLabelRequest(); s.features.LabelRequest && lr != nil {
-		s.labelRequest = &labelRequestSettings{outbound: lr.Outbound, destinations: configuredAddresses(lr.GetDestinations(), lr.GetDestination()), labels: maps.Clone(lr.Labels), timeout: dur(lr.Timeout, 4*time.Second), requestsPerHour: num(lr.RequestsPerHour, 6)}
+		s.labelRequest = &labelRequestSettings{outbound: lr.Outbound, destinations: slices.Clone(lr.GetDestinations()), labels: maps.Clone(lr.Labels), timeout: dur(lr.Timeout, 4*time.Second), requestsPerHour: num(lr.RequestsPerHour, 6)}
 	}
 	if u := c.GetUdpProbe(); s.features.UdpProbes && u != nil {
 		s.udpProbe = &udpSettings{requests: num(u.Requests, 5), interval: dur(u.Interval, 200*time.Millisecond), timeout: dur(u.Timeout, 2*time.Second), perHour: num(u.PerHour, 6)}
@@ -665,8 +594,6 @@ func newSettings(c *Config) *settings {
 		partialStallAge:    dur(p.GetPartialStallMaxAge(), defaultPartialStallAge),
 		stallMinWrite:      defaultStallMinWrite,
 		partialMinBytes:    defaultPartialMinBytes,
-		keepPending:        false,
-		keepSilent:         false,
 		skipQuality:        !s.features.Quality,
 	}
 	if !s.features.PartialStalls {
@@ -679,52 +606,24 @@ func newSettings(c *Config) *settings {
 		s.passive.loneFailureAfter = 0
 	}
 	for _, pp := range c.GetProbes() {
-		profile := probeSettings{
-			name:            pp.GetName(),
-			destination:     pp.GetDestination(),
-			method:          strings.ToUpper(stringOr(pp.GetMethod(), "GET")),
-			expectStatus:    pp.GetExpectedStatuses(),
-			minBytes:        pp.GetMinBytes(),
-			timeout:         min(dur(pp.GetTimeout(), defaultProbeTimeout), maxProbeTimeout),
-			progressTimeout: min(dur(pp.GetProgressTimeout(), defaultProbeProgress), maxProbeTimeout),
-		}
-		if len(pp.GetSteps()) == 0 {
-			profile.steps = []probeStepSettings{{
-				name: pp.GetName(), destinations: []string{profile.destination},
-				method: profile.method, expectStatus: profile.expectStatus, minBytes: profile.minBytes,
-				timeout: profile.timeout, progressTimeout: profile.progressTimeout,
-			}}
-		} else {
-			for _, step := range pp.GetSteps() {
-				profile.steps = append(profile.steps, probeStepSettings{
-					name: step.GetName(), destinations: step.GetDestinations(), isOptional: step.GetIsOptional(),
-					method: strings.ToUpper(stringOr(step.GetMethod(), "GET")), expectStatus: step.GetExpectedStatuses(),
-					minBytes: step.GetMinBytes(), timeout: min(dur(step.GetTimeout(), defaultProbeTimeout), maxProbeTimeout),
-					progressTimeout: min(dur(step.GetProgressTimeout(), defaultProbeProgress), maxProbeTimeout),
-				})
-			}
-			first := profile.steps[0]
-			profile.destination = ""
-			if len(first.destinations) > 0 {
-				profile.destination = first.destinations[0]
-			}
-			profile.method = first.method
-			profile.expectStatus = first.expectStatus
-			profile.minBytes = first.minBytes
-			profile.timeout = first.timeout
-			profile.progressTimeout = first.progressTimeout
+		profile := probeSettings{name: pp.GetName()}
+		for _, step := range pp.GetSteps() {
+			profile.steps = append(profile.steps, probeStepSettings{
+				name: step.GetName(), destinations: step.GetDestinations(), isOptional: step.GetIsOptional(),
+				method: strings.ToUpper(stringOr(step.GetMethod(), "GET")), expectStatus: step.GetExpectedStatuses(),
+				minBytes: step.GetMinBytes(), timeout: min(dur(step.GetTimeout(), defaultProbeTimeout), maxProbeTimeout),
+				progressTimeout: min(dur(step.GetProgressTimeout(), defaultProbeProgress), maxProbeTimeout),
+			})
 		}
 		s.probes = append(s.probes, profile)
 	}
-	if cc := c.GetConnectivity(); s.features.Connectivity && cc != nil && cc.GetOutbound() != "" && (len(cc.GetDestinations()) > 0 || cc.GetDestination() != "") {
+	if cc := c.GetConnectivity(); s.features.Connectivity && cc != nil && cc.GetOutbound() != "" && len(cc.GetDestinations()) > 0 {
 		s.connectivity = &connectivitySettings{
 			outbound:     cc.GetOutbound(),
-			destination:  cc.GetDestination(),
-			destinations: configuredAddresses(cc.GetDestinations(), cc.GetDestination()),
+			destinations: slices.Clone(cc.GetDestinations()),
 			timeout:      min(dur(cc.GetTimeout(), defaultConnectivityTimeout), maxProbeTimeout),
 			recheck:      defaultConnRecheck,
 			maxPause:     defaultMaxPause,
-			witnesses:    cc.GetWitnesses(),
 		}
 	}
 	if s.features.Witnesses {
@@ -777,13 +676,6 @@ func newSettings(c *Config) *settings {
 	s.remember = s.features.NetworkMemory
 	s.maxNetworks = min(num(c.GetNetwork().GetMaxNetworks(), defaultMaxNetworks), maxNetworks)
 	for _, pc := range c.GetProviders() {
-		if !featureValue(pc.IsEnabled, false) {
-			if s.disabledProviders == nil {
-				s.disabledProviders = make(map[string]bool)
-			}
-			s.disabledProviders[pc.GetTag()] = true
-			continue
-		}
 		ps := newProviderSettings(pc)
 		s.providers = append(s.providers, ps)
 	}
@@ -827,9 +719,9 @@ func (s *settings) probeFor(tag string) *probeSettings {
 		}
 	}
 	// No implicit third-party destination: JSON selections require a profile.
-	// Direct protobuf callers without one receive an inert profile.
-	return &probeSettings{isProbeOnly: path.isProbeOnly, method: "GET",
-		timeout: defaultProbeTimeout, progressTimeout: defaultProbeProgress}
+	// Direct protobuf callers without one receive a profile that always fails.
+	return &probeSettings{isProbeOnly: path.isProbeOnly, steps: []probeStepSettings{{name: "default",
+		destinations: []string{""}, method: "GET", timeout: defaultProbeTimeout, progressTimeout: defaultProbeProgress}}}
 }
 
 type selectorSettings struct {

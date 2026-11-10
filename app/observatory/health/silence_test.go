@@ -3,6 +3,7 @@ package health
 import (
 	"context"
 	"encoding/json"
+	"google.golang.org/protobuf/proto"
 	"testing"
 	"time"
 
@@ -20,14 +21,14 @@ type silenceFixture struct {
 	conns uint32
 }
 
-func newSilenceFixture(t *testing.T, passive *PassiveConfig, sc *SelectorConfig) *silenceFixture {
+func newSilenceFixture(t *testing.T, sc *SelectorConfig) *silenceFixture {
 	t.Helper()
 	if sc == nil {
-		sc = &SelectorConfig{Paths: pathSpecs("a1", 1, "b1", 3), SkipProbeBeforeSwitch: true}
+		sc = &SelectorConfig{Paths: pathSpecs("a1", 1, "b1", 3), Features: probeFirst(false)}
 	}
 	declared := fixtureSelector(sc, []string{"a1", "b1"})
-	cfg := &Config{Paths: declared.Paths, Passive: passive,
-		Schedule: &ScheduleConfig{IdleAfter: int64(time.Hour)}}
+	cfg := &Config{Paths: declared.Paths,
+		Schedule: tune(&ScheduleConfig{}, scheduleKnobs{idleAfter: time.Hour})}
 	f := &silenceFixture{t: t, o: newObserver(context.Background(), legacyScenarioConfig(cfg)), clk: &fakeClock{t: t0}, ended: map[string]bool{}}
 	t.Cleanup(func() { f.o.Close() })
 	f.o.s = legacyScenarioSettings(cfg)
@@ -162,7 +163,7 @@ func (f *silenceFixture) check(want map[string]bool) {
 // whose time the tracker takes, and so are those of other outbounds and
 // those that started after the decision. One timer, then none.
 func TestSilentConnectionsEndStallTimeoutAfterADown(t *testing.T) {
-	f := newSilenceFixture(t, nil, nil)
+	f := newSilenceFixture(t, nil)
 	f.open("a1", "quiet", 100)
 	udp, _ := f.open("a1", "quiet udp", 0)
 	udp.udp = true
@@ -232,8 +233,8 @@ func TestSilentConnectionsEndStallTimeoutAfterADown(t *testing.T) {
 // observer probes, of an outbound a balancer chooses or of one none does.
 // A connection that received anything since the decision is kept.
 func TestSilentConnectionsEndAfterEveryDown(t *testing.T) {
-	confirmAlways := &SelectorConfig{Paths: pathSpecs("a1", 1, "b1", 3), SkipProbeBeforeSwitch: true, ConfirmWithProbe: ConfirmMode_ALWAYS}
-	confirmNever := &SelectorConfig{Paths: pathSpecs("a1", 1, "b1", 3), SkipProbeBeforeSwitch: true, ConfirmWithProbe: ConfirmMode_NEVER}
+	confirmAlways := &SelectorConfig{Paths: pathSpecs("a1", 1, "b1", 3), Features: probeFirst(false), ConfirmWithProbe: ConfirmMode_ALWAYS}
+	confirmNever := &SelectorConfig{Paths: pathSpecs("a1", 1, "b1", 3), Features: probeFirst(false), ConfirmWithProbe: ConfirmMode_NEVER}
 	// confirmed fails the probe that confirms the suspicion.
 	confirmed := func(fail func(*silenceFixture)) func(*silenceFixture) {
 		return func(f *silenceFixture) {
@@ -273,7 +274,7 @@ func TestSilentConnectionsEndAfterEveryDown(t *testing.T) {
 		{name: "host probe", left: true, decide: probe(reasonHost), reason: "host_probe"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			f := newSilenceFixture(t, nil, tc.sc)
+			f := newSilenceFixture(t, tc.sc)
 			if tc.left {
 				f.leave()
 			}
@@ -330,11 +331,11 @@ func TestSilenceKeepsConnectionsWhenItProvesNothing(t *testing.T) {
 	// The probe confirming weak evidence when strong evidence came.
 	var confirming *probeJob
 	for _, tc := range []struct {
-		name    string
-		passive *PassiveConfig
-		left    bool
-		decide  func(*silenceFixture)
-		between func(*silenceFixture)
+		name       string
+		keepSilent bool
+		left       bool
+		decide     func(*silenceFixture)
+		between    func(*silenceFixture)
 	}{
 		{name: "back up", decide: strong, between: func(f *silenceFixture) {
 			f.engine(func(e *engine) { e.markUp(e.path("a1"), "probe", f.clk.now()) })
@@ -388,12 +389,17 @@ func TestSilenceKeepsConnectionsWhenItProvesNothing(t *testing.T) {
 		{name: "network changed after a probe", left: true, decide: probe, between: func(f *silenceFixture) {
 			f.engine(func(e *engine) { e.onNetworkChange("lte", f.clk.now()) })
 		}},
-		{name: "shouldKeepSilentOnDown", passive: &PassiveConfig{ShouldKeepSilentOnDown: true}, decide: strong},
-		{name: "shouldKeepSilentOnDown after a probe", passive: &PassiveConfig{ShouldKeepSilentOnDown: true},
+		{name: "closeSilent off", keepSilent: true, decide: strong},
+		{name: "closeSilent off after a probe", keepSilent: true,
 			left: true, decide: probe},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			f := newSilenceFixture(t, tc.passive, nil)
+			var sc *SelectorConfig
+			if tc.keepSilent {
+				sc = &SelectorConfig{Paths: pathSpecs("a1", 1, "b1", 3),
+					Features: &SelectorFeatureConfig{ProbeBeforeSwitch: proto.Bool(false), CloseSilent: proto.Bool(false)}}
+			}
+			f := newSilenceFixture(t, sc)
 			if tc.left {
 				f.leave()
 			}
@@ -427,7 +433,7 @@ func TestSilenceKeepsConnectionsWhenItProvesNothing(t *testing.T) {
 // it: the check waits for the balancer to move off, without a timer, and
 // runs then.
 func TestSilenceWaitsForTheFailover(t *testing.T) {
-	f := newSilenceFixture(t, nil, &SelectorConfig{Paths: pathSpecs("a1", 1, "b1", 3)})
+	f := newSilenceFixture(t, &SelectorConfig{Paths: pathSpecs("a1", 1, "b1", 3)})
 	f.open("a1", "quiet", 100)
 	f.clk.advance(time.Second)
 	decided := f.clk.now()
@@ -454,7 +460,7 @@ func TestSilenceWaitsForTheFailover(t *testing.T) {
 	if evs := f.events("pending_closed"); len(evs) != 1 || evs[0].Fields["is_silent"] != true {
 		t.Fatalf("events %+v, want the silent close at the switch", evs)
 	}
-	held := newSilenceFixture(t, nil, &SelectorConfig{Paths: pathSpecs("a1", 1, "b1", 3)})
+	held := newSilenceFixture(t, &SelectorConfig{Paths: pathSpecs("a1", 1, "b1", 3)})
 	held.open("a1", "quiet", 100)
 	held.clk.advance(time.Second)
 	held.failStrong("a1")
@@ -484,7 +490,7 @@ func TestSilenceOfSplicedConnectionsByTheKernel(t *testing.T) {
 		t.Skip("the kernel does not report received bytes here")
 	}
 	talking, srv := loopbackPair(t, 10*1024)
-	f := newSilenceFixture(t, nil, nil)
+	f := newSilenceFixture(t, nil)
 	splice := func(c net.Conn, name string) {
 		tr := f.o.StartDial(context.Background(), "a1", net.Destination{}, func() { f.ended[name] = true }).(*connTracker)
 		r, w := tr.Dialed(c, nil, nil, nil)

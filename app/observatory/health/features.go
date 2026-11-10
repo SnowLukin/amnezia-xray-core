@@ -177,7 +177,7 @@ func (c *Config) ValidateFeatures() error {
 		return fmt.Errorf("healthObservatory.network.witnesses.outbounds must be nonempty when witnesses")
 	}
 	if f.Connectivity && (c.GetConnectivity().GetOutbound() == "" || len(c.GetConnectivity().GetDestinations()) == 0) {
-		return fmt.Errorf("healthObservatory.network.connectivity requires outbound and destinations")
+		return fmt.Errorf("healthObservatory.network.connectivity requires .outbound and .destinations")
 	}
 	if cc := c.GetConnectivity(); cc != nil {
 		if len(cc.Destinations) > 4 {

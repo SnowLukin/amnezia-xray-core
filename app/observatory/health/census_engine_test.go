@@ -16,7 +16,7 @@ func censusTestEngine(t *testing.T, fraction float64, paths ...*PathDefinition) 
 	}
 	cfg := &Config{Paths: paths, Census: &CensusConfig{SampleFraction: fraction, StartAfter: int64(time.Second)},
 		Features: &FeatureConfig{Report: v2Bool(true)},
-		Schedule: &ScheduleConfig{IdleAfter: int64(time.Hour), MaxConcurrentProbes: 4, ProbesPerMinute: 100, ProbesPerServerNamePerMinute: 3},
+		Schedule: tune(&ScheduleConfig{MaxConcurrentProbes: 4, ProbesPerMinute: 100, ProbesPerServerNamePerMinute: 3}, scheduleKnobs{idleAfter: time.Hour}),
 		Probes:   []*ProbeProfile{{Name: "full", Steps: []*ProbeStep{{Name: "mandatory", Destinations: []string{"http://probe.test/"}}, {Name: "optional", IsOptional: true, Destinations: []string{"http://optional.test/"}}}}}}
 	for _, p := range paths {
 		p.Probe = "full"

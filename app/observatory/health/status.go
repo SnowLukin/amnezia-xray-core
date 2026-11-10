@@ -380,8 +380,5 @@ func (e *engine) effectiveFeatures() map[string]bool {
 		flags[prefix+"backend_schedule"] = p.cfg.backendSchedule
 		flags[prefix+"expired_lease_fallback"] = p.cfg.expiredFallback
 	}
-	for tag := range e.s.disabledProviders {
-		flags["providers."+tag+".is_enabled"] = false
-	}
 	return flags
 }

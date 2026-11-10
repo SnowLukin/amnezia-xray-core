@@ -273,10 +273,10 @@ func TestHealthProvidersBuild(t *testing.T) {
 		t.Fatal(err)
 	}
 	p := c.Providers[0]
-	if !p.GetIsEnabled() || p.Features.Periodic != nil || p.Features.GetPeriodic() || !p.Features.GetMinHealthy() || p.Features.Exhausted == nil || p.Features.GetExhausted() {
+	if p.Features.Periodic != nil || p.Features.GetPeriodic() || !p.Features.GetMinHealthy() || p.Features.Exhausted == nil || p.Features.GetExhausted() {
 		t.Fatalf("flags %v", p.Features)
 	}
-	if p.Triggers.Interval != 0 || p.Triggers.MinHealthyOutbounds != 3 || p.Triggers.WhenCostAbove.Cost != 10 || p.Triggers.NetworkChangeMode != health.RefreshOnNetwork_REFRESH_UNKNOWN || p.Limits.MinInterval != int64(time.Minute) || p.Limits.MaxRefreshesPerHour != 2 || p.Headers["Authorization"] != "Bearer x" {
+	if p.Triggers.Interval != nil || p.Triggers.MinHealthyOutbounds != 3 || p.Triggers.WhenCostAbove.Cost != 10 || p.Triggers.NetworkChangeMode != health.RefreshOnNetwork_REFRESH_UNKNOWN || p.Limits.MinInterval != int64(time.Minute) || p.Limits.MaxRefreshesPerHour != 2 || p.Headers["Authorization"] != "Bearer x" {
 		t.Fatalf("provider %v", p)
 	}
 }
@@ -414,7 +414,7 @@ func TestHealthProviderImmediateCostDelayPresence(t *testing.T) {
 			if strings.Contains(after, "1.000000001") {
 				want = int64(time.Second) + 1
 			}
-			if value == nil || *value != want {
+			if value == nil || value.Min != want || value.Max != want {
 				t.Fatalf("%s: %v", after, value)
 			}
 		}
@@ -463,7 +463,7 @@ func TestHealthV2ImmediateDelaysRetainPresence(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		got := c.Providers[0].Triggers.NetworkSettleDelay
+		got := c.Providers[0].Triggers.NetworkSettle
 		if value == "" {
 			if got != nil {
 				t.Fatal("missing settleDelay became explicit")
@@ -473,7 +473,7 @@ func TestHealthV2ImmediateDelaysRetainPresence(t *testing.T) {
 			if strings.Contains(value, "1.000000001") {
 				want = int64(time.Second) + 1
 			}
-			if got == nil || *got != want {
+			if got == nil || got.Min != want || got.Max != want {
 				t.Fatalf("settleDelay %s=%v", value, got)
 			}
 		}
@@ -517,5 +517,23 @@ func TestHealthV2AdaptiveMetadataBounds(t *testing.T) {
 	stock := `{"outbounds":[{"tag":"` + strings.Repeat("u", 256) + `","protocol":"freedom"}]}`
 	if err := loadConfig(stock); err != nil {
 		t.Fatal("stock tag was constrained", err)
+	}
+}
+
+func TestHealthProviderAllowedProtocols(t *testing.T) {
+	provider := func(protocols string) string {
+		return `{"providers":[{"tag":"a","urls":["https://x.test"],"apply":{"balancers":["auto"],"tagPrefix":"p-","allowedProtocols":` + protocols + `}}]}`
+	}
+	c, err := buildHealth(t, provider(`["VLESS","freedom"]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := c.Providers[0].Apply.AllowedProtocols; len(got) != 2 || got[0] != "vless" || got[1] != "freedom" {
+		t.Fatalf("protocols %v", got)
+	}
+	for _, bad := range []string{`[]`, `["vles"]`, `[""]`} {
+		if _, err := buildHealth(t, provider(bad)); err == nil || !strings.Contains(err.Error(), "allowedProtocols") {
+			t.Errorf("%s: %v", bad, err)
+		}
 	}
 }

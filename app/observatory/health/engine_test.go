@@ -46,6 +46,8 @@ func newSeededTestEngine(t *testing.T, seed int64, cfg *Config, sc *SelectorConf
 
 func fixtureSelector(sc *SelectorConfig, candidates []string) *SelectorConfig {
 	copySC := proto.Clone(sc).(*SelectorConfig)
+	// Shared, so the copy keeps the knobs of the original.
+	copySC.ReturnToCheaper = sc.ReturnToCheaper
 	copySC.Paths = nil
 	for _, candidate := range candidates {
 		for _, spec := range sc.Paths {
@@ -93,11 +95,11 @@ func observed(tags ...string) []*PathDefinition {
 }
 
 func quarantine(d time.Duration) *ScheduleConfig {
-	return &ScheduleConfig{Quarantine: &Backoff{InitialDelay: int64(d)}, IdleAfter: int64(time.Hour)}
+	return tune(&ScheduleConfig{}, scheduleKnobs{quarantine: backoff{initial: d}, idleAfter: time.Hour})
 }
 
 func TestZeroSuspectCooldownStaysOffAfterFalseAlarms(t *testing.T) {
-	te := newTestEngine(t, &Config{Schedule: &ScheduleConfig{SuspectCooldown: -1}}, nil, "a1")
+	te := newTestEngine(t, &Config{Schedule: tune(&ScheduleConfig{}, scheduleKnobs{suspectCooldown: -1})}, nil, "a1")
 	p := te.path("a1")
 	for i := range 3 {
 		now := at(time.Duration(i+1) * time.Second)
@@ -234,7 +236,7 @@ func suspectWeak(te *testEngine, tag string, base time.Duration) {
 }
 
 func TestWeakEvidenceIsConfirmedAndFalseAlarmBacksOff(t *testing.T) {
-	cfg := &Config{Schedule: &ScheduleConfig{SuspectCooldown: int64(time.Minute)}}
+	cfg := &Config{Schedule: tune(&ScheduleConfig{}, scheduleKnobs{suspectCooldown: time.Minute})}
 	te := newTestEngine(t, cfg, &SelectorConfig{Paths: pathSpecs("a", 1)}, "a1", "a2")
 	suspectWeak(te, "a1", 0)
 	jobs := te.run(t, at(3*time.Second), nil)
@@ -258,7 +260,7 @@ func TestWeakEvidenceIsConfirmedAndFalseAlarmBacksOff(t *testing.T) {
 }
 
 func TestTrafficThatAnswersASuspectIsAFalseAlarm(t *testing.T) {
-	cfg := &Config{Schedule: &ScheduleConfig{SuspectCooldown: int64(time.Minute)}}
+	cfg := &Config{Schedule: tune(&ScheduleConfig{}, scheduleKnobs{suspectCooldown: time.Minute})}
 	te := newTestEngine(t, cfg, &SelectorConfig{Paths: pathSpecs("a", 1)}, "a1", "a2")
 	suspectWeak(te, "a1", 0)
 	te.onSuccess("a1", at(2500*time.Millisecond))
@@ -290,8 +292,8 @@ func TestDownOutboundAsksToEndWaitingConnections(t *testing.T) {
 }
 
 func TestWaitingConnectionsAreKeptWhenAskedOrWhenTheNetworkIsInDoubt(t *testing.T) {
-	cfg := &Config{Passive: &PassiveConfig{ShouldKeepPendingOnDown: true}}
-	te := newTestEngine(t, cfg, &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3)}, "a1", "b1")
+	te := newTestEngine(t, nil, &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3),
+		Features: &SelectorFeatureConfig{ClosePending: proto.Bool(false)}}, "a1", "b1")
 	te.failN(3, "a1", failDial, at(0))
 	te.run(t, at(time.Second), nil)
 	for _, d := range te.takeDowns() {
@@ -329,7 +331,7 @@ func TestSuccessForgetsFailures(t *testing.T) {
 }
 
 func TestFailuresOutsideWindowAreForgotten(t *testing.T) {
-	cfg := &Config{Passive: &PassiveConfig{Window: int64(10 * time.Second)}}
+	cfg := &Config{Passive: tune(&PassiveConfig{}, passiveKnobs{window: 10 * time.Second})}
 	te := newTestEngine(t, cfg, &SelectorConfig{Paths: pathSpecs("a", 1)}, "a1", "a2")
 	te.fail("a1", failDial, "", at(0))
 	te.fail("a1", failDial, "", at(5*time.Second))
@@ -352,7 +354,7 @@ func TestWeakEvidenceOnOutboundNotChosenIsDropped(t *testing.T) {
 
 func TestChosenAgainAfterQuarantineIsJudgedAgain(t *testing.T) {
 	cfg := &Config{Schedule: quarantine(30 * time.Second)}
-	te := newTestEngine(t, cfg, &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3), SkipProbeBeforeSwitch: true}, "a1", "b1")
+	te := newTestEngine(t, cfg, &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3), Features: probeFirst(false)}, "a1", "b1")
 	te.failN(3, "a1", failDial, at(0))
 	if te.sel.current() != "b1" {
 		t.Fatalf("setup: want b1, got %q", te.sel.current())
@@ -391,7 +393,7 @@ func TestSharedCandidateAnswersEveryBalancer(t *testing.T) {
 }
 
 func TestExhaustedThenRecheckRecovers(t *testing.T) {
-	cfg := &Config{Schedule: &ScheduleConfig{Quarantine: &Backoff{InitialDelay: int64(30 * time.Second), Multiplier: 2, MaxDelay: int64(time.Hour)}}}
+	cfg := &Config{Schedule: tune(&ScheduleConfig{}, scheduleKnobs{quarantine: backoff{initial: 30 * time.Second, multiplier: 2, max: time.Hour}})}
 	te := newTestEngine(t, cfg, &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3)}, "a1", "b1")
 	te.failN(3, "a1", failDial, at(0))
 	te.run(t, at(time.Second), map[string]bool{"a1": false, "b1": false})
@@ -412,7 +414,7 @@ func TestExhaustedThenRecheckRecovers(t *testing.T) {
 }
 
 func TestIdleExhaustedDoesNotProbe(t *testing.T) {
-	cfg := &Config{Schedule: &ScheduleConfig{IdleAfter: int64(time.Minute), Quarantine: &Backoff{InitialDelay: int64(10 * time.Second)}}}
+	cfg := &Config{Schedule: tune(&ScheduleConfig{}, scheduleKnobs{idleAfter: time.Minute, quarantine: backoff{initial: 10 * time.Second}})}
 	te := newTestEngine(t, cfg, &SelectorConfig{Paths: pathSpecs("a", 1)}, "a1")
 	te.failN(3, "a1", failDial, at(0))
 	if jobs, _ := te.tick(at(2 * time.Hour)); len(jobs) != 0 {
@@ -424,15 +426,8 @@ func returnToCheaperConfig() *SelectorConfig {
 	return &SelectorConfig{
 		Paths:       pathSpecs("a", 1, "b", 3),
 		MinHoldTime: v2Int64(int64(time.Minute)),
-		ReturnToCheaper: &ReturnToCheaperConfig{
-			Interval:          int64(5 * time.Minute),
-			SkipRandomPhase:   true,
-			ProbesToReturn:    3,
-			ProbeInterval:     int64(20 * time.Second),
-			PenaltyWindow:     int64(5 * time.Minute),
-			PenaltyMultiplier: 2,
-			MaxPenaltyDelay:   int64(time.Hour),
-		},
+		ReturnToCheaper: tune(&ReturnToCheaperConfig{Interval: int64(5 * time.Minute)}, returnKnobs{fixedPhase: true, successes: 3,
+			spacing: 20 * time.Second, penaltyWindow: 5 * time.Minute, penaltyMultiplier: 2, maxPenalty: time.Hour}),
 	}
 }
 
@@ -586,7 +581,7 @@ func TestNetworkChangeForgetsAndRemembersPerNetwork(t *testing.T) {
 
 func TestUnknownNetworkSchedulesReturnToCheaperKnownDoesNot(t *testing.T) {
 	sc := &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3), MinHoldTime: v2Int64(int64(time.Second)),
-		ReturnToCheaper: &ReturnToCheaperConfig{ProbesToReturn: 1}}
+		ReturnToCheaper: tune(&ReturnToCheaperConfig{}, returnKnobs{successes: 1})}
 	te := newTestEngine(t, nil, sc, "a1", "b1")
 	failoverToB(t, te, at(0))
 	soon := func(now time.Time) bool {
@@ -640,7 +635,7 @@ func TestIgnoreNetworkChangeKeepsProbesInFlight(t *testing.T) {
 }
 
 func TestProbeBudget(t *testing.T) {
-	cfg := &Config{Schedule: &ScheduleConfig{MinProbeInterval: int64(2 * time.Second), ProbeJitterFraction: 0.0001, ProbesPerServerNamePerMinute: 3, ProbesPerMinute: 100}}
+	cfg := &Config{Schedule: tune(&ScheduleConfig{ProbesPerServerNamePerMinute: 3, ProbesPerMinute: 100}, scheduleKnobs{spacing: 2 * time.Second, spacingJitter: 0.0001})}
 	tags := []string{"a1", "a2", "a3", "a4", "a5"}
 	te := newTestEngine(t, cfg, &SelectorConfig{}, tags...)
 	// Five addresses behind one server name, as several IPs of one variant.
@@ -907,8 +902,8 @@ func TestWorkingOutboundProvesTheCheckWrong(t *testing.T) {
 
 func TestNoPauseStillRulesOutADeadOutbound(t *testing.T) {
 	cfg := connectivityConfig()
-	cfg.Connectivity.MaxPause = 1
 	te := newTestEngine(t, cfg, &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3)}, "a1", "b1")
+	te.s.connectivity.maxPause = 1
 	works := map[string]bool{"b1": true}
 	for s := 0; s < 30 && te.sel.current() != "b1"; s++ {
 		te.second(at(time.Duration(s)*time.Second), false, works)

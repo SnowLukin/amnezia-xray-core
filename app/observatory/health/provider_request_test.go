@@ -42,7 +42,7 @@ func setEngine(t *testing.T) *testEngine {
 	t.Helper()
 	te := newProviderEngine(t, quietProvider(func(p *ProviderConfig) {
 		p.Limits.ExhaustedMinInterval = int64(time.Second)
-	}), &SelectorConfig{Paths: pathSpecs("p-x1", 1, "p-x2", 3, "p-x3", 5), SkipProbeBeforeSwitch: true},
+	}), &SelectorConfig{Paths: pathSpecs("p-x1", 1, "p-x2", 3, "p-x3", 5), Features: probeFirst(false)},
 		"p-x1", "p-x2", "p-x3")
 	te.applyProviderSet(te.prov(), providerChange{tags: []string{"p-x2", "p-x1", "p-x3"}}, t0)
 	return te
@@ -169,7 +169,7 @@ func TestRequestBodyHoldsNoDestination(t *testing.T) {
 func TestNetworkIDAndRunAreHashedPerProvider(t *testing.T) {
 	ids := map[string]bool{}
 	for _, u := range []string{"https://a.test/set", "https://b.test/set"} {
-		te := newProviderEngine(t, quietProvider(func(p *ProviderConfig) { p.Url = u }), nil, "a1")
+		te := newProviderEngine(t, quietProvider(func(p *ProviderConfig) { p.Urls = []string{u} }), nil, "a1")
 		te.networkID = "home"
 		m, body, j := requestOf(t, te, t0)
 		te.onRefreshDone(j, refreshOutcome{ok: true}, t0)

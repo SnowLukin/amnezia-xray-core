@@ -215,8 +215,7 @@ func TestProviderDefaultRangesAndOneSamplePerEvent(t *testing.T) {
 			t.Fatal("network delay redrawn on tick")
 		}
 	}
-	pc.Triggers.Interval = 0
-	pc.Triggers.IntervalMax = proto.Int64(0)
+	pc.Triggers.Interval = &DurationRange{}
 	zero := newProvider(newProviderSettings(pc))
 	e.scheduleRefresh(zero, 0, false, t0)
 	if !zero.nextAt.Equal(t0) || zero.nextTrigger != triggerInterval {

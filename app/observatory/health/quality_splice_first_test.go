@@ -352,11 +352,10 @@ type qualitySpliceDecisionSide struct {
 func qualitySpliceDecisionFixture(t *testing.T, skip, skipProbe bool, client gonet.Conn) *qualitySpliceDecisionSide {
 	t.Helper()
 	cfg := &Config{Features: &FeatureConfig{Quality: proto.Bool(!skip), Report: proto.Bool(true), Events: proto.Bool(true)},
-		Passive:      &PassiveConfig{ShouldSkipQuality: skip},
-		Schedule:     &ScheduleConfig{IdleAfter: int64(time.Hour)},
+		Schedule:     tune(&ScheduleConfig{}, scheduleKnobs{idleAfter: time.Hour}),
 		Connectivity: &ConnectivityConfig{Outbound: "net", Destinations: []string{"https://x.test/204"}},
 	}
-	te := newTestEngine(t, cfg, &SelectorConfig{Paths: pathSpecs("a1", 1, "b1", 3), SkipProbeBeforeSwitch: skipProbe}, "a1", "b1")
+	te := newTestEngine(t, cfg, &SelectorConfig{Paths: pathSpecs("a1", 1, "b1", 3), Features: probeFirst(!skipProbe)}, "a1", "b1")
 	o, clk := newTestObserver()
 	o.s, o.e = te.s, te.engine
 	o.e.report.begin(clk.now())

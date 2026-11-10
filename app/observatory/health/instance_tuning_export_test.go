@@ -2,14 +2,29 @@ package health
 
 import (
 	"fmt"
-	"github.com/xtls/xray-core/app/router"
+	"time"
+
 	"github.com/xtls/xray-core/core"
 )
 
-// TuneInstanceScenario applies retired test clocks and evidence thresholds to
-// the already constructed observer. Feature flags and collector allocations
-// come exclusively from the real v2 constructor. It must run before Start.
-func TuneInstanceScenario(instance *core.Instance, cfg *core.Config) error {
+// InstanceKnobs are timings and thresholds that no config sets; integration
+// tests shorten time with them. Zero keeps the default.
+type InstanceKnobs struct {
+	Sweep              time.Duration
+	Failures           int
+	MinDistinctTargets int
+	SuccessBytes       int64
+	PartialMinBytes    int64
+	ProbeSpacing       time.Duration
+	SuspectCooldown    time.Duration
+	HostReuse          time.Duration
+	ReturnSuccesses    int
+	FixedReturnPhase   bool
+}
+
+// TuneInstance applies k to the observer of instance. It must run before
+// Start.
+func TuneInstance(instance *core.Instance, k InstanceKnobs) error {
 	o := FromInstance(instance)
 	if o == nil {
 		return fmt.Errorf("test scenario has no health observer")
@@ -17,49 +32,22 @@ func TuneInstanceScenario(instance *core.Instance, cfg *core.Config) error {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	if o.started {
-		return fmt.Errorf("test clocks must be set before Start")
+		return fmt.Errorf("test knobs must be set before Start")
 	}
-	for _, app := range cfg.App {
-		raw, err := app.GetInstance()
-		if err != nil {
-			return err
-		}
-		switch c := raw.(type) {
-		case *Config:
-			p, sc := c.GetPassive(), c.GetSchedule()
-			o.s.passive.window = dur(p.GetWindow(), defaultWindow)
-			o.s.passive.failures = num(p.GetFailuresToSuspect(), defaultFailures)
-			o.s.passive.minDistinctTargets = num(p.GetMinDistinctTargets(), defaultMinDistinctTargets)
-			o.s.passive.successBytes = size(p.GetSuccessBytes(), defaultSuccessBytes)
-			o.s.passive.sweepInterval = dur(p.GetSweepInterval(), defaultSweepInterval)
-			o.s.passive.stallMinWrite = size(p.GetStallMinWriteBytes(), defaultStallMinWrite)
-			o.s.passive.partialMinBytes = size(p.GetPartialStallMinBytes(), defaultPartialMinBytes)
-			o.s.schedule.spacing = dur(sc.GetMinProbeInterval(), defaultSpacing)
-			o.s.schedule.suspectCooldown = dur(sc.GetSuspectCooldown(), defaultSuspectCooldown)
-			o.s.schedule.hostProbes.reuse = dur(sc.GetHostProbes().GetReuseWindow(), defaultHostReuse)
-		case *router.Config:
-			for _, b := range c.BalancingRule {
-				raw, err := b.GetStrategySettings().GetInstance()
-				if err != nil {
-					return err
-				}
-				c, ok := raw.(*SelectorConfig)
-				if !ok {
-					continue
-				}
-				selector := o.e.selectors[b.Tag]
-				if selector == nil {
-					return fmt.Errorf("test scenario selector %s missing", b.Tag)
-				}
-				u := c.GetReturnToCheaper()
-				selector.cfg.returnToCheaper.randomPhase = !u.GetSkipRandomPhase()
-				selector.cfg.returnToCheaper.successes = num(u.GetProbesToReturn(), defaultReturnToCheaperSuccesses)
-				selector.cfg.returnToCheaper.spacing = dur(u.GetProbeInterval(), defaultReturnToCheaperSpacing)
-				selector.cfg.returnToCheaper.penaltyWindow = dur(u.GetPenaltyWindow(), defaultPenaltyWindow)
-				selector.cfg.returnToCheaper.penaltyMultiplier = fnum(u.GetPenaltyMultiplier(), defaultPenaltyMultiplier)
-				selector.cfg.returnToCheaper.maxPenalty = dur(u.GetMaxPenaltyDelay(), defaultMaxPenalty)
-			}
-		}
+	p := &o.s.passive
+	p.sweepInterval = dur(int64(k.Sweep), p.sweepInterval)
+	p.failures = num(int32(k.Failures), p.failures)
+	p.minDistinctTargets = num(int32(k.MinDistinctTargets), p.minDistinctTargets)
+	p.successBytes = size(k.SuccessBytes, p.successBytes)
+	p.partialMinBytes = size(k.PartialMinBytes, p.partialMinBytes)
+	sc := &o.s.schedule
+	sc.spacing = dur(int64(k.ProbeSpacing), sc.spacing)
+	sc.suspectCooldown = dur(int64(k.SuspectCooldown), sc.suspectCooldown)
+	sc.hostProbes.reuse = dur(int64(k.HostReuse), sc.hostProbes.reuse)
+	for _, s := range o.e.selectors {
+		r := &s.cfg.returnToCheaper
+		r.randomPhase = !k.FixedReturnPhase
+		r.successes = num(int32(k.ReturnSuccesses), r.successes)
 	}
 	return nil
 }

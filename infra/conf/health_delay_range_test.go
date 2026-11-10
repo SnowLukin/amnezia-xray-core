@@ -38,7 +38,7 @@ func TestProviderRoadsAndDelayConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	p := built.(*health.Config).Providers[0]
-	if len(p.Apply.Balancers) != 2 || p.Triggers.ExhaustedDelay.Max != int64(10*time.Second) || p.Triggers.GetIntervalMax() != int64(40*time.Minute) || p.Triggers.GetNetworkSettleMax() != int64(90*time.Second) || p.Triggers.WhenCostAbove.GetAfterMax() != int64(25*time.Minute) {
+	if len(p.Apply.Balancers) != 2 || p.Triggers.ExhaustedDelay.Max != int64(10*time.Second) || p.Triggers.GetInterval().GetMax() != int64(40*time.Minute) || p.Triggers.GetNetworkSettle().GetMax() != int64(90*time.Second) || p.Triggers.WhenCostAbove.GetAfter().GetMax() != int64(25*time.Minute) {
 		t.Fatal(p)
 	}
 	for _, bad := range []string{

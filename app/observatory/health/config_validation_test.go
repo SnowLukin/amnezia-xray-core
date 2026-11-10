@@ -19,7 +19,7 @@ func TestNewRejectsInvalidProbeSteps(t *testing.T) {
 	}{
 		{"null profile", nil, "probes[0]"},
 		{"empty profile name", &ProbeProfile{Steps: []*ProbeStep{valid()}}, "probes[0].name"},
-		{"empty legacy name", &ProbeProfile{Destination: "https://node.test/check"}, "probes[0].name"},
+		{"no steps", &ProbeProfile{Name: "full"}, "steps"},
 		{"empty steps", &ProbeProfile{Name: "full", Steps: []*ProbeStep{}}, "steps"},
 		{"null step", &ProbeProfile{Name: "full", Steps: []*ProbeStep{nil}}, "steps[0]"},
 		{"optional first", &ProbeProfile{Name: "full", Steps: []*ProbeStep{{Name: "transport", Destinations: []string{"https://node.test/check"}, IsOptional: true}}}, "steps[0]"},
@@ -37,8 +37,6 @@ func TestNewRejectsInvalidProbeSteps(t *testing.T) {
 		{"HEAD body", &ProbeProfile{Name: "full", Steps: []*ProbeStep{{Name: "transport", Destinations: []string{"https://node.test/check"}, Method: "HEAD", MinBytes: 1}}}, "minBytes"},
 		{"zero timeout", &ProbeProfile{Name: "full", Steps: []*ProbeStep{{Name: "transport", Destinations: []string{"https://node.test/check"}, Timeout: -1}}}, "timeout"},
 		{"zero progress timeout", &ProbeProfile{Name: "full", Steps: []*ProbeStep{{Name: "transport", Destinations: []string{"https://node.test/check"}, ProgressTimeout: -1}}}, "progressTimeout"},
-		{"profile method", &ProbeProfile{Name: "full", Method: "GET", Steps: []*ProbeStep{valid()}}, "method"},
-		{"profile timeout", &ProbeProfile{Name: "full", Timeout: 1, Steps: []*ProbeStep{valid()}}, "timeout"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.WithValue(context.Background(), core.XrayKey(1), new(core.Instance))
@@ -53,19 +51,10 @@ func TestNewRejectsInvalidProbeSteps(t *testing.T) {
 func TestNewRejectsDuplicateProbeProfiles(t *testing.T) {
 	step := &ProbeStep{Name: "transport", Destinations: []string{"https://node.test/check"}}
 	stepped := func() *ProbeProfile { return &ProbeProfile{Name: "full", Steps: []*ProbeStep{step}} }
-	legacy := func() *ProbeProfile { return &ProbeProfile{Name: "full", Destination: "https://node.test/check"} }
-	for name, profiles := range map[string][]*ProbeProfile{
-		"steps and steps":  {stepped(), stepped()},
-		"legacy and steps": {legacy(), stepped()},
-		"steps and legacy": {stepped(), legacy()},
-	} {
-		t.Run(name, func(t *testing.T) {
-			ctx := context.WithValue(context.Background(), core.XrayKey(1), new(core.Instance))
-			_, err := New(ctx, &Config{Probes: profiles})
-			if err == nil || !strings.Contains(err.Error(), "probes[1].name") {
-				t.Fatalf("New error %v must name duplicate profile", err)
-			}
-		})
+	ctx := context.WithValue(context.Background(), core.XrayKey(1), new(core.Instance))
+	_, err := New(ctx, &Config{Probes: []*ProbeProfile{stepped(), stepped()}})
+	if err == nil || !strings.Contains(err.Error(), "probes[1].name") {
+		t.Fatalf("New error %v must name duplicate profile", err)
 	}
 }
 

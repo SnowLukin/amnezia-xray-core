@@ -50,7 +50,7 @@ func TestStatusExitFollowsTheTraffic(t *testing.T) {
 		{Tag: "ai1", Balancer: "ai", Cost: 1, Probe: "check", Labels: map[string]string{"country": "nl"}},
 		{Tag: "main1", Balancer: "main", Cost: 1, Probe: "check", Labels: map[string]string{"country": "de"}},
 	}
-	o := newObserver(context.Background(), &Config{Paths: paths, Probes: []*ProbeProfile{{Name: "check", Destination: "http://127.0.0.1/probe"}}, Features: &FeatureConfig{Events: proto.Bool(true), Report: proto.Bool(true)}})
+	o := newObserver(context.Background(), &Config{Paths: paths, Probes: []*ProbeProfile{stepProfile("check", "http://127.0.0.1/probe", 0)}, Features: &FeatureConfig{Events: proto.Bool(true), Report: proto.Bool(true)}})
 	o.clock = func() time.Time { return now }
 	t.Cleanup(func() { o.Close() })
 	source := o.e.addSelectorAt("ai", newSelectorSettings(&SelectorConfig{Paths: paths[:1], FallbackBalancer: "main", FallbackTag: "block"}), t0)

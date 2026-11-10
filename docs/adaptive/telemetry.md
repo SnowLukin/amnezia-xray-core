@@ -131,7 +131,7 @@
 
 Плоская карта флагов, которые действуют в этом запуске. Глобальные ключи: `census`, `trace`, `dial_failures`, `dial_timeout`, `server_unverified`, `first_reply`, `early_close`, `stalled_requests`, `partial_stalls`, `udp_replies`, `lone_failure_probe`, `step_profiles`, `candidates`, `probe_requests`, `udp_probe`, `connectivity`, `witnesses`, `network_memory`, `host_labels`, `label_request`, `pinning`, `user_present`, `memory_pressure`, `tunnel_sleep`, `close_unchosen_idle`, `events`, `report`, `quality`, `path_labels`, `probe_measurements`, `metrics`, `session_labels`.
 
-Для каждого балансировщика добавляются ключи `balancers.<тег>.fallback_balancer`, `.probe_before_switch`, `.close_pending`, `.close_silent`, `.down_audit`, `.groups`, `.return_to_cheaper`, `.return_on_network_change`, `.network_changes`, `.startup_pin`. Для каждого провайдера `providers.<тег>.is_enabled`, `.periodic`, `.min_healthy`, `.cost_above`, `.max_age`, `.network_change`, `.exhausted`, `.lease_renewal`, `.backend_schedule`, `.expired_lease_fallback`. У провайдера, выключенного в конфиге, есть только `providers.<тег>.is_enabled: false`.
+Для каждого балансировщика добавляются ключи `balancers.<тег>.fallback_balancer`, `.probe_before_switch`, `.close_pending`, `.close_silent`, `.down_audit`, `.groups`, `.return_to_cheaper`, `.return_on_network_change`, `.network_changes`, `.startup_pin`. Для каждого провайдера `providers.<тег>.is_enabled`, `.periodic`, `.min_healthy`, `.cost_above`, `.max_age`, `.network_change`, `.exhausted`, `.lease_renewal`, `.backend_schedule`, `.expired_lease_fallback`.
 
 ### Пример
 

@@ -17,8 +17,8 @@ func ProbeClass(o *Observer, tag, dest string, minBytes int64, expect ...int32) 
 }
 
 func probeOnce(o *Observer, tag, dest string, minBytes int64, expect ...int32) probeResult {
-	return o.probe(tag, &probeSettings{destination: dest, method: "GET", minBytes: minBytes, expectStatus: expect,
-		timeout: 4 * time.Second, progressTimeout: 2 * time.Second})
+	return o.probe(tag, &probeSettings{steps: []probeStepSettings{{name: "default", destinations: []string{dest}, method: "GET",
+		minBytes: minBytes, expectStatus: expect, timeout: 4 * time.Second, progressTimeout: 2 * time.Second}}})
 }
 
 // QueueProbe asks for a probe of tag, as after a network change.

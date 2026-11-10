@@ -12,7 +12,6 @@ import (
 	"github.com/xtls/xray-core/features/routing"
 	routing_session "github.com/xtls/xray-core/features/routing/session"
 	_ "github.com/xtls/xray-core/main/distro/all"
-	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"net/http"
 	"net/http/httptest"
@@ -278,7 +277,7 @@ func TestDirectProviderLimitsCannotDisableAdmission(t *testing.T) {
 		return cfg
 	}
 	for _, field := range []string{"minInterval", "urgentMinInterval", "maxRefreshesPerHour"} {
-		pc := &health.ProviderConfig{IsEnabled: proto.Bool(true), Tag: "fresh", Url: "https://provider.test/set", Apply: &health.ProviderApply{Balancers: []string{"auto"}, TagPrefix: "p-"}, Limits: &health.ProviderLimits{}}
+		pc := &health.ProviderConfig{Tag: "fresh", Urls: []string{"https://provider.test/set"}, Apply: &health.ProviderApply{Balancers: []string{"auto"}, TagPrefix: "p-"}, Limits: &health.ProviderLimits{}}
 		switch field {
 		case "minInterval":
 			pc.Limits.MinInterval = -1
@@ -295,7 +294,7 @@ func TestDirectProviderLimitsCannotDisableAdmission(t *testing.T) {
 			t.Fatalf("direct protobuf %s=-1: %v", field, err)
 		}
 	}
-	pc := &health.ProviderConfig{IsEnabled: proto.Bool(true), Tag: "fresh", Url: "https://provider.test/set", Apply: &health.ProviderApply{Balancers: []string{"auto"}, TagPrefix: "p-"}, Limits: &health.ProviderLimits{}}
+	pc := &health.ProviderConfig{Tag: "fresh", Urls: []string{"https://provider.test/set"}, Apply: &health.ProviderApply{Balancers: []string{"auto"}, TagPrefix: "p-"}, Limits: &health.ProviderLimits{}}
 	inst, err := core.New(config(pc))
 	if err != nil {
 		t.Fatal(err)

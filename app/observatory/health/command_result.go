@@ -138,7 +138,7 @@ func (o *Observer) ProviderRefreshInfo(tag string) (RefreshData, error) {
 func (o *Observer) queueProviderRefresh(tag string) (RefreshData, error) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	if len(o.e.providers) == 0 || o.s.disabledProviders[tag] {
+	if len(o.e.providers) == 0 {
 		return RefreshData{}, NewCommandError("feature_disabled", "providers are disabled")
 	}
 	if tag != "" && o.e.provider(tag) == nil {
@@ -202,7 +202,7 @@ func (o *Observer) Run() string {
 
 func (o *Observer) providerCommandError(tag string) error { return o.e.providerCommandError(tag) }
 func (e *engine) providerCommandError(tag string) error {
-	if len(e.providers) == 0 || e.s.disabledProviders[tag] {
+	if len(e.providers) == 0 {
 		return NewCommandError("feature_disabled", "provider is disabled")
 	}
 	if e.provider(tag) == nil {

@@ -267,12 +267,11 @@ func startWireGuardStrategy(t *testing.T, ts *httptest.Server, passive, probe, m
 	if err != nil {
 		t.Fatal(err)
 	}
-	tuneWireGuardScenario(t, cfg, passive, strategy)
 	f.inst, err = core.New(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := health.TuneInstanceScenario(f.inst, cfg); err != nil {
+	if err := health.TuneInstance(f.inst, wireGuardKnobs(t, passive, strategy)); err != nil {
 		t.Fatal(err)
 	}
 	if err := f.inst.Start(); err != nil {

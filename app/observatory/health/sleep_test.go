@@ -98,7 +98,7 @@ func newSleepFixture(t *testing.T, cfg *Config, sc *SelectorConfig, candidates .
 	}
 	cfg.Paths = append(cfg.Paths, observed(candidates...)...)
 	if cfg.Schedule == nil {
-		cfg.Schedule = &ScheduleConfig{IdleAfter: int64(time.Hour)}
+		cfg.Schedule = tune(&ScheduleConfig{}, scheduleKnobs{idleAfter: time.Hour})
 	}
 	if sc == nil {
 		sc = &SelectorConfig{Paths: pathSpecs("a", 1, "w", 3)}
@@ -518,7 +518,7 @@ func TestSleepsAtOnceUnderLowMemory(t *testing.T) {
 // without a probe: nothing returns to w1, and no probe holds it, afterwards.
 func newDownFixture(t *testing.T) *sleepFixture {
 	t.Helper()
-	f := newSleepFixture(t, nil, &SelectorConfig{Paths: pathSpecs("a", 1, "w", 3), SkipProbeBeforeSwitch: true}, "a1", "w1")
+	f := newSleepFixture(t, nil, &SelectorConfig{Paths: pathSpecs("a", 1, "w", 3), Features: probeFirst(false)}, "a1", "w1")
 	f.engine(func(e *engine) { e.switchTo(e.selectors["auto"], "w1", "failover", t0) })
 	f.turn(t0)
 	return f
@@ -647,7 +647,7 @@ func TestSilentCloseLetsADownOutboundSleepAtOnce(t *testing.T) {
 	}{
 		{"failures of the chosen outbound", newDownFixture, func(f *sleepFixture, now time.Time) { f.failW1(now) }},
 		{"failed probe of an unchosen outbound", func(t *testing.T) *sleepFixture {
-			f := newSleepFixture(t, nil, &SelectorConfig{Paths: pathSpecs("a", 1, "w", 3), SkipProbeBeforeSwitch: true}, "a1", "w1")
+			f := newSleepFixture(t, nil, &SelectorConfig{Paths: pathSpecs("a", 1, "w", 3), Features: probeFirst(false)}, "a1", "w1")
 			f.use("w1", t0)
 			return f
 		}, func(f *sleepFixture, now time.Time) {
@@ -795,7 +795,7 @@ func TestBusySleepRetriesDoublingUpTo30m(t *testing.T) {
 // A handler has Sleep whatever its proxy; one whose proxy holds nothing is
 // looked at once and never asked to sleep, and costs no wake.
 func TestNonSleeperAskedOnce(t *testing.T) {
-	f := newSleepFixture(t, nil, &SelectorConfig{Paths: pathSpecs("a", 1, "w", 3), SkipProbeBeforeSwitch: true}, "a1", "a2", "w1")
+	f := newSleepFixture(t, nil, &SelectorConfig{Paths: pathSpecs("a", 1, "w", 3), Features: probeFirst(false)}, "a1", "a2", "w1")
 	f.turn(t0)
 	f.engine(func(e *engine) { e.switchTo(e.selectors["auto"], "a2", "failover", at(time.Second)) })
 	if wake := f.turn(at(time.Second)); !wake.IsZero() {

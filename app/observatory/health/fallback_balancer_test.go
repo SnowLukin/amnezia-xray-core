@@ -22,7 +22,7 @@ func newFallbackFixture(t *testing.T) *fallbackFixture {
 	t.Helper()
 	f := &fallbackFixture{now: t0}
 	paths := []*PathDefinition{{Tag: "ai1", Balancer: "ai", Cost: 1, Probe: "check"}, {Tag: "main1", Balancer: "main", Cost: 1, Probe: "check"}}
-	f.o = newObserver(context.Background(), &Config{Paths: paths, Probes: []*ProbeProfile{{Name: "check", Destination: "http://127.0.0.1/probe"}}, Features: &FeatureConfig{Events: proto.Bool(true), Report: proto.Bool(true), Pinning: proto.Bool(true)}})
+	f.o = newObserver(context.Background(), &Config{Paths: paths, Probes: []*ProbeProfile{stepProfile("check", "http://127.0.0.1/probe", 0)}, Features: &FeatureConfig{Events: proto.Bool(true), Report: proto.Bool(true), Pinning: proto.Bool(true)}})
 	f.o.clock = func() time.Time { return f.now }
 	t.Cleanup(func() { f.o.Close() })
 	f.o.e.report.begin(t0)

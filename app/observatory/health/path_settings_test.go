@@ -8,15 +8,15 @@ import (
 func TestPathProbeSelectionUsesOnlyNamedProfile(t *testing.T) {
 	s := newSettings(&Config{
 		Paths:  []*PathDefinition{{Tag: "plain"}, {Tag: "named", Probe: "default"}},
-		Probes: []*ProbeProfile{{Name: "default", Destination: "https://example.test/probe"}},
+		Probes: []*ProbeProfile{stepProfile("default", "https://example.test/probe", 0)},
 	})
-	if got := s.probeFor("plain").destination; got != "" {
+	if got := s.probeFor("plain").steps[0].destinations[0]; got != "" {
 		t.Fatalf("plain probe %s", got)
 	}
-	if got := s.probeFor("named").destination; got != "https://example.test/probe" {
+	if got := s.probeFor("named").steps[0].destinations[0]; got != "https://example.test/probe" {
 		t.Fatalf("named probe %s", got)
 	}
-	if got := s.probeFor("unlisted").destination; got != "" {
+	if got := s.probeFor("unlisted").steps[0].destinations[0]; got != "" {
 		t.Fatalf("unlisted probe %s", got)
 	}
 }
@@ -30,9 +30,8 @@ func TestExactPathObservation(t *testing.T) {
 
 func TestProbeStepsNormalization(t *testing.T) {
 	s := newSettings(&Config{
-		Paths: []*PathDefinition{{Tag: "legacy", Probe: "old"}, {Tag: "stepped", Probe: "full"}},
+		Paths: []*PathDefinition{{Tag: "stepped", Probe: "full"}},
 		Probes: []*ProbeProfile{
-			{Name: "old", Destination: "https://legacy.test/check", MinBytes: 5},
 			{Name: "full", Steps: []*ProbeStep{
 				{Name: "transport", Destinations: []string{"https://node.test/check"}, MinBytes: 12},
 				{Name: "egress", Destinations: []string{"https://one.test/204", "https://two.test/204"}, IsOptional: true,
@@ -40,11 +39,6 @@ func TestProbeStepsNormalization(t *testing.T) {
 			}},
 		},
 	})
-	legacy := s.probeFor("legacy")
-	if len(legacy.steps) != 1 || legacy.steps[0].name != "old" || legacy.steps[0].isOptional ||
-		legacy.steps[0].destinations[0] != "https://legacy.test/check" || legacy.steps[0].minBytes != 5 {
-		t.Fatalf("legacy steps %+v", legacy.steps)
-	}
 	full := s.probeFor("stepped")
 	if len(full.steps) != 2 || full.steps[0].name != "transport" || full.steps[0].isOptional ||
 		full.steps[0].timeout != defaultProbeTimeout || full.steps[0].progressTimeout != defaultProbeProgress ||
@@ -53,11 +47,8 @@ func TestProbeStepsNormalization(t *testing.T) {
 		!full.steps[1].statusOK(204) || full.steps[1].statusOK(200) {
 		t.Fatalf("stepped profile %+v", full)
 	}
-	if full.destination != "https://node.test/check" || full.minBytes != 12 {
-		t.Fatalf("legacy fields %+v", full)
-	}
 	builtin := s.probeFor("other")
-	if len(builtin.steps) != 0 || builtin.destination != "" {
+	if len(builtin.steps) != 1 || builtin.steps[0].destinations[0] != "" {
 		t.Fatalf("built-in steps %+v", builtin.steps)
 	}
 }
@@ -109,21 +100,13 @@ func TestProbeOnlyProfileSnapshotSurvivesModeSwitch(t *testing.T) {
 	}
 }
 
-func TestProbeOnlyLegacyAndBuiltinRemainFullTransportChecks(t *testing.T) {
-	s := newSettings(&Config{
-		Paths:  []*PathDefinition{{Tag: "builtin", IsProbeOnly: true}, {Tag: "legacy", Probe: "old", IsProbeOnly: true}},
-		Probes: []*ProbeProfile{{Name: "old", Destination: "http://node.test/check", MinBytes: 32768}},
-	})
-	for _, tag := range []string{"legacy"} {
-		p := s.probeFor(tag)
-		if !p.isProbeOnly || len(p.steps) != 1 || p.steps[0].isOptional || p.steps[0].method != "GET" {
-			t.Fatalf("%s profile %+v", tag, p)
-		}
-	}
-	if p := s.probeFor("builtin"); !p.isProbeOnly || len(p.steps) != 0 || p.destination != "" {
+func TestProbeOnlyWithoutProfileHasNoExternalProbe(t *testing.T) {
+	s := newSettings(&Config{Paths: []*PathDefinition{{Tag: "builtin", IsProbeOnly: true}}})
+	if p := s.probeFor("builtin"); !p.isProbeOnly || len(p.steps) != 1 || p.steps[0].destinations[0] != "" {
 		t.Fatalf("unconfigured candidate created external probe %+v", p)
 	}
-	if step := s.probeFor("legacy").steps[0]; step.destinations[0] != "http://node.test/check" || step.minBytes != 32768 {
-		t.Fatalf("legacy transport %+v", step)
-	}
+}
+
+func stepProfile(name, destination string, minBytes int64) *ProbeProfile {
+	return &ProbeProfile{Name: name, Steps: []*ProbeStep{{Name: name, Destinations: []string{destination}, MinBytes: minBytes}}}
 }

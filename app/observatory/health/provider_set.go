@@ -507,9 +507,6 @@ func (o *Observer) fetchSet(rt *providerRuntime, j *refreshJob, body []byte) (fe
 		via = []string{""}
 	}
 	urls := o.providerURLs(rt)
-	if len(urls) == 0 {
-		urls = []string{rt.cfg.url}
-	}
 	var last fetchResult
 	var lastErr error
 	asked, attempt, nonProtocol, timeouts := false, 0, 0, 0

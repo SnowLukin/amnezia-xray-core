@@ -11,8 +11,7 @@ import (
 
 // parallelConfig allows n probes at a time; an outbound found down rests a minute.
 func parallelConfig(n int) *Config {
-	return &Config{Schedule: &ScheduleConfig{MaxConcurrentProbes: int32(n), Quarantine: &Backoff{InitialDelay: int64(time.Minute)},
-		IdleAfter: int64(time.Hour)}}
+	return &Config{Schedule: tune(&ScheduleConfig{MaxConcurrentProbes: int32(n)}, scheduleKnobs{quarantine: backoff{initial: time.Minute}, idleAfter: time.Hour})}
 }
 
 func (te *testEngine) serverNames(names map[string]string) {
@@ -542,7 +541,7 @@ func TestRescueRestoresTheQuarantineLevel(t *testing.T) {
 // return it had just made to a1.
 func TestRescueLeavesTheBalancerWhereItMoved(t *testing.T) {
 	sc := returnToCheaperConfig()
-	sc.SkipProbeBeforeSwitch = true
+	sc.Features = probeFirst(false)
 	te := newTestEngine(t, nil, sc, "a1", "b1")
 	// The balancer has just returned to a1.
 	te.sel.returnedTo, te.sel.returnedAt = "a1", t0
@@ -564,7 +563,7 @@ func TestRescueLeavesTheBalancerWhereItMoved(t *testing.T) {
 	}
 	// The failover planned the return for returnToCheaper.interval later; a1 did
 	// not fail, so it waits only for minHoldTime.
-	hold, spacing := time.Duration(sc.GetMinHoldTime()), time.Duration(sc.ReturnToCheaper.ProbeInterval)
+	hold, spacing := time.Duration(sc.GetMinHoldTime()), knobsFor[returnKnobs](sc.ReturnToCheaper).spacing
 	var back time.Time
 	probes := 0
 	for now := at(4 * time.Second); now.Before(at(5*time.Minute)) && back.IsZero(); now = now.Add(time.Second) {
@@ -582,7 +581,7 @@ func TestRescueLeavesTheBalancerWhereItMoved(t *testing.T) {
 		}
 	}
 	got := brief(t, te)
-	if back.IsZero() || probes != int(sc.ReturnToCheaper.ProbesToReturn) || slices.Contains(got, "return_delayed") {
+	if back.IsZero() || probes != knobsFor[returnKnobs](sc.ReturnToCheaper).successes || slices.Contains(got, "return_delayed") {
 		t.Fatalf("back on a1 %v after the move, %d return probes; events %v", back.Sub(moved), probes, got)
 	}
 	if took := back.Sub(moved); took > hold+3*spacing+10*time.Second {
@@ -681,8 +680,8 @@ func TestReturnAfterARescueIsSpread(t *testing.T) {
 			waits := map[time.Duration]bool{}
 			const seeds = 8
 			for seed := int64(1); seed <= seeds; seed++ {
-				sc := &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3), SkipProbeBeforeSwitch: tc.moved,
-					ReturnToCheaper: &ReturnToCheaperConfig{SkipRandomPhase: tc.fixed}}
+				sc := &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3), Features: probeFirst(!tc.moved),
+					ReturnToCheaper: tune(&ReturnToCheaperConfig{}, returnKnobs{fixedPhase: tc.fixed})}
 				te := newSeededTestEngine(t, seed, nil, sc, "a1", "b1")
 				confirm := confirmRunning(t, te)
 				strongDown(t, te, at(3*time.Second))

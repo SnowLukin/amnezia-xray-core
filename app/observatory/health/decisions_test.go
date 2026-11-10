@@ -198,7 +198,7 @@ func TestFailoverCandidateRemovedDuringItsProbe(t *testing.T) {
 // the next network change a no-op: the previous network's quarantine is kept
 // and no return to the cheaper outbound is scheduled.
 func TestNetworkChangeAfterLongSilenceIsApplied(t *testing.T) {
-	cfg := &Config{Schedule: &ScheduleConfig{Quarantine: &Backoff{InitialDelay: int64(40 * time.Minute), MaxDelay: int64(time.Hour), JitterFraction: 0.0001}}}
+	cfg := &Config{Schedule: tune(&ScheduleConfig{}, scheduleKnobs{quarantine: backoff{initial: 40 * time.Minute, max: time.Hour, jitter: 0.0001}})}
 	te := newTestEngine(t, cfg, returnToCheaperConfig(), "a1", "b1")
 	failoverToB(t, te, at(0))
 	// The phone sleeps; a leftover timer or a late failure runs the engine.

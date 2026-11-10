@@ -34,7 +34,7 @@ func withoutHistograms(v qualityPathView) qualityPathView {
 func qualityStage1ExportFixture(t *testing.T) (*testEngine, *Observer, *fakeClock) {
 	t.Helper()
 	paths := []*PathDefinition{{Tag: "p-x", Cost: 1, Probe: "light"}, {Tag: "p-y", Cost: 2, Probe: "light"}}
-	sc := &SelectorConfig{Paths: paths, SkipProbeBeforeSwitch: true}
+	sc := &SelectorConfig{Paths: paths, Features: probeFirst(false)}
 	te := newProviderEngine(t, quietProvider(nil), sc, "p-x", "p-y")
 	te.applyProviderSet(te.prov(), providerChange{tags: []string{"p-x", "p-y"}, paths: paths}, t0)
 	o, clk := newTestObserver()

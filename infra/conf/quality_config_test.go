@@ -40,10 +40,3 @@ func TestHealthQualityFlag(t *testing.T) {
 		})
 	}
 }
-
-func TestHealthQualityFlagWireField(t *testing.T) {
-	field := (&health.PassiveConfig{}).ProtoReflect().Descriptor().Fields().ByName("should_skip_quality")
-	if field == nil || field.Number() != 32 || field.JSONName() != "shouldSkipQuality" {
-		t.Fatalf("quality flag protobuf contract changed: %v", field)
-	}
-}

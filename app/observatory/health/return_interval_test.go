@@ -25,7 +25,7 @@ func TestPathReturnIntervalUsesDeclaredPath(t *testing.T) {
 			sc := &SelectorConfig{
 				Paths:         append([]*PathDefinition{{Tag: "a1", Cost: 1}}, tc.entries...),
 				StartOutbound: "b1", MinHoldTime: v2Int64(int64(time.Minute)),
-				ReturnToCheaper: &ReturnToCheaperConfig{Interval: int64(5 * time.Minute), SkipRandomPhase: true},
+				ReturnToCheaper: tune(&ReturnToCheaperConfig{Interval: int64(5 * time.Minute)}, returnKnobs{fixedPhase: true}),
 			}
 			candidates := make([]string, 0, len(sc.Paths))
 			for _, path := range sc.Paths {
@@ -55,7 +55,7 @@ func TestCostReturnIntervalFollowsSelectedOutbound(t *testing.T) {
 	sc := &SelectorConfig{
 		Paths:         []*PathDefinition{{Tag: "a1", Cost: 1}, {Tag: "b1", Cost: 3, ReturnInterval: int64(40 * time.Second)}, {Tag: "c1", Cost: 5}},
 		StartOutbound: "c1", MinHoldTime: v2Int64(int64(time.Second)),
-		ReturnToCheaper: &ReturnToCheaperConfig{Interval: int64(5 * time.Minute), SkipRandomPhase: true},
+		ReturnToCheaper: tune(&ReturnToCheaperConfig{Interval: int64(5 * time.Minute)}, returnKnobs{fixedPhase: true}),
 	}
 	te := newTestEngine(t, nil, sc, "a1", "b1", "c1")
 	if want := t0.Add(5 * time.Minute); !te.sel.returnToCheaperAt.Equal(want) {
@@ -75,7 +75,7 @@ func TestCostReturnIntervalControlsPenaltyDelay(t *testing.T) {
 	sc := &SelectorConfig{
 		Paths:         []*PathDefinition{{Tag: "a1", Cost: 1}, {Tag: "b1", Cost: 3, ReturnInterval: int64(2 * time.Minute)}},
 		StartOutbound: "b1", MinHoldTime: v2Int64(int64(time.Minute)),
-		ReturnToCheaper: &ReturnToCheaperConfig{Interval: int64(5 * time.Minute), SkipRandomPhase: true},
+		ReturnToCheaper: tune(&ReturnToCheaperConfig{Interval: int64(5 * time.Minute)}, returnKnobs{fixedPhase: true}),
 	}
 	te := newTestEngine(t, nil, sc, "a1", "b1")
 	te.sel.penalty["a1"] = 2
@@ -90,7 +90,7 @@ func TestDisabledCostReturnPeriodStillAllowsSoonReturn(t *testing.T) {
 	sc := &SelectorConfig{
 		Paths:         []*PathDefinition{{Tag: "a1", Cost: 1}, {Tag: "b1", Cost: 3, ReturnInterval: -1}},
 		StartOutbound: "b1", MinHoldTime: v2Int64(int64(time.Minute)),
-		ReturnToCheaper: &ReturnToCheaperConfig{Interval: int64(5 * time.Minute), SkipRandomPhase: true},
+		ReturnToCheaper: tune(&ReturnToCheaperConfig{Interval: int64(5 * time.Minute)}, returnKnobs{fixedPhase: true}),
 	}
 	te := newTestEngine(t, nil, sc, "a1", "b1")
 	if !te.sel.returnToCheaperAt.IsZero() {
@@ -106,7 +106,7 @@ func TestCostReturnIntervalAppliesToDynamicOutbound(t *testing.T) {
 	sc := &SelectorConfig{
 		Paths:           []*PathDefinition{{Tag: "a1", Cost: 1}},
 		MinHoldTime:     v2Int64(int64(time.Second)),
-		ReturnToCheaper: &ReturnToCheaperConfig{Interval: int64(5 * time.Minute), SkipRandomPhase: true},
+		ReturnToCheaper: tune(&ReturnToCheaperConfig{Interval: int64(5 * time.Minute)}, returnKnobs{fixedPhase: true}),
 	}
 	te := newProviderEngine(t, quietProvider(nil), sc, "a1")
 	te.applyProviderSet(te.prov(), providerChange{
@@ -153,9 +153,8 @@ func TestCostReturnIntervalCapsPenaltyAfterSelectingOutbound(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			sc := &SelectorConfig{
 				Paths:         []*PathDefinition{{Tag: "a1", Cost: 1}, {Tag: "b1", Cost: 3, ReturnInterval: int64(tc.own)}},
-				StartOutbound: "b1", MinHoldTime: v2Int64(int64(time.Second)), SkipProbeBeforeSwitch: true,
-				ReturnToCheaper: &ReturnToCheaperConfig{Interval: int64(tc.global), SkipRandomPhase: true,
-					MaxPenaltyDelay: int64(tc.limit)},
+				StartOutbound: "b1", MinHoldTime: v2Int64(int64(time.Second)), Features: probeFirst(false),
+				ReturnToCheaper: tune(&ReturnToCheaperConfig{Interval: int64(tc.global)}, returnKnobs{fixedPhase: true, maxPenalty: tc.limit}),
 			}
 			te := newTestEngine(t, &Config{Schedule: quarantine(time.Second)}, sc, "a1", "b1")
 			te.switchTo(te.sel, "a1", "return", t0)
@@ -182,9 +181,8 @@ func TestCostReturnIntervalCapsPenaltyAfterSelectingOutbound(t *testing.T) {
 func TestZeroCostReturnIntervalAndHoldKeepPenaltyFinite(t *testing.T) {
 	sc := &SelectorConfig{
 		Paths:         []*PathDefinition{{Tag: "a1", Cost: 1}, {Tag: "b1", Cost: 3, ReturnInterval: -1}},
-		StartOutbound: "b1", MinHoldTime: v2Int64(-1), SkipProbeBeforeSwitch: true,
-		ReturnToCheaper: &ReturnToCheaperConfig{Interval: int64(time.Minute), SkipRandomPhase: true,
-			MaxPenaltyDelay: int64(time.Hour)},
+		StartOutbound: "b1", MinHoldTime: v2Int64(-1), Features: probeFirst(false),
+		ReturnToCheaper: tune(&ReturnToCheaperConfig{Interval: int64(time.Minute)}, returnKnobs{fixedPhase: true, maxPenalty: time.Hour}),
 	}
 	te := newTestEngine(t, &Config{Schedule: quarantine(time.Second)}, sc, "a1", "b1")
 	te.switchTo(te.sel, "a1", "return", t0)
@@ -225,9 +223,8 @@ func TestZeroCostReturnIntervalAndHoldKeepPenaltyFinite(t *testing.T) {
 func TestCostReturnPenaltyRecoversAfterDelayAndHold(t *testing.T) {
 	sc := &SelectorConfig{
 		Paths:         []*PathDefinition{{Tag: "a1", Cost: 1}, {Tag: "b1", Cost: 3, ReturnInterval: int64(10 * time.Second)}},
-		StartOutbound: "b1", MinHoldTime: v2Int64(int64(time.Second)), SkipProbeBeforeSwitch: true,
-		ReturnToCheaper: &ReturnToCheaperConfig{Interval: int64(time.Minute), SkipRandomPhase: true,
-			PenaltyWindow: int64(time.Minute), MaxPenaltyDelay: int64(time.Hour)},
+		StartOutbound: "b1", MinHoldTime: v2Int64(int64(time.Second)), Features: probeFirst(false),
+		ReturnToCheaper: tune(&ReturnToCheaperConfig{Interval: int64(time.Minute)}, returnKnobs{fixedPhase: true, penaltyWindow: time.Minute, maxPenalty: time.Hour}),
 	}
 	te := newTestEngine(t, &Config{Schedule: quarantine(time.Second)}, sc, "a1", "b1")
 	te.switchTo(te.sel, "a1", "return", t0)
@@ -252,9 +249,8 @@ func TestCostReturnPenaltyRecoversAfterDelayAndHold(t *testing.T) {
 func TestGlobalReturnPenaltyKeepsExistingLimit(t *testing.T) {
 	sc := &SelectorConfig{
 		Paths:         []*PathDefinition{{Tag: "a1", Cost: 1}, {Tag: "b1", Cost: 3}},
-		StartOutbound: "b1", MinHoldTime: v2Int64(int64(time.Second)), SkipProbeBeforeSwitch: true,
-		ReturnToCheaper: &ReturnToCheaperConfig{Interval: int64(time.Minute), SkipRandomPhase: true,
-			MaxPenaltyDelay: int64(3 * time.Minute)},
+		StartOutbound: "b1", MinHoldTime: v2Int64(int64(time.Second)), Features: probeFirst(false),
+		ReturnToCheaper: tune(&ReturnToCheaperConfig{Interval: int64(time.Minute)}, returnKnobs{fixedPhase: true, maxPenalty: 3 * time.Minute}),
 	}
 	te := newTestEngine(t, &Config{Schedule: quarantine(time.Second)}, sc, "a1", "b1")
 	te.sel.penalty["a1"] = 2

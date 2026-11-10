@@ -3,6 +3,7 @@ package health
 import (
 	"context"
 	"encoding/json"
+	"google.golang.org/protobuf/proto"
 	"slices"
 	"strings"
 	"testing"
@@ -153,9 +154,9 @@ func TestMemoryLowStretchesDoubtfulNetworkChecks(t *testing.T) {
 
 func TestMemoryLowSkipsTimedRefreshes(t *testing.T) {
 	te := newProviderEngine(t, quietProvider(func(p *ProviderConfig) {
-		p.Triggers.Interval = int64(time.Hour)
-		p.Triggers.JitterFraction = -1
-		p.Triggers.SkipRefreshWhenExhausted = false
+		p.Triggers.Interval = fixed(time.Hour)
+		knobsOf[providerKnobs](p).jitter = -1
+		p.Features.Exhausted = proto.Bool(true)
 	}), &SelectorConfig{Paths: pathSpecs("a", 1)}, "a1", "a2")
 	te.setMemoryLow(true, at(time.Minute))
 	expectNoRefresh(t, te, at(2*time.Hour))

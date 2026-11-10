@@ -70,10 +70,9 @@ func TestAllDegradedKeepsCheapestLivePath(t *testing.T) {
 }
 
 func TestReturnProbesKeepDegradedCandidateEligibleWithoutSwitchingFromUp(t *testing.T) {
-	sc := &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3), ReturnToCheaper: &ReturnToCheaperConfig{
-		Interval: int64(time.Minute), SkipRandomPhase: true, ProbesToReturn: 2, ProbeInterval: int64(time.Second),
-	}}
-	te := newTestEngine(t, &Config{Schedule: &ScheduleConfig{IdleAfter: int64(time.Hour)}}, sc, "a1", "b1")
+	sc := &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3), ReturnToCheaper: tune(&ReturnToCheaperConfig{
+		Interval: int64(time.Minute)}, returnKnobs{fixedPhase: true, successes: 2, spacing: time.Second})}
+	te := newTestEngine(t, &Config{Schedule: tune(&ScheduleConfig{}, scheduleKnobs{idleAfter: time.Hour})}, sc, "a1", "b1")
 	te.markDegraded(te.path("a1"), degradedProbe(), t0)
 	te.markUp(te.path("b1"), "probe", t0)
 	te.switchTo(te.sel, "b1", "test", at(time.Second))

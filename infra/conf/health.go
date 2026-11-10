@@ -605,10 +605,6 @@ func (c *HealthObservatoryConfig) Build() (proto.Message, error) {
 	if p.Limits.HostPerMinute != nil && *p.Limits.HostPerMinute > max(countOr(p.Limits.PerMinute, 12)/2, 1) {
 		return nil, errors.New("healthObservatory.probes.limits.hostPerMinute must not exceed half of perMinute")
 	}
-	pathDetector := enabled(e.DialFailures.IsEnabled, true) || enabled(e.DialTimeout.IsEnabled, true) || enabled(e.ServerUnverified.IsEnabled, true)
-	if enabled(e.LoneFailureProbe.IsEnabled, false) && !pathDetector {
-		return nil, errors.New("healthObservatory.evidence.loneFailureProbe requires an enabled path-level detector: dialFailures, dialTimeout or serverUnverified")
-	}
 	out.Passive = &health.PassiveConfig{DialTimeout: optionalDuration(e.DialTimeout.Timeout), FirstByteTimeout: optionalDuration(e.FirstReply.Timeout), StallTimeout: optionalDuration(e.StalledRequests.Timeout), PartialStallMaxAge: optionalDuration(e.PartialStalls.MaxAge), UdpReplyTimeout: optionalDuration(e.UDPReplies.Timeout), LoneFailureAfter: optionalDuration(e.LoneFailureProbe.After)}
 	for i, profile := range p.Profiles {
 		where := fmt.Sprintf("healthObservatory.probes.profiles[%d]", i)
@@ -618,15 +614,9 @@ func (c *HealthObservatoryConfig) Build() (proto.Message, error) {
 		if len(profile.Steps) == 0 {
 			return nil, errors.New(where, ".steps must contain 1 to 4 steps")
 		}
-		if len(profile.Steps) > 1 && !enabled(p.StepProfiles.IsEnabled, false) {
-			return nil, errors.New(where, ".steps requires healthObservatory.probes.stepProfiles")
-		}
 		pp := &health.ProbeProfile{Name: profile.Name}
 		for j, step := range profile.Steps {
 			stepWhere := fmt.Sprintf("%s.steps[%d]", where, j)
-			if step.IsOptional && !enabled(p.StepProfiles.IsEnabled, false) {
-				return nil, errors.New(stepWhere, ".isOptional requires healthObservatory.probes.stepProfiles")
-			}
 			for _, f := range []struct {
 				name  string
 				value *duration.Duration
@@ -654,17 +644,6 @@ func (c *HealthObservatoryConfig) Build() (proto.Message, error) {
 		return nil, errors.New(strings.ReplaceAll(strings.ReplaceAll(strings.ReplaceAll(err.Error(), "healthObservatory: ", "healthObservatory."), "probes[", "probes.profiles["), "udpProbe", "probes.udp"))
 	}
 	cc := n.Connectivity
-	if enabled(cc.IsEnabled, false) && cc.Outbound == "" {
-		return nil, errors.New("healthObservatory.network.connectivity.outbound is required")
-	}
-	if enabled(cc.IsEnabled, false) {
-		if err := checkURLs("healthObservatory.network.connectivity.destinations", cc.Destinations); err != nil {
-			return nil, err
-		}
-	}
-	if enabled(n.Witnesses.IsEnabled, false) && len(n.Witnesses.Outbounds) == 0 {
-		return nil, errors.New("healthObservatory.network.witnesses.outbounds must not be empty")
-	}
 	for _, v := range n.Witnesses.Outbounds {
 		if v == "" {
 			return nil, errors.New("healthObservatory.network.witnesses.outbounds must not contain an empty prefix")
@@ -692,9 +671,6 @@ func (c *HealthObservatoryConfig) Build() (proto.Message, error) {
 	if math.IsNaN(t.Report.QuietSampleFraction) || math.IsInf(t.Report.QuietSampleFraction, 0) || t.Report.QuietSampleFraction < 0 || t.Report.QuietSampleFraction > 1 {
 		return nil, errors.New("healthObservatory.telemetry.report.quietSampleFraction must be in [0, 1]")
 	}
-	if (enabled(t.Report.SessionLabels.IsEnabled, false) || t.Report.QuietSampleFraction > 0) && !enabled(t.Report.IsEnabled, false) {
-		return nil, errors.New("healthObservatory.telemetry.report.sessionLabels and quietSampleFraction require healthObservatory.telemetry.report")
-	}
 	if err := validateLabels("healthObservatory.telemetry.report.sessionLabels.labels", t.Report.SessionLabels.Labels, 8); err != nil {
 		return nil, err
 	}
@@ -708,9 +684,6 @@ func (c *HealthObservatoryConfig) Build() (proto.Message, error) {
 		}
 	}
 	if census := t.Census; census != nil {
-		if !enabled(t.Report.IsEnabled, false) {
-			return nil, errors.New("healthObservatory.telemetry.census requires healthObservatory.telemetry.report")
-		}
 		if census.SampleFraction == nil || math.IsNaN(*census.SampleFraction) || math.IsInf(*census.SampleFraction, 0) || *census.SampleFraction <= 0 || *census.SampleFraction > 1 {
 			return nil, errors.New("healthObservatory.telemetry.census.sampleFraction is required and must be in (0, 1]")
 		}
@@ -742,6 +715,9 @@ func (c *HealthObservatoryConfig) Build() (proto.Message, error) {
 			}
 		}
 		out.Providers = append(out.Providers, built)
+	}
+	if err := out.ValidateFeatures(); err != nil {
+		return nil, err
 	}
 	return out, nil
 }
@@ -818,7 +794,7 @@ func (c *HealthProviderConfig) build() (*health.ProviderConfig, error) {
 			return nil, err
 		}
 	}
-	if t.Periodic.Interval != nil && rangeMin(t.Periodic.Interval) == 0 {
+	if t.Periodic.Interval != nil && rangeProto(t.Periodic.Interval).Min == 0 {
 		return nil, errors.New(where, ".triggers.periodic.interval must be greater than 0s")
 	}
 	if t.NetworkChange.SettleDelay != nil && !t.NetworkChange.SettleDelay.valid() {
@@ -843,6 +819,17 @@ func (c *HealthProviderConfig) build() (*health.ProviderConfig, error) {
 	if math.IsNaN(renew) || math.IsNaN(urgent) || renew <= 0 || renew > .95 || urgent < renew || urgent > .95 {
 		return nil, errors.New(where, ".triggers.leaseRenewal: renewAtFraction must be in (0, 0.95], urgentAtFraction in [renewAtFraction, 0.95]")
 	}
+	if a.AllowedProtocols != nil && len(a.AllowedProtocols) == 0 {
+		return nil, errors.New(where, ".apply.allowedProtocols must not be empty; omit it for the default")
+	}
+	protocols := make([]string, 0, len(a.AllowedProtocols))
+	for _, name := range a.AllowedProtocols {
+		name = strings.ToLower(name)
+		if _, err := outboundConfigLoader.cache.CreateConfig(name); err != nil {
+			return nil, errors.New(where, ".apply.allowedProtocols: unknown protocol ", name)
+		}
+		protocols = append(protocols, name)
+	}
 	mode := health.RefreshOnNetwork_REFRESH_UNKNOWN_NOT_CHEAPEST
 	switch t.NetworkChange.Mode {
 	case "", "unknownNotCheapest":
@@ -853,17 +840,13 @@ func (c *HealthProviderConfig) build() (*health.ProviderConfig, error) {
 	default:
 		return nil, errors.New(where, ".triggers.networkChange.mode must be unknownNotCheapest, unknown or any")
 	}
-	out := &health.ProviderConfig{ProbeOnlyRoads: c.ProbeOnlyRoads != nil, IsPlainHttpAllowed: c.IsPlainHTTPAllowed, IsEnabled: featurePresence(true), Tag: c.Tag, Urls: c.URLs, Method: method, Headers: c.Headers, Via: c.Via, Timeout: optionalDuration(c.Timeout), BaseVersion: c.BaseVersion,
+	out := &health.ProviderConfig{ProbeOnlyRoads: c.ProbeOnlyRoads != nil, IsPlainHttpAllowed: c.IsPlainHTTPAllowed, Tag: c.Tag, Urls: c.URLs, Method: method, Headers: c.Headers, Via: c.Via, Timeout: optionalDuration(c.Timeout), BaseVersion: c.BaseVersion,
 		Features: &health.ProviderFeatureConfig{Periodic: t.Periodic.IsEnabled, MinHealthy: t.MinHealthy.IsEnabled, CostAbove: t.WhenCostAbove.IsEnabled, MaxAge: t.MaxAge.IsEnabled, NetworkChange: t.NetworkChange.IsEnabled, Exhausted: t.Exhausted.IsEnabled, LeaseRenewal: t.LeaseRenewal.IsEnabled, BackendSchedule: t.BackendSchedule.IsEnabled, ExpiredLeaseFallback: a.ExpiredLeaseFallback.IsEnabled},
-		Triggers: &health.ProviderTriggers{Interval: rangeMin(t.Periodic.Interval), IntervalMax: rangeMax(t.Periodic.Interval), ExhaustedDelay: rangeProto(t.Exhausted.Delay), MinHealthyDelay: rangeProto(t.MinHealthy.Delay), MinHealthyOutbounds: count(t.MinHealthy.Outbounds), MaxAge: optionalDuration(t.MaxAge.Age), NetworkChangeMode: mode, NetworkSettleDelay: rangeMaxMin(t.NetworkChange.SettleDelay), NetworkSettleMax: rangeMax(t.NetworkChange.SettleDelay), Expiry: &health.ExpiryTrigger{RenewAtFraction: renew, UrgentAtFraction: urgent}},
+		Triggers: &health.ProviderTriggers{Interval: rangeProto(t.Periodic.Interval), ExhaustedDelay: rangeProto(t.Exhausted.Delay), MinHealthyDelay: rangeProto(t.MinHealthy.Delay), MinHealthyOutbounds: count(t.MinHealthy.Outbounds), MaxAge: optionalDuration(t.MaxAge.Age), NetworkChangeMode: mode, NetworkSettle: rangeProto(t.NetworkChange.SettleDelay), Expiry: &health.ExpiryTrigger{RenewAtFraction: renew, UrgentAtFraction: urgent}},
 		Limits:   &health.ProviderLimits{MinInterval: optionalDuration(l.MinInterval), ExhaustedMinInterval: optionalDuration(l.UrgentMinInterval), MaxRefreshesPerHour: count(l.MaxRefreshesPerHour)},
-		Apply:    &health.ProviderApply{Balancers: a.Balancers, TagPrefix: a.TagPrefix, DrainTimeout: optionalDuration(a.DrainTimeout), MaxOutbounds: count(a.MaxOutbounds), AllowedProtocols: a.AllowedProtocols}}
+		Apply:    &health.ProviderApply{Balancers: a.Balancers, TagPrefix: a.TagPrefix, DrainTimeout: optionalDuration(a.DrainTimeout), MaxOutbounds: count(a.MaxOutbounds), AllowedProtocols: protocols}}
 	if t.WhenCostAbove.Cost != nil || enabled(t.WhenCostAbove.IsEnabled, false) {
-		out.Triggers.WhenCostAbove = &health.CostTrigger{Cost: floatValue(t.WhenCostAbove.Cost)}
-		if t.WhenCostAbove.After != nil {
-			out.Triggers.WhenCostAbove.After = rangeMaxMin(t.WhenCostAbove.After)
-			out.Triggers.WhenCostAbove.AfterMax = rangeMax(t.WhenCostAbove.After)
-		}
+		out.Triggers.WhenCostAbove = &health.CostTrigger{Cost: floatValue(t.WhenCostAbove.Cost), After: rangeProto(t.WhenCostAbove.After)}
 	}
 	if a.AcceptedHeaders != nil {
 		out.Apply.AcceptedHeaders = *a.AcceptedHeaders
@@ -911,12 +894,16 @@ func (o *OutboundDetourConfig) UnmarshalJSON(raw []byte) error {
 	if err := json.Unmarshal(raw, &fields); err != nil {
 		return err
 	}
+	// Xray never refused unknown keys of an outbound; only near misses of
+	// the adaptive blocks are, in any case.
 	for name := range fields {
-		if strings.EqualFold(name, "selection") && name != "selection" {
-			return errors.New("outbounds[].", name, ": unknown key; use selection")
-		}
 		if strings.EqualFold(name, "path") {
 			return errors.New("outbounds[].path is not supported; use selection")
+		}
+		for _, key := range []string{"selection", "speedLimit"} {
+			if name != key && editDistance(strings.ToLower(name), strings.ToLower(key)) <= 2 {
+				return errors.New("outbounds[].", name, ": unknown key; use ", key)
+			}
 		}
 	}
 	if raw, ok := fields["selection"]; ok {
@@ -924,8 +911,33 @@ func (o *OutboundDetourConfig) UnmarshalJSON(raw []byte) error {
 			return err
 		}
 	}
+	if raw, ok := fields["speedLimit"]; ok {
+		if err := validateJSONShape(raw, reflect.TypeOf(SpeedLimitConfig{}), "outbounds[].speedLimit"); err != nil {
+			return err
+		}
+	}
 	type plain OutboundDetourConfig
 	return json.Unmarshal(raw, (*plain)(o))
+}
+
+// editDistance is the Levenshtein distance between a and b.
+func editDistance(a, b string) int {
+	prev := make([]int, len(b)+1)
+	for j := range prev {
+		prev[j] = j
+	}
+	for i := 1; i <= len(a); i++ {
+		cur := []int{i}
+		for j := 1; j <= len(b); j++ {
+			cost := 1
+			if a[i-1] == b[j-1] {
+				cost = 0
+			}
+			cur = append(cur, min(prev[j]+1, cur[j-1]+1, prev[j-1]+cost))
+		}
+		prev = cur
+	}
+	return prev[len(b)]
 }
 
 type strategyPathGroupConfig struct {

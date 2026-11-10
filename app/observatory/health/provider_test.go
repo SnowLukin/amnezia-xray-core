@@ -14,16 +14,13 @@ import (
 // checks and sees that nothing else fires.
 func quietProvider(mod func(*ProviderConfig)) *ProviderConfig {
 	pc := &ProviderConfig{
-		IsEnabled: proto.Bool(true),
-		Features:  &ProviderFeatureConfig{Periodic: proto.Bool(true), MinHealthy: proto.Bool(true), CostAbove: proto.Bool(true), MaxAge: proto.Bool(true), NetworkChange: proto.Bool(true)},
-		Tag:       "fresh",
-		Url:       "https://provider.test/set",
+		Features: &ProviderFeatureConfig{MinHealthy: proto.Bool(true), CostAbove: proto.Bool(true), MaxAge: proto.Bool(true), NetworkChange: proto.Bool(true), Exhausted: proto.Bool(false)},
+		Tag:      "fresh",
+		Urls:     []string{"https://provider.test/set"},
 		Triggers: &ProviderTriggers{
-			Interval:                 -1,
-			MinHealthyOutbounds:      -1,
-			SkipRefreshWhenExhausted: true,
-			MaxAge:                   -1,
-			NetworkChangeMode:        RefreshOnNetwork_REFRESH_NEVER,
+			MinHealthyOutbounds: -1,
+			MaxAge:              -1,
+			NetworkChangeMode:   RefreshOnNetwork_REFRESH_NEVER,
 		},
 		Limits: &ProviderLimits{},
 		Apply:  &ProviderApply{Balancers: []string{"auto"}, TagPrefix: "p-"},
@@ -31,7 +28,6 @@ func quietProvider(mod func(*ProviderConfig)) *ProviderConfig {
 	if mod != nil {
 		mod(pc)
 	}
-	pc.Features.Exhausted = proto.Bool(!pc.GetTriggers().GetSkipRefreshWhenExhausted())
 	return pc
 }
 
@@ -39,7 +35,7 @@ func newProviderEngine(t *testing.T, pc *ProviderConfig, sc *SelectorConfig, can
 	t.Helper()
 	cfg := &Config{
 		Providers: []*ProviderConfig{pc},
-		Schedule:  &ScheduleConfig{IdleAfter: int64(time.Hour)},
+		Schedule:  tune(&ScheduleConfig{}, scheduleKnobs{idleAfter: time.Hour}),
 	}
 	te := newTestEngine(t, cfg, sc, candidates...)
 	for _, p := range te.providers {
@@ -119,8 +115,8 @@ func TestQuietProviderNeverRefreshes(t *testing.T) {
 
 func TestIntervalRefreshIsJittered(t *testing.T) {
 	te := newProviderEngine(t, quietProvider(func(p *ProviderConfig) {
-		p.Triggers.Interval = int64(2 * time.Hour)
-		p.Triggers.JitterFraction = 0.2
+		p.Triggers.Interval = fixed(2 * time.Hour)
+		knobsOf[providerKnobs](p).jitter = 0.2
 	}), nil, "a1")
 	jobs, wake := te.refreshAt(t0)
 	if len(jobs) != 0 {
@@ -140,8 +136,8 @@ func TestIntervalRefreshIsJittered(t *testing.T) {
 
 func TestTimedRefreshWaitsForTraffic(t *testing.T) {
 	te := newProviderEngine(t, quietProvider(func(p *ProviderConfig) {
-		p.Triggers.Interval = int64(time.Hour)
-		p.Triggers.JitterFraction = -1
+		p.Triggers.Interval = fixed(time.Hour)
+		knobsOf[providerKnobs](p).jitter = -1
 	}), nil, "a1")
 	te.s.schedule.idleAfter = 2 * time.Minute
 	te.refreshAt(t0)
@@ -158,8 +154,8 @@ func TestTimedRefreshWaitsForTraffic(t *testing.T) {
 
 func TestManualRefreshWaitsForNetworkAndResumes(t *testing.T) {
 	te := newProviderEngine(t, quietProvider(func(p *ProviderConfig) {
-		p.Triggers.Interval = int64(time.Hour)
-		p.Triggers.JitterFraction = -1
+		p.Triggers.Interval = fixed(time.Hour)
+		knobsOf[providerKnobs](p).jitter = -1
 	}), nil, "a1")
 	te.onNetworkLost(at(30 * time.Minute))
 	expectNoRefresh(t, te, at(time.Hour))
@@ -190,8 +186,8 @@ func TestManualRefreshWaitsForPinAndResumes(t *testing.T) {
 				sc.StartPinnedOutbound = "a1"
 			}
 			te := newProviderEngine(t, quietProvider(func(p *ProviderConfig) {
-				p.Triggers.Interval = int64(time.Hour)
-				p.Triggers.JitterFraction = -1
+				p.Triggers.Interval = fixed(time.Hour)
+				knobsOf[providerKnobs](p).jitter = -1
 				p.Triggers.MinHealthyOutbounds = 2
 			}), sc, "a1", "b1")
 			if !start {
@@ -229,7 +225,7 @@ func TestManualRefreshWaitsForPinAndResumes(t *testing.T) {
 // request asks about the value under the pin. A retry after it failed waits
 // for the release, also once the lease ended.
 func TestRenewalWaitsForThePinUntilUrgent(t *testing.T) {
-	te := leaseEngine(t, renewing(func(x *ExpiryTrigger) { x.JitterFraction = -1 }),
+	te := leaseEngine(t, renewing(func(x *ExpiryTrigger) { tune(x, renewJitter(-1)) }),
 		&SelectorConfig{Paths: pathSpecs("p-", 1)}, "p-x1", "p-x2")
 	te.lease(t0, map[string]time.Duration{"p-x1": time.Minute}, "p-x1", "p-x2")
 	te.pin("auto", "p-x1", at(time.Second))
@@ -261,7 +257,7 @@ func TestRenewalWaitsForThePinUntilUrgent(t *testing.T) {
 // A long pin of the host does not let the lease of the pinned outbound end:
 // the urgent renewal goes, and the answer renews the lease.
 func TestLongPinKeepsTheLeaseOfThePinnedOutbound(t *testing.T) {
-	te := leaseEngine(t, renewing(func(x *ExpiryTrigger) { x.JitterFraction = -1 }),
+	te := leaseEngine(t, renewing(func(x *ExpiryTrigger) { tune(x, renewJitter(-1)) }),
 		&SelectorConfig{Paths: pathSpecs("p-", 1)}, "p-x1", "p-x2")
 	te.lease(t0, map[string]time.Duration{"p-x1": time.Hour, "p-x2": time.Hour}, "p-x1", "p-x2")
 	te.pin("auto", "p-x1", at(time.Second))
@@ -320,7 +316,7 @@ func TestMinHealthyRetriesAfterFailure(t *testing.T) {
 
 func TestExhaustedRefreshesAtOnceWhileNetworkIsUp(t *testing.T) {
 	te := newProviderEngine(t, quietProvider(func(p *ProviderConfig) {
-		p.Triggers.SkipRefreshWhenExhausted = false
+		p.Features.Exhausted = proto.Bool(true)
 	}), nil, "a1", "a2")
 	expectNoRefresh(t, te, t0)
 	te.networkDown = true
@@ -342,7 +338,7 @@ func TestExhaustedRefreshesAtOnceWhileNetworkIsUp(t *testing.T) {
 
 func TestExhaustedWaitsUntilTheBalancerSawTheNewSet(t *testing.T) {
 	te := newProviderEngine(t, quietProvider(func(p *ProviderConfig) {
-		p.Triggers.SkipRefreshWhenExhausted = false
+		p.Features.Exhausted = proto.Bool(true)
 	}), &SelectorConfig{Paths: pathSpecs("a", 1, "p-", 2)}, "a1")
 	te.failN(3, "a1", failDial, t0)
 	if !te.sel.exhausted {
@@ -371,7 +367,7 @@ func TestExhaustedWaitsUntilTheBalancerSawTheNewSet(t *testing.T) {
 
 func TestSameSetWhileExhaustedBacksOff(t *testing.T) {
 	te := newProviderEngine(t, quietProvider(func(p *ProviderConfig) {
-		p.Triggers.SkipRefreshWhenExhausted = false
+		p.Features.Exhausted = proto.Bool(true)
 		p.Limits.MaxRefreshesPerHour = -1
 	}), nil, "a1")
 	te.exhaust(te.sel, t0)
@@ -402,7 +398,7 @@ func TestSameSetWhileExhaustedBacksOff(t *testing.T) {
 
 func TestProviderFixtureStartsWithDeclaredBasePath(t *testing.T) {
 	te := newProviderEngine(t, quietProvider(func(p *ProviderConfig) {
-		p.Triggers.SkipRefreshWhenExhausted = false
+		p.Features.Exhausted = proto.Bool(true)
 	}), nil, "a1")
 	if !te.sel.hasCandidate("a1") || te.sel.exhausted || te.prov().fetching {
 		t.Fatalf("fixture lost a1: candidates %v, exhausted %v, fetching %v",
@@ -412,7 +408,7 @@ func TestProviderFixtureStartsWithDeclaredBasePath(t *testing.T) {
 
 func TestCostAboveFiresAfterTimeOnExpensive(t *testing.T) {
 	te := newProviderEngine(t, quietProvider(func(p *ProviderConfig) {
-		p.Triggers.WhenCostAbove = &CostTrigger{Cost: 10, After: proto.Int64(int64(15 * time.Minute))}
+		p.Triggers.WhenCostAbove = &CostTrigger{Cost: 10, After: fixed(15 * time.Minute)}
 	}), &SelectorConfig{Paths: pathSpecs("a", 1, "d", 50)}, "a1", "d1")
 	expectNoRefresh(t, te, at(30*time.Minute))
 	te.switchTo(te.sel, "d1", "failover", at(time.Hour))
@@ -430,7 +426,7 @@ func TestCostAboveFiresAfterTimeOnExpensive(t *testing.T) {
 
 func TestCostAboveForgetsTimeOnCheapPath(t *testing.T) {
 	te := newProviderEngine(t, quietProvider(func(p *ProviderConfig) {
-		p.Triggers.WhenCostAbove = &CostTrigger{Cost: 10, After: proto.Int64(int64(15 * time.Minute))}
+		p.Triggers.WhenCostAbove = &CostTrigger{Cost: 10, After: fixed(15 * time.Minute)}
 	}), &SelectorConfig{Paths: pathSpecs("a", 1, "d", 50)}, "a1", "d1")
 	te.switchTo(te.sel, "d1", "failover", t0)
 	expectNoRefresh(t, te, at(10*time.Minute))
@@ -443,7 +439,7 @@ func TestCostAboveForgetsTimeOnCheapPath(t *testing.T) {
 
 func TestCostAboveZeroAfterStartsInTheSwitchTurnAndUsesShortLimit(t *testing.T) {
 	te := newProviderEngine(t, quietProvider(func(p *ProviderConfig) {
-		p.Triggers.WhenCostAbove = &CostTrigger{Cost: 10, After: proto.Int64(-1)}
+		p.Triggers.WhenCostAbove = &CostTrigger{Cost: 10, After: &DurationRange{}}
 		p.Limits.MinInterval = int64(5 * time.Minute)
 		p.Limits.ExhaustedMinInterval = int64(30 * time.Second)
 	}), &SelectorConfig{Paths: pathSpecs("a", 1, "d", 10)}, "a1", "d1")
@@ -462,7 +458,7 @@ func TestCostAboveZeroAfterStartsInTheSwitchTurnAndUsesShortLimit(t *testing.T) 
 
 func TestCostAbovePositiveAfterKeepsNormalLimit(t *testing.T) {
 	te := newProviderEngine(t, quietProvider(func(p *ProviderConfig) {
-		p.Triggers.WhenCostAbove = &CostTrigger{Cost: 10, After: proto.Int64(int64(15 * time.Second))}
+		p.Triggers.WhenCostAbove = &CostTrigger{Cost: 10, After: fixed(15 * time.Second)}
 		p.Limits.MinInterval = int64(5 * time.Minute)
 		p.Limits.ExhaustedMinInterval = int64(time.Second)
 	}), &SelectorConfig{Paths: pathSpecs("a", 1, "d", 10)}, "a1", "d1")
@@ -488,10 +484,10 @@ func TestCostAboveZeroAfterKeepsBackoffRetryAfterAndHourlyLimit(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			te := newProviderEngine(t, quietProvider(func(p *ProviderConfig) {
-				p.Triggers.WhenCostAbove = &CostTrigger{Cost: 10, After: proto.Int64(-1)}
+				p.Triggers.WhenCostAbove = &CostTrigger{Cost: 10, After: &DurationRange{}}
 				p.Limits.MinInterval = int64(5 * time.Minute)
 				p.Limits.ExhaustedMinInterval = int64(time.Second)
-				p.Limits.Backoff = &Backoff{InitialDelay: int64(tc.wait), MaxDelay: int64(tc.wait), JitterFraction: -1}
+				knobsOf[providerKnobs](p).backoff = backoff{initial: tc.wait, max: tc.wait, jitter: -1}
 			}), &SelectorConfig{Paths: pathSpecs("a", 1, "d", 10)}, "a1", "d1")
 			te.switchTo(te.sel, "d1", "failover", at(time.Second))
 			j := expectRefresh(t, te, at(time.Second), "cost_above")
@@ -510,7 +506,7 @@ func TestCostAboveZeroAfterKeepsBackoffRetryAfterAndHourlyLimit(t *testing.T) {
 	}
 
 	te := newProviderEngine(t, quietProvider(func(p *ProviderConfig) {
-		p.Triggers.WhenCostAbove = &CostTrigger{Cost: 10, After: proto.Int64(-1)}
+		p.Triggers.WhenCostAbove = &CostTrigger{Cost: 10, After: &DurationRange{}}
 		p.Limits.MinInterval = int64(5 * time.Minute)
 		p.Limits.ExhaustedMinInterval = int64(time.Second)
 		p.Limits.MaxRefreshesPerHour = 1
@@ -539,7 +535,7 @@ func TestCostAboveZeroAfterRespectsOtherGates(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			te := newProviderEngine(t, quietProvider(func(p *ProviderConfig) {
-				p.Triggers.WhenCostAbove = &CostTrigger{Cost: 10, After: proto.Int64(-1)}
+				p.Triggers.WhenCostAbove = &CostTrigger{Cost: 10, After: &DurationRange{}}
 				p.Limits.ExhaustedMinInterval = int64(time.Second)
 			}), &SelectorConfig{Paths: pathSpecs("a", 1, "d", 10)}, "a1", "d1")
 			now := at(2 * time.Second)
@@ -554,7 +550,7 @@ func TestCostAboveZeroAfterRespectsOtherGates(t *testing.T) {
 
 func TestCostAboveZeroAfterIsNotMaskedByMinHealthy(t *testing.T) {
 	te := newProviderEngine(t, quietProvider(func(p *ProviderConfig) {
-		p.Triggers.WhenCostAbove = &CostTrigger{Cost: 10, After: proto.Int64(-1)}
+		p.Triggers.WhenCostAbove = &CostTrigger{Cost: 10, After: &DurationRange{}}
 		p.Triggers.MinHealthyOutbounds = 2
 		p.Limits.MinInterval = int64(5 * time.Minute)
 		p.Limits.ExhaustedMinInterval = int64(30 * time.Second)
@@ -570,8 +566,8 @@ func TestCostAboveZeroAfterIsNotMaskedByMinHealthy(t *testing.T) {
 
 func TestCostAboveZeroAfterIsNotMaskedByRenewal(t *testing.T) {
 	te := newProviderEngine(t, quietProvider(func(p *ProviderConfig) {
-		p.Triggers.WhenCostAbove = &CostTrigger{Cost: 10, After: proto.Int64(-1)}
-		p.Triggers.Expiry = &ExpiryTrigger{RenewAtFraction: 0.5, UrgentAtFraction: 0.8, JitterFraction: -1}
+		p.Triggers.WhenCostAbove = &CostTrigger{Cost: 10, After: &DurationRange{}}
+		p.Triggers.Expiry = tune(&ExpiryTrigger{RenewAtFraction: 0.5, UrgentAtFraction: 0.8}, renewJitter(-1))
 		p.Limits.MinInterval = int64(5 * time.Minute)
 		p.Limits.ExhaustedMinInterval = int64(30 * time.Second)
 	}), &SelectorConfig{Paths: pathSpecs("a", 1, "d", 10)}, "a1", "d1")
@@ -591,7 +587,7 @@ func TestCostAboveZeroAfterDoesNotBypassSharedLimits(t *testing.T) {
 		reason string
 	}{
 		{"backoff", func(p *ProviderConfig) {
-			p.Limits.Backoff = &Backoff{InitialDelay: int64(2 * time.Minute), MaxDelay: int64(2 * time.Minute)}
+			knobsOf[providerKnobs](p).backoff = backoff{initial: 2 * time.Minute, max: 2 * time.Minute}
 		}, refreshOutcome{err: "timeout"}, "backoff"},
 		{"retry_after", nil, refreshOutcome{err: "status 429", retryAfter: 2 * time.Minute}, "retry_after"},
 		{"max_per_hour", func(p *ProviderConfig) {
@@ -600,7 +596,7 @@ func TestCostAboveZeroAfterDoesNotBypassSharedLimits(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			te := newProviderEngine(t, quietProvider(func(p *ProviderConfig) {
-				p.Triggers.WhenCostAbove = &CostTrigger{Cost: 10, After: proto.Int64(-1)}
+				p.Triggers.WhenCostAbove = &CostTrigger{Cost: 10, After: &DurationRange{}}
 				p.Triggers.MinHealthyOutbounds = 2
 				p.Limits.MinInterval = int64(5 * time.Minute)
 				p.Limits.ExhaustedMinInterval = int64(30 * time.Second)
@@ -641,8 +637,8 @@ func TestMaxAgeKeepsAskingUntilASuccess(t *testing.T) {
 
 func TestNextRefreshInReplacesInterval(t *testing.T) {
 	te := newProviderEngine(t, quietProvider(func(p *ProviderConfig) {
-		p.Triggers.Interval = int64(2 * time.Hour)
-		p.Triggers.JitterFraction = 0.1
+		p.Triggers.Interval = fixed(2 * time.Hour)
+		knobsOf[providerKnobs](p).jitter = 0.1
 		p.Limits.MinInterval = int64(time.Minute)
 	}), nil, "a1")
 	te.prov().host = true
@@ -664,8 +660,8 @@ func TestNextRefreshInReplacesInterval(t *testing.T) {
 
 func TestZeroNextRefreshInReplacesInterval(t *testing.T) {
 	te := newProviderEngine(t, quietProvider(func(p *ProviderConfig) {
-		p.Triggers.Interval = int64(2 * time.Hour)
-		p.Triggers.JitterFraction = -1
+		p.Triggers.Interval = fixed(2 * time.Hour)
+		knobsOf[providerKnobs](p).jitter = -1
 		p.Limits.MinInterval = -1
 	}), nil, "a1")
 	te.prov().host = true
@@ -684,7 +680,7 @@ func TestZeroNextRefreshInReplacesInterval(t *testing.T) {
 
 func TestExhaustedUsesShorterMinInterval(t *testing.T) {
 	te := newProviderEngine(t, quietProvider(func(p *ProviderConfig) {
-		p.Triggers.SkipRefreshWhenExhausted = false
+		p.Features.Exhausted = proto.Bool(true)
 		p.Triggers.MaxAge = int64(time.Hour)
 		p.Limits.MinInterval = int64(5 * time.Minute)
 		p.Limits.ExhaustedMinInterval = int64(30 * time.Second)
@@ -719,7 +715,7 @@ func TestNetworkChangeTriggerModes(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			te := newProviderEngine(t, quietProvider(func(p *ProviderConfig) {
 				p.Triggers.NetworkChangeMode = c.mode
-				p.Triggers.NetworkSettleDelay = proto.Int64(int64(30 * time.Second))
+				p.Triggers.NetworkSettle = fixed(30 * time.Second)
 			}), &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3), NetworkChangeAction: NetworkChangeMode_FORGET}, "a1", "b1")
 			if c.known {
 				te.networks["cafe"] = map[string]string{"auto": "a1"}
@@ -758,7 +754,7 @@ func TestNetworkTriggerInANetworkSeenUnderAPin(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			te := newProviderEngine(t, quietProvider(func(p *ProviderConfig) {
 				p.Triggers.NetworkChangeMode = RefreshOnNetwork_REFRESH_UNKNOWN_NOT_CHEAPEST
-				p.Triggers.NetworkSettleDelay = proto.Int64(int64(30 * time.Second))
+				p.Triggers.NetworkSettle = fixed(30 * time.Second)
 			}), &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3), NetworkChangeAction: NetworkChangeMode_FORGET}, "a1", "b1")
 			te.onNetworkChange("home", at(time.Minute))
 			if tc.learned {
@@ -810,9 +806,9 @@ func TestNetworkTriggerAfterAPinOnTheCheapestThatFailed(t *testing.T) {
 		t.Run(fmt.Sprintf("switch after probe %v", probe), func(t *testing.T) {
 			te := newProviderEngine(t, quietProvider(func(p *ProviderConfig) {
 				p.Triggers.NetworkChangeMode = RefreshOnNetwork_REFRESH_UNKNOWN_NOT_CHEAPEST
-				p.Triggers.NetworkSettleDelay = proto.Int64(int64(30 * time.Second))
+				p.Triggers.NetworkSettle = fixed(30 * time.Second)
 			}), &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3), NetworkChangeAction: NetworkChangeMode_FORGET,
-				SkipProbeBeforeSwitch: !probe}, "a1", "b1")
+				Features: probeFirst(probe)}, "a1", "b1")
 			te.pin("auto", "a1", at(time.Minute))
 			back := at(10 * time.Minute)
 			te.onNetworkChange("cafe", back)
@@ -879,7 +875,7 @@ func TestFailedHostRefreshRetriesWithGrowingJitteredBackoff(t *testing.T) {
 	te := newProviderEngine(t, quietProvider(func(p *ProviderConfig) {
 		p.Limits.MaxRefreshesPerHour = -1
 		p.Limits.ExhaustedMinInterval = int64(time.Second)
-		p.Limits.Backoff = &Backoff{InitialDelay: int64(30 * time.Second), Multiplier: 2, MaxDelay: int64(10 * time.Minute), JitterFraction: 0.3}
+		knobsOf[providerKnobs](p).backoff = backoff{initial: 30 * time.Second, multiplier: 2, max: 10 * time.Minute, jitter: 0.3}
 	}), nil, "a1")
 	te.requestRefresh("fresh")
 	var starts []time.Time
@@ -916,8 +912,8 @@ func TestFailedHostRefreshRetriesWithGrowingJitteredBackoff(t *testing.T) {
 
 func TestMinIntervalHoldsTriggersAndSkipIsReportedOnce(t *testing.T) {
 	te := newProviderEngine(t, quietProvider(func(p *ProviderConfig) {
-		p.Triggers.Interval = int64(time.Minute)
-		p.Triggers.JitterFraction = -1
+		p.Triggers.Interval = fixed(time.Minute)
+		knobsOf[providerKnobs](p).jitter = -1
 		p.Limits.MinInterval = int64(5 * time.Minute)
 	}), nil, "a1")
 	j := expectRefresh(t, te, at(time.Minute), "interval")
@@ -974,13 +970,13 @@ func TestRefreshWhileFetchingWaits(t *testing.T) {
 func TestRefreshesOfManyClientsSpreadOut(t *testing.T) {
 	const clients = 1000
 	pc := quietProvider(func(p *ProviderConfig) {
-		p.Triggers.Interval = int64(96 * time.Minute)
-		p.Triggers.IntervalMax = proto.Int64(int64(144 * time.Minute))
+		p.Triggers.Interval = &DurationRange{Min: int64(96 * time.Minute), Max: int64(144 * time.Minute)}
+		p.Features.Periodic = proto.Bool(true)
 	})
 	byMinute := map[int]int{}
 	waves := 0
 	for c := 0; c < clients; c++ {
-		s := legacyScenarioSettings(&Config{Providers: []*ProviderConfig{pc}, Schedule: &ScheduleConfig{IdleAfter: int64(24 * time.Hour)}})
+		s := legacyScenarioSettings(&Config{Providers: []*ProviderConfig{pc}, Schedule: tune(&ScheduleConfig{}, scheduleKnobs{idleAfter: 24 * time.Hour})})
 		e := newEngine(s, int64(c+1))
 		e.noteDemand(t0)
 		_, wake := e.tickProviders(t0)
@@ -1191,7 +1187,7 @@ func TestResolveVia(t *testing.T) {
 
 func TestProviderDefaultsAndOff(t *testing.T) {
 	p := newProviderSettings(&ProviderConfig{Apply: &ProviderApply{Balancers: []string{"auto"}, TagPrefix: "p-"}})
-	if p.enabled || p.interval != 0 || p.jitter != 0.2 || p.minHealthy != 0 || !p.whenExhausted || p.costAbove ||
+	if p.interval != 0 || p.jitter != 0.2 || p.minHealthy != 0 || !p.whenExhausted || p.costAbove ||
 		p.maxAge != 0 || p.onNetwork != RefreshOnNetwork_REFRESH_NEVER {
 		t.Fatalf("trigger defaults %+v", p)
 	}
@@ -1200,7 +1196,7 @@ func TestProviderDefaultsAndOff(t *testing.T) {
 		t.Fatalf("limit defaults %+v", p)
 	}
 	off := newProviderSettings(quietProvider(func(p *ProviderConfig) {
-		p.Triggers.JitterFraction = -1
+		knobsOf[providerKnobs](p).jitter = -1
 		p.Limits.MaxRefreshesPerHour = -1
 	}))
 	if off.interval != 0 || off.jitter != 0.2 || off.minHealthy != 0 || off.whenExhausted || off.maxAge != 0 || off.maxPerHour != 0 {
@@ -1246,7 +1242,7 @@ func TestRetryAfterForms(t *testing.T) {
 // too, and the pause is no failure: the backoff does not grow.
 func TestRetryAfterHoldsEveryTriggerWithoutGrowingBackoff(t *testing.T) {
 	te := newProviderEngine(t, quietProvider(func(p *ProviderConfig) {
-		p.Triggers.SkipRefreshWhenExhausted = false
+		p.Features.Exhausted = proto.Bool(true)
 		p.Limits.ExhaustedMinInterval = int64(time.Second)
 	}), nil, "a1")
 	te.exhaust(te.sel, t0)
@@ -1315,23 +1311,29 @@ func TestRetryAfterOfManyClientsSpreadOut(t *testing.T) {
 
 func applyLegacyProviderTimings(p *providerSettings, c *ProviderConfig) {
 	p.exhaustedDelay, p.minHealthyDelay = durationRange{}, durationRange{}
-	p.interval = optional(c.GetTriggers().GetInterval(), defaultRefreshInterval)
-	p.periodic = p.interval > 0
-	p.networkSettle = presentDelay(c.GetTriggers().NetworkSettleDelay, defaultNetworkSettle)
+	p.interval, p.periodic = 0, c.GetTriggers().GetInterval() != nil
+	if p.periodic {
+		p.interval = time.Duration(c.GetTriggers().GetInterval().Min)
+	}
+	p.networkSettle = 30 * time.Second
+	if r := c.GetTriggers().GetNetworkSettle(); r != nil {
+		p.networkSettle = time.Duration(r.Min)
+	}
 	p.networkSettleMax = p.networkSettle
 	p.costAboveAfterMax = p.costAboveAfter
+	k := knobsFor[providerKnobs](c)
 	p.jitter = 0
-	if c.GetTriggers().GetJitterFraction() >= 0 {
-		p.jitter = jitter(c.GetTriggers().GetJitterFraction(), defaultRefreshJitter)
+	if k.jitter >= 0 {
+		p.jitter = jitter(k.jitter, defaultRefreshJitter)
 	}
 	p.intervalMax = time.Duration(float64(p.interval) * (1 + p.jitter))
 	p.interval = time.Duration(float64(p.interval) * (1 - p.jitter))
 	p.renewJitter = 0
-	if c.GetTriggers().GetExpiry().GetJitterFraction() >= 0 {
-		p.renewJitter = min(fnum(c.GetTriggers().GetExpiry().GetJitterFraction(), defaultRenewJitter), maxRenewJitter)
+	if rj := knobsFor[renewJitter](c.GetTriggers().GetExpiry()); rj >= 0 {
+		p.renewJitter = min(fnum(float64(rj), defaultRenewJitter), maxRenewJitter)
 	}
-	p.backoff = toBackoff(c.GetLimits().GetBackoff(), defaultRefreshRetry)
-	p.authRetry = optional(c.GetLimits().GetAuthRetryDelay(), defaultAuthRetry)
+	p.backoff = fill(k.backoff, defaultRefreshRetry)
+	p.authRetry = optional(int64(k.authRetry), defaultAuthRetry)
 }
 
 // Accelerated runtime timings are a test recipe, absent from the public config.

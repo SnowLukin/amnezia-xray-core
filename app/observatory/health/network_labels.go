@@ -52,9 +52,6 @@ func (c *Config) ValidateMeasurementContext() error {
 		if lr == nil {
 			return fmt.Errorf("network.labelRequest requires settings")
 		}
-		if lr.Destination != "" {
-			return fmt.Errorf("network.labelRequest.destination is unsupported; use destinations")
-		}
 		if (c.GetFeatures().GetLabelRequest() && len(lr.Destinations) < 1) || len(lr.Destinations) > 4 {
 			return fmt.Errorf("network.labelRequest.destinations must contain 1 to 4 addresses")
 		}

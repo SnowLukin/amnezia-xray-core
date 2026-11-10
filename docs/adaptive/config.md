@@ -14,7 +14,7 @@
 
 ### Регистр и имена
 
-Все ключи в camelCase и регистрозависимы. `Selection` или `HealthObservatory` вместо `selection` и `healthObservatory` отвергаются с подсказкой правильного имени. Ключ `path` у outbound отвергается в любом регистре (`outbounds[].path is not supported; use selection`).
+Все ключи в camelCase и регистрозависимы. `Selection` или `HealthObservatory` вместо `selection` и `healthObservatory` отвергаются с подсказкой правильного имени. У outbound так же отвергается любой ключ, который отличается от `selection` или `speedLimit` регистром или не больше чем двумя буквами (`selections`, `seletion`, `speedlimit`, `speedLimits`): `outbounds[].selections: unknown key; use selection`. Ключ `path` у outbound отвергается в любом регистре (`outbounds[].path is not supported; use selection`).
 
 ### Длительности и промежутки
 
@@ -56,9 +56,9 @@ healthObservatory.telemetry.report.isEnabled is not supported; include the block
 
 ### Строгий разбор
 
-Внутри `healthObservatory`, `outbounds[].selection` и `strategy.settings` балансировщика `leastCost` неизвестный ключ, `null` и неверный тип отвергаются с путём к ключу, например `healthObservatory.telemetry.reprot: unknown key`.
+Внутри `healthObservatory`, `outbounds[].selection`, `outbounds[].speedLimit` и `strategy.settings` балансировщика `leastCost` неизвестный ключ, `null` и неверный тип отвергаются с путём к ключу, например `healthObservatory.telemetry.reprot: unknown key`.
 
-Вне этих блоков действует штатный нестрогий декодер Xray. Это касается и `speedLimit`, и самого объекта outbound. Опечатка в имени блока или ключа (`"selections"`, `"speed_limit"`, `{"down": "5mbps"}` внутри `speedLimit`) проходит молча, и блок просто не действует. Другой регистр штатный декодер прощает (`"speedlimit"` сработает), кроме `selection`, который в другом регистре отвергается. Генерируйте эти ключи из кода, а не руками.
+Вне этих блоков действует штатный нестрогий декодер Xray, в том числе на уровне самого объекта outbound: неизвестные ключи outbound принимались всегда, и чужие конфиги на это опираются. Поэтому отвергаются только ключи, похожие на `selection` и `speedLimit` (раздел «Регистр и имена»). Опечатка, далёкая от этих имён (`"speed_limit"`, `"limit"`), по-прежнему проходит молча, и блок просто не действует. Генерируйте эти ключи из кода, а не руками.
 
 Ошибки формы `selection` адресуются как `outbounds[].selection.<ключ>`, без индекса и тега outbound. Ошибки ссылок и зависимостей адресуются тегом: `outbound nl-1.selection...`. Ошибки внутри `leastCost` начинаются с `balancer <тег>: leastCost.settings...`.
 
@@ -166,11 +166,11 @@ healthObservatory.telemetry.report.isEnabled is not supported; include the block
 | `uplink` | string | пусто, без лимита | `0` или от 64 kbps | от пользователя к серверу |
 | `downlink` | string | пусто, без лимита | `0` или от 64 kbps | от сервера к пользователю |
 
-Скорость задаётся в битах в секунду: число и единица `bps`, `kbps`, `mbps`, `gbps`, `tbps` (допустимы сокращения `b`, `k`/`kb`, `m`/`mb`, `g`/`gb`, `t`/`tb`, регистр не важен). Множители двоичные: `"1mbps"` равно 2^20 бит/с, `"20mbps"` на 4,9 % больше 20 000 000 бит/с. `"20mb"` и `"20m"` тоже означают мебибиты, а не мегабайты. Неизвестная единица даёт `unsupported unit`, ненулевое значение ниже 64 kbps даёт `speedLimit must be at least 64kbps per direction`.
+Скорость задаётся в битах в секунду: неотрицательное число и единица `kbps`, `mbps` или `gbps` (регистр единицы не важен). Множители десятичные: `"20mbps"` равно 20 000 000 бит/с, `"1.5mbps"` равно 1 500 000 бит/с. Голое число, `bps`, `tbps` и сокращения вроде `"20mb"` или `"20m"` дают `speedLimit.downlink must be a number with kbps, mbps or gbps, such as 20mbps`. Ненулевое значение ниже 64 kbps даёт `speedLimit must be at least 64kbps per direction`.
 
 После простоя лимит пропускает сразу четверть секунды трафика, но не меньше 64 КиБ. Ограниченное соединение не использует splice. Пробы наблюдателя идут через тот же outbound и тратят тот же бюджет, поэтому профиль с `minBytes` на медленном лимите проходит дольше. Поле может прийти и в ответе провайдера, изменение лимита пересоздаёт outbound.
 
-Разбор нестрогий (раздел 1): опечатка в имени ключа внутри `speedLimit` не даёт ошибки, лимит просто не применяется.
+Разбор строгий (раздел 1): неизвестный ключ внутри `speedLimit`, например `{"down": "5mbps"}` или `{"downLink": "5mbps"}`, даёт `outbounds[].speedLimit.down: unknown key`.
 
 ### 3.3 Балансировщик `leastCost`
 
@@ -545,13 +545,13 @@ UDP-проба по STUN: измеряет доступность и задер�
 | `tagPrefix` | string | обязателен | непустой; не перекрывается с префиксами других провайдеров; под него попадают только outbound конфига с `selection` в его `apply.balancers` | префикс тегов outbound из набора |
 | `drainTimeout` | dur | `5m` | > 0, до 30m | сколько доживают соединения удалённого или заменённого outbound |
 | `maxOutbounds` | int | `64` | 1..128 | размер набора; ответ ограничен 4 КиБ на outbound |
-| `allowedProtocols` | array | `vless`, `vmess`, `trojan`, `shadowsocks`, `wireguard`, `hysteria`, `socks`, `http` | имена протоколов в нижнем регистре | какие протоколы может прислать бэк |
+| `allowedProtocols` | array | `vless`, `vmess`, `trojan`, `shadowsocks`, `wireguard`, `hysteria`, `socks`, `http` | непустой список протоколов outbound этого ядра, регистр не важен | какие протоколы может прислать бэк |
 | `acceptedHeaders` | array | `["Authorization"]` | имена заголовков; `[]` запрещает ответу менять заголовки | какие заголовки запроса ответ может заменить |
 | `expiredLeaseFallback` | object | вкл. | `{"isEnabled": false}` | путь с истёкшей арендой остаётся последним резервом |
 
 Балансировщики, кроме первого, служат дорогами к бэку: `via` может ссылаться на них, а ответ может положить outbound в любой из перечисленных. Группа из ответа требует `groups` у своего балансировщика.
 
-Имена `allowedProtocols` не проверяются. Протокол из ответа приводится к нижнему регистру, список из конфига нет, поэтому `"VLESS"` не совпадёт ни с одним outbound. `allowedProtocols: []` означает список по умолчанию, а `acceptedHeaders: []` означает запрет: одна форма с противоположным смыслом. `freedom` в список по умолчанию не входит.
+Имена `allowedProtocols` приводятся к нижнему регистру и сверяются с протоколами outbound, которые знает ядро: опечатка даёт `providers[<tag>].apply.allowedProtocols: unknown protocol vles`. Пустой список отвергается: чтобы взять умолчание, ключ опускают. `freedom` в список по умолчанию не входит.
 
 `expiredLeaseFallback: {"isEnabled": false}` исключает пути с истёкшей арендой из новых выборов; при отсутствии других путей новые соединения уходят в `fallbackTag`.
 
@@ -679,17 +679,16 @@ UDP-проба по STUN: измеряет доступность и задер�
 | `fallbackTag` балансировщика `leastCost` | outbound конфига с этим тегом | `balancer auto.fallbackTag: unknown outbound blok` |
 | `failover.downAudit` | `confirmWithProbe: auto` | `balancer auto: leastCost.settings.failover.downAudit requires failover.confirmWithProbe:auto` |
 | `failover.downAudit` | одна из улик `dialFailures`, `dialTimeout`, `serverUnverified` | `balancer auto.failover.downAudit requires an enabled path-level detector` |
-| `evidence.loneFailureProbe` | то же | `healthObservatory.evidence.loneFailureProbe requires an enabled path-level detector: dialFailures, dialTimeout or serverUnverified` |
-| профиль из нескольких шагов | `probes.stepProfiles` | `healthObservatory.probes.profiles[0].steps requires healthObservatory.probes.stepProfiles` |
-| `steps[].isOptional` | `probes.stepProfiles` | `healthObservatory.probes.profiles[0].steps[1].isOptional requires healthObservatory.probes.stepProfiles` |
+| `evidence.loneFailureProbe` | то же | `healthObservatory.evidence.loneFailureProbe requires evidence.dialFailures, evidence.dialTimeout or evidence.serverUnverified` |
+| профиль из нескольких шагов или с `steps[].isOptional` | `probes.stepProfiles` | `healthObservatory.probes.profiles[0].steps requires probes.stepProfiles` |
 | `probes.limits.hostPerMinute` | не больше половины `perMinute` | `healthObservatory.probes.limits.hostPerMinute must not exceed half of perMinute` |
-| `network.connectivity` | `outbound` и `destinations` | `healthObservatory.network.connectivity.outbound is required` |
+| `network.connectivity` | `outbound` и `destinations` | `healthObservatory.network.connectivity requires .outbound and .destinations` |
 | `network.connectivity.outbound`, `network.labelRequest.outbound` | outbound конфига с этим тегом | `healthObservatory.network.connectivity.outbound: unknown outbound drect` |
-| `network.witnesses` | непустой `outbounds` | `healthObservatory.network.witnesses.outbounds must not be empty` |
+| `network.witnesses` | непустой `outbounds` | `healthObservatory.network.witnesses.outbounds must be nonempty when witnesses` |
 | `network.witnesses.outbounds[]` | совпадение с тегом outbound конфига или с `tagPrefix` провайдера | `healthObservatory.network.witnesses.outbounds: dir matches no outbound` |
 | `network.labelRequest` | `outbound`, `destinations`, `labels` | `healthObservatory.network.labelRequest requires outbound, destinations and labels` |
-| `telemetry.report.sessionLabels`, `quietSampleFraction` > 0 | `telemetry.report` | `healthObservatory.telemetry.report.sessionLabels and quietSampleFraction require healthObservatory.telemetry.report` |
-| `telemetry.census` | `telemetry.report` | `healthObservatory.telemetry.census requires healthObservatory.telemetry.report` |
+| `telemetry.report.sessionLabels`, `quietSampleFraction` > 0 | `telemetry.report` | `healthObservatory.telemetry.report.sessionLabels requires telemetry.report` (для `quietSampleFraction` так же) |
+| `telemetry.census` | `telemetry.report` | `healthObservatory.telemetry.census requires telemetry.report` |
 | `telemetry.census` | `sampleFraction` | `healthObservatory.telemetry.census.sampleFraction is required and must be in (0, 1]` |
 | `telemetry.census.onDemand` | существующие пути или группы с `probePolicy: onDemand` | `healthObservatory.telemetry.census.onDemand[0]: reserve must use probePolicy:onDemand` |
 | `telemetry.metrics` | верхний блок `metrics` | `healthObservatory.telemetry.metrics requires metrics exporter` |
@@ -768,7 +767,7 @@ UDP-проба по STUN: измеряет доступность и задер�
 | цепочка `fallbackBalancer` | до 4 балансировщиков, без циклов |
 | `failover.closeSilent.after`, `returnToCheaper.interval` | > 0 |
 | `returnToCheaper.minHoldTime`, `startup.pin.timeout` | >= 0 |
-| `speedLimit.uplink`, `downlink` | 0 или >= 64 kbps |
+| `speedLimit.uplink`, `downlink` | 0 или >= 64 kbps, единицы `kbps`, `mbps`, `gbps` |
 | `evidence.*.timeout`, `partialStalls.maxAge`, `loneFailureProbe.after` | > 0 |
 | `profiles[].steps` | 1..4 |
 | `steps[].destinations`, `connectivity.destinations`, `labelRequest.destinations`, `providers[].urls` | 1..4 |
@@ -828,7 +827,6 @@ UDP-проба по STUN: измеряет доступность и задер�
 | `evidence.*.timeout`, `failover.closeSilent.after` | нижнего предела | `"1ms"` признаёт мёртвыми рабочие пути и рвёт живые соединения | не ниже умолчаний |
 | `candidates.recheckInterval`, `returnToCheaper.interval`, `userPresent.minInterval` | нижнего предела | пробы чаще нужного, в пределах `probes.limits` | не ниже умолчаний |
 | `providers[].headers` | предела числа и длины | большой запрос | только нужный токен |
-| `apply.allowedProtocols` | проверки имён | опечатка или верхний регистр молча отклоняют всю выдачу этого протокола | имена в нижнем регистре |
 
 ## 6. Ловушки
 
@@ -850,7 +848,7 @@ UDP-проба по STUN: измеряет доступность и задер�
 
 ### Прочее
 
-Остальные ловушки описаны рядом с ключами. Пустой объект включает фичу (раздел 1). Опечатка в имени `selection` или внутри `speedLimit` проходит молча (раздел 1). `startup.pin` без `timeout` бессрочен (раздел 3.3). Скорость в `speedLimit` задаётся в двоичных мегабитах (раздел 3.2).
+Остальные ловушки описаны рядом с ключами. Пустой объект включает фичу (раздел 1). Опечатка в имени блока outbound, далёкая от `selection` и `speedLimit`, проходит молча (раздел 1). `startup.pin` без `timeout` бессрочен (раздел 3.3).
 
 ## 7. Версии
 

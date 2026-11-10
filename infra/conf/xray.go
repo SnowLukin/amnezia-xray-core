@@ -3,8 +3,10 @@ package conf
 import (
 	"context"
 	"encoding/json"
+	"math"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/xtls/xray-core/app/dispatcher"
@@ -240,22 +242,39 @@ type OutboundDetourConfig struct {
 // SpeedLimitConfig caps the payload rate of one outbound, shared by all its
 // connections. An empty direction is not limited.
 type SpeedLimitConfig struct {
-	Uplink   Bandwidth `json:"uplink"`
-	Downlink Bandwidth `json:"downlink"`
+	Uplink   string `json:"uplink"`
+	Downlink string `json:"downlink"`
 }
 
 // Below this a limited outbound cannot carry a TLS handshake within the
 // usual timeouts, which would look like a dead path to the observer.
-const minSpeedLimitBytesPerSecond = 8 * Kilobyte
+const minSpeedLimitBytesPerSecond = 64_000 / 8
+
+// speedLimitRate reads a rate such as "20mbps" in bits per second with
+// decimal multipliers and returns it in bytes per second.
+func speedLimitRate(where, s string) (uint64, error) {
+	if s == "" {
+		return 0, nil
+	}
+	lower := strings.ToLower(s)
+	for unit, bits := range map[string]float64{"kbps": 1e3, "mbps": 1e6, "gbps": 1e9} {
+		if n, ok := strings.CutSuffix(lower, unit); ok {
+			if v, err := strconv.ParseFloat(n, 64); err == nil && v >= 0 && !math.IsInf(v, 0) {
+				return uint64(v * bits / 8), nil
+			}
+		}
+	}
+	return 0, errors.New(where, " must be a number with kbps, mbps or gbps, such as 20mbps")
+}
 
 func (c *SpeedLimitConfig) Build() (*proxyman.SpeedLimit, error) {
-	up, err := c.Uplink.Bps()
+	up, err := speedLimitRate("speedLimit.uplink", c.Uplink)
 	if err != nil {
-		return nil, errors.New("invalid speedLimit.uplink").Base(err)
+		return nil, err
 	}
-	down, err := c.Downlink.Bps()
+	down, err := speedLimitRate("speedLimit.downlink", c.Downlink)
 	if err != nil {
-		return nil, errors.New("invalid speedLimit.downlink").Base(err)
+		return nil, err
 	}
 	if up > 0 && up < minSpeedLimitBytesPerSecond || down > 0 && down < minSpeedLimitBytesPerSecond {
 		return nil, errors.New("speedLimit must be at least 64kbps per direction")

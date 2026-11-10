@@ -9,13 +9,10 @@ import (
 func newAuditEngine(t *testing.T, sc *SelectorConfig) *testEngine {
 	t.Helper()
 	if sc == nil {
-		sc = &SelectorConfig{SkipProbeBeforeSwitch: true}
+		sc = &SelectorConfig{Features: probeFirst(false)}
 	}
 	sc.Paths = pathSpecs("a", 1, "b", 3)
-	return newTestEngine(t, &Config{Schedule: &ScheduleConfig{
-		Quarantine: &Backoff{InitialDelay: int64(time.Minute)},
-		IdleAfter:  int64(time.Hour), MinProbeInterval: int64(time.Second),
-	}}, sc, "a1", "b1")
+	return newTestEngine(t, &Config{Schedule: tune(&ScheduleConfig{}, scheduleKnobs{quarantine: backoff{initial: time.Minute}, idleAfter: time.Hour, spacing: time.Second})}, sc, "a1", "b1")
 }
 
 func startAudit(t *testing.T, te *testEngine) *probeJob {
@@ -205,9 +202,9 @@ func TestAuditAllowsOnlyOnePerPenaltyWindow(t *testing.T) {
 
 func TestSharedPathUsesLongestActivePenaltyWindow(t *testing.T) {
 	te := newAuditEngine(t, nil)
-	otherConfig := &SelectorConfig{SkipProbeBeforeSwitch: true,
+	otherConfig := &SelectorConfig{Features: probeFirst(false),
 		Paths:           []*PathDefinition{{Tag: "a1", Balancer: "other", Cost: 1}, {Tag: "b1", Balancer: "other", Cost: 3}},
-		ReturnToCheaper: &ReturnToCheaperConfig{PenaltyWindow: int64(10 * time.Minute)}}
+		ReturnToCheaper: tune(&ReturnToCheaperConfig{}, returnKnobs{penaltyWindow: 10 * time.Minute})}
 	other := te.addSelector("other", legacyScenarioSelector(otherConfig, nil))
 	te.updateCandidates(other, []string{"a1", "b1"}, t0)
 	j := startAudit(t, te)
@@ -230,9 +227,8 @@ func TestAuditPreservesDegradedProbeResult(t *testing.T) {
 }
 
 func TestAuditedPathReturnsAfterHoldAndThreeProbes(t *testing.T) {
-	sc := &SelectorConfig{SkipProbeBeforeSwitch: true, MinHoldTime: v2Int64(int64(5 * time.Second)),
-		ReturnToCheaper: &ReturnToCheaperConfig{Interval: int64(time.Hour), SkipRandomPhase: true,
-			ProbesToReturn: 3, ProbeInterval: int64(time.Second)}}
+	sc := &SelectorConfig{Features: probeFirst(false), MinHoldTime: v2Int64(int64(5 * time.Second)),
+		ReturnToCheaper: tune(&ReturnToCheaperConfig{Interval: int64(time.Hour)}, returnKnobs{fixedPhase: true, successes: 3, spacing: time.Second})}
 	te := newAuditEngine(t, sc)
 	j := startAudit(t, te)
 	te.onProbeResult(j, probeResult{ok: true}, at(2*time.Second))
@@ -282,7 +278,7 @@ func TestWeakAndAlwaysConfirmationDoNotAudit(t *testing.T) {
 	if !weak.queued("a1", reasonConfirm) || weak.queued("a1", reasonAudit) || weak.path("a1").status != statusSuspect {
 		t.Fatal("weak evidence did not wait for confirmation")
 	}
-	always := newAuditEngine(t, &SelectorConfig{SkipProbeBeforeSwitch: true, ConfirmWithProbe: ConfirmMode_ALWAYS})
+	always := newAuditEngine(t, &SelectorConfig{Features: probeFirst(false), ConfirmWithProbe: ConfirmMode_ALWAYS})
 	always.failN(3, "a1", failDial, at(0))
 	if !always.queued("a1", reasonConfirm) || always.queued("a1", reasonAudit) || always.path("a1").status != statusSuspect {
 		t.Fatal("always mode did not wait for confirmation")
@@ -326,7 +322,7 @@ func TestAuditNetworkChangeAndDisabledSetting(t *testing.T) {
 		}
 	})
 	t.Run("disabled", func(t *testing.T) {
-		te := newAuditEngine(t, &SelectorConfig{SkipProbeBeforeSwitch: true, ShouldSkipDownAudit: true})
+		te := newAuditEngine(t, &SelectorConfig{Features: noProbeNoAudit()})
 		te.failN(3, "a1", failDial, at(0))
 		if te.queued("a1", reasonAudit) || te.report.counts.AuditSkipped != 1 {
 			t.Fatalf("disabled audit: %+v", te.report.counts)

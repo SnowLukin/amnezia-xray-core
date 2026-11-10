@@ -39,7 +39,7 @@ func TestReportAuditSkippedActions(t *testing.T) {
 		setup func(*testing.T) *testEngine
 	}{
 		{"disabled", func(t *testing.T) *testEngine {
-			te := newAuditEngine(t, &SelectorConfig{SkipProbeBeforeSwitch: true, ShouldSkipDownAudit: true})
+			te := newAuditEngine(t, &SelectorConfig{Features: noProbeNoAudit()})
 			te.report.begin(t0)
 			te.failN(3, "a1", failDial, at(0))
 			if te.queued("a1", reasonAudit) || te.sel.current() != "b1" {
@@ -160,9 +160,9 @@ func TestReportWakeSkippedActions(t *testing.T) {
 		}, 0, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			te := newReportEngine(t, &Config{Schedule: &ScheduleConfig{IdleAfter: int64(time.Hour)},
+			te := newReportEngine(t, &Config{Schedule: tune(&ScheduleConfig{}, scheduleKnobs{idleAfter: time.Hour}),
 				Report: &ReportConfig{QuietShare: 1}}, &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3),
-				SkipProbeBeforeSwitch: true, ReturnToCheaper: &ReturnToCheaperConfig{Interval: int64(time.Hour), SkipRandomPhase: true}}, "a1", "b1")
+				Features: probeFirst(false), ReturnToCheaper: tune(&ReturnToCheaperConfig{Interval: int64(time.Hour)}, returnKnobs{fixedPhase: true})}, "a1", "b1")
 			if !te.report.quietSample {
 				t.Fatal("quiet share did not select the run")
 			}
@@ -192,7 +192,7 @@ func TestReportSkippedActionsResetBetweenWindows(t *testing.T) {
 	for _, final := range []bool{false, true} {
 		t.Run(map[bool]string{false: "interval", true: "final"}[final], func(t *testing.T) {
 			te := newReportEngine(t, &Config{Schedule: quarantine(time.Minute), Report: &ReportConfig{Interval: int64(time.Second)}},
-				&SelectorConfig{Paths: pathSpecs("a", 1, "b", 3), SkipProbeBeforeSwitch: true, ShouldSkipDownAudit: true}, "a1", "b1")
+				&SelectorConfig{Paths: pathSpecs("a", 1, "b", 3), Features: noProbeNoAudit()}, "a1", "b1")
 			te.failN(3, "a1", failDial, at(time.Second))
 			if te.sel.current() != "b1" {
 				t.Fatal("strong down did not make a failover decision")

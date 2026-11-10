@@ -6,9 +6,6 @@ import (
 	"time"
 
 	"github.com/xtls/xray-core/app/observatory/health"
-	"github.com/xtls/xray-core/app/router"
-	"github.com/xtls/xray-core/common/serial"
-	"github.com/xtls/xray-core/core"
 )
 
 // These existing integration scenarios use short clocks and carefully chosen
@@ -93,85 +90,42 @@ func wireGuardScenarioV2(t *testing.T, passive, probe, more, strategy string) (s
 	return string(rawObserver), string(rawSettings)
 }
 
-// Fast cadence and detector thresholds are test mechanics, not configuration
-// knobs. Apply them to the typed config before the actual core constructor.
-func tuneWireGuardScenario(t *testing.T, cfg *core.Config, passive, strategy string) {
+// wireGuardKnobs reads the fast cadence and detector thresholds of a
+// scenario recipe: test mechanics, not configuration.
+func wireGuardKnobs(t *testing.T, passive, strategy string) health.InstanceKnobs {
 	t.Helper()
 	var recipe struct {
 		SweepInterval        string `json:"sweepInterval"`
-		FailuresToSuspect    int32  `json:"failuresToSuspect"`
-		MinDistinctTargets   int32  `json:"minDistinctTargets"`
+		FailuresToSuspect    int    `json:"failuresToSuspect"`
+		MinDistinctTargets   int    `json:"minDistinctTargets"`
 		SuccessBytes         int64  `json:"successBytes"`
 		PartialStallMinBytes int64  `json:"partialStallMinBytes"`
 	}
 	if err := json.Unmarshal([]byte(passive), &recipe); err != nil {
 		t.Fatal(err)
 	}
-	for i, app := range cfg.App {
-		value, err := app.GetInstance()
+	k := health.InstanceKnobs{Failures: recipe.FailuresToSuspect, MinDistinctTargets: recipe.MinDistinctTargets,
+		SuccessBytes: recipe.SuccessBytes, PartialMinBytes: recipe.PartialStallMinBytes,
+		ProbeSpacing: 10 * time.Millisecond, SuspectCooldown: time.Second, HostReuse: time.Millisecond}
+	if recipe.SweepInterval != "" {
+		d, err := time.ParseDuration(recipe.SweepInterval)
 		if err != nil {
 			t.Fatal(err)
 		}
-		switch c := value.(type) {
-		case *health.Config:
-			if recipe.SweepInterval != "" {
-				d, err := time.ParseDuration(recipe.SweepInterval)
-				if err != nil {
-					t.Fatal(err)
-				}
-				c.Passive.SweepInterval = int64(d)
-			}
-			c.Passive.FailuresToSuspect = recipe.FailuresToSuspect
-			c.Passive.MinDistinctTargets = recipe.MinDistinctTargets
-			c.Passive.SuccessBytes = recipe.SuccessBytes
-			c.Passive.PartialStallMinBytes = recipe.PartialStallMinBytes
-			c.Schedule.MinProbeInterval = int64(10 * time.Millisecond)
-			c.Schedule.SuspectCooldown = int64(time.Second)
-			c.Schedule.HostProbes.ReuseWindow = int64(time.Millisecond)
-			cfg.App[i] = serial.ToTypedMessage(c)
-		case *router.Config:
-			if strategy == "" {
-				continue
-			}
-			var recipe struct {
-				Return struct {
-					HasRandomPhase *bool `json:"hasRandomPhase"`
-					ProbesToReturn int32 `json:"probesToReturn"`
-				} `json:"returnToCheaper"`
-			}
-			if err := json.Unmarshal([]byte("{"+strategy+"}"), &recipe); err != nil {
-				t.Fatal(err)
-			}
-			for _, balancer := range c.BalancingRule {
-				raw, err := balancer.StrategySettings.GetInstance()
-				if err != nil {
-					t.Fatal(err)
-				}
-				selector, ok := raw.(*health.SelectorConfig)
-				if !ok {
-					continue
-				}
-				selector.ReturnToCheaper.ProbesToReturn = recipe.Return.ProbesToReturn
-				selector.ReturnToCheaper.SkipRandomPhase = recipe.Return.HasRandomPhase != nil && !*recipe.Return.HasRandomPhase
-				balancer.StrategySettings = serial.ToTypedMessage(selector)
-			}
-			cfg.App[i] = serial.ToTypedMessage(c)
-		}
+		k.Sweep = d
 	}
-}
-func tuneInstanceProbeSpacing(t *testing.T, cfg *core.Config) {
-	t.Helper()
-	for i, app := range cfg.App {
-		value, err := app.GetInstance()
-		if err != nil {
+	if strategy != "" {
+		var recipe struct {
+			Return struct {
+				HasRandomPhase *bool `json:"hasRandomPhase"`
+				ProbesToReturn int   `json:"probesToReturn"`
+			} `json:"returnToCheaper"`
+		}
+		if err := json.Unmarshal([]byte("{"+strategy+"}"), &recipe); err != nil {
 			t.Fatal(err)
 		}
-		if c, ok := value.(*health.Config); ok {
-			if c.Schedule == nil {
-				c.Schedule = &health.ScheduleConfig{}
-			}
-			c.Schedule.MinProbeInterval = int64(10 * time.Millisecond)
-			cfg.App[i] = serial.ToTypedMessage(c)
-		}
+		k.ReturnSuccesses = recipe.Return.ProbesToReturn
+		k.FixedReturnPhase = recipe.Return.HasRandomPhase != nil && !*recipe.Return.HasRandomPhase
 	}
+	return k
 }

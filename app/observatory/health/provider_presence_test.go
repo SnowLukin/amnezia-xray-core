@@ -94,7 +94,7 @@ func TestProviderMirrorsNormalizationAndBounds(t *testing.T) {
 }
 
 func TestProviderAnswerRequiresExplicitProbeProfile(t *testing.T) {
-	s := newSettings(&Config{Probes: []*ProbeProfile{{Name: "check", Destination: "http://127.0.0.1/probe"}}, Features: &FeatureConfig{StepProfiles: proto.Bool(true)}})
+	s := newSettings(&Config{Probes: []*ProbeProfile{stepProfile("check", "http://127.0.0.1/probe", 0)}, Features: &FeatureConfig{StepProfiles: proto.Bool(true)}})
 	for _, tc := range []struct {
 		name    string
 		path    *PathDefinition

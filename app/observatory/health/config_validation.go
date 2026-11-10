@@ -22,28 +22,8 @@ func (c *Config) ValidateProbeSteps() error {
 			return fmt.Errorf("%s.name must be nonempty and unique", where)
 		}
 		seenProfiles[profile.Name] = true
-		if profile.Steps == nil {
-			continue
-		}
 		if len(profile.Steps) < 1 || len(profile.Steps) > 4 {
 			return fmt.Errorf("%s.steps must contain 1 to 4 steps", where)
-		}
-		if profile.Destination != "" {
-			return fmt.Errorf("%s.destination cannot be used with steps", where)
-		}
-		for _, field := range []struct {
-			name    string
-			present bool
-		}{
-			{"method", profile.Method != ""},
-			{"expectedStatuses", len(profile.ExpectedStatuses) > 0},
-			{"minBytes", profile.MinBytes != 0},
-			{"timeout", profile.Timeout != 0},
-			{"progressTimeout", profile.ProgressTimeout != 0},
-		} {
-			if field.present {
-				return fmt.Errorf("%s.%s belongs to steps", where, field.name)
-			}
 		}
 		seenNames := make(map[string]bool, len(profile.Steps))
 		optionalStarted := false

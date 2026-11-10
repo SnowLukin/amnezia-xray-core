@@ -72,9 +72,11 @@ func (h *fakeHandler) closes() int {
 	defer h.mu.Unlock()
 	return h.closed
 }
-func (h *fakeHandler) Tag() string                                   { return h.tag }
-func (h *fakeHandler) Dispatch(context.Context, *transport.Link)     {}
-func (h *fakeHandler) SenderSettings() *serial.TypedMessage          { return serial.ToTypedMessage(&Backoff{}) }
+func (h *fakeHandler) Tag() string                               { return h.tag }
+func (h *fakeHandler) Dispatch(context.Context, *transport.Link) {}
+func (h *fakeHandler) SenderSettings() *serial.TypedMessage {
+	return serial.ToTypedMessage(&DurationRange{})
+}
 func (h *fakeHandler) ProxySettings() *serial.TypedMessage           { return h.proxy }
 func (h *fakeHandler) String() string                                { return h.tag }
 func (h *fakeHandler) withProxy(m *serial.TypedMessage) *fakeHandler { h.proxy = m; return h }
@@ -155,7 +157,7 @@ type fakeOutbound struct {
 }
 
 func fakeSettings(v int64) *serial.TypedMessage {
-	return serial.ToTypedMessage(&Backoff{InitialDelay: v})
+	return serial.ToTypedMessage(&DurationRange{Min: v})
 }
 
 type applyFixture struct {
@@ -175,7 +177,7 @@ func newApplyFixture(t *testing.T, drain time.Duration, mods ...func(*ProviderCo
 			mod(p)
 		}
 	})
-	o := newObserver(context.Background(), &Config{Providers: []*ProviderConfig{pc}, Probes: []*ProbeProfile{{Name: "check", Destination: "http://127.0.0.1/probe"}}, Features: &FeatureConfig{Events: proto.Bool(true), Report: proto.Bool(true), Quality: proto.Bool(true), MemoryPressure: proto.Bool(true), Pinning: proto.Bool(true), Candidates: proto.Bool(true)}})
+	o := newObserver(context.Background(), &Config{Providers: []*ProviderConfig{pc}, Probes: []*ProbeProfile{stepProfile("check", "http://127.0.0.1/probe", 0)}, Features: &FeatureConfig{Events: proto.Bool(true), Report: proto.Bool(true), Quality: proto.Bool(true), MemoryPressure: proto.Bool(true), Pinning: proto.Bool(true), Candidates: proto.Bool(true)}})
 	t.Cleanup(func() { o.Close() })
 	f := &applyFixture{o: o, rt: o.providers[0], m: newFakeManager(), seq0: o.e.providers[0].seq}
 	o.ohm = f.m
@@ -189,16 +191,16 @@ func newApplyFixture(t *testing.T, drain time.Duration, mods ...func(*ProviderCo
 			if fo.Tag == "unparsable" {
 				return nil, errors.New("unknown protocol")
 			}
-			cfg := &core.OutboundHandlerConfig{Tag: fo.Tag, ProxySettings: fakeSettings(fo.V), SenderSettings: serial.ToTypedMessage(&Backoff{})}
+			cfg := &core.OutboundHandlerConfig{Tag: fo.Tag, ProxySettings: fakeSettings(fo.V), SenderSettings: serial.ToTypedMessage(&DurationRange{})}
 			if fo.Bad {
-				cfg.ProxySettings = serial.ToTypedMessage(&Backoff{InitialDelay: -1})
+				cfg.ProxySettings = serial.ToTypedMessage(&DurationRange{Min: -1})
 			}
 			out = append(out, cfg)
 		}
 		return out, nil
 	}
 	o.newHandler = func(c *core.OutboundHandlerConfig) (outbound.Handler, error) {
-		if inst, _ := c.ProxySettings.GetInstance(); inst.(*Backoff).InitialDelay < 0 {
+		if inst, _ := c.ProxySettings.GetInstance(); inst.(*DurationRange).Min < 0 {
 			return nil, errors.New("cannot build")
 		}
 		h := &fakeHandler{tag: c.Tag, proxy: c.ProxySettings}
@@ -866,20 +868,17 @@ func TestDrainedOutboundLeavesNoCounters(t *testing.T) {
 func TestAnswerLimitFollowsTheSetSize(t *testing.T) {
 	for _, tc := range []struct {
 		outbounds int32
-		maxBytes  int64
 		want      int64
 	}{
-		{0, 0, 256 << 10},
-		{16, 0, 64 << 10},
-		{128, 0, 512 << 10},
-		{0, 300_000, 256 << 10},
+		{0, 256 << 10},
+		{16, 64 << 10},
+		{128, 512 << 10},
 	} {
 		p := newProviderSettings(quietProvider(func(p *ProviderConfig) {
 			p.Apply.MaxOutbounds = tc.outbounds
-			p.MaxBytes = tc.maxBytes
 		}))
 		if p.maxBytes != tc.want {
-			t.Errorf("maxOutbounds %d, maxBytes %d: limit %d, want %d", tc.outbounds, tc.maxBytes, p.maxBytes, tc.want)
+			t.Errorf("maxOutbounds %d: limit %d, want %d", tc.outbounds, p.maxBytes, tc.want)
 		}
 	}
 }

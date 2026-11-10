@@ -210,7 +210,7 @@ func TestMeasurementV2LabelCacheLRU(t *testing.T) {
 
 func TestMeasurementV2PreparedProtoValidation(t *testing.T) {
 	for _, lr := range []*LabelRequestConfig{
-		{Destination: "ftp://host/a"},
+		{Destinations: []string{"ftp://host/a"}},
 		{Labels: map[string]string{"BAD": "X-Network-Asn"}},
 		{Labels: map[string]string{"asn": "bad header"}},
 		{RequestsPerHour: 61},

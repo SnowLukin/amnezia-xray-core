@@ -48,11 +48,10 @@ func qualityStage1ExportControllerFixture(t *testing.T, skip bool, concurrent in
 		paths = pathSpecs("a", 1, "b", 3, "c", 5)
 		candidates = append(candidates, "c1")
 	}
-	cfg := &Config{Features: &FeatureConfig{Quality: proto.Bool(!skip), Report: proto.Bool(true), Events: proto.Bool(true)}, Passive: &PassiveConfig{ShouldSkipQuality: skip}, Schedule: &ScheduleConfig{
-		MaxConcurrentProbes: int32(concurrent), Quarantine: &Backoff{InitialDelay: int64(time.Minute)}, IdleAfter: int64(time.Hour),
-	}}
-	sc := &SelectorConfig{Paths: paths, SkipProbeBeforeSwitch: switchWithoutProbe,
-		ReturnToCheaper: &ReturnToCheaperConfig{Interval: int64(time.Hour), SkipRandomPhase: true}}
+	cfg := &Config{Features: &FeatureConfig{Quality: proto.Bool(!skip), Report: proto.Bool(true), Events: proto.Bool(true)}, Schedule: tune(&ScheduleConfig{
+		MaxConcurrentProbes: int32(concurrent)}, scheduleKnobs{quarantine: backoff{initial: time.Minute}, idleAfter: time.Hour})}
+	sc := &SelectorConfig{Paths: paths, Features: probeFirst(!switchWithoutProbe),
+		ReturnToCheaper: tune(&ReturnToCheaperConfig{Interval: int64(time.Hour)}, returnKnobs{fixedPhase: true})}
 	te := newTestEngine(t, cfg, sc, candidates...)
 	o, clk := newTestObserver()
 	o.s, o.e = te.s, te.engine

@@ -42,8 +42,7 @@ message WakeConfig {
 
 // PassiveConfig decides when user traffic makes an outbound suspect.
 message PassiveConfig {
-  // Evidence older than this is forgotten.
-  int64 window = 1;
+  reserved 1, 6, 9, 11 to 15, 32;
   // A dial that has not finished after this long counts as failed.
   int64 dial_timeout = 2;
   // No response this long after the first write counts as failed.
@@ -51,60 +50,26 @@ message PassiveConfig {
   // No progress this long while a written request waits for an answer
   // counts as a stall.
   int64 stall_timeout = 4;
-  // Failures needed in the window to suspect an outbound.
+  // Not read: the core keeps its defaults for these three.
   int32 failures_to_suspect = 5;
-  // For failures that depend on the destination (no response, stall),
-  // how many different destinations they must cover.
-  int32 min_distinct_targets = 6;
-  // A connection that downloaded this many bytes proves the outbound works.
   int64 success_bytes = 7;
-  // How often live connections are checked for stalls and timeouts.
   int64 sweep_interval = 8;
-  // Failures of dial and handshake only, without response and stall checks.
-  bool is_dial_only = 9;
   // A young connection that received less than success_bytes and then went
   // silent for stall_timeout counts as a stall, even when nothing waits for
   // an answer. This is how a censor freezing connections after the first
   // kilobytes looks from the client. Only connections that went silent within
   // this time after the dial count.
   int64 partial_stall_max_age = 10;
-  bool should_ignore_partial_stalls = 11;
-  // A stall needs at least this much written since the last read, so small
-  // control writes such as HTTP/2 window updates do not count.
-  int64 stall_min_write_bytes = 12;
-  // A partial stall needs at least this much read, so idle keep-alive
-  // connections with small answers do not count.
-  int64 partial_stall_min_bytes = 13;
-  // When an outbound is found down, its connections that have not received
-  // anything yet are ended right away, so applications retry on the outbound
-  // chosen now instead of waiting for their own timeout. This keeps them.
-  bool should_keep_pending_on_down = 14;
-  // When an outbound is found down, its connections that started before
-  // and then receive nothing for stall_timeout are ended too: they cannot
-  // progress on a path the core has left, and they keep its tunnel awake.
-  // This keeps them.
-  bool should_keep_silent_on_down = 15;
   // Without recent proof of life, one path failure asks for a probe.
   // Zero uses the default; a negative value disables this check.
   int64 lone_failure_after = 16;
   // Zero uses 5 seconds; a negative value disables UDP evidence.
   int64 udp_reply_timeout = 17;
-  // Only measure path quality from user TCP traffic; this disables the
-  // measurements without changing evidence, probes or routing decisions.
-  bool should_skip_quality = 32;
 }
 
 message ProbeProfile {
   string name = 1;
-  string destination = 2;
-  string method = 3;
-  // Accepted status codes. Empty accepts 200-299.
-  repeated int32 expected_statuses = 4;
-  // The probe fails unless it reads at least this many body bytes.
-  int64 min_bytes = 5;
-  int64 timeout = 6;
-  // The probe fails when no byte arrives for this long.
-  int64 progress_timeout = 7;
+  reserved 2 to 7;
   repeated ProbeStep steps = 8;
 }
 
@@ -124,15 +89,9 @@ message ProbeStep {
 message ConnectivityConfig {
   // Outbound used for the check, usually one that bypasses the tunnel.
   string outbound = 1;
-  string destination = 2;
+  reserved 2;
   int64 timeout = 3;
-  // While the network looks down, recheck it with this backoff.
-  Backoff recheck_backoff = 4;
-  // How long decisions stay paused while the check keeps failing. After that
-  // they resume, but outbounds ruled out meanwhile come back once a check
-  // passes: either the outage is long or the check cannot reach its
-  // destination in this network.
-  int64 max_pause = 5;
+  reserved 4, 5;
   // Outbounds whose working connections prove that the network works, such
   // as a direct outbound for sites outside the tunnel. A connection counts
   // once it receives successBytes.
@@ -141,34 +100,15 @@ message ConnectivityConfig {
   repeated string destinations = 7;
 }
 
-message Backoff {
-  int64 initial_delay = 1;
-  double multiplier = 2;
-  int64 max_delay = 3;
-  // Random spread, 0.2 means +-20%.
-  double jitter_fraction = 4;
-}
-
 message ScheduleConfig {
-  // Without user traffic for this long, no probes and no timers run.
-  int64 idle_after = 1;
-  // How long a failed outbound rests before it may be probed again.
-  Backoff quarantine = 2;
+  reserved 1, 2, 4, 5, 8;
   // Probes running at the same time, never two of one server name.
   int32 max_concurrent_probes = 3;
-  // Minimum pause between probe starts; with concurrent above one, that many
-  // may start within it.
-  int64 min_probe_interval = 4;
-  // Random spread of spacing.
-  double probe_jitter_fraction = 5;
   // Probe starts per server name per minute. The server name is the TLS or
   // REALITY server name, or the server address without one.
   int32 probes_per_server_name_per_minute = 6;
   // Probe starts per minute in total.
   int32 probes_per_minute = 7;
-  // After a probe cleared a suspicion, the same outbound is not suspected
-  // again for this long.
-  int64 suspect_cooldown = 8;
   // Probes the host asks for.
   HostProbesConfig host_probes = 9;
   ProbeOnlyConfig probe_only = 10;
@@ -187,9 +127,7 @@ message ProbeOnlyConfig {
 message HostProbesConfig {
   // Host probe starts per minute, at most half of per_minute.
   int32 probes_per_minute = 1;
-  // An outbound that works and proved it within this long is answered
-  // without a probe.
-  int64 reuse_window = 2;
+  reserved 2;
   // Outbounds in one request.
   int32 max_outbounds = 3;
   // A request still waiting after this long ends; its probes that have not
@@ -227,9 +165,7 @@ message SleepConfig {
 }
 
 message NetworkConfig {
-  // Do not remember the last working outbound per network id given by the
-  // host.
-  bool no_memory = 1;
+  reserved 1;
   // How many networks to remember.
   int32 max_networks = 2;
 }
@@ -262,9 +198,7 @@ message PathGroup {
 message SelectorConfig {
   repeated PathDefinition paths = 1;
   repeated PathGroup groups = 2;
-  reserved 3;
-  // Move traffic to the next candidate without probing it first.
-  bool skip_probe_before_switch = 4;
+  reserved 3, 4, 12;
   // When to probe the current outbound before leaving it.
   ConfirmMode confirm_with_probe = 5;
   // Minimum time on an outbound before returning to a cheaper one.
@@ -281,8 +215,6 @@ message SelectorConfig {
   // host verifies the pinned outbound within a known time and stops the core
   // when it fails. Zero keeps the pin until the host releases it.
   int64 start_pin_timeout = 11;
-  // Skip the probe that checks a strong down after failover.
-  bool should_skip_down_audit = 12;
   SelectorFeatureConfig features = 13;
   int64 close_silent_after = 14;
   // When exhausted, delegate new connections to this balancer's choice.
@@ -313,20 +245,7 @@ enum NetworkChangeMode {
 message ReturnToCheaperConfig {
   // Check cheaper outbounds this often while traffic flows.
   int64 interval = 1;
-  // Start the interval right away instead of at a random point; with a
-  // random point devices do not check together.
-  bool skip_random_phase = 2;
-  // Successful probes in a row needed to return.
-  int32 probes_to_return = 3;
-  // Pause between those probes.
-  int64 probe_interval = 4;
-  // If the cheaper outbound fails this soon after the return, the next
-  // attempt waits longer.
-  int64 penalty_window = 5;
-  double penalty_multiplier = 6;
-  int64 max_penalty_delay = 7;
-  // Do not check cheaper outbounds after a network change.
-  bool skip_try_on_network_change = 8;
+  reserved 2 to 8;
   // Check after a change to any network, not only to one not seen before.
   bool try_on_all_networks = 9;
 }
@@ -338,8 +257,7 @@ message ReturnToCheaperConfig {
 message ProviderConfig {
   // Names the provider in events, status and refresh requests.
   string tag = 1;
-  // The set is fetched from this URL with method.
-  string url = 2;
+  reserved 2;
   // Request headers. Credentials belong here, not in the URL.
   map<string, string> headers = 3;
   // Outbound or leastCost balancer tags to send the request through, tried
@@ -347,8 +265,7 @@ message ProviderConfig {
   repeated string via = 4;
   // Timeout of one request through one via.
   int64 timeout = 5;
-  // Larger answers are rejected.
-  int64 max_bytes = 6;
+  reserved 6;
   ProviderTriggers triggers = 7;
   ProviderLimits limits = 8;
   ProviderApply apply = 9;
@@ -363,7 +280,7 @@ message ProviderConfig {
   // generated it named it. An answer that names another one tells the host
   // to fetch the config anew. Empty takes the one of a fresh initial.
   string base_version = 12;
-  optional bool is_enabled = 13;
+  reserved 13;
   ProviderFeatureConfig features = 14;
   // Mirrors, tried in order through each configured via.
   repeated string urls = 15;
@@ -373,28 +290,23 @@ message ProviderConfig {
   bool is_plain_http_allowed = 17;
 }
 
+// A delay of a trigger left out takes its default range.
 message ProviderTriggers {
-  // Refresh this long after the previous successful refresh. Negative
-  // disables.
-  int64 interval = 1;
-  // Historical in-process test carrier; not a public JSON field.
-  double jitter_fraction = 2 [deprecated = true];
+  reserved 1, 2, 4, 8, 10, 11;
+  // Refresh this long after the previous successful refresh.
+  DurationRange interval = 14;
   // Refresh when the balancer has fewer usable candidates than this.
   // Negative disables.
   int32 min_healthy_outbounds = 3;
-  // Do not refresh when the balancer has no usable candidate left.
-  bool skip_refresh_when_exhausted = 4;
   // Refresh when the balancer keeps outbounds of at least this cost.
   CostTrigger when_cost_above = 5;
   // Refresh when the set is older than this. Negative disables.
   int64 max_age = 6;
   RefreshOnNetwork network_change_mode = 7;
-  // How long after a network change the balancer is judged.
-  optional int64 network_settle_delay = 8;
   // Renewal of the leases an answer gives its outbounds.
   ExpiryTrigger expiry = 9;
-  optional int64 interval_max = 10;
-  optional int64 network_settle_max = 11;
+  // How long after a network change the balancer is judged.
+  DurationRange network_settle = 15;
   DurationRange exhausted_delay = 12;
   DurationRange min_healthy_delay = 13;
 }
@@ -407,8 +319,7 @@ message ExpiryTrigger {
   double renew_at_fraction = 1;
   // Share of the lease after which the renewal is urgent, 0.8 by default.
   double urgent_at_fraction = 2;
-  // Random spread of renew_at_fraction, 0.1 means +-10%. Negative is none.
-  double jitter_fraction = 3;
+  reserved 3;
 }
 
 // Inclusive nonnegative bounds, in nanoseconds.
@@ -419,9 +330,8 @@ message DurationRange {
 
 message CostTrigger {
   float cost = 1;
-  // Absence uses the default; an explicit zero is immediate.
-  optional int64 after = 2;
-  optional int64 after_max = 3;
+  reserved 2, 3;
+  DurationRange after = 4;
 }
 
 enum RefreshOnNetwork {
@@ -441,11 +351,7 @@ message ProviderLimits {
   int64 exhausted_min_interval = 2;
   // Refreshes started within an hour. Negative removes the limit.
   int32 max_refreshes_per_hour = 3;
-  // Pause after failed refreshes.
-  Backoff backoff = 4;
-  // Pause of every trigger, the host's too, after the backend refused the
-  // headers of the provider, 1 h by default. Negative waits for new headers.
-  int64 auth_retry_delay = 5;
+  reserved 4, 5;
 }
 
 message ProviderApply {
@@ -517,7 +423,7 @@ message FeatureConfig {
 
 message LabelRequestConfig {
   string outbound = 1;
-  string destination = 2;
+  reserved 2;
   map<string, string> labels = 3;
   int64 timeout = 4;
   int32 requests_per_hour = 5;

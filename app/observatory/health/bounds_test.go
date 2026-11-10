@@ -39,8 +39,7 @@ func gcUntil(done func() bool) {
 // Connections that ended while others still wait for their deadline must not
 // stay reachable through the sweep.
 func TestSweepLetsEndedConnectionsGo(t *testing.T) {
-	o := newObserver(context.Background(), &Config{Paths: observed("a1", "a2"),
-		Passive: &PassiveConfig{SweepInterval: int64(5 * time.Millisecond)}})
+	o := newObserver(context.Background(), &Config{Paths: observed("a1", "a2")})
 	defer o.Close()
 	dest := net.TCPDestination(net.LocalHostIP, 443)
 	// Few enough for the sweep to keep its batch between passes.
@@ -137,15 +136,14 @@ func TestConfigValuesHaveCeilings(t *testing.T) {
 	huge := int64(24 * time.Hour)
 	s := newSettings(&Config{
 		Features:     &FeatureConfig{Connectivity: v2Bool(true), Events: v2Bool(true)},
-		Probes:       []*ProbeProfile{{Timeout: huge, ProgressTimeout: huge}},
+		Probes:       []*ProbeProfile{{Steps: []*ProbeStep{{Timeout: huge, ProgressTimeout: huge}}}},
 		Connectivity: &ConnectivityConfig{Outbound: "direct", Destinations: []string{"https://check.test/"}, Timeout: huge},
 		Schedule: &ScheduleConfig{MaxConcurrentProbes: 1 << 20, HostProbes: &HostProbesConfig{
-			ProbesPerMinute: 1 << 20, ReuseWindow: huge, MaxOutbounds: 1 << 20, Timeout: huge,
+			ProbesPerMinute: 1 << 20, MaxOutbounds: 1 << 20, Timeout: huge,
 		}},
 		Events:  &EventsConfig{MaxEvents: 1 << 30, MaxBytes: 1 << 40},
 		Network: &NetworkConfig{MaxNetworks: 1 << 30},
 		Providers: []*ProviderConfig{quietProvider(func(p *ProviderConfig) {
-			p.MaxBytes = 1 << 40
 			p.Apply.MaxOutbounds = 1 << 30
 			p.Apply.DrainTimeout = huge
 			p.BaseVersion = strings.Repeat("b", 1<<20)
@@ -153,8 +151,8 @@ func TestConfigValuesHaveCeilings(t *testing.T) {
 	})
 	p := s.providers[0]
 	for name, v := range map[string][2]int64{
-		"probe timeout":        {int64(s.probes[0].timeout), int64(maxProbeTimeout)},
-		"probe progress":       {int64(s.probes[0].progressTimeout), int64(maxProbeTimeout)},
+		"probe timeout":        {int64(s.probes[0].steps[0].timeout), int64(maxProbeTimeout)},
+		"probe progress":       {int64(s.probes[0].steps[0].progressTimeout), int64(maxProbeTimeout)},
 		"connectivity timeout": {int64(s.connectivity.timeout), int64(maxProbeTimeout)},
 		"maxConcurrentProbes":  {int64(s.schedule.concurrent), maxConcurrent},
 		"events":               {int64(s.maxEvents), maxEvents},
@@ -179,7 +177,7 @@ func TestConfigValuesHaveCeilings(t *testing.T) {
 // provider rotates its tags: the counts of requests under way by outbound
 // keep nothing once the requests ended.
 func TestFetchViaKeepsNothingAfterTheRequests(t *testing.T) {
-	te := newTestEngine(t, &Config{Paths: observed("p-0")}, &SelectorConfig{SkipProbeBeforeSwitch: true}, "p-0")
+	te := newTestEngine(t, &Config{Paths: observed("p-0")}, &SelectorConfig{Features: probeFirst(false)}, "p-0")
 	for i := 1; i <= 100; i++ {
 		tag := fmt.Sprintf("p-%d", i)
 		te.updateCandidates(te.sel, []string{tag}, at(time.Duration(i)*time.Second))

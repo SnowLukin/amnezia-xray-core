@@ -13,17 +13,22 @@ import (
 )
 
 func v2ProviderConfig() *ProviderConfig {
-	return &ProviderConfig{IsEnabled: proto.Bool(true), Tag: "fresh", Url: "https://provider.test/set", Apply: &ProviderApply{Balancers: []string{"auto"}, TagPrefix: "p-"}, Features: &ProviderFeatureConfig{Exhausted: proto.Bool(false), LeaseRenewal: proto.Bool(false), BackendSchedule: proto.Bool(false)}}
+	return &ProviderConfig{Tag: "fresh", Urls: []string{"https://provider.test/set"}, Apply: &ProviderApply{Balancers: []string{"auto"}, TagPrefix: "p-"}, Features: &ProviderFeatureConfig{Exhausted: proto.Bool(false), LeaseRenewal: proto.Bool(false), BackendSchedule: proto.Bool(false)}}
 }
-func TestProviderV2DisabledHasNoRuntimeOrBackgroundWork(t *testing.T) {
-	for _, flag := range []*bool{nil, proto.Bool(false)} {
-		pc := v2ProviderConfig()
-		pc.IsEnabled = flag
-		pc.InitialAnswer = []byte(strings.Repeat("broken", 100000))
-		o := newObserver(context.Background(), &Config{Providers: []*ProviderConfig{pc}})
+
+// A provider in the protobuf config runs as one from JSON does; without one
+// nothing of the provider runs.
+func TestProviderV2AbsentHasNoRuntimeOrBackgroundWork(t *testing.T) {
+	present := newObserver(context.Background(), &Config{Providers: []*ProviderConfig{v2ProviderConfig()}})
+	defer present.Close()
+	if len(present.providers) != 1 || len(present.e.providers) != 1 {
+		t.Fatal("a provider of a protobuf config does not run")
+	}
+	{
+		o := newObserver(context.Background(), &Config{})
 		o.applyInitial()
 		if len(o.providers) != 0 || len(o.e.providers) != 0 || len(o.s.providers) != 0 || o.e.quality != nil || o.e.events != nil {
-			t.Fatal("disabled provider created runtime collectors or slots")
+			t.Fatal("no provider created runtime collectors or slots")
 		}
 		if n := testing.AllocsPerRun(100, func() {
 			jobs, wake := o.e.tickProviders(at(100 * time.Hour))
@@ -53,7 +58,7 @@ func TestProviderV2DisabledHasNoRuntimeOrBackgroundWork(t *testing.T) {
 func TestProviderV2EveryOptionalTriggerOffDoesNotSchedule(t *testing.T) {
 	pc := v2ProviderConfig()
 	pc.Features = &ProviderFeatureConfig{Exhausted: proto.Bool(false), LeaseRenewal: proto.Bool(false), BackendSchedule: proto.Bool(false)}
-	pc.Triggers = &ProviderTriggers{Interval: int64(time.Minute), MinHealthyOutbounds: 5, MaxAge: int64(time.Minute), WhenCostAbove: &CostTrigger{Cost: 1, After: proto.Int64(0)}, NetworkChangeMode: RefreshOnNetwork_REFRESH_ANY, NetworkSettleDelay: proto.Int64(0)}
+	pc.Triggers = &ProviderTriggers{Interval: fixed(time.Minute), MinHealthyOutbounds: 5, MaxAge: int64(time.Minute), WhenCostAbove: &CostTrigger{Cost: 1, After: &DurationRange{}}, NetworkChangeMode: RefreshOnNetwork_REFRESH_ANY, NetworkSettle: &DurationRange{}}
 	e := newEngine(newSettings(&Config{Providers: []*ProviderConfig{pc}}), 1)
 	s := e.addSelector("auto", newSelectorSettings(&SelectorConfig{Paths: []*PathDefinition{{Tag: "p-x", Balancer: "auto", Cost: 2}}}))
 	p := e.providers[0]
@@ -82,7 +87,7 @@ func TestProviderV2BackendScheduleGateKeepsPeriodicIndependent(t *testing.T) {
 		pc := v2ProviderConfig()
 		pc.Features.Periodic = proto.Bool(true)
 		pc.Features.BackendSchedule = proto.Bool(backend)
-		pc.Triggers = &ProviderTriggers{Interval: int64(time.Hour)}
+		pc.Triggers = &ProviderTriggers{Interval: fixed(time.Hour)}
 		p := newProvider(newProviderSettings(pc))
 		e := newEngine(newSettings(nil), 1)
 		e.scheduleRefresh(p, time.Minute, true, t0)
@@ -366,7 +371,7 @@ func TestProviderV2EachRefreshTriggerHasAnEffectiveGate(t *testing.T) {
 				if enabled {
 					tc.enable(pc.Features)
 				}
-				pc.Triggers = &ProviderTriggers{Interval: int64(time.Minute), MinHealthyOutbounds: 2, MaxAge: int64(time.Minute), WhenCostAbove: &CostTrigger{Cost: 1, After: proto.Int64(0)}, NetworkChangeMode: RefreshOnNetwork_REFRESH_ANY, NetworkSettleDelay: proto.Int64(0), ExhaustedDelay: &DurationRange{}, MinHealthyDelay: &DurationRange{}}
+				pc.Triggers = &ProviderTriggers{Interval: fixed(time.Minute), MinHealthyOutbounds: 2, MaxAge: int64(time.Minute), WhenCostAbove: &CostTrigger{Cost: 1, After: &DurationRange{}}, NetworkChangeMode: RefreshOnNetwork_REFRESH_ANY, NetworkSettle: &DurationRange{}, ExhaustedDelay: &DurationRange{}, MinHealthyDelay: &DurationRange{}}
 				e := newEngine(newSettings(&Config{Providers: []*ProviderConfig{pc}}), 1)
 				p := e.providers[0]
 				p.started = true

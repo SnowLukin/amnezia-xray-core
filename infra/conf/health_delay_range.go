@@ -47,31 +47,10 @@ func (d *HealthDelayRange) UnmarshalJSON(raw []byte) error {
 	return nil
 }
 func (d HealthDelayRange) valid() bool { _, _, err := d.bounds(); return err == nil }
-func rangeMin(d *HealthDelayRange) int64 {
-	if d == nil {
-		return 0
-	}
-	low, _, _ := d.bounds()
-	return int64(low)
-}
-func rangeMax(d *HealthDelayRange) *int64 {
-	if d == nil {
-		return nil
-	}
-	_, high, _ := d.bounds()
-	v := int64(high)
-	return &v
-}
-func rangeMaxMin(d *HealthDelayRange) *int64 {
-	if d == nil {
-		return nil
-	}
-	v := rangeMin(d)
-	return &v
-}
 func rangeProto(d *HealthDelayRange) *health.DurationRange {
 	if d == nil {
 		return nil
 	}
-	return &health.DurationRange{Min: rangeMin(d), Max: *rangeMax(d)}
+	low, high, _ := d.bounds()
+	return &health.DurationRange{Min: int64(low), Max: int64(high)}
 }

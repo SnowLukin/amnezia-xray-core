@@ -173,7 +173,7 @@ func TestPinnedOutboundIsNotRememberedForTheNetwork(t *testing.T) {
 // return to a cheaper outbound as soon as the change would have.
 func TestReleaseInUnknownNetworkReturnsSoon(t *testing.T) {
 	sc := &SelectorConfig{Paths: pathSpecs("a", 1, "b", 3), StartPinnedOutbound: "b1", MinHoldTime: v2Int64(int64(time.Second)),
-		ReturnToCheaper: &ReturnToCheaperConfig{ProbesToReturn: 1, SkipRandomPhase: true}}
+		ReturnToCheaper: tune(&ReturnToCheaperConfig{}, returnKnobs{successes: 1, fixedPhase: true})}
 	for _, tc := range []struct {
 		name     string
 		networks []string

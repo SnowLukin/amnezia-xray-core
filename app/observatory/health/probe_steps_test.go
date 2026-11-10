@@ -158,21 +158,6 @@ func TestConnectivityAddressesRace(t *testing.T) {
 	}
 }
 
-func TestProbeStepsLegacySettingsBecomeOneMandatoryStep(t *testing.T) {
-	d := &probePhaseDispatcher{reportDial: true, serve: func(c gonet.Conn) {
-		serveProbeChunks(c, 0, 0, 10)
-	}}
-	o := probePhaseObserver(time.Second, d)
-	defer o.stopRun()
-	ps := probePhaseSettings(time.Second, time.Second, 10)
-	ps.name = "light"
-	r := o.probe("a1", ps)
-	if !r.ok || r.state != statusUp || r.profile != "light" || len(r.steps) != 1 ||
-		r.steps[0].name != "light" || !r.steps[0].ok || r.steps[0].destination != 0 || r.rtt <= 0 {
-		t.Fatalf("legacy profile: %+v", r)
-	}
-}
-
 func TestProbeStepsAllDestinationsFail(t *testing.T) {
 	d := &probePhaseDispatcher{reportDial: true, serve: func(c gonet.Conn) {
 		req, err := http.ReadRequest(bufio.NewReader(c))

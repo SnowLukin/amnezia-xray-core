@@ -52,10 +52,6 @@ func TestV2PresentAwareDefaults(t *testing.T) {
 	if !s.switchAfterProbe || !s.closePending || !s.closeSilent || !s.skipDownAudit || s.returnToCheaper.interval != 0 || s.onNetworkChange != NetworkChangeMode_IGNORE {
 		t.Fatalf("selector defaults %+v", s)
 	}
-	disabled := newSettings(&Config{Providers: []*ProviderConfig{{Tag: "prepared", InitialAnswer: []byte("broken")}}})
-	if len(disabled.providers) != 0 {
-		t.Fatal("disabled provider allocated runtime")
-	}
 }
 
 func TestV2AllEvidenceOffHasNoTrackersOrSweep(t *testing.T) {
@@ -330,7 +326,7 @@ func TestV2DirectFeatureDependencies(t *testing.T) {
 	if validateSelectorFeatures(&SelectorConfig{Features: &SelectorFeatureConfig{DownAudit: v2Bool(true)}, ConfirmWithProbe: ConfirmMode_ALWAYS}, newFeatureSettings(nil)) == nil {
 		t.Fatal("audit accepted without auto")
 	}
-	provider := &ProviderConfig{IsEnabled: v2Bool(true), Tag: "p", Urls: []string{"https://x.test/set"}, Apply: &ProviderApply{Balancers: []string{"auto"}}}
+	provider := &ProviderConfig{Tag: "p", Urls: []string{"https://x.test/set"}, Apply: &ProviderApply{Balancers: []string{"auto"}}}
 	if err := (&Config{Providers: []*ProviderConfig{provider}}).ValidateFeatures(); err == nil || !strings.Contains(err.Error(), "tagPrefix") {
 		t.Fatalf("a provider without tagPrefix would own every outbound: %v", err)
 	}
@@ -344,27 +340,12 @@ func TestV2GenuineZeroDelaysPreservePresence(t *testing.T) {
 	if absent.minHoldTime != defaultMinHoldTime || immediate.minHoldTime != 0 {
 		t.Fatal("minHoldTime absence/zero collapsed")
 	}
-	provider := func(delay *int64, after *int64) *providerSettings {
-		return newProviderSettings(&ProviderConfig{Features: &ProviderFeatureConfig{NetworkChange: v2Bool(true), CostAbove: v2Bool(true)}, Triggers: &ProviderTriggers{NetworkSettleDelay: delay, WhenCostAbove: &CostTrigger{Cost: 10, After: after}}})
+	provider := func(delay, after *DurationRange) *providerSettings {
+		return newProviderSettings(&ProviderConfig{Features: &ProviderFeatureConfig{NetworkChange: v2Bool(true), CostAbove: v2Bool(true)}, Triggers: &ProviderTriggers{NetworkSettle: delay, WhenCostAbove: &CostTrigger{Cost: 10, After: after}}})
 	}
-	a, b := provider(nil, nil), provider(v2Int64(0), v2Int64(0))
-	if a.networkSettle != defaultNetworkSettle || a.costAboveAfter != defaultCostAboveAfter || b.networkSettle != 0 || b.costAboveAfter != 0 {
+	a, b := provider(nil, nil), provider(&DurationRange{}, &DurationRange{})
+	if a.networkSettle != 30*time.Second || a.costAboveAfter != 15*time.Minute || b.networkSettle != 0 || b.costAboveAfter != 0 {
 		t.Fatal("provider delays absence/zero collapsed")
-	}
-}
-
-func TestV2RetiredControlsDoNotOverridePositiveFlags(t *testing.T) {
-	s := newSettings(&Config{Features: &FeatureConfig{Quality: v2Bool(true), Report: v2Bool(true), Events: v2Bool(true)}, Passive: &PassiveConfig{IsDialOnly: true, ShouldSkipQuality: true, Window: 1, FailuresToSuspect: 1, SuccessBytes: 1, SweepInterval: 1, ShouldKeepPendingOnDown: true, ShouldKeepSilentOnDown: true}, Schedule: &ScheduleConfig{IdleAfter: 1, MinProbeInterval: 1, SuspectCooldown: 1}})
-	if s.passive.skipQuality || s.passive.dialOnly || s.passive.window != defaultWindow || s.passive.failures != defaultFailures || s.passive.successBytes != defaultSuccessBytes || s.passive.sweepInterval != defaultSweepInterval || s.schedule.spacing != defaultSpacing || s.schedule.idleAfter != defaultIdleAfter {
-		t.Fatal("retired control still overrides runtime")
-	}
-	sc := newSelectorSettings(&SelectorConfig{Features: &SelectorFeatureConfig{ProbeBeforeSwitch: v2Bool(true), DownAudit: v2Bool(true)}, SkipProbeBeforeSwitch: true, ShouldSkipDownAudit: true})
-	if !sc.switchAfterProbe || sc.skipDownAudit {
-		t.Fatal("negative alias overrides positive selector flag")
-	}
-	p := newProviderSettings(&ProviderConfig{Features: &ProviderFeatureConfig{Exhausted: v2Bool(true)}, Triggers: &ProviderTriggers{SkipRefreshWhenExhausted: true}})
-	if !p.whenExhausted {
-		t.Fatal("negative alias overrides exhausted flag")
 	}
 }
 

@@ -10,15 +10,8 @@ func protoRange(r *DurationRange, fallback durationRange) durationRange {
 	}
 	return durationRange{time.Duration(r.Min), time.Duration(r.Max)}
 }
-func configuredRange(low int64, high *int64, fallback durationRange) (time.Duration, time.Duration) {
-	if high != nil {
-		return time.Duration(low), time.Duration(*high)
-	}
-	if low != 0 {
-		return time.Duration(low), time.Duration(low)
-	}
-	return fallback.min, fallback.max
-}
+
+func (r durationRange) bounds() (time.Duration, time.Duration) { return r.min, r.max }
 
 // Int63n keeps both bounds reachable, including a full [0, MaxInt64] range.
 func (e *engine) randomDelay(low, high time.Duration) time.Duration {
