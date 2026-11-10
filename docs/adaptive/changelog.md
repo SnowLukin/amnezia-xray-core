@@ -7,8 +7,8 @@
 | | Ревизия 4 | Ревизия 5 |
 |---|---|---|
 | Заголовок | `xray="26.10.31", api=2, rev=4, provider=1` | `xray="26.10.31", api=2, rev=5, provider=1` |
-| Ядро `xray-core-adaptive` | ветка `finalize/adaptive`, `7424a0e0` | та же ветка. Мост закреплён на `e6f31ef2`; более поздние коммиты меняют только документы |
-| Мост `libxray-adaptive` | `152c2ee` | `274b4ac`, ветка `finalize/adaptive` |
+| Ядро `xray-core-adaptive` | ветка `finalize/adaptive`, `7424a0e0` | та же ветка. Мост закреплён на `5577e0f0`; более поздние коммиты меняют только документы |
+| Мост `libxray-adaptive` | `152c2ee` | `96cd1dd`, ветка `finalize/adaptive` |
 
 Добавлены команда хоста `View` с блоком конфига `healthObservatory.host.view`, который её включает, и блок `startup.probe` в настройках балансировщика `leastCost`.
 
