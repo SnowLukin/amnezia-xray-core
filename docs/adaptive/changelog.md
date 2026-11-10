@@ -7,6 +7,8 @@
 | | Ревизия 4 | Ревизия 5 |
 |---|---|---|
 | Заголовок | `xray="26.10.31", api=2, rev=4, provider=1` | `xray="26.10.31", api=2, rev=5, provider=1` |
+| Ядро `xray-core-adaptive` | ветка `finalize/adaptive`, `7424a0e0` | та же ветка. Мост закреплён на `ea5253fd`; более поздние коммиты меняют только документы |
+| Мост `libxray-adaptive` | `152c2ee` | `0ac9a3a`, ветка `finalize/adaptive` |
 
 Добавлена одна команда хоста, `View`, и блок конфига `healthObservatory.host.view`, который её включает. `View` отдаёт компактный снимок для экрана приложения: готовое состояние трафика пользователя (`ok`, `searching`, `blocked`, `no_network`, `idle`), текущий выход с протоколом и метками, что ядро делает сейчас, какие пути проверяются в эту секунду и что должен сделать хост (`needs`). До этого каждое приложение собирало то же самое из Status по-своему. Поля, правило состояния и сценарий «Экран приложения» - в [host-api.md](host-api.md), блок конфига - в [config.md](config.md), раздел 3.7.
 
@@ -25,7 +27,7 @@
 3. Без блока в конфиге `View` отвечает `feature_disabled`: так будет у клиентов, которым бэк ещё отдаёт шаблон ревизии 4.
 4. Status остаётся диагностикой и нужен по-прежнему для фонового тика и отчёта об ошибке.
 
-Имена команды по слоям: `View` в Go API ядра и gRPC, `xray api health view` в CLI, `HealthView` в libXray, `LibXrayHealthView` в C-экспорте, `view` в Swift.
+Имена команды по слоям: `View` в Go API ядра и gRPC, `xray api health view` в CLI, `HealthView` в libXray (`healthView` в Kotlin), `LibXrayHealthView` в C-экспорте, `view` в Swift. Цепочка Swift - C - libXray - работающее ядро проверена на Mac; на телефонах команда не вызывалась.
 
 ## Ревизия 4
 
