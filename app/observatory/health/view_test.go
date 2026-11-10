@@ -101,7 +101,7 @@ func TestViewStateFollowsTheExit(t *testing.T) {
 	// Before the first connection the balancer has not chosen; its paths
 	// are known from the config.
 	v := f.view(t)
-	if v.State != "idle" || v.Exit.Outbound != "" || len(v.Paths) != 3 || exits(v) != nil || v.LastSwitch != nil ||
+	if v.State != "ready" || v.Exit.Outbound != "" || len(v.Paths) != 3 || exits(v) != nil || v.LastSwitch != nil ||
 		viewPathOf(t, v, "a1").State != "unknown" || viewPathOf(t, v, "a1").IsActive {
 		t.Fatalf("before the first connection: %+v", v)
 	}
@@ -234,7 +234,7 @@ func TestViewNeedsAndDoing(t *testing.T) {
 	f.o.e.providers = []*provider{p}
 	provider := func() viewProvider { return f.view(t).Providers[0] }
 	v := f.view(t)
-	if len(v.Needs) != 0 || len(v.Doing) != 0 || v.Needs == nil || v.Doing == nil || provider() != (viewProvider{Provider: "fresh", State: "idle", SetAgeMs: 60000}) {
+	if len(v.Needs) != 0 || len(v.Doing) != 0 || v.Needs == nil || v.Doing == nil || provider() != (viewProvider{Provider: "fresh", State: "ok", SetAgeMs: 60000}) {
 		t.Fatalf("quiet: needs %v doing %v providers %+v", v.Needs, v.Doing, v.Providers)
 	}
 

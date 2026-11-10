@@ -554,7 +554,7 @@ func (e *engine) emitPath(p *path, now time.Time) {
 	if (p.status == statusSuspect || p.status == statusDown) && !p.failStart.IsZero() && p.failStart.Before(now) {
 		f["evidence_ms"] = now.Sub(p.failStart).Milliseconds()
 	}
-	if p.status == statusDown {
+	if p.status == statusDown && now.Before(p.quarantineUntil) {
 		f["quarantine_ms"] = p.quarantineUntil.Sub(now).Milliseconds()
 		f["quarantine_level"] = p.quarantineLevel
 		if p.provisional {

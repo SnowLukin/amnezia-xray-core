@@ -314,3 +314,29 @@ func TestProbeOnlyFailedRechecksWithGrowingPause(t *testing.T) {
 		t.Fatalf("recovery kept the pause: %v", burned.candidateRetryAt)
 	}
 }
+
+// A credential that failed its check rests until its recheck, not in a
+// quarantine: its event tells no quarantine, that of a real outbound does.
+func TestFailedCandidateEventTellsNoQuarantine(t *testing.T) {
+	te := probeOnlyTestEngine(t, 1,
+		&PathDefinition{Tag: "real", Cost: 1},
+		&PathDefinition{Tag: "burned", Cost: 2, IsProbeOnly: true})
+	jobs, _ := te.tick(t0)
+	if jobs = candidateJobsOf(jobs); len(jobs) != 1 {
+		t.Fatalf("jobs %+v", jobs)
+	}
+	te.onProbeResult(jobs[0], probeResult{state: statusDown, class: "timeout"}, t0)
+	f := te.lastOf(t, "path_state").Fields
+	if f["outbound"] != "burned" || f["state"] != "down" || f["reason"] != "candidate" {
+		t.Fatalf("event %v", f)
+	}
+	for _, key := range []string{"quarantine_ms", "quarantine_level", "is_provisional"} {
+		if value, has := f[key]; has {
+			t.Errorf("%s %v of an outbound not in quarantine", key, value)
+		}
+	}
+	te.markDown(te.path("real"), "probe", at(time.Second))
+	if f = te.lastOf(t, "path_state").Fields; f["outbound"] != "real" || f["quarantine_ms"].(float64) <= 0 || f["quarantine_level"] != 1.0 {
+		t.Fatalf("event of a real outbound %v", f)
+	}
+}

@@ -165,7 +165,7 @@ func (e *engine) view(now time.Time) ViewData {
 	case e.networkDown:
 		v.State = "no_network"
 	case fresh:
-		v.State = "idle"
+		v.State = "ready"
 	case by == nil || down && by.pinned != "":
 		v.State = "blocked"
 	case v.Exit.IsHeld || down:
@@ -222,7 +222,7 @@ func (e *engine) view(now time.Time) ViewData {
 
 	fetching, refused, rebased := false, false, false
 	for _, p := range e.providers {
-		pv := viewProvider{Provider: p.cfg.tag, State: "idle"}
+		pv := viewProvider{Provider: p.cfg.tag, State: "ok"}
 		switch {
 		case p.fetching:
 			pv.State = "fetching"
