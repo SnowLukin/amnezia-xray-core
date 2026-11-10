@@ -321,10 +321,11 @@ class Screen:
         self.thread.join(timeout=15)
 
     def states(self):
-        """The states in the order seen, each run of one state once."""
+        """The states in the order seen, each run of one state once, without
+        the idle before the first connection."""
         out = []
         for v in self.views:
-            if not out or out[-1] != v["state"]:
+            if v["state"] != "idle" and (not out or out[-1] != v["state"]):
                 out.append(v["state"])
         return out
 

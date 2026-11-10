@@ -101,9 +101,15 @@ func TestViewStateFollowsTheExit(t *testing.T) {
 	// Before the first connection the balancer has not chosen; its paths
 	// are known from the config.
 	v := f.view(t)
-	if v.State != "ok" || v.Exit.Outbound != "" || len(v.Paths) != 3 || exits(v) != nil || v.LastSwitch != nil {
+	if v.State != "idle" || v.Exit.Outbound != "" || len(v.Paths) != 3 || exits(v) != nil || v.LastSwitch != nil ||
+		viewPathOf(t, v, "a1").State != "unknown" || viewPathOf(t, v, "a1").IsActive {
 		t.Fatalf("before the first connection: %+v", v)
 	}
+	f.o.NetworkLost()
+	if v = f.view(t); v.State != "no_network" {
+		t.Fatalf("no network before the first connection: %+v", v)
+	}
+	f.o.NetworkChanged("wifi")
 	f.connect()
 	v = f.view(t)
 	if v.State != "ok" || v.Balancer != "auto" || v.Run != f.o.run || !v.Network.IsUp ||

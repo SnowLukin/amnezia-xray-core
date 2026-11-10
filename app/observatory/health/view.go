@@ -165,7 +165,7 @@ func (e *engine) view(now time.Time) ViewData {
 	case e.networkDown:
 		v.State = "no_network"
 	case fresh:
-		v.State = "ok"
+		v.State = "idle"
 	case by == nil || down && by.pinned != "":
 		v.State = "blocked"
 	case v.Exit.IsHeld || down:
