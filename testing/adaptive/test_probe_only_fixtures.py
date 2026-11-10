@@ -106,7 +106,7 @@ class ProbeOnlyReportTest(unittest.TestCase):
             ("probe_result", {"reason": "candidate", "is_ok": True, "bytes": 40960}),
             ("probe_result", {"reason": "candidate", "is_ok": False, "bytes": 0}),
             ("probe_result", {"reason": "host", "is_ok": False}),
-            ("probe_only_promoted", {"tag": "p-b"}),
+            ("probe_only_promoted", {"outbound": "p-b"}),
             ("fresh_path_down", {"outbound": "p-b"}),
         ]]
         counters, _ = bench.fold_report(events)

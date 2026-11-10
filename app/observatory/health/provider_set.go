@@ -545,7 +545,7 @@ nextVia:
 		for _, tag := range roads {
 			roadSkip := skip
 			if roadSkip == "" && tag != "" && o.ohm.GetHandler(tag) == nil {
-				roadSkip = "no such outbound"
+				roadSkip = "no_such_outbound"
 			}
 			if roadSkip != "" {
 				j.recordAttempt(requestAttempt{Via: v, Code: "skipped"})

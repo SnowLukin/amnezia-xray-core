@@ -139,6 +139,21 @@ func TestQualityDownloadAndUploadLoadSignals(t *testing.T) {
 	}
 }
 
+// Darwin gives only the RTT of the sender, which a download barely moves:
+// the download is not classified there, the upload still is.
+func TestQualityDarwinClassifiesUploadOnly(t *testing.T) {
+	first, last := decodeDarwinTCPQuality(qualityDarwinFixture()), decodeDarwinTCPQuality(qualityDarwinFixture())
+	last.rxOutOfOrder += 50
+	last.rxTotal += 100
+	s := qualityEndSample{s1: first, s2: last, u1: first, u2: last}
+	if load := qualityDownloadLoad(s); load != qualityLoadUnknown {
+		t.Fatalf("download load %d", load)
+	}
+	if load := qualityUploadLoad(s); load == qualityLoadUnknown {
+		t.Fatal("upload not classified")
+	}
+}
+
 // Writes fill the socket buffer at once; the acknowledged bytes show 8 MiB
 // went out in two seconds.
 func TestQualityUploadPeakUsesAcknowledgedBytes(t *testing.T) {

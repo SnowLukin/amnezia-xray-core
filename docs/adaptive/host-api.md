@@ -26,18 +26,16 @@
 | снять закрепление | `Release` | `Release` | `release <b> [run]` | `HealthRelease` | `LibXrayHealthRelease` | `release` |
 | запросить набор | `RequestProviderRefresh`, `ProviderRefreshInfo` | `RequestProviderRefresh` | `refresh [provider]` | `HealthRequestProviderRefresh` | `LibXrayHealthRequestProviderRefresh` | `requestProviderRefresh` |
 | заголовки провайдера | `SetProviderHeaders` | `SetProviderHeaders` | `headers <provider>`, JSON из stdin | `HealthSetProviderHeaders` | `LibXrayHealthSetProviderHeaders` | `setProviderHeaders` |
-| адреса провайдера | `SetProviderURLs` | нет | нет | `HealthSetProviderURLs` | `LibXrayHealthSetProviderURLs` | `setProviderURLs` |
+| адреса провайдера | `SetProviderURLs` | `SetProviderURLs` | `urls <provider>`, JSON из stdin | `HealthSetProviderURLs` | `LibXrayHealthSetProviderURLs` | `setProviderURLs` |
 | выгрузить набор | `ExportProviderSet` | `ExportProviderSet` | `set <provider> [after]` | `HealthExportProviderSet` | `LibXrayHealthExportProviderSet` | `exportProviderSet` |
-| заголовок версии | `health.AdaptiveHeader()` (функция пакета) | нет | нет | `HealthAdaptiveHeader` | `LibXrayHealthAdaptiveHeader` | `adaptiveHeader` |
+| заголовок версии | `health.AdaptiveHeader()` (функция пакета) | `AdaptiveHeader` | `header` | `HealthAdaptiveHeader` | `LibXrayHealthAdaptiveHeader` | `adaptiveHeader` |
 | заказать пробу | `RequestProbe` | `RequestProbe` | `probe [--udp] <b> [o...]` | `HealthRequestProbe` | `LibXrayHealthRequestProbe` | `requestProbe` |
 | результат пробы | `ProbeResult` | `ProbeResult` | `probe-result <run> <id>` | `HealthProbeResult` | `LibXrayHealthProbeResult` | `probeResult` |
 | состояние | `Status` | `Status` | `status` | `HealthStatus` | `LibXrayHealthStatus` | `status` |
 | журнал событий | `DrainEvents` | `DrainEvents` | `events` | `HealthDrainEvents` | `LibXrayHealthDrainEvents` | `drainEvents` |
 | снимок сводки | `PeekReport` | `PeekReport` | `report` | `HealthPeekReport` | `LibXrayHealthPeekReport` | `peekReport` |
 | закрыть окно сводки | `TakeReport` | `TakeReport` | `report take`, `report final` | `HealthTakeReport` | `LibXrayHealthTakeReport` | `takeReport` |
-| трасса | `ExportTrace` | нет | нет | `HealthExportTrace` | `LibXrayHealthExportTrace` | `exportTrace` |
-
-У `SetProviderURLs`, `ExportTrace` и `AdaptiveHeader` нет gRPC и CLI. Настольный клиент, который управляет ядром через gRPC, не может сменить адреса провайдера и выгрузить трассу; заголовок версии он собирает сам по формату из раздела [`AdaptiveHeader`](#adaptiveheader).
+| трасса | `ExportTrace`, `ExportTraceUpTo` | `ExportTrace` | `trace [after] [--max-bytes=N]` | `HealthExportTrace` | `LibXrayHealthExportTrace` | `exportTrace` |
 
 Типы результата на разных слоях разные. Сигнальные команды (смена и потеря сети, `UserPresent`, `SetMemoryLow`, `Pin`, `Release`, `RequestProviderRefresh`) в libXray возвращают `bool`, в C `int` (1 или 0), в Swift `Bool`. Остальные команды на этих слоях возвращают контейнер Result, описанный ниже. В gRPC Result возвращает каждая команда, включая сигнальные.
 
@@ -78,14 +76,13 @@
 |---|---|
 | `not_running` | ядро не запущено или уже остановлено |
 | `feature_disabled` | блок конфига, нужный команде, отсутствует; у провайдерских команд - в конфиге нет провайдеров |
-| `invalid_argument` | неверные аргументы: битый JSON, неверный заголовок или адрес, слишком много outbound в пробе. Сюда же попадает любой отказ без своего кода, а в gRPC и отклонённый `Pin` или `Release` |
+| `invalid_argument` | неверные аргументы: битый JSON, неверный заголовок или адрес, слишком много outbound в пробе. Сюда же попадает любой отказ без своего кода, а в gRPC и отклонённый `Pin` или `Release` с `run` этого запуска или пустым |
 | `unknown_balancer` | нет балансировщика `leastCost` с таким тегом |
 | `unknown_outbound` | outbound не кандидат этого балансировщика |
 | `unknown_provider` | нет провайдера с таким тегом |
-| `stale_run` | `ProbeResult` с `run` другого запуска или пустым |
+| `stale_run` | `ProbeResult` с `run` другого запуска или пустым; в gRPC также `Pin` и `Release` с непустым `run` другого запуска |
 | `not_found` | билет пробы уже забыт |
 | `busy` | `RequestProbe` до первого соединения через балансировщик: у него ещё нет кандидатов |
-| `rate_limited` | есть в списке кодов, сейчас ни одна команда его не возвращает |
 
 ### Сигнальные команды
 
@@ -245,7 +242,7 @@
 
 Список заменяется целиком и действует со следующей попытки; идущая попытка доживает со старым адресом. Пауза после сбоев на старых адресах сбрасывается, пауза `Retry-After` и пауза после отказа в токене остаются. Запрос не запускается. Список живёт до остановки ядра: при следующем старте действуют адреса конфига, и хост передаёт свой список заново. Адреса не попадают ни в запросы, ни в события, ни в сводку; Status показывает `urls_count` и `urls_generation`, событие `provider_urls` - `count` и `generation`.
 
-Ошибки: `invalid_argument`, `unknown_provider`, `feature_disabled`, `not_running`. Команды нет в gRPC и CLI.
+Ошибки: `invalid_argument`, `unknown_provider`, `feature_disabled`, `not_running`. CLI читает массив из stdin, как `headers`.
 
 #### `RequestProviderRefresh(provider)`
 
@@ -355,15 +352,17 @@ Status - локальная диагностика (`is_local_only: true`). В �
 
 #### `ExportTrace(after)`
 
-Трасса сырых улик сессии для диагностики. Требует `healthObservatory.telemetry.trace`. Ядро держит кольцо строк до `maxBytes` (2 МиБ по умолчанию); хост дописывает полученное в свой файл трассы и спрашивает снова с последним `seq`.
+Трасса сырых улик сессии для диагностики. Требует `healthObservatory.telemetry.trace`. Ядро держит кольцо строк до `trace.maxBytes` (256 КиБ по умолчанию); хост дописывает полученное в свой файл трассы и спрашивает снова с последним `seq`.
 
 ```json
-{"success": true, "run": "232c4c611bfbaee9", "data": {"seq": 1408, "dropped": 0, "started": "2026-11-10T09:00:00Z", "records": [{"seq": 1408, "t": 61234, "type": "event", "event": "path_state", "fields": {"outbound": "b1", "state": "up", "reason": "probe"}}]}}
+{"success": true, "run": "232c4c611bfbaee9", "data": {"seq": 1408, "is_more": false, "dropped": 0, "started": "2026-11-10T09:00:00Z", "records": [{"seq": 1408, "t": 61234, "type": "event", "event": "path_state", "fields": {"outbound": "b1", "state": "up", "reason": "probe"}}]}}
 ```
 
-`records` - массив строк после `after`, `seq` - номер последней строки, `dropped` - сколько строк кольцо вытеснило с начала трассы, `started` - начало трассы по часам. Если `after` старше начала кольца, приходит всё кольцо, и разрыв виден по `seq` первой записи.
+`records` - массив строк после `after`, `seq` - номер последней отданной строки, `dropped` - сколько строк кольцо вытеснило с начала трассы, `started` - начало трассы по часам. Если `after` старше начала кольца, приходит всё кольцо, и разрыв виден по `seq` первой записи.
 
-Номера строк начинаются с 1 в каждом запуске. После перезапуска ядра (новый `run` или `started`) хост обязан начать с `after: 0`. Если передать прежний `after`, больший текущего `seq`, ответы будут пустыми, пока новая трасса его не догонит.
+Предел порции `maxBytes` ограничивает размер `records` одного ответа; строка больше предела приходит одна. `is_more: true` значит, что за порцией есть ещё строки, и хост сразу спрашивает снова с полученным `seq`. 0 или отсутствие предела отдаёт всё после `after` за один вызов. Предел есть в Go API (`ExportTraceUpTo(after, maxBytes)`), в gRPC (`max_bytes`) и в CLI (`--max-bytes=N`); `ExportTrace(after)` в Go API и libXray вызывают выгрузку без предела.
+
+Номера строк начинаются с 1 в каждом запуске. После перезапуска ядра (новый `run` или `started`) хост начинает с `after: 0`. Прежний `after`, больший номера последней строки новой трассы, ядро считает нулём и отдаёт трассу с начала; если новая трасса успела его обогнать, начало новой трассы хост пропустит, поэтому смену `run` стоит проверять.
 
 Трасса не содержит адресов, доменов, SNI и URL. Назначение и id сети в ней хешируются солью трассы, которая нигде не хранится. Тем не менее это сырые данные одной сессии, они остаются на устройстве или уходят только в отчёт об ошибке с согласия пользователя. Размер и память при выгрузке - в разделе [Память и размеры на границе](#память-и-размеры-на-границе).
 
@@ -479,11 +478,11 @@ Status отвечает на вопрос "куда пойдут новые со
 | `DrainEvents` | до `events.maxBytes` (64 КиБ, потолок 256 КиБ) плюс обёртка | |
 | сводка | 10-30 КБ | |
 | набор провайдера | до `min(4 КиБ * apply.maxOutbounds, 1 МиБ)` плюс до 195 КиБ на заголовки и время | при `maxOutbounds` 64 - до 256 КиБ ответа |
-| трасса | до `trace.maxBytes` (2 МиБ) за один вызов | |
+| трасса | до предела порции, без него до `trace.maxBytes` (256 КиБ по умолчанию, потолок 2 МиБ) за один вызов | |
 
 libXray добавляет base64 (+33 %), на Android строка Java ещё удваивается в UTF-16. В iOS-цепочке ядро - libXray - C - Swift один ответ копируется несколько раз: сборка JSON, base64, обратное декодирование, `char*`, строка Swift, дерево разобранного JSON. Go-куча после этого возвращается системе не сразу. В расширении с лимитом около 50 МБ это существенно для двух команд.
 
-- Трасса. Первый вызов после старта или перезапуска (`after: 0`) отдаёт всё кольцо, до 2 МиБ. В расширении iOS стоит держать `trace.maxBytes` маленьким (сотни КиБ), выгружать часто, чтобы каждая порция была мала, и не разбирать `records` в дерево: строки достаточно дописать в файл как есть.
+- Трасса. Первый вызов после старта или перезапуска (`after: 0`) без предела порции отдаёт всё кольцо. В расширении iOS стоит держать `trace.maxBytes` по умолчанию, выгружать порциями с пределом и не разбирать `records` в дерево: строки достаточно дописать в файл как есть.
 - Набор провайдера. Хранить и передавать `set` байтами, без разбора в словари. Звать с последним `seq`, тогда вызов без изменений ничего не копирует.
 - Status. Разбирать один раз за тик и только нужные поля.
 

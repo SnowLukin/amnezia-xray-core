@@ -264,7 +264,7 @@ func TestReportAddsUpTheEvents(t *testing.T) {
 	te.emit(now, "provider_fetch", map[string]any{"provider": "p", "trigger": "host", "retry": 0, "attempt": 1,
 		"via": "", "outbound": "", "is_ok": true, "status": 200, "ms": int64(40), "bytes": 900})
 	te.emit(now, "provider_fetch", map[string]any{"provider": "p", "trigger": "exhausted", "retry": 1, "attempt": 1,
-		"via": "auto", "outbound": "", "is_ok": false, "error": "balancer exhausted"})
+		"via": "auto", "outbound": "", "is_ok": false, "error": "balancer_exhausted"})
 	te.emit(now, "provider_fetch", map[string]any{"provider": "p", "trigger": "exhausted", "retry": 1, "attempt": 1,
 		"via": "", "outbound": "", "is_ok": false, "status": 429, "retry_after_ms": int64(60000), "error": "status 429"})
 	te.emit(now, "provider_apply", map[string]any{"provider": "p", "trigger": "host", "is_ok": false, "error": "bad"})
@@ -747,6 +747,10 @@ func TestReportFieldsDocumented(t *testing.T) {
 	}
 	if len(top) < 30 || len(paths["a1"]) != reflect.TypeOf(reportPath{}).NumField() {
 		t.Fatalf("setup: report %s", raw)
+	}
+	// The life-long TTFB is not the one of a quality segment.
+	if _, ok := paths["a1"]["ttfb_life_p50_ms"]; !ok {
+		t.Errorf("paths without ttfb_life_p50_ms: %v", paths["a1"])
 	}
 	for _, k := range keys {
 		if !strings.Contains(string(readme), "`"+k+"`") {

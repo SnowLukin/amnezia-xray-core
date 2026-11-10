@@ -998,6 +998,23 @@ func TestEventLogByteLimitAndDefaults(t *testing.T) {
 	}
 }
 
+// One event larger than the whole log is dropped alone and does not push
+// out what the log holds.
+func TestEventLogDropsOnlyAnOversizedEvent(t *testing.T) {
+	l := newEventLog(1000, 300)
+	l.add(t0, "x", map[string]any{"i": 1})
+	l.add(t0, "x", map[string]any{"i": 2})
+	l.add(t0, "big", map[string]any{"text": strings.Repeat("a", 400)})
+	raw, dropped := l.drain()
+	var evs []Event
+	if err := json.Unmarshal(raw, &evs); err != nil {
+		t.Fatal(err)
+	}
+	if len(evs) != 2 || dropped != 1 || l.droppedCount() != 1 {
+		t.Fatalf("kept %s, dropped %d", raw, dropped)
+	}
+}
+
 func TestQuarantineGrowsToItsCeiling(t *testing.T) {
 	q := newSettings(&Config{}).schedule.quarantine
 	var got []time.Duration

@@ -26,6 +26,20 @@ func TestReportEvidenceByOutcome(t *testing.T) {
 	}
 }
 
+// A tag the provider removed while down and later brought back starts clean:
+// its first up is no rescue of the old down.
+func TestReportEvidenceForgetsRemovedPath(t *testing.T) {
+	te := newReportEngine(t, &Config{}, nil, "a1", "b1")
+	te.emit(at(time.Second), "path_state", map[string]any{"outbound": "a1", "state": "suspect", "reason": "traffic", "kinds": map[string]int{"no_response": 2}})
+	te.emit(at(2*time.Second), "path_state", map[string]any{"outbound": "a1", "state": "down", "reason": "traffic"})
+	te.forget("a1", at(3*time.Second))
+	te.emit(at(4*time.Second), "path_state", map[string]any{"outbound": "a1", "state": "up", "reason": "rescued", "by": "audit"})
+	te.emit(at(4*time.Second), "panic_recovered", map[string]any{"scope": "connection", "where": "test"})
+	if e := reportJSON(t, te.takeReport(true, at(5*time.Second))).Evidence["no_response"]; e == nil || e.Rescued != 0 {
+		t.Fatalf("evidence %+v", e)
+	}
+}
+
 // The engine counts every user failure by kind, and the report tells the
 // connections of the last minute before it.
 func TestReportEvidenceFailuresAndRecent(t *testing.T) {

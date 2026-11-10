@@ -16,7 +16,7 @@ import (
 
 var cmdHealth = &base.Command{
 	CustomFlags: true,
-	UsageLine:   "{{.Exec}} api health [--server=127.0.0.1:8080] <status|events|network [id]|lost|present|pin <balancer> <outbound> [run]|release <balancer> [run]|refresh [provider]|report [take|final]|probe [--udp] <balancer> [outbound...]|headers <provider>|set <provider> [after]|probe-result <run> <id>|memory --low=true>",
+	UsageLine:   "{{.Exec}} api health [--server=127.0.0.1:8080] <status|events|network [id]|lost|present|pin <balancer> <outbound> [run]|release <balancer> [run]|refresh [provider]|report [take|final]|probe [--udp] <balancer> [outbound...]|headers <provider>|urls <provider>|set <provider> [after]|trace [after] [--max-bytes=N]|header|probe-result <run> <id>|memory --low=true>",
 	Short:       "Query and control the health observatory",
 	Long: `
 Query and control the health observatory. Output is JSON.
@@ -54,10 +54,18 @@ Commands:
 	                            {"Authorization": "Bearer ..."}; an empty
 	                            value removes one. Never from arguments,
 	                            which the process list shows
+	urls <provider>             replace the addresses of the provider with
+	                            a JSON array of 1 to 4 URLs on stdin, in
+	                            the order to try them
 	set <provider> [after]      the last set the provider applied, valid
 	                            as its initialAnswer, with the token: {"seq": n,
-	                            "set": {...}}; set is null when nothing
-	                            changed since the seq after
+	                            "set": {...}}; no data when nothing changed
+	                            since the seq after or no set was applied
+	trace [after] [--max-bytes=N]
+	                            trace records after the seq after, at most
+	                            N bytes of them; is_more true asks to call
+	                            again with the seq returned
+	header                      the Xray-Adaptive header of this core
 
 Arguments:
 
@@ -78,15 +86,21 @@ func executeHealth(cmd *base.Command, args []string) {
 		base.Fatalf("health: missing command")
 	}
 	var headers map[string]string
-	if a[0] == "headers" {
+	var urls []string
+	if a[0] == "headers" || a[0] == "urls" {
 		if len(a) < 2 {
-			base.Fatalf("health headers: need provider")
+			base.Fatalf("health %s: need provider", a[0])
 		}
 		// Before the dial, whose timeout covers the call: a person may be
-		// typing the object.
+		// typing the input.
 		var err error
-		if headers, err = providerHeaders(os.Stdin); err != nil {
-			base.Fatalf("health headers: %s", err)
+		if a[0] == "headers" {
+			err = stdinJSON(os.Stdin, &headers, `a JSON object of strings, such as {"Authorization": "Bearer ..."}`)
+		} else {
+			err = stdinJSON(os.Stdin, &urls, `a JSON array of strings, such as ["https://example.com/set"]`)
+		}
+		if err != nil {
+			base.Fatalf("health %s: %s", a[0], err)
 		}
 	}
 	conn, ctx, close := dialAPIServer()
@@ -193,6 +207,26 @@ func executeHealth(cmd *base.Command, args []string) {
 		response, err = client.ExportProviderSet(ctx, req)
 	case "headers":
 		response, err = client.SetProviderHeaders(ctx, &healthService.SetProviderHeadersRequest{Provider: a[1], Headers: headers})
+	case "urls":
+		response, err = client.SetProviderURLs(ctx, &healthService.SetProviderURLsRequest{Provider: a[1], Urls: urls})
+	case "trace":
+		req := &healthService.ExportTraceRequest{}
+		for _, arg := range a[1:] {
+			var parseErr error
+			if limit, ok := strings.CutPrefix(arg, "--max-bytes="); ok {
+				var n uint64
+				n, parseErr = strconv.ParseUint(limit, 10, 32)
+				req.MaxBytes = uint32(n)
+			} else {
+				req.After, parseErr = strconv.ParseUint(arg, 10, 64)
+			}
+			if parseErr != nil {
+				base.Fatalf("health trace: expected [after] [--max-bytes=N]")
+			}
+		}
+		response, err = client.ExportTrace(ctx, req)
+	case "header":
+		response, err = client.AdaptiveHeader(ctx, &healthService.AdaptiveHeaderRequest{})
 	default:
 		base.Fatalf("health: unknown command %s", a[0])
 	}
@@ -202,31 +236,30 @@ func executeHealth(cmd *base.Command, args []string) {
 	fmt.Println(string(decodedHealthResult(response)))
 }
 
-// maxHeadersInput bounds what providerHeaders reads: eight values of 4 KiB
+// maxStdinInput bounds what stdinJSON reads: eight header values of 4 KiB
 // and their names fit many times over.
-const maxHeadersInput = 256 << 10
+const maxStdinInput = 256 << 10
 
-// providerHeaders reads the headers for a provider as a JSON object of
-// strings. A token never comes from the arguments, which the process list
-// shows, and an error never quotes the input, which holds it.
-func providerHeaders(in io.Reader) (map[string]string, error) {
-	raw, err := io.ReadAll(io.LimitReader(in, maxHeadersInput+1))
+// stdinJSON reads the headers or the addresses of a provider. A token never
+// comes from the arguments, which the process list shows, and an error never
+// quotes the input, which holds it.
+func stdinJSON[T map[string]string | []string](in io.Reader, out *T, want string) error {
+	raw, err := io.ReadAll(io.LimitReader(in, maxStdinInput+1))
 	if err != nil {
-		return nil, err
+		return err
 	}
-	if len(raw) > maxHeadersInput {
-		return nil, fmt.Errorf("stdin holds more than %d bytes", maxHeadersInput)
+	if len(raw) > maxStdinInput {
+		return fmt.Errorf("stdin holds more than %d bytes", maxStdinInput)
 	}
 	if !utf8.Valid(raw) {
 		// The decoder would put U+FFFD in place of such bytes, and the
 		// provider would send another token than the one given.
-		return nil, errors.New("stdin is not valid UTF-8")
+		return errors.New("stdin is not valid UTF-8")
 	}
-	var headers map[string]string
-	if json.Unmarshal(raw, &headers) != nil || headers == nil {
-		return nil, errors.New(`stdin must hold a JSON object of strings, such as {"Authorization": "Bearer ..."}`)
+	if json.Unmarshal(raw, out) != nil || *out == nil {
+		return errors.New("stdin must hold " + want)
 	}
-	return headers, nil
+	return nil
 }
 
 // Render the shared Result without encoding its data object a second time.

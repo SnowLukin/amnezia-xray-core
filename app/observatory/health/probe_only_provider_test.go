@@ -200,7 +200,7 @@ func TestProviderPromotionReusesOnlyFreshCandidateProof(t *testing.T) {
 			}
 			events := te.eventsOf(t, "probe_only_promoted")
 			if tc.want {
-				if len(events) != 1 || q.status != statusUp || q.lastProbeResult.reason != "candidate" || len(q.lastProbeResult.steps) != 1 || te.sel.current() != "p-probe" {
+				if len(events) != 1 || events[0].Fields["outbound"] != "p-probe" || q.status != statusUp || q.lastProbeResult.reason != "candidate" || len(q.lastProbeResult.steps) != 1 || te.sel.current() != "p-probe" {
 					t.Fatalf("fresh promotion: events=%v state=%v current=%v", events, q.status, te.sel.current())
 				}
 			} else if len(events) != 0 || !q.lastProbeEnd.IsZero() {

@@ -53,8 +53,6 @@ func CommandErrorOf(err error) *CommandError {
 		code = "feature_disabled"
 	case strings.Contains(text, "no candidates yet"):
 		code = "busy"
-	case strings.Contains(text, "too many requests"):
-		code = "rate_limited"
 	}
 	return NewCommandError(code, strings.ReplaceAll(code, "_", " "))
 }

@@ -160,7 +160,7 @@ func TestProviderRefreshInRunningCore(t *testing.T) {
 		t.Fatalf("first apply %v", ev.Fields)
 	}
 	fetches := w.since(0, "provider_fetch")
-	if len(fetches) != 3 || fetches[0].Fields["error"] != "no such outbound" ||
+	if len(fetches) != 3 || fetches[0].Fields["error"] != "no_such_outbound" ||
 		fetches[1].Fields["via"] != "dead" || fetches[1].Fields["is_ok"] != false ||
 		fetches[2].Fields["via"] != "direct" || fetches[2].Fields["is_ok"] != true || fetches[2].Fields["trigger"] != "host" {
 		t.Fatalf("fetches %+v; want the missing via skipped, the dead one failed, then direct", fetches)
@@ -577,7 +577,7 @@ func TestSkippedViaKeepsTheFailureBeforeIt(t *testing.T) {
 	obs.RequestProviderRefresh("fresh")
 	w.until("provider_apply", func(e health.Event) bool { return e.Fields["is_ok"] == true })
 	fetches := w.since(0, "provider_fetch")
-	if len(fetches) < 3 || fetches[0].Fields["status"] != 502.0 || fetches[1].Fields["error"] != "no such outbound" {
+	if len(fetches) < 3 || fetches[0].Fields["status"] != 502.0 || fetches[1].Fields["error"] != "no_such_outbound" {
 		t.Fatalf("fetches %+v; want a 502 through direct, then missing skipped", fetches)
 	}
 	mu.Lock()

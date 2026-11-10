@@ -40,7 +40,8 @@ func (l *eventLog) add(now time.Time, typ string, fields map[string]any) {
 	}
 	l.seq++
 	raw, err := json.Marshal(Event{Seq: l.seq, Time: now.UnixMilli(), Type: typ, Fields: fields})
-	if err != nil {
+	// An event larger than the whole log would push out everything else.
+	if err != nil || len(raw) > l.maxBytes {
 		l.dropped++
 		l.droppedTotal++
 		return

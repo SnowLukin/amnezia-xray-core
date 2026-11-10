@@ -10,6 +10,7 @@ import (
 	"context"
 	"encoding/json"
 	"reflect"
+	"strings"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -17,6 +18,18 @@ import (
 
 	"github.com/xtls/xray-core/common/net"
 )
+
+// withoutHistograms is the view as Status gives it: the report keeps the
+// histograms, Status, which hosts read often, does not.
+func withoutHistograms(v qualityPathView) qualityPathView {
+	rv := reflect.ValueOf(&v).Elem()
+	for i := range rv.NumField() {
+		if strings.HasSuffix(rv.Type().Field(i).Name, "Hist") {
+			rv.Field(i).SetZero()
+		}
+	}
+	return v
+}
 
 func qualityStage1ExportFixture(t *testing.T) (*testEngine, *Observer, *fakeClock) {
 	t.Helper()
@@ -158,7 +171,7 @@ func TestQualityStage1ExportCompletedProbeAndUserQualityCoexist(t *testing.T) {
 			row := qualityStage1ExportStatusPath(t, status, "p-x")
 			only := qualityStage1ExportStatusPath(t, status, "p-y")
 			if row.Probe == nil || row.Probe.Profile != result.profile || row.Probe.Reason != reasonHost.String() || row.Probe.State != result.pathState().String() || row.Probe.AgoMs != 2000 ||
-				len(row.Probe.Steps) != len(result.steps) || row.Quality == nil || !reflect.DeepEqual(*row.Quality, initial) ||
+				len(row.Probe.Steps) != len(result.steps) || row.Quality == nil || initial.TTFBMsHist == nil || !reflect.DeepEqual(*row.Quality, withoutHistograms(initial)) ||
 				row.TTFBP50Ms != 0 || row.TTFBP90Ms != 0 || row.BytesDown != 512 || row.ConnsOK != 1 || row.Probes != 1 || row.ProbeBytes != result.bytes {
 				t.Fatalf("completed-job Status conflated raw probe and user traffic: %+v", row)
 			}
@@ -255,7 +268,7 @@ func TestQualityStage1ExportProfileChangeClearsProbeOnly(t *testing.T) {
 	request, _ := qualityStage1ExportProvider(t, te, o, clk.now())
 	out := qualityStage1ExportRequestPath(t, request, "x")
 	if status.Probe != nil || out.Probe != nil || status.State != "unknown" || status.Quality == nil ||
-		!reflect.DeepEqual(*status.Quality, qualityBefore) || !reflect.DeepEqual(out.Quality, requestQualityOf(qualityBefore)) {
+		!reflect.DeepEqual(*status.Quality, withoutHistograms(qualityBefore)) || !reflect.DeepEqual(out.Quality, requestQualityOf(qualityBefore)) {
 		t.Fatal("stale old-profile result repopulated raw export or changed measured user quality")
 	}
 	clk.advance(time.Second)
@@ -265,7 +278,7 @@ func TestQualityStage1ExportProfileChangeClearsProbeOnly(t *testing.T) {
 	}}, clk.now())
 	status = qualityStage1ExportStatusPath(t, te.status(clk.now()), "p-x")
 	if status.Probe == nil || status.Probe.Profile != "full" || status.Probe.Reason != reasonHost.String() || status.Probe.State != "degraded" || status.Quality == nil ||
-		!reflect.DeepEqual(*status.Quality, qualityBefore) {
+		!reflect.DeepEqual(*status.Quality, withoutHistograms(qualityBefore)) {
 		t.Fatal("fresh new-profile result lost its raw snapshot beside retained user measurement history")
 	}
 }

@@ -154,12 +154,12 @@ type statusView struct {
 func (e *engine) status(now time.Time) statusView {
 	quality := e.currentQuality(now)
 	v := statusView{
-		Census:         e.censusStatus(),
-		IsLocalOnly:    true,
-		Features:       e.effectiveFeatures(),
-		Groups:         e.groupViews(now),
-		WitnessQuality: quality.Witness, QualitySamplesDropped: quality.SamplesDropped,
-		NetworkID: e.networkID, Network: e.networkLabels(),
+		Census:                e.censusStatus(),
+		IsLocalOnly:           true,
+		Features:              e.effectiveFeatures(),
+		Groups:                e.groupViews(now),
+		QualitySamplesDropped: quality.SamplesDropped,
+		NetworkID:             e.networkID, Network: e.networkLabels(),
 		IsNetworkUp:  !e.networkDown,
 		Connectivity: e.connectivityState(),
 		Generation:   e.generation,
@@ -167,6 +167,9 @@ func (e *engine) status(now time.Time) statusView {
 		IsMemoryLow:  e.memoryLow,
 		Queued:       len(e.queue),
 		Running:      len(e.running),
+	}
+	if quality.Witness != nil {
+		v.WitnessQuality = quality.Witness.brief()
 	}
 	active := map[string]time.Duration{}
 	for _, s := range e.sortedSelectors() {
@@ -234,7 +237,7 @@ func (e *engine) status(now time.Time) statusView {
 			pv.CanCloseUnchosenIdle = &capable
 		}
 		if q, ok := quality.Paths[tag]; ok {
-			pv.Quality = &q
+			pv.Quality = q.brief()
 		}
 		if !p.statusSince.IsZero() {
 			pv.ForMs = now.Sub(p.statusSince).Milliseconds()

@@ -147,10 +147,14 @@ func (s qualityLoadSignals) load() qualityLoad {
 
 // The download compares the receiver RTT at the latest milestone with the
 // minimum RTT at the first reply, and counts reordered arrivals between them.
+// Without the receiver RTT reordering alone tells too little.
 func qualityDownloadLoad(s qualityEndSample) qualityLoad {
 	signals := qualityLoadSignals{
 		minRTT: s.s1.minRTT, loadRTT: s.s2.loadRTT,
 		hasRTT: s.s1.present&qualityHasMinRTT != 0 && s.s2.present&qualityHasLoadRTT != 0,
+	}
+	if !signals.hasRTT {
+		return qualityLoadUnknown
 	}
 	signals.lost, signals.total, signals.hasLoss = qualityRXDelta(s)
 	return signals.load()
@@ -314,6 +318,14 @@ type qualityPathView struct {
 	TXRetransmitFraction    *float64          `json:"tx_retransmit_fraction,omitempty"`
 	SpeedLimitDownKbps      *int64            `json:"speed_limit_down_kbps,omitempty"`
 	SpeedLimitUpKbps        *int64            `json:"speed_limit_up_kbps,omitempty"`
+}
+
+// brief is the view without histograms, as Status gives it: hosts read
+// Status often, and the report keeps the histograms.
+func (v qualityPathView) brief() *qualityPathView {
+	v.TTFBMsHist, v.DialMsHist, v.BulkKbpsHist, v.BulkPeakKbpsHist, v.BulkSaturatedKbpsHist = nil, nil, nil, nil, nil
+	v.BulkPolicedKbpsHist, v.UploadPeakKbpsHist, v.UploadSaturatedKbpsHist, v.UploadPolicedKbpsHist = nil, nil, nil, nil
+	return &v
 }
 
 type qualitySegmentView struct {

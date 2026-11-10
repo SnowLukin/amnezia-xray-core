@@ -35,6 +35,9 @@ const (
 	HealthService_ProbeResult_FullMethodName              = "/xray.core.app.observatory.health.command.HealthService/ProbeResult"
 	HealthService_SetProviderHeaders_FullMethodName       = "/xray.core.app.observatory.health.command.HealthService/SetProviderHeaders"
 	HealthService_ExportProviderSet_FullMethodName        = "/xray.core.app.observatory.health.command.HealthService/ExportProviderSet"
+	HealthService_SetProviderURLs_FullMethodName          = "/xray.core.app.observatory.health.command.HealthService/SetProviderURLs"
+	HealthService_ExportTrace_FullMethodName              = "/xray.core.app.observatory.health.command.HealthService/ExportTrace"
+	HealthService_AdaptiveHeader_FullMethodName           = "/xray.core.app.observatory.health.command.HealthService/AdaptiveHeader"
 )
 
 // HealthServiceClient is the client API for HealthService service.
@@ -57,6 +60,10 @@ type HealthServiceClient interface {
 	ProbeResult(ctx context.Context, in *ProbeResultRequest, opts ...grpc.CallOption) (*Result, error)
 	SetProviderHeaders(ctx context.Context, in *SetProviderHeadersRequest, opts ...grpc.CallOption) (*Result, error)
 	ExportProviderSet(ctx context.Context, in *ExportProviderSetRequest, opts ...grpc.CallOption) (*Result, error)
+	SetProviderURLs(ctx context.Context, in *SetProviderURLsRequest, opts ...grpc.CallOption) (*Result, error)
+	ExportTrace(ctx context.Context, in *ExportTraceRequest, opts ...grpc.CallOption) (*Result, error)
+	// Works without a running observatory.
+	AdaptiveHeader(ctx context.Context, in *AdaptiveHeaderRequest, opts ...grpc.CallOption) (*Result, error)
 }
 
 type healthServiceClient struct {
@@ -227,6 +234,36 @@ func (c *healthServiceClient) ExportProviderSet(ctx context.Context, in *ExportP
 	return out, nil
 }
 
+func (c *healthServiceClient) SetProviderURLs(ctx context.Context, in *SetProviderURLsRequest, opts ...grpc.CallOption) (*Result, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(Result)
+	err := c.cc.Invoke(ctx, HealthService_SetProviderURLs_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *healthServiceClient) ExportTrace(ctx context.Context, in *ExportTraceRequest, opts ...grpc.CallOption) (*Result, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(Result)
+	err := c.cc.Invoke(ctx, HealthService_ExportTrace_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *healthServiceClient) AdaptiveHeader(ctx context.Context, in *AdaptiveHeaderRequest, opts ...grpc.CallOption) (*Result, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(Result)
+	err := c.cc.Invoke(ctx, HealthService_AdaptiveHeader_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // HealthServiceServer is the server API for HealthService service.
 // All implementations must embed UnimplementedHealthServiceServer
 // for forward compatibility.
@@ -247,6 +284,10 @@ type HealthServiceServer interface {
 	ProbeResult(context.Context, *ProbeResultRequest) (*Result, error)
 	SetProviderHeaders(context.Context, *SetProviderHeadersRequest) (*Result, error)
 	ExportProviderSet(context.Context, *ExportProviderSetRequest) (*Result, error)
+	SetProviderURLs(context.Context, *SetProviderURLsRequest) (*Result, error)
+	ExportTrace(context.Context, *ExportTraceRequest) (*Result, error)
+	// Works without a running observatory.
+	AdaptiveHeader(context.Context, *AdaptiveHeaderRequest) (*Result, error)
 	mustEmbedUnimplementedHealthServiceServer()
 }
 
@@ -304,6 +345,15 @@ func (UnimplementedHealthServiceServer) SetProviderHeaders(context.Context, *Set
 }
 func (UnimplementedHealthServiceServer) ExportProviderSet(context.Context, *ExportProviderSetRequest) (*Result, error) {
 	return nil, status.Error(codes.Unimplemented, "method ExportProviderSet not implemented")
+}
+func (UnimplementedHealthServiceServer) SetProviderURLs(context.Context, *SetProviderURLsRequest) (*Result, error) {
+	return nil, status.Error(codes.Unimplemented, "method SetProviderURLs not implemented")
+}
+func (UnimplementedHealthServiceServer) ExportTrace(context.Context, *ExportTraceRequest) (*Result, error) {
+	return nil, status.Error(codes.Unimplemented, "method ExportTrace not implemented")
+}
+func (UnimplementedHealthServiceServer) AdaptiveHeader(context.Context, *AdaptiveHeaderRequest) (*Result, error) {
+	return nil, status.Error(codes.Unimplemented, "method AdaptiveHeader not implemented")
 }
 func (UnimplementedHealthServiceServer) mustEmbedUnimplementedHealthServiceServer() {}
 func (UnimplementedHealthServiceServer) testEmbeddedByValue()                       {}
@@ -614,6 +664,60 @@ func _HealthService_ExportProviderSet_Handler(srv interface{}, ctx context.Conte
 	return interceptor(ctx, in, info, handler)
 }
 
+func _HealthService_SetProviderURLs_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetProviderURLsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(HealthServiceServer).SetProviderURLs(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: HealthService_SetProviderURLs_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(HealthServiceServer).SetProviderURLs(ctx, req.(*SetProviderURLsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _HealthService_ExportTrace_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ExportTraceRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(HealthServiceServer).ExportTrace(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: HealthService_ExportTrace_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(HealthServiceServer).ExportTrace(ctx, req.(*ExportTraceRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _HealthService_AdaptiveHeader_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(AdaptiveHeaderRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(HealthServiceServer).AdaptiveHeader(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: HealthService_AdaptiveHeader_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(HealthServiceServer).AdaptiveHeader(ctx, req.(*AdaptiveHeaderRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // HealthService_ServiceDesc is the grpc.ServiceDesc for HealthService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -684,6 +788,18 @@ var HealthService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ExportProviderSet",
 			Handler:    _HealthService_ExportProviderSet_Handler,
+		},
+		{
+			MethodName: "SetProviderURLs",
+			Handler:    _HealthService_SetProviderURLs_Handler,
+		},
+		{
+			MethodName: "ExportTrace",
+			Handler:    _HealthService_ExportTrace_Handler,
+		},
+		{
+			MethodName: "AdaptiveHeader",
+			Handler:    _HealthService_AdaptiveHeader_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

@@ -28,7 +28,7 @@ func TestProbeOnlyRoadsOrderBoundAndUserIsolation(t *testing.T) {
 	}
 	te.sel.setActive("")
 	te.sel.exhausted = true
-	if _, skip := te.resolveProviderVia(cfg, "auto", at(5*time.Second)); skip != "balancer exhausted" {
+	if _, skip := te.resolveProviderVia(cfg, "auto", at(5*time.Second)); skip != "balancer_exhausted" {
 		t.Fatal(skip)
 	}
 	cfg.probeOnlyRoads = true
@@ -47,7 +47,7 @@ func TestProbeOnlyRoadsOrderBoundAndUserIsolation(t *testing.T) {
 	if skip != "" || !slices.Equal(roads, []string{"p-user"}) {
 		t.Fatal(roads, skip)
 	}
-	if _, skip = te.resolveProviderVia(cfg, "p-b", at(5*time.Second)); skip != "probe-only outbound" {
+	if _, skip = te.resolveProviderVia(cfg, "p-b", at(5*time.Second)); skip != "probe_only_outbound" {
 		t.Fatal(skip)
 	}
 	te.paths["p-user"].status = statusDown
@@ -73,7 +73,7 @@ func TestProviderViaSkipsCurrentOutboundDown(t *testing.T) {
 		t.Fatal(roads, skip)
 	}
 	te.paths["p-user"].status = statusDown
-	if _, skip := te.resolveProviderVia(cfg, "auto", at(2*time.Second)); skip != "current outbound down" {
+	if _, skip := te.resolveProviderVia(cfg, "auto", at(2*time.Second)); skip != "current_outbound_down" {
 		t.Fatal(skip)
 	}
 	cfg.probeOnlyRoads = true

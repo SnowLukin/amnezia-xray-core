@@ -577,10 +577,14 @@ func (e *engine) suspect(p *path, v verdict, now time.Time) {
 		return
 	}
 	p.setStatus(statusSuspect, "traffic", now)
-	e.emit(now, "path_state", map[string]any{
+	f := map[string]any{
 		"outbound": p.tag, "state": "suspect", "reason": "traffic",
 		"failures": v.failures, "targets": v.targets, "kinds": v.kinds, "is_strong": v.strong,
-	})
+	}
+	if !p.failStart.IsZero() && p.failStart.Before(now) {
+		f["evidence_ms"] = now.Sub(p.failStart).Milliseconds()
+	}
+	e.emit(now, "path_state", f)
 	if e.s.connectivity != nil && !e.connectivityIgnored && !e.doubt && now.Sub(e.lastConnectivityOK) > e.s.connectivity.timeout*4 {
 		e.pendingSuspicion[p.tag] = v
 		e.enqueueConnectivity(now)
@@ -3208,7 +3212,7 @@ func (e *engine) forget(tag string, now time.Time) {
 		return true
 	})
 	delete(e.paths, tag)
-	e.report.forgetProbeSteps(tag)
+	e.report.forgetPath(tag)
 	e.lastServer.Delete(tag)
 	for _, s := range e.selectors {
 		delete(s.penalty, tag)

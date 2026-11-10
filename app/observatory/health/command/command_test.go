@@ -64,7 +64,7 @@ func TestExplicitCommandMethods(t *testing.T) {
 			t.Fatalf("legacy alias %s remains", name)
 		}
 	}
-	for _, name := range []string{"Status", "PeekReport", "TakeReport", "Release", "NetworkLost", "SetMemoryLow", "ProbeResult", "RequestProbe", "RequestProviderRefresh", "ExportProviderSet"} {
+	for _, name := range []string{"Status", "PeekReport", "TakeReport", "Release", "NetworkLost", "SetMemoryLow", "ProbeResult", "RequestProbe", "RequestProviderRefresh", "ExportProviderSet", "SetProviderURLs", "ExportTrace", "AdaptiveHeader"} {
 		if descriptor.Methods().ByName(protoreflect.Name(name)) == nil {
 			t.Fatalf("missing method %s", name)
 		}
@@ -86,11 +86,59 @@ func TestJSONCommandsWithoutObservatory(t *testing.T) {
 		func() (*command.Result, error) {
 			return s.SetProviderHeaders(ctx, &command.SetProviderHeadersRequest{})
 		},
+		func() (*command.Result, error) {
+			return s.SetProviderURLs(ctx, &command.SetProviderURLsRequest{Provider: "p", Urls: []string{"https://a.test/set"}})
+		},
+		func() (*command.Result, error) { return s.ExportTrace(ctx, &command.ExportTraceRequest{}) },
 	}
 	for _, call := range calls {
 		r, err := call()
 		requireCode(t, r, err, "not_running")
 	}
+	// The header does not depend on a running observatory.
+	r, err := s.AdaptiveHeader(ctx, &command.AdaptiveHeaderRequest{})
+	var header struct{ Name, Value string }
+	decodeData(t, r, err, &header)
+	if name, value := health.AdaptiveHeader(); header.Name != name || header.Value != value {
+		t.Fatalf("header %s", r.Data)
+	}
+}
+
+// The commands a host has in the library work through gRPC as well, and a
+// pin for another run is told from a wrong argument.
+func TestURLsTraceAndPinCommands(t *testing.T) {
+	s, _ := service(t, `{"log":{"loglevel":"none"},"outbounds":[{"tag":"direct","protocol":"freedom"},{"tag":"drop","protocol":"blackhole"},{"tag":"a1","protocol":"freedom","selection":{"balancer":"auto","cost":1,"probe":"check"}}],"routing":{"balancers":[{"tag":"auto","strategy":{"type":"leastCost"},"fallbackTag":"drop"}]},"healthObservatory":{"host":{"pinning":{}},"probes":{"profiles":[{"name":"check","steps":[{"name":"transport","destinations":["http://127.0.0.1:1/check"]}]}]},"telemetry":{"trace":{}},"providers":[{"tag":"fresh","urls":["https://provider.test/set"],"via":["direct"],"triggers":{"exhausted":{"isEnabled":false},"leaseRenewal":{"isEnabled":false},"backendSchedule":{"isEnabled":false}},"apply":{"balancers":["auto"],"tagPrefix":"p-","allowedProtocols":["freedom"]}}]}}`)
+	ctx := context.Background()
+	r, err := s.SetProviderURLs(ctx, &command.SetProviderURLsRequest{Provider: "fresh", Urls: []string{"https://mirror.test/set", "https://other.test/set"}})
+	decodeData(t, r, err, nil)
+	run := r.Run
+	r, err = s.SetProviderURLs(ctx, &command.SetProviderURLsRequest{Provider: "fresh", Urls: []string{"ftp://mirror.test/set"}})
+	requireCode(t, r, err, "invalid_argument")
+	r, err = s.SetProviderURLs(ctx, &command.SetProviderURLsRequest{Provider: "other", Urls: []string{"https://mirror.test/set"}})
+	requireCode(t, r, err, "unknown_provider")
+	r, err = s.SetProviderURLs(ctx, &command.SetProviderURLsRequest{Provider: "fresh", Urls: []string{"https://other.test/set"}})
+	decodeData(t, r, err, nil)
+
+	r, err = s.ExportTrace(ctx, &command.ExportTraceRequest{MaxBytes: 1})
+	var part health.TraceData
+	decodeData(t, r, err, &part)
+	var records []map[string]any
+	if json.Unmarshal(part.Records, &records) != nil || len(records) != 1 || part.Seq != 1 || !part.IsMore {
+		t.Fatalf("part %s", r.Data)
+	}
+	r, err = s.ExportTrace(ctx, &command.ExportTraceRequest{After: part.Seq})
+	var rest health.TraceData
+	decodeData(t, r, err, &rest)
+	if rest.IsMore || rest.Seq <= part.Seq {
+		t.Fatalf("rest %s", r.Data)
+	}
+
+	r, err = s.Pin(ctx, &command.PinRequest{Balancer: "auto", Outbound: "a1", Run: "0000000000000000"})
+	requireCode(t, r, err, "stale_run")
+	r, err = s.Pin(ctx, &command.PinRequest{Balancer: "auto", Outbound: "missing", Run: run})
+	requireCode(t, r, err, "invalid_argument")
+	r, err = s.Release(ctx, &command.ReleaseRequest{Balancer: "auto", Run: "0000000000000000"})
+	requireCode(t, r, err, "stale_run")
 }
 func TestDisabledCommandsAndLocalStatus(t *testing.T) {
 	s, _ := service(t, `{"log":{"loglevel":"none"},"outbounds":[{"tag":"direct","protocol":"freedom"}],"healthObservatory":{}}`)

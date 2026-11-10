@@ -106,9 +106,10 @@ func decodeDarwinTCPQuality(b []byte) tcpQualitySnapshot {
 	var s tcpQualitySnapshot
 	if len(b) >= qualityDarwinRTTOffset+4 {
 		s.rtt = time.Duration(binary.NativeEndian.Uint32(b[qualityDarwinRTTOffset:])) * time.Millisecond
-		// The caller uses minRTT only from S1 and loadRTT only from S2.
-		s.minRTT, s.loadRTT = s.rtt, s.rtt
-		s.present |= qualityHasRTT | qualityHasMinRTT | qualityHasLoadRTT
+		// The caller uses minRTT only from S1. Darwin has no RTT of the
+		// receiver, and the sender's barely moves on a download.
+		s.minRTT = s.rtt
+		s.present |= qualityHasRTT | qualityHasMinRTT
 	}
 	if len(b) >= qualityDarwinRXOOOOffset+8 && len(b) >= qualityDarwinRXTotalOffset+8 {
 		s.rxOutOfOrder = binary.NativeEndian.Uint64(b[qualityDarwinRXOOOOffset:])

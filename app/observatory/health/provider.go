@@ -684,23 +684,23 @@ func (e *engine) resolveVia(via string, now time.Time) (string, string) {
 	if s := e.selectors[via]; s != nil {
 		if cur := s.current(); cur != "" {
 			if e.isProbeOnly(cur) {
-				return "", "probe-only outbound"
+				return "", "probe_only_outbound"
 			}
 			// The balancer still names an outbound it found dead and is
 			// failing over from: a request through it would wait out its
 			// timeout on a dead road.
 			if p := e.paths[cur]; p != nil && (p.status == statusDown || p.quarantined(now)) {
-				return "", "current outbound down"
+				return "", "current_outbound_down"
 			}
 			return cur, ""
 		}
-		return "", "balancer exhausted"
+		return "", "balancer_exhausted"
 	}
 	if e.isProbeOnly(via) {
-		return "", "probe-only outbound"
+		return "", "probe_only_outbound"
 	}
 	if p := e.paths[via]; p != nil && p.quarantined(now) {
-		return "", "outbound down"
+		return "", "outbound_down"
 	}
 	return via, ""
 }
@@ -709,7 +709,7 @@ func (e *engine) resolveVia(via string, now time.Time) (string, string) {
 // candidates of an exhausted balancer. It never changes the user selection.
 func (e *engine) resolveProviderVia(cfg *providerSettings, via string, now time.Time) ([]string, string) {
 	tag, skip := e.resolveVia(via, now)
-	if (skip != "balancer exhausted" && skip != "current outbound down") || !cfg.probeOnlyRoads {
+	if (skip != "balancer_exhausted" && skip != "current_outbound_down") || !cfg.probeOnlyRoads {
 		return []string{tag}, skip
 	}
 	s := e.selectors[via]
@@ -842,7 +842,7 @@ func (e *engine) applyProviderSet(p *provider, c providerChange, now time.Time) 
 			if q.setStatus(statusUp, "candidate", now) {
 				e.emitPath(q, now)
 			}
-			e.emit(now, "probe_only_promoted", map[string]any{"provider": p.cfg.tag, "tag": tag})
+			e.emit(now, "probe_only_promoted", map[string]any{"provider": p.cfg.tag, "outbound": tag})
 		}
 	}
 	p.expect = ""

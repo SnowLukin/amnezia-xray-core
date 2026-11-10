@@ -64,7 +64,7 @@ func TestReportIncidentExhaustedWithBackend(t *testing.T) {
 	te.emit(at(0), "switch", map[string]any{"balancer": "auto", "from": "", "to": "a1", "reason": "start"})
 	te.emit(at(10*time.Second), "path_state", map[string]any{"outbound": "a1", "state": "down", "reason": "traffic"})
 	te.emit(at(10*time.Second), "exhausted", map[string]any{"balancer": "auto", "from": "a1"})
-	te.emit(at(10*time.Second), "provider_fetch", map[string]any{"provider": "p", "attempt": 1, "is_ok": false, "error": "balancer exhausted"})
+	te.emit(at(10*time.Second), "provider_fetch", map[string]any{"provider": "p", "attempt": 1, "is_ok": false, "error": "balancer_exhausted"})
 	te.emit(at(11500*time.Millisecond), "provider_fetch", map[string]any{"provider": "p", "attempt": 2, "is_ok": true, "ms": int64(1500)})
 	te.emit(at(11600*time.Millisecond), "provider_apply", map[string]any{"provider": "p", "is_ok": true, "is_changed": true})
 	te.emit(at(11700*time.Millisecond), "switch", map[string]any{"balancer": "auto", "from": "", "to": "p-s2", "reason": "candidates_changed"})
@@ -169,6 +169,26 @@ func TestPathStateTellsEvidenceStart(t *testing.T) {
 	te.onSuccess("a1", at(10*time.Second))
 	if !te.paths["a1"].failStart.IsZero() {
 		t.Fatal("evidence start survived a success")
+	}
+}
+
+// A suspicion tells when the users began waiting as a down does, so an
+// outage that a suspicion opens counts from that moment.
+func TestSuspectPathStateTellsEvidenceStart(t *testing.T) {
+	te := newReportEngine(t, &Config{}, nil, "a1", "b1")
+	te.run(t, at(0), nil)
+	te.noteFailStart("a1", at(2*time.Second))
+	for _, target := range []string{"x.test:443", "y.test:443", "z.test:443"} {
+		te.fail("a1", failNoResponse, target, at(9*time.Second))
+	}
+	var suspect map[string]any
+	for _, ev := range te.eventsOf(t, "path_state") {
+		if ev.Fields["state"] == "suspect" {
+			suspect = ev.Fields
+		}
+	}
+	if suspect == nil || suspect["evidence_ms"] != 7000.0 {
+		t.Fatalf("suspect %v", suspect)
 	}
 }
 

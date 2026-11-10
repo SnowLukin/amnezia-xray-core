@@ -113,7 +113,7 @@ type reportPath struct {
 	UDPJitterP50Ms     int64                    `json:"udp_jitter_p50_ms"`
 	UDPState           string                   `json:"udp_state"`
 	State              string                   `json:"state"`
-	TTFBP50Ms          int64                    `json:"ttfb_p50_ms"`
+	TTFBP50Ms          int64                    `json:"ttfb_life_p50_ms"`
 	ActiveMs           int64                    `json:"active_ms"`
 	BytesUp            int64                    `json:"bytes_up"`
 	BytesDown          int64                    `json:"bytes_down"`
@@ -427,8 +427,10 @@ func (r *report) count(typ string, f map[string]any) {
 	}
 }
 
-func (r *report) forgetProbeSteps(tag string) {
+func (r *report) forgetPath(tag string) {
 	delete(r.stepCounts, tag)
+	delete(r.evidenceState.suspected, tag)
+	delete(r.evidenceState.downed, tag)
 }
 
 func (r *report) countProbeSteps(f map[string]any) {

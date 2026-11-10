@@ -100,9 +100,18 @@ func (s *service) Pin(_ context.Context, r *PinRequest) (*Result, error) {
 		return result(o, nil, health.NewCommandError("invalid_argument", "pin requires an outbound")), nil
 	}
 	if !o.Pin(r.Balancer, r.Outbound, r.Run) {
-		return result(o, nil, health.NewCommandError("invalid_argument", "pin was not accepted")), nil
+		return result(o, nil, refused(o, "pin", r.Run)), nil
 	}
 	return result(o, nil, nil), nil
+}
+
+// refused tells a request meant for another run of the core from a wrong
+// argument, as ProbeResult does.
+func refused(o *health.Observer, what, run string) error {
+	if run != "" && run != o.Run() {
+		return health.NewCommandError("stale_run", what+" belongs to another run")
+	}
+	return health.NewCommandError("invalid_argument", what+" was not accepted")
 }
 func (s *service) Release(_ context.Context, r *ReleaseRequest) (*Result, error) {
 	o := s.observer
@@ -110,7 +119,7 @@ func (s *service) Release(_ context.Context, r *ReleaseRequest) (*Result, error)
 		return result(o, nil, err), nil
 	}
 	if !o.Release(r.Balancer, r.Run) {
-		return result(o, nil, health.NewCommandError("invalid_argument", "release was not accepted")), nil
+		return result(o, nil, refused(o, "release", r.Run)), nil
 	}
 	return result(o, nil, nil), nil
 }
@@ -202,6 +211,26 @@ func (s *service) ExportProviderSet(_ context.Context, r *ExportProviderSetReque
 		return result(o, nil, err), nil
 	}
 	return result(o, health.ProviderSetData{Seq: seq, Set: raw}, nil), nil
+}
+func (s *service) SetProviderURLs(_ context.Context, r *SetProviderURLsRequest) (*Result, error) {
+	o := s.observer
+	if o == nil {
+		return result(nil, nil, nil), nil
+	}
+	return result(o, nil, o.SetProviderURLs(r.Provider, r.Urls)), nil
+}
+func (s *service) ExportTrace(_ context.Context, r *ExportTraceRequest) (*Result, error) {
+	o := s.observer
+	if o == nil {
+		return result(nil, nil, nil), nil
+	}
+	data, err := o.ExportTraceUpTo(r.After, int(r.MaxBytes))
+	return result(o, data, err), nil
+}
+func (s *service) AdaptiveHeader(context.Context, *AdaptiveHeaderRequest) (*Result, error) {
+	name, value := health.AdaptiveHeader()
+	raw, _ := json.Marshal(map[string]string{"name": name, "value": value})
+	return &Result{Success: true, Run: s.observer.Run(), Data: string(raw)}, nil
 }
 func (s *service) Register(server *grpc.Server) { RegisterHealthServiceServer(server, s) }
 func init() {

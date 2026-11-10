@@ -115,14 +115,13 @@ func TestDecodeDarwinTCPQuality(t *testing.T) {
 	want := tcpQualitySnapshot{
 		rtt:          123 * time.Millisecond,
 		minRTT:       123 * time.Millisecond,
-		loadRTT:      123 * time.Millisecond,
 		rxOutOfOrder: 1 << 32,
 		rxTotal:      1 << 42,
 		txRetransmit: 1 << 33,
 		txTotal:      1 << 40,
 		rxBytes:      1 << 42,
 		txAcked:      1<<40 - 1<<33,
-		present:      qualityHasRTT | qualityHasMinRTT | qualityHasLoadRTT | qualityHasRX | qualityHasTX | qualityHasRXBytes | qualityHasTXAcked,
+		present:      qualityHasRTT | qualityHasMinRTT | qualityHasRX | qualityHasTX | qualityHasRXBytes | qualityHasTXAcked,
 	}
 	if got := decodeDarwinTCPQuality(qualityDarwinFixture()); got != want {
 		t.Fatalf("snapshot = %+v, want %+v", got, want)
@@ -136,7 +135,7 @@ func TestDecodeDarwinTCPQualityShortStructure(t *testing.T) {
 			got := decodeDarwinTCPQuality(b[:n])
 			var want uint8
 			if n >= 48 {
-				want |= qualityHasRTT | qualityHasMinRTT | qualityHasLoadRTT
+				want |= qualityHasRTT | qualityHasMinRTT
 			}
 			if n >= 80 {
 				want |= qualityHasTX | qualityHasTXAcked
@@ -159,7 +158,7 @@ func TestDecodeDarwinTCPQualityShortStructure(t *testing.T) {
 
 func TestDecodeDarwinTCPQualityZeroAndUnits(t *testing.T) {
 	b := make([]byte, 112)
-	want := qualityHasRTT | qualityHasMinRTT | qualityHasLoadRTT | qualityHasRX | qualityHasTX | qualityHasRXBytes | qualityHasTXAcked
+	want := qualityHasRTT | qualityHasMinRTT | qualityHasRX | qualityHasTX | qualityHasRXBytes | qualityHasTXAcked
 	if got := decodeDarwinTCPQuality(b); got.present != want || got.rtt != 0 || got.txRetransmit != 0 {
 		t.Fatalf("known zero values were lost: %+v", got)
 	}

@@ -1,7 +1,6 @@
 package health
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -21,7 +20,7 @@ import (
 // so a trace tells the same site from another but not which one, and two
 // traces cannot be matched.
 const (
-	defaultTraceBytes = 2 << 20
+	defaultTraceBytes = 256 << 10
 	minTraceBytes     = 64 << 10
 	maxTraceBytes     = 2 << 20
 )
@@ -160,45 +159,60 @@ func (r *traceRing) conn(now time.Time, c traceConn) {
 }
 
 // TraceData is what ExportTrace returns: the lines after the number asked
-// for, as JSON lines, the number of the last one, how many lines the ring
-// dropped since it started, and when the trace started by the wall clock.
+// for, as JSON lines, the number of the last one, whether more lines wait
+// past a bound on the size, how many lines the ring dropped since it
+// started, and when the trace started by the wall clock.
 type TraceData struct {
 	Seq     uint64          `json:"seq"`
+	IsMore  bool            `json:"is_more"`
 	Dropped uint64          `json:"dropped"`
 	Started time.Time       `json:"started"`
 	Records json.RawMessage `json:"records"`
 }
 
-func (r *traceRing) export(after uint64) TraceData {
+func (r *traceRing) export(after uint64, maxBytes int) TraceData {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	first := r.seq - uint64(len(r.lines)) + 1
-	var b bytes.Buffer
-	b.WriteByte('[')
-	n := 0
-	for i, line := range r.lines {
-		if first+uint64(i) <= after {
-			continue
-		}
-		if n > 0 {
-			b.WriteByte(',')
-		}
-		b.Write(line)
-		n++
+	if after > r.seq {
+		// The number of an earlier run of the core.
+		after = 0
 	}
-	b.WriteByte(']')
-	return TraceData{Seq: r.seq, Dropped: r.dropped, Started: r.wall, Records: b.Bytes()}
+	lines := r.lines
+	if first := r.seq - uint64(len(lines)) + 1; after >= first {
+		lines = lines[after-first+1:]
+	}
+	n, size := 0, 2
+	for ; n < len(lines) && (maxBytes <= 0 || n == 0 || size+len(lines[n])+1 <= maxBytes); n++ {
+		size += len(lines[n]) + 1
+	}
+	b := make([]byte, 1, size)
+	b[0] = '['
+	for i, line := range lines[:n] {
+		if i > 0 {
+			b = append(b, ',')
+		}
+		b = append(b, line...)
+	}
+	b = append(b, ']')
+	return TraceData{Seq: r.seq - uint64(len(lines)-n), IsMore: n < len(lines), Dropped: r.dropped, Started: r.wall, Records: b}
 }
 
 // ExportTrace returns the records of the trace after the number the host has,
 // to append to its own trace file. The core keeps the ring as it is: the
 // host asks again with the number it got.
 func (o *Observer) ExportTrace(after uint64) (TraceData, error) {
+	return o.ExportTraceUpTo(after, 0)
+}
+
+// ExportTraceUpTo is ExportTrace with records of at most maxBytes, or of
+// one line when that line alone is larger; 0 means no bound. is_more tells
+// the host to ask again at once with the seq it got.
+func (o *Observer) ExportTraceUpTo(after uint64, maxBytes int) (TraceData, error) {
 	r := o.e.trace
 	if r == nil {
 		return TraceData{}, NewCommandError("feature_disabled", "trace is disabled")
 	}
-	return r.export(after), nil
+	return r.export(after, maxBytes), nil
 }
 
 // traceEnd writes how a user connection ended, when the trace keeps them.
@@ -234,7 +248,7 @@ func (o *Observer) traceEnd(t *connTracker, err error) {
 		up: t.bytesWritten.Load(), down: t.bytesRead.Load()})
 }
 
-// isErrorClass tells a short class such as timeout or balancer exhausted
+// isErrorClass tells a short class such as timeout or balancer_exhausted
 // from the text of an error.
 func isErrorClass(s string) bool {
 	if len(s) > 32 {

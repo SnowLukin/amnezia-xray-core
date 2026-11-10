@@ -37,6 +37,14 @@ message ExportProviderSetRequest {
  // data.set is an object valid as providers[].initialAnswer. It contains
  // credentials and belongs only in protected local storage.
 }
+message SetProviderURLsRequest { string provider = 1; repeated string urls = 2; }
+message ExportTraceRequest {
+ uint64 after = 1;
+ // Bound on the bytes of records in one answer, 0 for none; data.is_more
+ // tells to ask again with data.seq.
+ uint32 max_bytes = 2;
+}
+message AdaptiveHeaderRequest {}
 service HealthService {
  rpc Status(StatusRequest) returns (Result) {}
  rpc DrainEvents(DrainEventsRequest) returns (Result) {}
@@ -54,5 +62,9 @@ service HealthService {
  rpc ProbeResult(ProbeResultRequest) returns (Result) {}
  rpc SetProviderHeaders(SetProviderHeadersRequest) returns (Result) {}
  rpc ExportProviderSet(ExportProviderSetRequest) returns (Result) {}
+ rpc SetProviderURLs(SetProviderURLsRequest) returns (Result) {}
+ rpc ExportTrace(ExportTraceRequest) returns (Result) {}
+ // Works without a running observatory.
+ rpc AdaptiveHeader(AdaptiveHeaderRequest) returns (Result) {}
 }
 message Config {}
