@@ -2,6 +2,7 @@ package health
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -328,6 +329,10 @@ func TestV2DirectFeatureDependencies(t *testing.T) {
 	}
 	if validateSelectorFeatures(&SelectorConfig{Features: &SelectorFeatureConfig{DownAudit: v2Bool(true)}, ConfirmWithProbe: ConfirmMode_ALWAYS}, newFeatureSettings(nil)) == nil {
 		t.Fatal("audit accepted without auto")
+	}
+	provider := &ProviderConfig{IsEnabled: v2Bool(true), Tag: "p", Urls: []string{"https://x.test/set"}, Apply: &ProviderApply{Balancers: []string{"auto"}}}
+	if err := (&Config{Providers: []*ProviderConfig{provider}}).ValidateFeatures(); err == nil || !strings.Contains(err.Error(), "tagPrefix") {
+		t.Fatalf("a provider without tagPrefix would own every outbound: %v", err)
 	}
 }
 

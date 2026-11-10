@@ -33,6 +33,9 @@ func validateProviderConfigurations(c *Config) error {
 		if len(a.GetBalancers()) < 1 || len(a.GetBalancers()) > 4 {
 			return fmt.Errorf("%s.apply.balancers requires 1 to 4 tags", where)
 		}
+		if a.GetTagPrefix() == "" {
+			return fmt.Errorf("%s.apply.tagPrefix must not be empty", where)
+		}
 		for i, tag := range a.GetBalancers() {
 			if tag == "" || slices.Contains(a.GetBalancers()[:i], tag) {
 				return fmt.Errorf("%s.apply.balancers requires distinct nonempty tags", where)

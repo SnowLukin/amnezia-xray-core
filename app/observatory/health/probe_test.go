@@ -23,7 +23,7 @@ import (
 
 func probeInstance(t *testing.T) *health.Observer {
 	t.Helper()
-	cfg, err := serial.LoadJSONConfig(strings.NewReader(`{"log":{"loglevel":"none"},"outbounds":[{"tag":"a1","protocol":"freedom","settings":{"finalRules":[{"action":"allow"}]},"selection":{"balancer":"auto","cost":1,"probe":"fixture"}}],"routing":{"balancers":[{"tag":"auto","fallbackTag":"block","strategy":{"type":"leastCost"}}]},"healthObservatory":{"probes":{"profiles":[{"name":"fixture","steps":[{"name":"transport","destinations":["http://127.0.0.1:1/probe"]}]}]}}}`))
+	cfg, err := serial.LoadJSONConfig(strings.NewReader(`{"log":{"loglevel":"none"},"outbounds":[{"tag":"a1","protocol":"freedom","settings":{"finalRules":[{"action":"allow"}]},"selection":{"balancer":"auto","cost":1,"probe":"fixture"}},{"tag":"block","protocol":"blackhole"}],"routing":{"balancers":[{"tag":"auto","fallbackTag":"block","strategy":{"type":"leastCost"}}]},"healthObservatory":{"probes":{"profiles":[{"name":"fixture","steps":[{"name":"transport","destinations":["http://127.0.0.1:1/probe"]}]}]}}}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -173,7 +173,7 @@ func TestCloseEndsRunningProbesWithoutCountingThem(t *testing.T) {
 	}()
 	cfg, err := serial.LoadJSONConfig(strings.NewReader(`{
 		"log": {"loglevel": "none"},
-		"outbounds": [{"tag": "a1", "protocol": "freedom", "settings": {"finalRules": [{"action": "allow"}]}, "selection":{"balancer":"auto","cost":1,"probe":"silent"}}],
+		"outbounds": [{"tag": "a1", "protocol": "freedom", "settings": {"finalRules": [{"action": "allow"}]}, "selection":{"balancer":"auto","cost":1,"probe":"silent"}}, {"tag": "block", "protocol": "blackhole"}],
 		"routing": {"balancers":[{"tag":"auto","fallbackTag":"block","strategy":{"type":"leastCost"}}]},
 		"healthObservatory": {
 			"probes": {"profiles":[{"name":"silent","steps":[{"name":"transport","destinations": ["http://` + ln.Addr().String() + `/silent"], "timeout": "3s", "progressTimeout": "3s"}]}]}}

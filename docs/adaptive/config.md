@@ -183,7 +183,7 @@ healthObservatory.telemetry.report.isEnabled is not supported; include the block
 | `selector` | | | запрещён | состав задаётся через `outbounds[].selection` |
 | `strategy.settings` | object | `{}` | ключи ниже | настройки выбора |
 
-Существование тега `fallbackTag` при загрузке не проверяется. Опечатка проявится только при исчерпании.
+Тег `fallbackTag` должен быть тегом outbound конфига, иначе конфиг отвергается (`balancer auto.fallbackTag: unknown outbound blok`).
 
 Ключи `strategy.settings`:
 
@@ -205,7 +205,7 @@ healthObservatory.telemetry.report.isEnabled is not supported; include the block
 | `downAudit` | object | нет | `{}` | дополнительная проба после сильной пассивной улики |
 | `closePending` | object | включён | `{"isEnabled": false}` | закрыть соединения мёртвого пути, не получившие ни байта |
 | `closeSilent` | object | включён | `{"isEnabled": false}`, `{"after": dur}` | закрыть соединения, замолчавшие после решения |
-| `closeSilent.after` | dur | `8s` | > 0 | сколько ждать тишины после решения |
+| `closeSilent.after` | dur | `8s` | > 0 | сколько ждать тишины после решения; не зависит от `evidence.stalledRequests.timeout` |
 
 `auto` подтверждает пробой только слабые улики, сильная улика (например, ошибка установки соединения) сразу признаёт путь мёртвым. `always` подтверждает всё, `never` решает без проб. `downAudit` требует `confirmWithProbe: auto` и хотя бы одну из улик `dialFailures`, `dialTimeout`, `serverUnverified`.
 
@@ -238,7 +238,7 @@ healthObservatory.telemetry.report.isEnabled is not supported; include the block
 | `onNetworkChange` | object | нет | `{}`, `{"scope": ...}` | попытка возврата сразу после смены сети |
 | `onNetworkChange.scope` | string | `unknown` | `unknown`, `all` | только в незнакомой сети или в любой |
 
-`onNetworkChange` требует `returnToCheaper` и `networkChanges` этого балансировщика. Срабатывает он только при `networkChanges.action: recheck`: с `forget` блок принимается, но попытка возврата после смены сети не запускается. Незнакомой считается сеть, для которой `network.memory` ещё не запомнила выбор; без блока `network.memory` незнакома любая сеть.
+`onNetworkChange` требует `returnToCheaper` и `networkChanges` этого балансировщика с `action: recheck`; с `forget` конфиг отвергается. Незнакомой считается сеть, для которой `network.memory` ещё не запомнила выбор, поэтому `scope: unknown` (умолчание) требует `network.memory`.
 
 #### `startup`
 
@@ -319,9 +319,9 @@ routing.balancers[udp].strategy.settings.fallbackBalancer: cycle udp -> main -> 
 | `steps[].destinations` | array | обязателен | 1..4 URL `http` или `https` с хостом | адреса шага |
 | `steps[].method` | string | `GET` | `GET`, `HEAD` | метод запроса |
 | `steps[].expectedStatuses` | array int | любой 2xx | 100..599 | допустимые коды ответа |
-| `steps[].minBytes` | int | `0`, чтение до 64 КиБ | >= 0; с `HEAD` только 0 | сколько байт тела нужно получить |
-| `steps[].timeout` | dur | `8s` | > 0, выше 30s обрезается | предел шага |
-| `steps[].progressTimeout` | dur | `4s` | > 0, выше 30s обрезается | предел паузы без новых байт |
+| `steps[].minBytes` | int | `0`, чтение до 64 КиБ | 0..1048576; с `HEAD` только 0 | сколько байт тела нужно получить |
+| `steps[].timeout` | dur | `8s` | > 0, до 30s | предел шага |
+| `steps[].progressTimeout` | dur | `4s` | > 0, до 30s | предел паузы без новых байт |
 | `steps[].isOptional` | bool | `false` | | необязательный шаг |
 | `stepProfiles` | object | нет | `{}` | разрешает несколько шагов и необязательные шаги |
 
@@ -333,12 +333,14 @@ routing.balancers[udp].strategy.settings.fallbackBalancer: cycle udp -> main -> 
 
 | Ключ | Тип | Умолчание | Допустимые значения | Смысл |
 |---|---|---|---|---|
-| `maxConcurrent` | int | `1` | >= 1, выше 8 обрезается | проб одновременно |
-| `perMinute` | int | `12` | >= 1 | проб в минуту на все пути |
-| `perServerNamePerMinute` | int | `3` | >= 1 | проб в минуту на один адрес сервера |
-| `hostPerMinute` | int | `4` | 1..max(`perMinute`/2, 1) | проб в минуту по запросам хоста |
+| `maxConcurrent` | int | `1` | 1..8 | проб одновременно |
+| `perMinute` | int | `12` | 1..60 | проб в минуту на все пути |
+| `perServerNamePerMinute` | int | `3` | 1..10 | проб в минуту на один адрес сервера |
+| `hostPerMinute` | int | min(4, max(`perMinute`/2, 1)) | 1..max(`perMinute`/2, 1) | проб в минуту по запросам хоста |
 
-`hostPerMinute` выше половины `perMinute` отвергается (`hostPerMinute must not exceed half of perMinute`). Если `hostPerMinute` не задан, умолчание 4 молча урезается до половины `perMinute`: при `perMinute: 6` хосту достанется 3 пробы в минуту.
+Хосту достаётся не больше половины `perMinute`: остальное остаётся на поиск отказов. Явное значение выше половины отвергается (`hostPerMinute must not exceed half of perMinute`), умолчание следует той же формуле: при `perMinute: 6` оно равно 3.
+
+Все пробы, кроме проверки сети и запроса меток, проходят через эти лимиты, поэтому они и задают потолок нагрузки на серверы и адреса проб, какими бы короткими ни были интервалы `candidates.recheckInterval`, `returnToCheaper.interval` и `userPresent.minInterval`.
 
 #### `candidates`
 
@@ -357,8 +359,8 @@ routing.balancers[udp].strategy.settings.fallbackBalancer: cycle udp -> main -> 
 
 | Ключ | Тип | Умолчание | Допустимые значения | Смысл |
 |---|---|---|---|---|
-| `maxOutbounds` | int | `8` | >= 1, выше 16 обрезается | сколько outbound хост может назвать в одном запросе |
-| `timeout` | dur | `2m` | > 0, выше 10m обрезается | сколько запрос ждёт результата |
+| `maxOutbounds` | int | `8` | 1..16 | сколько outbound хост может назвать в одном запросе |
+| `timeout` | dur | `2m` | > 0, до 10m | сколько запрос ждёт результата |
 
 `requests.maxOutbounds` не связан с `providers[].apply.maxOutbounds`, размером набора провайдера.
 
@@ -369,12 +371,12 @@ UDP-проба по STUN: измеряет доступность и задер�
 | Ключ | Тип | Умолчание | Допустимые значения | Смысл |
 |---|---|---|---|---|
 | `destinations` | array | обязателен | 1..4 адреса `host:port`, порт 1..65535 | STUN-серверы |
-| `requests` | int | `5` | >= 1 | пакетов на пробу |
-| `interval` | dur | `200ms` | > 0 | пауза между пакетами |
-| `timeout` | dur | `2s` | > 0 | ожидание ответов после последнего пакета |
-| `perHour` | int | `6` | >= 1 | UDP-проб в час |
+| `requests` | int | `5` | 1..32 | пакетов на пробу |
+| `interval` | dur | `200ms` | > 0, до 2s | пауза между пакетами |
+| `timeout` | dur | `2s` | > 0, до 10s | ожидание ответов после последнего пакета |
+| `perHour` | int | `6` | 1..60 | UDP-проб в час |
 
-Проба одного адреса длится `requests × interval + timeout`. Запрос хоста с `isUdp: true` требует этого блока.
+Проба одного адреса длится `requests × interval + timeout`, не дольше 74 секунд. Запрос хоста с `isUdp: true` требует этого блока.
 
 ### 3.6 `healthObservatory.network`
 
@@ -384,11 +386,11 @@ UDP-проба по STUN: измеряет доступность и задер�
 
 | Ключ | Тип | Умолчание | Допустимые значения | Смысл |
 |---|---|---|---|---|
-| `outbound` | string | обязателен | тег outbound | через что идёт проверка, обычно `freedom` |
+| `outbound` | string | обязателен | тег outbound конфига | через что идёт проверка, обычно `freedom` |
 | `destinations` | array | обязателен | 1..4 URL `http(s)` без логина и `#` | адреса проверки |
-| `timeout` | dur | `4s` | > 0, выше 30s обрезается | предел проверки |
+| `timeout` | dur | `4s` | > 0, до 30s | предел проверки |
 
-Адреса опрашиваются параллельно, проверка проходит по первому успешному HTTP-ответу. Если проверка падает, а путь при этом работает, ядро перестаёт ей верить до следующей смены сети (`connectivity_ignored`): для этого три неудачные проверки подряд должны каждая прийти после успеха трафика, пробы или свидетеля. Сеть, которая на миг появляется и снова пропадает, проверку не выключает. Существование тега `outbound` не проверяется: с опечаткой каждая проверка падает, и после каждой смены сети решения стоят на паузе до минуты.
+Адреса опрашиваются параллельно, проверка проходит по первому успешному HTTP-ответу. Если проверка падает, а путь при этом работает, ядро перестаёт ей верить до следующей смены сети (`connectivity_ignored`): для этого три неудачные проверки подряд должны каждая прийти после успеха трафика, пробы или свидетеля. Сеть, которая на миг появляется и снова пропадает, проверку не выключает.
 
 #### `witnesses`
 
@@ -396,7 +398,7 @@ UDP-проба по STUN: измеряет доступность и задер�
 |---|---|---|---|---|
 | `outbounds` | array | обязателен | непустой, без пустых строк | префиксы тегов outbound-свидетелей |
 
-Успешное соединение через outbound, тег которого начинается с одного из префиксов, доказывает, что сеть есть: снимает паузу после `NetworkLost` хоста или провала проверки. Отказ свидетеля сеть не роняет. Свидетели работают и без `connectivity`. Значения сравниваются как префиксы: `"d"` совпадёт с `direct` и с `de-1`. Совпадение хоть с одним тегом при загрузке не проверяется.
+Успешное соединение через outbound, тег которого начинается с одного из префиксов, доказывает, что сеть есть: снимает паузу после `NetworkLost` хоста или провала проверки. Отказ свидетеля сеть не роняет. Свидетели работают и без `connectivity`. Значения сравниваются как префиксы: `"d"` совпадёт с `direct` и с `de-1`. Каждый префикс должен совпасть хотя бы с одним тегом outbound конфига или пересекаться с `tagPrefix` провайдера, иначе конфиг отвергается (`witnesses.outbounds: dir matches no outbound`).
 
 #### `memory`
 
@@ -404,7 +406,7 @@ UDP-проба по STUN: измеряет доступность и задер�
 
 | Ключ | Тип | Умолчание | Допустимые значения | Смысл |
 |---|---|---|---|---|
-| `maxNetworks` | int | `16` | >= 1, выше 64 обрезается | сколько сетей помнить |
+| `maxNetworks` | int | `16` | 1..64 | сколько сетей помнить |
 
 Тем же числом ограничен кеш меток `labelRequest`. Без блока `memory` кеш меток всё равно есть и имеет размер 16; изменить его можно только вместе с включением памяти решений.
 
@@ -418,13 +420,13 @@ UDP-проба по STUN: измеряет доступность и задер�
 
 | Ключ | Тип | Умолчание | Допустимые значения | Смысл |
 |---|---|---|---|---|
-| `outbound` | string | обязателен | тег outbound | через что идёт запрос |
+| `outbound` | string | обязателен | тег outbound конфига | через что идёт запрос |
 | `destinations` | array | обязателен | 1..4 URL `http(s)` | адреса, по очереди до первого успеха |
 | `labels` | map | обязателен | 1..6, имя метки → имя заголовка ответа | какие заголовки читать |
-| `timeout` | dur | `4s` | > 0 | предел на каждый адрес |
-| `requestsPerHour` | int | `6` | >= 1 | запросов в час |
+| `timeout` | dur | `4s` | > 0, до 30s | предел на каждый адрес |
+| `requestsPerHour` | int | `6` | 1..60 | запросов в час |
 
-Запрос идёт асинхронно после успеха пользовательского трафика или свидетеля в текущей сети. После отказа допускается один повтор через 10 минут. Метки сети на выбор не влияют. Существование тега `outbound` не проверяется.
+Запрос идёт асинхронно после успеха пользовательского трафика или свидетеля в текущей сети. После отказа допускается один повтор через 10 минут. Метки сети на выбор не влияют.
 
 ### 3.7 `healthObservatory.host`
 
@@ -453,8 +455,8 @@ UDP-проба по STUN: измеряет доступность и задер�
 
 | Блок | Ключ | Тип | Умолчание | Допустимые значения | Смысл |
 |---|---|---|---|---|---|
-| `events` | `maxEvents` | int | `1000` | >= 1, выше 4096 обрезается | размер журнала событий в записях |
-| `events` | `maxBytes` | int, байты | `65536` | > 0, выше 262144 обрезается | размер журнала в байтах |
+| `events` | `maxEvents` | int | `1000` | 1..4096 | размер журнала событий в записях |
+| `events` | `maxBytes` | int, байты | `65536` | 1..262144 | размер журнала в байтах |
 | `report` | `interval` | dur | `24h` | > 0 | предельная длина окна отчёта, когда в окне были решения |
 | `report` | `quietSampleFraction` | number | `0` | 0..1 | доля сессий без решений, для которых тоже строится отчёт |
 | `report.sessionLabels` | `labels` | map | нет | до 8 меток | метки сессии в отчёте |
@@ -484,7 +486,7 @@ UDP-проба по STUN: измеряет доступность и задер�
 | `urls` | array | обязателен | 1..4 URL; `https`, `http` только с `isPlainHttpAllowed`; без логина и `#` | зеркала ручки, перебираются по порядку |
 | `method` | string | `POST` | `GET`, `POST` (без учёта регистра) | `GET` для статического файла |
 | `headers` | map | нет | имя по правилам HTTP, не длиннее 256 байт; значение без CR, LF, NUL | заголовки запроса, обычно токен |
-| `via` | array | пусто | непустые теги outbound или балансировщиков | дороги к бэку, по порядку |
+| `via` | array | пусто | теги outbound или балансировщиков конфига | дороги к бэку, по порядку |
 | `probeOnlyRoads` | object | нет | только `{}` | проверочные дороги исчерпанного балансировщика |
 | `timeout` | dur | `10s` | > 0 | предел одной попытки |
 | `isPlainHttpAllowed` | bool | `false` | | разрешить `http://` в `urls` |
@@ -498,7 +500,7 @@ UDP-проба по STUN: измеряет доступность и задер�
 
 Заголовки транспорта (`Host`, `Content-Length`, `Content-Type`, `Transfer-Encoding`, `Connection`, `Keep-Alive`, `TE`, `Trailer`, `Upgrade`, `Accept`, `Proxy-*`) и `Xray-Adaptive` в `headers` запрещены в любом регистре. Число заголовков и длина значений в конфиге не ограничены.
 
-`via` перебирается по порядку, внутри каждой дороги перебираются зеркала `urls`. Тег балансировщика в `via` означает его текущий выбор; исчерпанный балансировщик или его мёртвый текущий путь пропускаются. Пустой `via` означает обычную маршрутизацию ядра по `routing.rules`. Существование тегов `via` при загрузке не проверяется: с опечаткой каждый запрос через эту дорогу заканчивается `no such outbound`. Дороги к бэку держите без правил маршрутизации пользовательского трафика; ядро это не проверяет.
+`via` перебирается по порядку, внутри каждой дороги перебираются зеркала `urls`. Тег балансировщика в `via` означает его текущий выбор; исчерпанный балансировщик или его мёртвый текущий путь пропускаются. Пустой `via` означает обычную маршрутизацию ядра по `routing.rules`. Тег `via`, которого нет среди outbound и балансировщиков конфига, отвергает конфиг; если хост удалил outbound через API, запрос через эту дорогу заканчивается `no such outbound`, и ядро идёт к следующей. Дороги к бэку держите без правил маршрутизации пользовательского трафика; ядро это не проверяет.
 
 `probeOnlyRoads: {}` включает проверочные дороги. Когда очередной `via` указывает на исчерпанный балансировщик или его текущий путь мёртв, ядро пробует до двух его проверенных участников `isProbeOnly`. Им нужен `probes.candidates`.
 
@@ -513,7 +515,7 @@ UDP-проба по STUN: измеряет доступность и задер�
 | `exhausted` | вкл. | `delay`: `"0s..10s"` | у балансировщика не осталось пригодных путей; после неудачных обновлений верхняя граница `delay` удваивается за каждое, до 1 мин |
 | `leaseRenewal` | вкл. | `renewAtFraction`: `0.5`, `urgentAtFraction`: max(0.8, `renewAtFraction`) | продление аренды на доле её срока; с `urgentAtFraction` запрос срочный |
 | `backendSchedule` | вкл. | | запрос через `nextRefreshIn`, который прислал бэк |
-| `periodic` | блоком | `interval`: `"96m..144m"` | запрос по таймеру |
+| `periodic` | блоком | `interval`: `"96m..144m"`, левая граница > 0 | запрос по таймеру |
 | `minHealthy` | блоком | `outbounds`: `2`, `delay`: `"0s..30s"` | здоровых путей меньше `outbounds` |
 | `whenCostAbove` | блоком | `cost` обязателен, `after`: `"15m..25m"` | цена текущего пути выше `cost` дольше `after` |
 | `maxAge` | блоком | `age`: `6h` | набор старше `age` |
@@ -521,7 +523,7 @@ UDP-проба по STUN: измеряет доступность и задер�
 
 `renewAtFraction` в (0, 0.95], `urgentAtFraction` в [`renewAtFraction`, 0.95]. `minHealthy.outbounds` >= 1, `whenCostAbove.cost` > 0, `maxAge.age` > 0. Промежутки >= 0.
 
-`networkChange.mode` принимает `unknownNotCheapest` (незнакомая сеть, и основной балансировщик не на самом дешёвом пути), `unknown` (любая незнакомая сеть) и `any` (любая смена). Незнакомая сеть определяется по `network.memory`, как в разделе 3.3: без памяти незнакома каждая сеть.
+`networkChange.mode` принимает `unknownNotCheapest` (незнакомая сеть, и основной балансировщик не на самом дешёвом пути), `unknown` (любая незнакомая сеть) и `any` (любая смена). Незнакомая сеть определяется по `network.memory`, поэтому `unknownNotCheapest` и `unknown` требуют `network.memory`.
 
 `leaseRenewal: {"isEnabled": false}` выключает запросы продления, но аренды всё равно истекают.
 
@@ -531,17 +533,17 @@ UDP-проба по STUN: измеряет доступность и задер�
 |---|---|---|---|---|
 | `minInterval` | dur | `5m` | > 0 | минимальная пауза между запросами |
 | `urgentMinInterval` | dur | `30s` | > 0 | пауза для срочных поводов: исчерпание, срочное продление, ручной запрос хоста |
-| `maxRefreshesPerHour` | int | `6` | >= 1 | запросов в час на провайдер по всем поводам |
+| `maxRefreshesPerHour` | int | `6` | 1..60 | запросов в час на провайдер по всем поводам |
 
-Ручной запрос хоста (`RequestProviderRefresh`) соблюдает те же ограничения. Кроме них действуют встроенные ограничители: простой устройства, пин, пропажа сети, нехватка памяти, `Retry-After` бэка и растущая пауза после неудач.
+Ручной запрос хоста (`RequestProviderRefresh`) соблюдает те же ограничения. Потолок нагрузки на бэк задаёт `maxRefreshesPerHour`: он считает обновления по всем поводам, включая срочные, поэтому короткие `minInterval` и `urgentMinInterval` меняют только то, как плотно обновления идут внутри часа. Кроме них действуют встроенные ограничители: простой устройства, пин, пропажа сети, нехватка памяти, `Retry-After` бэка и растущая пауза после неудач.
 
 #### `apply`
 
 | Ключ | Тип | Умолчание | Допустимые значения | Смысл |
 |---|---|---|---|---|
 | `balancers` | array | обязателен | 1..4 разных тега балансировщиков `leastCost` | куда кладётся набор; первый основной |
-| `tagPrefix` | string | обязателен | непустой; не перекрывается с префиксами других провайдеров | префикс тегов outbound из набора |
-| `drainTimeout` | dur | `5m` | > 0, выше 30m обрезается | сколько доживают соединения удалённого или заменённого outbound |
+| `tagPrefix` | string | обязателен | непустой; не перекрывается с префиксами других провайдеров; под него попадают только outbound конфига с `selection` в его `apply.balancers` | префикс тегов outbound из набора |
+| `drainTimeout` | dur | `5m` | > 0, до 30m | сколько доживают соединения удалённого или заменённого outbound |
 | `maxOutbounds` | int | `64` | 1..128 | размер набора; ответ ограничен 4 КиБ на outbound |
 | `allowedProtocols` | array | `vless`, `vmess`, `trojan`, `shadowsocks`, `wireguard`, `hysteria`, `socks`, `http` | имена протоколов в нижнем регистре | какие протоколы может прислать бэк |
 | `acceptedHeaders` | array | `["Authorization"]` | имена заголовков; `[]` запрещает ответу менять заголовки | какие заголовки запроса ответ может заменить |
@@ -672,6 +674,9 @@ UDP-проба по STUN: измеряет доступность и задер�
 | `startup.pin` | `host.pinning` | `balancer auto.startup.pin requires healthObservatory.host.pinning` |
 | `startup.pin` | `outbound` | `balancer auto: leastCost.settings.startup.pin.outbound is required` |
 | `returnToCheaper.onNetworkChange` | `returnToCheaper` и `networkChanges` | `balancer auto: leastCost.settings.returnToCheaper.onNetworkChange requires returnToCheaper and networkChanges` |
+| `returnToCheaper.onNetworkChange` | `networkChanges.action: recheck` | `balancer auto: leastCost.settings.returnToCheaper.onNetworkChange requires networkChanges.action:recheck` |
+| `returnToCheaper.onNetworkChange` со `scope: unknown` | `network.memory` | `balancer auto.returnToCheaper.onNetworkChange.scope:unknown requires healthObservatory.network.memory` |
+| `fallbackTag` балансировщика `leastCost` | outbound конфига с этим тегом | `balancer auto.fallbackTag: unknown outbound blok` |
 | `failover.downAudit` | `confirmWithProbe: auto` | `balancer auto: leastCost.settings.failover.downAudit requires failover.confirmWithProbe:auto` |
 | `failover.downAudit` | одна из улик `dialFailures`, `dialTimeout`, `serverUnverified` | `balancer auto.failover.downAudit requires an enabled path-level detector` |
 | `evidence.loneFailureProbe` | то же | `healthObservatory.evidence.loneFailureProbe requires an enabled path-level detector: dialFailures, dialTimeout or serverUnverified` |
@@ -679,7 +684,9 @@ UDP-проба по STUN: измеряет доступность и задер�
 | `steps[].isOptional` | `probes.stepProfiles` | `healthObservatory.probes.profiles[0].steps[1].isOptional requires healthObservatory.probes.stepProfiles` |
 | `probes.limits.hostPerMinute` | не больше половины `perMinute` | `healthObservatory.probes.limits.hostPerMinute must not exceed half of perMinute` |
 | `network.connectivity` | `outbound` и `destinations` | `healthObservatory.network.connectivity.outbound is required` |
+| `network.connectivity.outbound`, `network.labelRequest.outbound` | outbound конфига с этим тегом | `healthObservatory.network.connectivity.outbound: unknown outbound drect` |
 | `network.witnesses` | непустой `outbounds` | `healthObservatory.network.witnesses.outbounds must not be empty` |
+| `network.witnesses.outbounds[]` | совпадение с тегом outbound конфига или с `tagPrefix` провайдера | `healthObservatory.network.witnesses.outbounds: dir matches no outbound` |
 | `network.labelRequest` | `outbound`, `destinations`, `labels` | `healthObservatory.network.labelRequest requires outbound, destinations and labels` |
 | `telemetry.report.sessionLabels`, `quietSampleFraction` > 0 | `telemetry.report` | `healthObservatory.telemetry.report.sessionLabels and quietSampleFraction require healthObservatory.telemetry.report` |
 | `telemetry.census` | `telemetry.report` | `healthObservatory.telemetry.census requires healthObservatory.telemetry.report` |
@@ -690,6 +697,10 @@ UDP-проба по STUN: измеряет доступность и задер�
 | `providers[].triggers.whenCostAbove` | `cost` | `healthObservatory.providers[fresh].triggers.whenCostAbove.cost is required` |
 | `providers[].urls` с `http://` | `isPlainHttpAllowed: true` | `healthObservatory.providers[fresh].urls[0] must be https or set isPlainHttpAllowed` |
 | `providers[].apply.tagPrefix` | не перекрывается с префиксом другого провайдера | `healthObservatory.providers.apply.tagPrefix overlaps` |
+| `providers[].apply.tagPrefix` | под префикс попадают только outbound с `selection` в `apply.balancers` этого провайдера | `healthObservatory.providers[fresh]: outbound block is under apply.tagPrefix b and the provider would remove it` |
+| `providers[].via[]` | outbound или балансировщик конфига | `healthObservatory.providers[fresh].via: unknown outbound or balancer drect` |
+| `providers[].triggers.networkChange` с `mode` `unknownNotCheapest` или `unknown` | `network.memory` | `healthObservatory.providers[fresh].triggers.networkChange.mode:unknownNotCheapest requires healthObservatory.network.memory` |
+| шаблоны `i1`-`i5` outbound и inbound WireGuard | теги `b`, `t`, `r`, `rc`, `rd`, `d`, `ds`, `dz` библиотеки AmneziaWG | `invalid AmneziaWG i1 > unknown tag <c>` |
 | `healthObservatory` | отсутствие `observatory` и `burstObservatory` | `healthObservatory cannot be used together with observatory or burstObservatory` |
 
 Ошибки ссылок адресуются тегом outbound или балансировщика из конфига; в таблице показаны теги из примеров.
@@ -743,94 +754,87 @@ UDP-проба по STUN: измеряет доступность и задер�
 
 ## 5. Ограничения и потолки
 
-Значение вне диапазона из столбца "Ошибка" отвергает конфиг. Значение выше потолка из столбца "Обрезается" принимается без ошибки и молча заменяется потолком; что ядро работает с другим значением, видно только по поведению и отчёту.
+Значение вне диапазона отвергает конфиг целиком, молча ничего не обрезается. Ошибка называет ключ и диапазон: `healthObservatory.probes.limits.perMinute must be from 1 to 60`, `... must be at least 10s`. `> 0` у длительности здесь означает от 1 нс.
 
-| Ключ | Ошибка вне | Обрезается до |
-|---|---|---|
-| тег outbound с `selection`, `groups[].name`, `providers[].tag` | до 128 байт, непустой, уникальный | |
-| `selection.cost`, `groups[].cost` | > 0, конечное | |
-| `labels` пути и группы, итог у члена группы | до 6 меток; имя 1..24 `[a-z0-9_]`, значение 1..32 `[A-Za-z0-9._:-]`, не IP-адрес | |
-| `report.sessionLabels.labels` | до 8 меток | |
-| `groups[].failedInRowToLeave` | 1..16 | |
-| цепочка `fallbackBalancer` | до 4 балансировщиков, без циклов | |
-| `failover.closeSilent.after`, `returnToCheaper.interval` | > 0 | |
-| `returnToCheaper.minHoldTime`, `startup.pin.timeout` | >= 0 | |
-| `speedLimit.uplink`, `downlink` | 0 или >= 64 kbps | |
-| `evidence.*.timeout`, `partialStalls.maxAge`, `loneFailureProbe.after` | > 0 | |
-| `profiles[].steps` | 1..4 | |
-| `steps[].destinations`, `connectivity.destinations`, `labelRequest.destinations`, `providers[].urls` | 1..4 | |
-| `steps[].expectedStatuses` | 100..599 | |
-| `steps[].minBytes` | >= 0, с `HEAD` только 0 | |
-| `steps[].timeout`, `progressTimeout` | > 0 | 30s |
-| `limits.maxConcurrent` | >= 1 | 8 |
-| `limits.perMinute`, `perServerNamePerMinute` | >= 1 | |
-| `limits.hostPerMinute` | 1..max(`perMinute`/2, 1) | |
-| `candidates.keepVerified` | 1..4 | |
-| `candidates.recheckInterval` | > 0 | |
-| `requests.maxOutbounds` | >= 1 | 16 |
-| `requests.timeout` | > 0 | 10m |
-| `udp.destinations` | 1..4 `host:port`, порт 1..65535 | |
-| `udp.requests`, `udp.perHour` | >= 1 | |
-| `udp.interval`, `udp.timeout` | > 0 | |
-| `connectivity.timeout` | > 0 | 30s |
-| `memory.maxNetworks` | >= 1 | 64 |
-| `labelRequest.labels` | 1..6 | |
-| `labelRequest.timeout`, `requestsPerHour` | > 0, >= 1 | |
-| `userPresent.freshness`, `minInterval` | > 0 | |
-| `tunnelSleep.afterLastUse` | >= 10s | |
-| `closeUnchosenIdle.after` | 10s..10m | |
-| `events.maxEvents` | >= 1 | 4096 |
-| `events.maxBytes` | > 0 | 262144 |
-| `report.interval` | > 0 | |
-| `report.quietSampleFraction` | 0..1 | |
-| `census.sampleFraction` | (0, 1] | |
-| `census.startAfter` | > 0 | |
-| `trace.maxBytes` | 65536..2097152 | |
-| `providers[].baseVersion` | до 256 байт | |
-| `providers[].timeout`, `limits.minInterval`, `limits.urgentMinInterval`, `triggers.maxAge.age` | > 0 | |
-| `providers[].limits.maxRefreshesPerHour`, `triggers.minHealthy.outbounds` | >= 1 | |
-| `providers[].triggers.*` промежутки | >= 0, левая граница не больше правой | |
-| `triggers.leaseRenewal.renewAtFraction` | (0, 0.95] | |
-| `triggers.leaseRenewal.urgentAtFraction` | [`renewAtFraction`, 0.95] | |
-| `triggers.whenCostAbove.cost` | > 0, конечное | |
-| `apply.balancers` | 1..4 разных непустых тега | |
-| `apply.maxOutbounds` | 1..128 | |
-| `apply.drainTimeout` | > 0 | 30m |
-| `apply.tagPrefix` | непустой, без перекрытия с другими провайдерами | |
+Потолки ограничивают то, что одна ошибка в конфиге, разосланном всему парку, может сделать с бэком, серверами, трафиком и памятью клиента: частоту запросов провайдера и проб, размер и длительность UDP-пробы, объём чтения пробы, размер журналов.
 
-Счётчик без верхнего предела при значении 0 даёт ошибку вида `... must be positive (maximum 0)`. `maximum 0` здесь означает, что потолка нет.
+| Ключ | Допустимо |
+|---|---|
+| тег outbound с `selection`, `groups[].name`, `providers[].tag` | до 128 байт, непустой, уникальный |
+| `selection.cost`, `groups[].cost` | > 0, конечное |
+| `labels` пути и группы, итог у члена группы | до 6 меток; имя 1..24 `[a-z0-9_]`, значение 1..32 `[A-Za-z0-9._:-]`, не IP-адрес |
+| `report.sessionLabels.labels` | до 8 меток |
+| `groups[].failedInRowToLeave` | 1..16 |
+| цепочка `fallbackBalancer` | до 4 балансировщиков, без циклов |
+| `failover.closeSilent.after`, `returnToCheaper.interval` | > 0 |
+| `returnToCheaper.minHoldTime`, `startup.pin.timeout` | >= 0 |
+| `speedLimit.uplink`, `downlink` | 0 или >= 64 kbps |
+| `evidence.*.timeout`, `partialStalls.maxAge`, `loneFailureProbe.after` | > 0 |
+| `profiles[].steps` | 1..4 |
+| `steps[].destinations`, `connectivity.destinations`, `labelRequest.destinations`, `providers[].urls` | 1..4 |
+| `steps[].expectedStatuses` | 100..599 |
+| `steps[].minBytes` | 0..1048576, с `HEAD` только 0 |
+| `steps[].timeout`, `progressTimeout` | > 0, до 30s |
+| `limits.maxConcurrent` | 1..8 |
+| `limits.perMinute` | 1..60 |
+| `limits.perServerNamePerMinute` | 1..10 |
+| `limits.hostPerMinute` | 1..max(`perMinute`/2, 1) |
+| `candidates.keepVerified` | 1..4 |
+| `candidates.recheckInterval` | > 0 |
+| `requests.maxOutbounds` | 1..16 |
+| `requests.timeout` | > 0, до 10m |
+| `udp.destinations` | 1..4 `host:port`, порт 1..65535 |
+| `udp.requests` | 1..32 |
+| `udp.interval` | > 0, до 2s |
+| `udp.timeout` | > 0, до 10s |
+| `udp.perHour` | 1..60 |
+| `connectivity.timeout`, `labelRequest.timeout` | > 0, до 30s |
+| `memory.maxNetworks` | 1..64 |
+| `labelRequest.labels` | 1..6 |
+| `labelRequest.requestsPerHour` | 1..60 |
+| `userPresent.freshness`, `minInterval` | > 0 |
+| `tunnelSleep.afterLastUse` | >= 10s |
+| `closeUnchosenIdle.after` | 10s..10m |
+| `events.maxEvents` | 1..4096 |
+| `events.maxBytes` | 1..262144 |
+| `report.interval` | > 0 |
+| `report.quietSampleFraction` | 0..1 |
+| `census.sampleFraction` | (0, 1] |
+| `census.startAfter` | > 0 |
+| `trace.maxBytes` | 65536..2097152 |
+| `providers[].baseVersion` | до 256 байт |
+| `providers[].timeout`, `limits.minInterval`, `limits.urgentMinInterval`, `triggers.maxAge.age` | > 0 |
+| `providers[].limits.maxRefreshesPerHour` | 1..60 |
+| `providers[].triggers.minHealthy.outbounds` | >= 1 |
+| `providers[].triggers.periodic.interval` | левая граница > 0 |
+| остальные промежутки `providers[].triggers.*` | >= 0, левая граница не больше правой |
+| `triggers.leaseRenewal.renewAtFraction` | (0, 0.95] |
+| `triggers.leaseRenewal.urgentAtFraction` | [`renewAtFraction`, 0.95] |
+| `triggers.whenCostAbove.cost` | > 0, конечное |
+| `apply.balancers` | 1..4 разных непустых тега |
+| `apply.maxOutbounds` | 1..128 |
+| `apply.drainTimeout` | > 0, до 30m |
+| `apply.tagPrefix` | непустой, без перекрытия с другими провайдерами и с outbound конфига вне его набора |
 
 ### Что код не ограничивает
 
-Перечисленные значения принимаются любыми, пока они положительные. Одна опечатка в конфиге, разосланном всему парку, умножает нагрузку на бэк, серверы или трафик пользователя. Столбец "Ориентир" не проверяется кодом, это безопасный предел для генератора.
+Перечисленные значения принимаются любыми в пределах таблицы выше. Столбец "Ориентир" кодом не проверяется, это разумный выбор для генератора.
 
 | Ключ | Чего нет | Чем опасно | Ориентир |
 |---|---|---|---|
-| `providers[].limits.minInterval`, `urgentMinInterval` | нижнего предела | `"5s"` вместо `"5m"` вместе с большим `maxRefreshesPerHour` даёт запрос к бэку каждые несколько секунд с каждого клиента | `minInterval` >= 1m, `urgentMinInterval` >= 10s |
-| `providers[].limits.maxRefreshesPerHour` | верхнего предела | то же | <= 12 |
-| `providers[].triggers.periodic.interval` | запрета `"0s"` | запрос по таймеру сразу и снова, как только пустят `minInterval` и `maxRefreshesPerHour` | >= 30m |
-| `providers[].triggers.minHealthy.outbounds` | верхнего предела | значение больше размера набора держит повод включённым постоянно | не больше числа путей в наборе |
-| `providers[].timeout` | обоих пределов | долгий таймаут держит соединения к перегруженному бэку; таймауты и сетевые ошибки не ограничивают перебор всех `via` и зеркал | 8s..10s |
-| `probes.limits.perMinute`, `perServerNamePerMinute` | верхнего предела | сотни проб в минуту к серверу и адресу проверки | `perMinute` <= 60, `perServerNamePerMinute` <= 10 |
-| `steps[].minBytes` | верхнего предела, кроме 30-секундного предела шага | мегабайты мобильного трафика на каждую пробу, до 4 шагов по 4 адреса | <= 1 МиБ |
-| `probes.udp.requests` | верхнего предела | ядро заранее выделяет память на каждый пакет; миллионы пакетов убивают процесс с лимитом памяти (iOS Network Extension) | <= 32 |
-| `probes.udp.interval`, `udp.timeout` | верхнего и нижнего предела | проба длится `requests × interval + timeout` без общего дедлайна | `interval` <= 2s, `timeout` <= 10s |
-| `probes.udp.perHour` | верхнего предела | поток UDP-проб | <= 60 |
-| `probes.candidates.recheckInterval` | нижнего предела | постоянные пробы проверочных путей | >= 5m |
-| `network.labelRequest.requestsPerHour` | верхнего предела | поток запросов к серверу меток | <= 12 |
-| `host.userPresent.minInterval` | нижнего предела | проба на каждую разблокировку экрана | >= 30m |
+| `providers[].limits.minInterval`, `urgentMinInterval` | нижнего предела | обновления идут плотно в начале часа, пока не кончится `maxRefreshesPerHour` | `minInterval` >= 1m, `urgentMinInterval` >= 10s |
+| `providers[].triggers.minHealthy.outbounds` | верхнего предела | значение больше размера набора держит повод включённым постоянно, в пределах `maxRefreshesPerHour` | не больше числа путей в наборе |
+| `providers[].timeout` | обоих пределов | долгий таймаут держит соединения к перегруженному бэку | 8s..10s |
 | `evidence.*.timeout`, `failover.closeSilent.after` | нижнего предела | `"1ms"` признаёт мёртвыми рабочие пути и рвёт живые соединения | не ниже умолчаний |
-| `returnToCheaper.interval` | нижнего предела | частые пробы дешёвых путей | >= 10m |
+| `candidates.recheckInterval`, `returnToCheaper.interval`, `userPresent.minInterval` | нижнего предела | пробы чаще нужного, в пределах `probes.limits` | не ниже умолчаний |
 | `providers[].headers` | предела числа и длины | большой запрос | только нужный токен |
 | `apply.allowedProtocols` | проверки имён | опечатка или верхний регистр молча отклоняют всю выдачу этого протокола | имена в нижнем регистре |
-| `fallbackTag`, `connectivity.outbound`, `labelRequest.outbound`, `providers[].via`, `witnesses.outbounds` | проверки, что тег существует | опечатка проявляется только в работе: при исчерпании, на каждой проверке сети или на каждом запросе провайдера | сверяйте с тегами outbound при генерации |
-| `apply.tagPrefix` | проверки пересечения с тегами конфига | раздел 6 | |
 
 ## 6. Ловушки
 
 ### `apply.tagPrefix` захватывает outbound конфига
 
-Провайдер считает своими все outbound, чей тег начинается с `tagPrefix`, включая outbound базового конфига. До первого ответа они считаются набором провайдера, а после применения ответа outbound с префиксом, которых нет в ответе, закрываются через `drainTimeout`. Загрузка проверяет только перекрытие префиксов разных провайдеров. С `tagPrefix: "b"` и outbound `block` в роли `fallbackTag` после первого ответа `block` пропадёт, и при исчерпании соединения уйдут на несуществующий тег. С `tagPrefix: "d"` пропадёт `direct`, а с ним дорога к бэку в `via` и проверка сети. Выбирайте префикс, с которого не начинается ни один тег конфига: `fallbackTag`, `connectivity.outbound`, `labelRequest.outbound`, теги из `via` и `witnesses`, outbound без `selection` и участники других балансировщиков. Надёжно работает префикс с разделителем, которого нет в ваших тегах, например `"p-"` или `"fresh:"`.
+Провайдер считает своими все outbound, чей тег начинается с `tagPrefix`, включая outbound базового конфига. До первого ответа они считаются набором провайдера, а после применения ответа outbound с префиксом, которых нет в ответе, закрываются через `drainTimeout`. Поэтому под префикс могут попадать только outbound с `selection` в одном из `apply.balancers` этого провайдера, то есть его стартовый набор. Любой другой outbound под префиксом отвергает конфиг: с `tagPrefix: "b"` это `block` в роли `fallbackTag`, с `tagPrefix: "d"` это `direct`, дорога к бэку и проверка сети. Надёжно работает префикс с разделителем, которого нет в ваших тегах, например `"p-"` или `"fresh:"`.
 
 ### Пример со всеми блоками включает все фичи
 
@@ -846,7 +850,7 @@ UDP-проба по STUN: измеряет доступность и задер�
 
 ### Прочее
 
-Остальные ловушки описаны рядом с ключами. Пустой объект включает фичу (раздел 1). Опечатка в имени `selection` или внутри `speedLimit` проходит молча (раздел 1). Часть значений выше потолка молча обрезается: `steps[].timeout: "60s"` работает как 30 секунд (раздел 5). `startup.pin` без `timeout` бессрочен (раздел 3.3). `returnToCheaper.onNetworkChange` не срабатывает при `networkChanges.action: forget` (раздел 3.3). Скорость в `speedLimit` задаётся в двоичных мегабитах (раздел 3.2).
+Остальные ловушки описаны рядом с ключами. Пустой объект включает фичу (раздел 1). Опечатка в имени `selection` или внутри `speedLimit` проходит молча (раздел 1). `startup.pin` без `timeout` бессрочен (раздел 3.3). Скорость в `speedLimit` задаётся в двоичных мегабитах (раздел 3.2).
 
 ## 7. Версии
 

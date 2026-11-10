@@ -193,6 +193,12 @@ func (c *AmneziaParameters) Build() (*wireguard.AmneziaParameters, error) {
 		}
 	}
 
+	for i, spec := range []awgParam{c.I1, c.I2, c.I3, c.I4, c.I5} {
+		if err := wireguard.ValidateAmneziaTemplate(string(spec)); err != nil {
+			return nil, errors.New("invalid AmneziaWG i", i+1).Base(err)
+		}
+	}
+
 	return &wireguard.AmneziaParameters{
 		Jc:   string(c.Jc),
 		Jmin: string(c.Jmin),

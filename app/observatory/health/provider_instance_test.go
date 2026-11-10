@@ -2,6 +2,7 @@ package health_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -113,6 +114,7 @@ func TestProviderRefreshInRunningCore(t *testing.T) {
 	  "outbounds": [
 	    {"tag": "direct", "protocol": "freedom", "settings": {"finalRules": [{"action": "allow"}]}},
 	    {"tag": "dead", "protocol": "blackhole"},
+	    {"tag": "missing", "protocol": "blackhole"},
 	    {"tag": "block", "protocol": "blackhole"}
 	  ],
 	  "routing": {"balancers": [{"tag": "auto",
@@ -140,6 +142,7 @@ func TestProviderRefreshInRunningCore(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer inst.Close()
+	removeOutbound(t, inst, "missing")
 	obs := health.FromInstance(inst)
 	health.ConfigureProviderScenarioForTest(obs)
 	selectProviderTraffic(t, obs)
@@ -238,7 +241,8 @@ func TestRefreshUnderLowMemoryTriesOneVia(t *testing.T) {
 	  "log": {"loglevel": "none"},
 	  "outbounds": [
 	    {"tag": "direct", "protocol": "freedom", "settings": {"finalRules": [{"action": "allow"}]}},
-	    {"tag": "dead", "protocol": "blackhole"}
+	    {"tag": "dead", "protocol": "blackhole"},
+	    {"tag": "missing", "protocol": "blackhole"}
 	  ],
 	  "routing": {"balancers": [{"tag": "auto", "strategy":{"type":"leastCost","settings":{}},"fallbackTag":"direct"}]},
 	  "healthObservatory": {"probes":{"profiles":[{"name":"check","steps":[{"name":"transport","destinations":["http://127.0.0.1/probe"]}]}]},"telemetry":{"events":{},"report":{}},"host":{"memoryPressure":{}},
@@ -262,6 +266,7 @@ func TestRefreshUnderLowMemoryTriesOneVia(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer inst.Close()
+	removeOutbound(t, inst, "missing")
 	obs := health.FromInstance(inst)
 	health.ConfigureProviderScenarioForTest(obs)
 	health.ConfigureProviderLongCooldownForTest(obs)
@@ -303,6 +308,15 @@ func TestRefreshUnderLowMemoryTriesOneVia(t *testing.T) {
 // then direct2; both work, so only the answer decides whether the second is
 // tried. more goes last into the provider, such as `, "method": "GET"`, and
 // a key in it takes the place of the one above.
+// removeOutbound takes an outbound away the way the host does through the
+// API, so a via may name an outbound the core no longer has.
+func removeOutbound(t *testing.T, inst *core.Instance, tag string) {
+	t.Helper()
+	if err := inst.GetFeature(outbound.ManagerType()).(outbound.Manager).RemoveHandler(context.Background(), tag); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func twoViaCore(t *testing.T, url string, more ...string) *health.Observer {
 	t.Helper()
 	cfg, err := core.LoadConfig("json", strings.NewReader(`{
@@ -310,6 +324,7 @@ func twoViaCore(t *testing.T, url string, more ...string) *health.Observer {
 	  "outbounds": [
 	    {"tag": "direct", "protocol": "freedom", "settings": {"finalRules": [{"action": "allow"}]}},
 	    {"tag": "direct2", "protocol": "freedom", "settings": {"finalRules": [{"action": "allow"}]}},
+	    {"tag": "missing", "protocol": "blackhole"},
 	    {"tag": "p-b", "protocol": "blackhole", "selection": {"balancer": "auto", "probe": "check", "cost": 1}},
 	    {"tag": "p-a", "protocol": "blackhole", "selection": {"balancer": "auto", "probe": "check", "cost": 1}}
 	  ],
@@ -334,6 +349,7 @@ func twoViaCore(t *testing.T, url string, more ...string) *health.Observer {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { inst.Close() })
+	removeOutbound(t, inst, "missing")
 	o := health.FromInstance(inst)
 	health.ConfigureProviderScenarioForTest(o)
 	selectProviderTraffic(t, o)

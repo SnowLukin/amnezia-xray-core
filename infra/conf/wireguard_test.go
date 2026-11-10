@@ -2,6 +2,7 @@ package conf_test
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/xtls/xray-core/common/protocol"
@@ -308,6 +309,8 @@ func TestWireGuardRejectsBadAmnezia31Values(t *testing.T) {
 		awg(`"s1": 20, "s2": 78, "s3": 15, "headerProtectionKey": "` + testHeaderKey + `"`),
 		awg(`"s1": 20, "s2": 78, "s3": 11, "s4": 12, "headerProtectionKey": "` + testHeaderKey + `"`),
 		awg(`"s1": 20, "s2": 78, "s3": 15, "s4": 12, "headerProtectionKey": "not a key"`),
+		awg(`"i1": "<b 0xc70000000108><r 16><c><t>"`),
+		awg(`"i5": "<c><r 8>"`),
 	} {
 		for _, isClient := range []bool{true, false} {
 			c := &WireGuardConfig{IsClient: isClient}
@@ -318,6 +321,13 @@ func TestWireGuardRejectsBadAmnezia31Values(t *testing.T) {
 				t.Errorf("built %s", input)
 			}
 		}
+	}
+	c := &WireGuardConfig{IsClient: true}
+	if err := json.Unmarshal([]byte(awg(`"i3": "<r 32>", "i5": "<c><r 8>"`)), c); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Build(); err == nil || !strings.Contains(err.Error(), "i5") || !strings.Contains(err.Error(), "<c>") {
+		t.Fatalf("template error must name the key and the tag: %v", err)
 	}
 }
 

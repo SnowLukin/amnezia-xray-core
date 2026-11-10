@@ -51,7 +51,8 @@ func TestProbeIsolatedMuxKeepsSlowFirstByte(t *testing.T) {
 			"settings": {"vnext": [{"address": "127.0.0.1", "port": %d,
 				"users": [{"id": %q, "encryption": "none"}]}]},
 			"mux": {"enabled": true, "concurrency": 8},
-			"selection": {"balancer": "auto", "cost": 1, "probe": "mux-local"}}],
+			"selection": {"balancer": "auto", "cost": 1, "probe": "mux-local"}},
+			{"tag": "block", "protocol": "blackhole"}],
 		"routing": {"balancers": [{"tag": "auto", "fallbackTag":"block", "strategy": {"type": "leastCost"}}]},
 		"healthObservatory": {"evidence": {"dialTimeout": {"timeout": "1s"}}, "probes":{"profiles":[{"name":"mux-local","steps":[{"name":"transport","destinations":[%q],"minBytes":2,"timeout":"2s","progressTimeout":"2s"}]}]}}
 	}`, serverPort, userID, httpServer.URL+"/configured-probe")

@@ -268,7 +268,7 @@ func TestHealthV2StockConfigStillLoads(t *testing.T) {
 	}
 }
 func TestHealthProvidersBuild(t *testing.T) {
-	c, err := buildHealth(t, `{"providers":[{"tag":"fresh","headers":{"Authorization":"Bearer x"},"via":["auto","direct"],"timeout":"5s","triggers":{"minHealthy":{"outbounds":3},"exhausted":{"isEnabled":false},"whenCostAbove":{"cost":10,"after":"15m"},"networkChange":{"mode":"unknown"}},"limits":{"minInterval":"1m","urgentMinInterval":"30s","maxRefreshesPerHour":2},"apply":{"balancers":["auto"],"tagPrefix":"p-","drainTimeout":"1m"},"urls":["https://api.test/set"]}]}`)
+	c, err := buildHealth(t, `{"network":{"memory":{}},"providers":[{"tag":"fresh","headers":{"Authorization":"Bearer x"},"via":["auto","direct"],"timeout":"5s","triggers":{"minHealthy":{"outbounds":3},"exhausted":{"isEnabled":false},"whenCostAbove":{"cost":10,"after":"15m"},"networkChange":{"mode":"unknown"}},"limits":{"minInterval":"1m","urgentMinInterval":"30s","maxRefreshesPerHour":2},"apply":{"balancers":["auto"],"tagPrefix":"p-","drainTimeout":"1m"},"urls":["https://api.test/set"]}]}`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -459,7 +459,7 @@ func TestHealthV2LabelsValidateEvenWhileDisabled(t *testing.T) {
 
 func TestHealthV2ImmediateDelaysRetainPresence(t *testing.T) {
 	for _, value := range []string{``, `,"settleDelay":"0s"`, `,"settleDelay":"1.000000001s"`} {
-		c, err := buildHealthProvider(t, `{"providers":[{"triggers":{"networkChange":{`+strings.TrimPrefix(value, ",")+`}}}]}`)
+		c, err := buildHealthProvider(t, `{"network":{"memory":{}},"providers":[{"triggers":{"networkChange":{`+strings.TrimPrefix(value, ",")+`}}}]}`)
 		if err != nil {
 			t.Fatal(err)
 		}

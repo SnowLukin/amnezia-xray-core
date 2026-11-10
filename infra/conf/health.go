@@ -2,11 +2,13 @@ package conf
 
 import (
 	"bytes"
+	"cmp"
 	"encoding/json"
 	"fmt"
 	"math"
 	"net/url"
 	"reflect"
+	"slices"
 	"strings"
 	"time"
 
@@ -481,11 +483,20 @@ func fraction(v *float64, def float64) float64 {
 	}
 	return *v
 }
-func requirePositiveDuration(key string, v *duration.Duration) error {
-	if v != nil && *v <= 0 {
-		return errors.New(key, " must be greater than 0s")
+
+// inRange refuses a set value outside [lo, hi] and names the range; hi 0
+// means no upper bound. Durations pass as *time.Duration to print as such.
+func inRange[T ~int32 | ~int64](where string, v *T, lo, hi T) error {
+	if v == nil || *v >= lo && (hi == 0 || *v <= hi) {
+		return nil
 	}
-	return nil
+	if hi == 0 {
+		return errors.New(where, " must be at least ", lo)
+	}
+	return errors.New(where, " must be from ", lo, " to ", hi)
+}
+func durationIn(where string, v *duration.Duration, lo, hi time.Duration) error {
+	return inRange(where, (*time.Duration)(v), lo, hi)
 }
 func checkProbeURL(where, dest string) error {
 	if dest == "" {
@@ -509,12 +520,6 @@ func checkURLs(where string, destinations []string) error {
 		if err := checkProbeURL(path, dest); err != nil {
 			return err
 		}
-	}
-	return nil
-}
-func positiveCount(where string, v *int32, ceiling int32) error {
-	if v != nil && (*v < 1 || (ceiling > 0 && *v > ceiling)) {
-		return errors.New(where, " must be positive", fmt.Sprintf(" (maximum %d)", ceiling))
 	}
 	return nil
 }
@@ -564,15 +569,20 @@ func (c *HealthObservatoryConfig) Build() (proto.Message, error) {
 		TunnelSleep: r.TunnelSleep.IsEnabled, CloseUnchosenIdle: r.CloseUnchosenIdle.IsEnabled,
 		Events: t.Events.IsEnabled, Report: t.Report.IsEnabled, Quality: t.Quality.IsEnabled, PathLabels: t.PathLabels.IsEnabled, ProbeMeasurements: t.ProbeMeasurements.IsEnabled, Metrics: t.Metrics.IsEnabled, SessionLabels: t.Report.SessionLabels.IsEnabled,
 	}}
+	// Bounds of the values that set how often the core reaches the network,
+	// how much memory it takes and how long it waits. A config goes to every
+	// client at once, so a value out of them is refused rather than cut.
 	for _, f := range []struct {
-		name  string
-		value *duration.Duration
+		name   string
+		value  *duration.Duration
+		lo, hi time.Duration
 	}{
-		{"evidence.dialTimeout.timeout", e.DialTimeout.Timeout}, {"evidence.firstReply.timeout", e.FirstReply.Timeout}, {"evidence.stalledRequests.timeout", e.StalledRequests.Timeout}, {"evidence.partialStalls.maxAge", e.PartialStalls.MaxAge}, {"evidence.udpReplies.timeout", e.UDPReplies.Timeout}, {"evidence.loneFailureProbe.after", e.LoneFailureProbe.After},
-		{"probes.candidates.recheckInterval", p.Candidates.RecheckInterval}, {"probes.requests.timeout", p.Requests.Timeout}, {"probes.udp.interval", p.UDP.Interval}, {"probes.udp.timeout", p.UDP.Timeout},
-		{"network.connectivity.timeout", n.Connectivity.Timeout}, {"network.labelRequest.timeout", n.LabelRequest.Timeout}, {"host.userPresent.freshness", h.UserPresent.Freshness}, {"host.userPresent.minInterval", h.UserPresent.MinInterval}, {"resources.tunnelSleep.afterLastUse", r.TunnelSleep.AfterLastUse}, {"resources.closeUnchosenIdle.after", r.CloseUnchosenIdle.After}, {"telemetry.report.interval", t.Report.Interval},
+		{"evidence.dialTimeout.timeout", e.DialTimeout.Timeout, 1, 0}, {"evidence.firstReply.timeout", e.FirstReply.Timeout, 1, 0}, {"evidence.stalledRequests.timeout", e.StalledRequests.Timeout, 1, 0}, {"evidence.partialStalls.maxAge", e.PartialStalls.MaxAge, 1, 0}, {"evidence.udpReplies.timeout", e.UDPReplies.Timeout, 1, 0}, {"evidence.loneFailureProbe.after", e.LoneFailureProbe.After, 1, 0},
+		{"probes.candidates.recheckInterval", p.Candidates.RecheckInterval, 1, 0}, {"probes.requests.timeout", p.Requests.Timeout, 1, 10 * time.Minute}, {"probes.udp.interval", p.UDP.Interval, 1, 2 * time.Second}, {"probes.udp.timeout", p.UDP.Timeout, 1, 10 * time.Second},
+		{"network.connectivity.timeout", n.Connectivity.Timeout, 1, 30 * time.Second}, {"network.labelRequest.timeout", n.LabelRequest.Timeout, 1, 30 * time.Second}, {"host.userPresent.freshness", h.UserPresent.Freshness, 1, 0}, {"host.userPresent.minInterval", h.UserPresent.MinInterval, 1, 0},
+		{"resources.tunnelSleep.afterLastUse", r.TunnelSleep.AfterLastUse, 10 * time.Second, 0}, {"resources.closeUnchosenIdle.after", r.CloseUnchosenIdle.After, 10 * time.Second, 10 * time.Minute}, {"telemetry.report.interval", t.Report.Interval, 1, 0},
 	} {
-		if err := requirePositiveDuration("healthObservatory."+f.name, f.value); err != nil {
+		if err := durationIn("healthObservatory."+f.name, f.value, f.lo, f.hi); err != nil {
 			return nil, err
 		}
 	}
@@ -581,12 +591,16 @@ func (c *HealthObservatoryConfig) Build() (proto.Message, error) {
 		value *int32
 		max   int32
 	}{
-		{"probes.limits.maxConcurrent", p.Limits.MaxConcurrent, 0}, {"probes.limits.perMinute", p.Limits.PerMinute, 0}, {"probes.limits.perServerNamePerMinute", p.Limits.PerServerNamePerMinute, 0}, {"probes.limits.hostPerMinute", p.Limits.HostPerMinute, 0},
-		{"probes.candidates.keepVerified", p.Candidates.KeepVerified, 4}, {"probes.requests.maxOutbounds", p.Requests.MaxOutbounds, 0}, {"probes.udp.requests", p.UDP.Requests, 0}, {"probes.udp.perHour", p.UDP.PerHour, 0}, {"network.memory.maxNetworks", n.Memory.MaxNetworks, 0}, {"network.labelRequest.requestsPerHour", n.LabelRequest.RequestsPerHour, 0}, {"telemetry.events.maxEvents", t.Events.MaxEvents, 0},
+		{"probes.limits.maxConcurrent", p.Limits.MaxConcurrent, 8}, {"probes.limits.perMinute", p.Limits.PerMinute, 60}, {"probes.limits.perServerNamePerMinute", p.Limits.PerServerNamePerMinute, 10}, {"probes.limits.hostPerMinute", p.Limits.HostPerMinute, 0},
+		{"probes.candidates.keepVerified", p.Candidates.KeepVerified, 4}, {"probes.requests.maxOutbounds", p.Requests.MaxOutbounds, 16}, {"probes.udp.requests", p.UDP.Requests, 32}, {"probes.udp.perHour", p.UDP.PerHour, 60},
+		{"network.memory.maxNetworks", n.Memory.MaxNetworks, 64}, {"network.labelRequest.requestsPerHour", n.LabelRequest.RequestsPerHour, 60}, {"telemetry.events.maxEvents", t.Events.MaxEvents, 4096},
 	} {
-		if err := positiveCount("healthObservatory."+f.name, f.value, f.max); err != nil {
+		if err := inRange("healthObservatory."+f.name, f.value, 1, f.max); err != nil {
 			return nil, err
 		}
+	}
+	if err := inRange("healthObservatory.telemetry.events.maxBytes", t.Events.MaxBytes, 1, 256<<10); err != nil {
+		return nil, err
 	}
 	if p.Limits.HostPerMinute != nil && *p.Limits.HostPerMinute > max(countOr(p.Limits.PerMinute, 12)/2, 1) {
 		return nil, errors.New("healthObservatory.probes.limits.hostPerMinute must not exceed half of perMinute")
@@ -617,12 +631,12 @@ func (c *HealthObservatoryConfig) Build() (proto.Message, error) {
 				name  string
 				value *duration.Duration
 			}{{"timeout", step.Timeout}, {"progressTimeout", step.ProgressTimeout}} {
-				if err := requirePositiveDuration(stepWhere+"."+f.name, f.value); err != nil {
+				if err := durationIn(stepWhere+"."+f.name, f.value, 1, 30*time.Second); err != nil {
 					return nil, err
 				}
 			}
-			if step.MinBytes < 0 {
-				return nil, errors.New(stepWhere, ".minBytes must not be negative")
+			if err := inRange(stepWhere+".minBytes", &step.MinBytes, 0, 1<<20); err != nil {
+				return nil, err
 			}
 			for _, status := range step.ExpectedStatuses {
 				if status < 100 || status > 599 {
@@ -673,16 +687,7 @@ func (c *HealthObservatoryConfig) Build() (proto.Message, error) {
 	out.Schedule = &health.ScheduleConfig{MaxConcurrentProbes: count(p.Limits.MaxConcurrent), ProbesPerMinute: count(p.Limits.PerMinute), ProbesPerServerNamePerMinute: count(p.Limits.PerServerNamePerMinute), ProbeOnly: &health.ProbeOnlyConfig{KeepVerified: count(p.Candidates.KeepVerified), RecheckInterval: optionalDuration(p.Candidates.RecheckInterval)}, HostProbes: &health.HostProbesConfig{ProbesPerMinute: count(p.Limits.HostPerMinute), MaxOutbounds: count(p.Requests.MaxOutbounds), Timeout: optionalDuration(p.Requests.Timeout)}}
 	out.Network = &health.NetworkConfig{MaxNetworks: count(n.Memory.MaxNetworks)}
 	out.Wake = &health.WakeConfig{Freshness: optionalDuration(h.UserPresent.Freshness), MinInterval: optionalDuration(h.UserPresent.MinInterval)}
-	if r.TunnelSleep.AfterLastUse != nil && *r.TunnelSleep.AfterLastUse < duration.Duration(10*time.Second) {
-		return nil, errors.New("healthObservatory.resources.tunnelSleep.afterLastUse must be at least 10s")
-	}
-	if a := r.CloseUnchosenIdle.After; a != nil && (*a < duration.Duration(10*time.Second) || *a > duration.Duration(10*time.Minute)) {
-		return nil, errors.New("healthObservatory.resources.closeUnchosenIdle.after must be in [10s, 10m]")
-	}
 	out.Sleep = &health.SleepConfig{AfterLastUse: optionalDuration(r.TunnelSleep.AfterLastUse), CloseIdleAfter: optionalDuration(r.CloseUnchosenIdle.After)}
-	if t.Events.MaxBytes != nil && *t.Events.MaxBytes <= 0 {
-		return nil, errors.New("healthObservatory.telemetry.events.maxBytes must be positive")
-	}
 	out.Events = &health.EventsConfig{MaxEvents: count(t.Events.MaxEvents), MaxBytes: sizeValue(t.Events.MaxBytes)}
 	if math.IsNaN(t.Report.QuietSampleFraction) || math.IsInf(t.Report.QuietSampleFraction, 0) || t.Report.QuietSampleFraction < 0 || t.Report.QuietSampleFraction > 1 {
 		return nil, errors.New("healthObservatory.telemetry.report.quietSampleFraction must be in [0, 1]")
@@ -694,8 +699,8 @@ func (c *HealthObservatoryConfig) Build() (proto.Message, error) {
 		return nil, err
 	}
 	if trace := t.Trace; trace != nil {
-		if trace.MaxBytes != nil && (*trace.MaxBytes < 64<<10 || *trace.MaxBytes > 2<<20) {
-			return nil, errors.New("healthObservatory.telemetry.trace.maxBytes must be from 65536 to 2097152")
+		if err := inRange("healthObservatory.telemetry.trace.maxBytes", trace.MaxBytes, 64<<10, 2<<20); err != nil {
+			return nil, err
 		}
 		out.Trace = &health.TraceConfig{ConnectionsEnabled: trace.Connections.IsEnabled}
 		if trace.MaxBytes != nil {
@@ -709,7 +714,7 @@ func (c *HealthObservatoryConfig) Build() (proto.Message, error) {
 		if census.SampleFraction == nil || math.IsNaN(*census.SampleFraction) || math.IsInf(*census.SampleFraction, 0) || *census.SampleFraction <= 0 || *census.SampleFraction > 1 {
 			return nil, errors.New("healthObservatory.telemetry.census.sampleFraction is required and must be in (0, 1]")
 		}
-		if err := requirePositiveDuration("healthObservatory.telemetry.census.startAfter", census.StartAfter); err != nil {
+		if err := durationIn("healthObservatory.telemetry.census.startAfter", census.StartAfter, 1, 0); err != nil {
 			return nil, err
 		}
 		out.Census = &health.CensusConfig{SampleFraction: *census.SampleFraction, StartAfter: optionalDuration(census.StartAfter), OnDemand: census.OnDemand}
@@ -723,6 +728,9 @@ func (c *HealthObservatoryConfig) Build() (proto.Message, error) {
 		built, err := pc.build()
 		if err != nil {
 			return nil, err
+		}
+		if nc := pc.Triggers.NetworkChange; enabled(nc.IsEnabled, false) && nc.Mode != "any" && !enabled(n.Memory.IsEnabled, false) {
+			return nil, errors.New("healthObservatory.providers[", pc.Tag, "].triggers.networkChange.mode:", cmp.Or(nc.Mode, "unknownNotCheapest"), " requires healthObservatory.network.memory")
 		}
 		for _, other := range out.Providers {
 			if other.Tag == built.Tag {
@@ -793,21 +801,25 @@ func (c *HealthProviderConfig) build() (*health.ProviderConfig, error) {
 	}
 	t, l, a := c.Triggers, c.Limits, c.Apply
 	for _, f := range []struct {
-		name  string
-		value *duration.Duration
-	}{{"timeout", c.Timeout}, {"triggers.maxAge.age", t.MaxAge.Age}, {"limits.minInterval", l.MinInterval}, {"limits.urgentMinInterval", l.UrgentMinInterval}, {"apply.drainTimeout", a.DrainTimeout}} {
-		if err := requirePositiveDuration(where+"."+f.name, f.value); err != nil {
+		name   string
+		value  *duration.Duration
+		lo, hi time.Duration
+	}{{"timeout", c.Timeout, 1, 0}, {"triggers.maxAge.age", t.MaxAge.Age, 1, 0}, {"limits.minInterval", l.MinInterval, 1, 0}, {"limits.urgentMinInterval", l.UrgentMinInterval, 1, 0}, {"apply.drainTimeout", a.DrainTimeout, 1, 30 * time.Minute}} {
+		if err := durationIn(where+"."+f.name, f.value, f.lo, f.hi); err != nil {
 			return nil, err
 		}
 	}
 	for _, f := range []struct {
-		name    string
-		value   *int32
-		ceiling int32
-	}{{"triggers.minHealthy.outbounds", t.MinHealthy.Outbounds, 0}, {"limits.maxRefreshesPerHour", l.MaxRefreshesPerHour, 0}, {"apply.maxOutbounds", a.MaxOutbounds, 128}} {
-		if err := positiveCount(where+"."+f.name, f.value, f.ceiling); err != nil {
+		name  string
+		value *int32
+		max   int32
+	}{{"triggers.minHealthy.outbounds", t.MinHealthy.Outbounds, 0}, {"limits.maxRefreshesPerHour", l.MaxRefreshesPerHour, 60}, {"apply.maxOutbounds", a.MaxOutbounds, 128}} {
+		if err := inRange(where+"."+f.name, f.value, 1, f.max); err != nil {
 			return nil, err
 		}
+	}
+	if t.Periodic.Interval != nil && rangeMin(t.Periodic.Interval) == 0 {
+		return nil, errors.New(where, ".triggers.periodic.interval must be greater than 0s")
 	}
 	if t.NetworkChange.SettleDelay != nil && !t.NetworkChange.SettleDelay.valid() {
 		return nil, errors.New(where, ".triggers.networkChange.settleDelay must be nonnegative")
@@ -996,7 +1008,7 @@ func selectionReturn(where string, v *SelectionReturnConfig, selectorEnabled boo
 	if v == nil {
 		return nil, 0, nil
 	}
-	if err := requirePositiveDuration(where+".returnToCheaper.interval", v.Interval); err != nil {
+	if err := durationIn(where+".returnToCheaper.interval", v.Interval, 1, 0); err != nil {
 		return nil, 0, err
 	}
 	if enabled(v.IsEnabled, false) && !selectorEnabled {
@@ -1019,7 +1031,7 @@ func (v *strategyLeastCostConfig) Build() (proto.Message, error) {
 		name  string
 		value *duration.Duration
 	}{{"returnToCheaper.interval", u.Interval}, {"failover.closeSilent.after", f.CloseSilent.After}} {
-		if err := requirePositiveDuration("leastCost.settings."+x.name, x.value); err != nil {
+		if err := durationIn("leastCost.settings."+x.name, x.value, 1, 0); err != nil {
 			return nil, err
 		}
 	}
@@ -1034,6 +1046,9 @@ func (v *strategyLeastCostConfig) Build() (proto.Message, error) {
 	}
 	if enabled(u.OnNetworkChange.IsEnabled, false) && (!enabled(u.IsEnabled, false) || !enabled(n.IsEnabled, false)) {
 		return nil, errors.New("leastCost.settings.returnToCheaper.onNetworkChange requires returnToCheaper and networkChanges")
+	}
+	if enabled(u.OnNetworkChange.IsEnabled, false) && n.Action == "forget" {
+		return nil, errors.New("leastCost.settings.returnToCheaper.onNetworkChange requires networkChanges.action:recheck")
 	}
 	switch u.OnNetworkChange.Scope {
 	case "", "unknown", "all":
@@ -1175,6 +1190,9 @@ func checkLeastCost(c *Config) error {
 			e := c.HealthObservatory.Evidence
 			if enabled(v.Failover.DownAudit.IsEnabled, false) && !enabled(e.DialFailures.IsEnabled, true) && !enabled(e.DialTimeout.IsEnabled, true) && !enabled(e.ServerUnverified.IsEnabled, true) {
 				return errors.New("balancer ", b.Tag, ".failover.downAudit requires an enabled path-level detector")
+			}
+			if onChange := v.ReturnToCheaper.OnNetworkChange; enabled(onChange.IsEnabled, false) && onChange.Scope != "all" && !enabled(c.HealthObservatory.Network.Memory.IsEnabled, false) {
+				return errors.New("balancer ", b.Tag, ".returnToCheaper.onNetworkChange.scope:unknown requires healthObservatory.network.memory")
 			}
 			if enabled(v.Startup.Pin.IsEnabled, false) && !enabled(c.HealthObservatory.Host.Pinning.IsEnabled, false) {
 				return errors.New("balancer ", b.Tag, ".startup.pin requires healthObservatory.host.pinning")
@@ -1348,6 +1366,69 @@ func checkLeastCost(c *Config) error {
 	if c.HealthObservatory != nil && c.HealthObservatory.Telemetry.Census != nil {
 		if err := validateCensusOnDemand(c.HealthObservatory.Telemetry.Census.OnDemand, parsed, groups); err != nil {
 			return err
+		}
+	}
+	return checkTagReferences(c, balancers, parsed)
+}
+
+// checkTagReferences makes sure the outbounds and balancers the config names
+// exist, and that no provider owns an outbound it was not given: a provider
+// removes every outbound under its tagPrefix that its answer lacks.
+func checkTagReferences(c *Config, balancers map[string]*BalancingRule, leastCost map[string]*strategyLeastCostConfig) error {
+	h := c.HealthObservatory
+	if h == nil {
+		return nil
+	}
+	var providers []*HealthProviderConfig
+	for _, p := range h.Providers {
+		if p != nil && p.Apply.TagPrefix != "" {
+			providers = append(providers, p)
+		}
+	}
+	outbounds := map[string]bool{}
+	for _, o := range c.OutboundConfigs {
+		outbounds[o.Tag] = true
+		for _, p := range providers {
+			if !strings.HasPrefix(o.Tag, p.Apply.TagPrefix) {
+				continue
+			}
+			if o.Selection == nil || !slices.Contains(p.Apply.Balancers, o.Selection.Balancer) {
+				return errors.New("healthObservatory.providers[", p.Tag, "]: outbound ", o.Tag, " is under apply.tagPrefix ", p.Apply.TagPrefix, " and the provider would remove it")
+			}
+		}
+	}
+	refs := [][2]string{}
+	for tag := range leastCost {
+		refs = append(refs, [2]string{"balancer " + tag + ".fallbackTag", balancers[tag].FallbackTag})
+	}
+	if enabled(h.Network.Connectivity.IsEnabled, false) {
+		refs = append(refs, [2]string{"healthObservatory.network.connectivity.outbound", h.Network.Connectivity.Outbound})
+	}
+	if enabled(h.Network.LabelRequest.IsEnabled, false) {
+		refs = append(refs, [2]string{"healthObservatory.network.labelRequest.outbound", h.Network.LabelRequest.Outbound})
+	}
+	for _, ref := range refs {
+		if !outbounds[ref[1]] {
+			return errors.New(ref[0], ": unknown outbound ", ref[1])
+		}
+	}
+	for _, p := range providers {
+		for _, via := range p.Via {
+			if !outbounds[via] && balancers[via] == nil {
+				return errors.New("healthObservatory.providers[", p.Tag, "].via: unknown outbound or balancer ", via)
+			}
+		}
+	}
+	for _, w := range h.Network.Witnesses.Outbounds {
+		matched := false
+		for tag := range outbounds {
+			matched = matched || strings.HasPrefix(tag, w)
+		}
+		for _, p := range providers {
+			matched = matched || strings.HasPrefix(w, p.Apply.TagPrefix) || strings.HasPrefix(p.Apply.TagPrefix, w)
+		}
+		if !matched {
+			return errors.New("healthObservatory.network.witnesses.outbounds: ", w, " matches no outbound")
 		}
 	}
 	return nil

@@ -28,7 +28,7 @@ func TestProviderDelayRangeGrammar(t *testing.T) {
 
 func TestProviderRoadsAndDelayConfig(t *testing.T) {
 	// Decode the actual public loader, including its strict nested shape checks.
-	raw := `{"healthObservatory":{"providers":[{"tag":"p","urls":["https://backend.test/set"],"triggers":{"exhausted":{"delay":"0s..10s"},"minHealthy":{"outbounds":2,"delay":"2s..3s"},"periodic":{"interval":"20m..40m"},"networkChange":{"settleDelay":"30s..90s"},"whenCostAbove":{"cost":10,"after":"15m..25m"}},"apply":{"balancers":["auto","backend"],"tagPrefix":"p-"}}]}}`
+	raw := `{"healthObservatory":{"network":{"memory":{}},"providers":[{"tag":"p","urls":["https://backend.test/set"],"triggers":{"exhausted":{"delay":"0s..10s"},"minHealthy":{"outbounds":2,"delay":"2s..3s"},"periodic":{"interval":"20m..40m"},"networkChange":{"settleDelay":"30s..90s"},"whenCostAbove":{"cost":10,"after":"15m..25m"}},"apply":{"balancers":["auto","backend"],"tagPrefix":"p-"}}]}}`
 	var c conf.Config
 	if err := json.Unmarshal([]byte(raw), &c); err != nil {
 		t.Fatal(err)

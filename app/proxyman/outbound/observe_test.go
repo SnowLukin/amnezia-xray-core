@@ -207,7 +207,7 @@ func TestAbortEndsAConnectionWaitingForAnAnswer(t *testing.T) {
 			"settings": {"address": "127.0.0.1", "port": `+strconv.Itoa(ln.Addr().(*gonet.TCPAddr).Port)+`,
 				"id": "27848739-7e62-4138-9fd3-098a63964b6b", "encryption": "none"},
 			"selection": {"balancer": "auto", "cost": 1, "probe": "default"}}],
-		"routing": {"balancers": [{"tag": "auto", "fallbackTag": "t1", "strategy": {"type": "leastCost"}}]},
+		"routing": {"balancers": [{"tag": "auto", "fallbackTag": "v1", "strategy": {"type": "leastCost"}}]},
 		"healthObservatory": {"probes": {"profiles": [{"name": "default", "steps": [{"name": "http", "destinations": ["http://example.test/"], "timeout": "1s"}]}]}}
 	}`)
 	defer inst.Close()
@@ -306,7 +306,7 @@ func TestPreconnectionsAreFinished(t *testing.T) {
 			"settings": {"address": "127.0.0.1", "port": `+strconv.Itoa(ln.Addr().(*gonet.TCPAddr).Port)+`,
 				"id": "27848739-7e62-4138-9fd3-098a63964b6b", "encryption": "none", "testpre": 1},
 			"selection": {"balancer": "auto", "cost": 1, "probe": "default"}}],
-		"routing": {"balancers": [{"tag": "auto", "fallbackTag": "t1", "strategy": {"type": "leastCost"}}]},
+		"routing": {"balancers": [{"tag": "auto", "fallbackTag": "v1", "strategy": {"type": "leastCost"}}]},
 		"healthObservatory": {"probes": {"profiles": [{"name": "default", "steps": [{"name": "http", "destinations": ["http://example.test/"], "timeout": "1s"}]}]}}
 	}`)
 	// The instance stays open: closing the VLESS outbound closes the channel
