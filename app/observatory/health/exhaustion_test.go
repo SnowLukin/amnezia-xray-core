@@ -1,6 +1,7 @@
 package health
 
 import (
+	"slices"
 	"testing"
 	"time"
 )
@@ -331,5 +332,36 @@ func TestNewConnectionThatWorksUndoesTheDown(t *testing.T) {
 	te.onConnSuccess("a1", at(3*time.Second), at(4*time.Second))
 	if p := te.path("a1"); p.status != statusUp || te.sel.current() != "a1" {
 		t.Fatalf("a1 %v active %q after a new connection worked, want up and chosen", p.status, te.sel.current())
+	}
+}
+
+// The backend form: one user slot and a probe-only account. The slot dies,
+// the balancer runs out and holds it for user traffic, yet the refresh goes
+// through the probe-only road and never waits on the held slot. With every
+// road dead it moves on to the next via instead.
+func TestHeldSlotIsNoRoadToTheBackend(t *testing.T) {
+	paths := []*PathDefinition{{Tag: "p-slot", Cost: 1}, {Tag: "p-probe", Cost: 2, IsProbeOnly: true}}
+	te := newProviderEngine(t, quietProvider(nil), &SelectorConfig{Paths: paths}, "p-slot", "p-probe")
+	p := te.prov()
+	p.cfg.whenExhausted, p.cfg.probeOnlyRoads = true, true
+	p.cfg.exhaustedDelay = durationRange{}
+	reserveProof(te.engine, "p-probe", at(time.Second))
+	for s := 2; !te.sel.exhausted; s++ {
+		if s > 60 {
+			t.Fatal("the balancer never ran out of outbounds")
+		}
+		te.fail("p-slot", failDialTimeout, "", at(time.Duration(s)*time.Second))
+	}
+	now := at(time.Minute)
+	if got := te.chosen(now); got != "p-slot" {
+		t.Fatalf("user traffic goes to %q, want the held p-slot", got)
+	}
+	expectRefresh(t, te, now, "exhausted")
+	if roads, skip := te.resolveProviderVia(p.cfg, "auto", now); skip != "" || !slices.Equal(roads, []string{"p-probe"}) {
+		t.Fatalf("roads %v skip %q, want the probe-only road", roads, skip)
+	}
+	te.paths["p-probe"].status = statusDown
+	if roads, skip := te.resolveProviderVia(p.cfg, "auto", now); skip != "balancer_exhausted" || len(roads) != 0 {
+		t.Fatalf("roads %v skip %q with every road dead, want the next via", roads, skip)
 	}
 }
