@@ -9,8 +9,8 @@
 | | Ревизия 5 (`ac85a956`) | Ревизия 6 |
 |---|---|---|
 | Заголовок | `xray="26.10.31", api=2, rev=5, provider=1` | `xray="26.10.31", api=2, rev=6, provider=1` |
-| Ядро `xray-core-adaptive` | `ac85a956`, ветка `finalize/adaptive` | та же ветка, пины ниже |
-| Мост: libXray, кит | `b9c2e55`, `0cb70c4` | ветка `finalize/adaptive`, пины ниже |
+| Ядро `xray-core-adaptive` | `ac85a956`, ветка `finalize/adaptive` | та же ветка. Мост закреплён на `783c4616`; более поздние коммиты меняют только документы |
+| Мост: libXray, кит | `b9c2e55`, `0cb70c4` | `2cfd866`, `cc27581`, ветка `finalize/adaptive`. `libXray.aar` 57 283 360 байт, SHA-256 `a3f63a141418fea38fb4f3587be226a9bb6f72f7633712a40d4617431f6964ea`; `VpnFoundation.xcframework.zip` 70 358 842 байта, SHA-256 `c1bcea11a5a2bc8525424a1e5510ab46c44b909ce3d99562e05a0979c8e63220` |
 | `View.state` | `ready`, `ok`, `searching`, `blocked`, `no_network` | `connecting`, `connected`, `reconnecting`, `blocked`, `no_network` |
 | `View.phase` | поля нет | `verifying`, `searching`, `refreshing`, `waiting`; нет в `connected` и `no_network` |
 | Текущий outbound в `View` | `exit`: `outbound`, `protocol`, `labels`, `is_held` | `outbound`: `tag`, `protocol`, `labels`, `is_held` |
