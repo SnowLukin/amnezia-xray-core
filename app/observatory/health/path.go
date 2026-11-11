@@ -140,6 +140,11 @@ type path struct {
 	// without a network change; failures in a row in this epoch.
 	candidateFailures int
 	candidateRetryAt  time.Time
+	// The last probe of any reason that judged the outbound, and the network
+	// epoch it began in: an outbound with probePolicy standby is checked
+	// again once that is older than probes.standby.recheckInterval.
+	standbyAt    time.Time
+	standbyEpoch uint64
 
 	realSince         time.Time
 	freshDownReported bool

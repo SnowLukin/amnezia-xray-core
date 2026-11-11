@@ -82,21 +82,25 @@ func answerReturn(a *providerAnswer, obj map[string]json.RawMessage, where, path
 	return int64(d), &enabled, nil
 }
 
-func answerProbePolicy(obj map[string]json.RawMessage, where string) (bool, error) {
+// answerProbePolicy returns whether the outbound is probed on demand and
+// whether it is kept checked while not chosen (standby, on demand too).
+func answerProbePolicy(obj map[string]json.RawMessage, where string) (bool, bool, error) {
 	if len(obj["probePolicy"]) == 0 {
-		return false, nil
+		return false, false, nil
 	}
 	policy, err := answerString(obj, "probePolicy", where)
 	if err != nil {
-		return false, err
+		return false, false, err
 	}
 	switch policy {
 	case "regular":
-		return false, nil
+		return false, false, nil
 	case "onDemand":
-		return true, nil
+		return true, false, nil
+	case "standby":
+		return true, true, nil
 	}
-	return false, fmt.Errorf("%s.probePolicy must be regular or onDemand", where)
+	return false, false, fmt.Errorf("%s.probePolicy must be regular, onDemand or standby", where)
 }
 
 func answerLabels(obj map[string]json.RawMessage, where string) (map[string]string, error) {
@@ -140,7 +144,7 @@ func validateAnswerPaths(cfg *providerSettings, a *providerAnswer) error {
 			if err != nil {
 				return err
 			}
-			lazy, err := answerProbePolicy(obj, where)
+			lazy, standby, err := answerProbePolicy(obj, where)
 			if err != nil {
 				return err
 			}
@@ -162,7 +166,7 @@ func validateAnswerPaths(cfg *providerSettings, a *providerAnswer) error {
 			if err != nil {
 				return err
 			}
-			g := &PathGroup{Labels: labels, ReturnIsEnabled: returnEnabled, Name: cfg.prefix + name, Cost: cost, IsLazy: lazy, ReturnInterval: interval, Probe: probe, FailedInRowToLeave: limit}
+			g := &PathGroup{Labels: labels, ReturnIsEnabled: returnEnabled, Name: cfg.prefix + name, Cost: cost, IsLazy: lazy, IsStandby: standby, ReturnInterval: interval, Probe: probe, FailedInRowToLeave: limit}
 			groups[name] = g
 			a.groups = append(a.groups, g)
 		}
@@ -212,7 +216,7 @@ func validateAnswerPaths(cfg *providerSettings, a *providerAnswer) error {
 			if err != nil {
 				return err
 			}
-			p.IsLazy, err = answerProbePolicy(obj, where)
+			p.IsLazy, p.IsStandby, err = answerProbePolicy(obj, where)
 			if err != nil {
 				return err
 			}

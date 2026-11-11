@@ -51,6 +51,7 @@ const (
 	defaultProbeOnlyKeepVerified        = 1
 	defaultProbeOnlyRecheckInterval     = 15 * time.Minute
 	maxProbeOnlyKeepVerified            = 4
+	defaultStandbyRecheckInterval       = 30 * time.Minute
 	maxSuspectCooldown                  = time.Hour
 	defaultMaxEvents                    = 1000
 	defaultReportInterval               = 24 * time.Hour
@@ -257,6 +258,9 @@ type scheduleSettings struct {
 	suspectCooldown              time.Duration
 	hostProbes                   hostProbeSettings
 	probeOnly                    probeOnlySettings
+	// How often an outbound with probePolicy standby is checked while
+	// its balancer does not choose it.
+	standbyInterval time.Duration
 }
 
 type probeOnlySettings struct {
@@ -650,6 +654,7 @@ func newSettings(c *Config) *settings {
 		keepVerified:    min(num(po.GetKeepVerified(), defaultProbeOnlyKeepVerified), maxProbeOnlyKeepVerified),
 		recheckInterval: dur(max(po.GetRecheckInterval(), 0), defaultProbeOnlyRecheckInterval),
 	}
+	s.schedule.standbyInterval = dur(max(sc.GetStandby().GetRecheckInterval(), 0), defaultStandbyRecheckInterval)
 	hp := sc.GetHostProbes()
 	s.schedule.hostProbes = hostProbeSettings{
 		// The observer keeps at least half of the budget for finding failures.
@@ -757,6 +762,7 @@ type costEntrySettings struct {
 	groupLimit     int
 	cost           float64
 	lazy           bool
+	standby        bool
 	returnInterval int64
 	returnEnabled  *bool
 	probe          string
@@ -789,13 +795,14 @@ func newSelectorSettings(c *SelectorConfig) *selectorSettings {
 	paths := map[string]*costEntrySettings{}
 	order := make([]string, 0, len(c.GetPaths()))
 	for _, p := range c.GetPaths() {
-		entry := &costEntrySettings{labels: filterLabels(p.Labels, 6), cost: float64(p.Cost), lazy: p.IsLazy, returnInterval: p.ReturnInterval, returnEnabled: p.ReturnIsEnabled, probe: p.Probe, isProbeOnly: p.IsProbeOnly, protocol: p.Protocol}
+		entry := &costEntrySettings{labels: filterLabels(p.Labels, 6), cost: float64(p.Cost), lazy: p.IsLazy || p.IsStandby, standby: p.IsStandby, returnInterval: p.ReturnInterval, returnEnabled: p.ReturnIsEnabled, probe: p.Probe, isProbeOnly: p.IsProbeOnly, protocol: p.Protocol}
 		if g := groups[p.Group]; g != nil && p.Group != "" {
 			entry.labels = mergeLabels(g.Labels, p.Labels)
 			entry.groupName = g.Name
 			entry.groupLimit = min(max(num(g.FailedInRowToLeave, 3), 1), 16)
 			entry.cost = float64(g.Cost)
-			entry.lazy = g.IsLazy
+			entry.lazy = g.IsLazy || g.IsStandby
+			entry.standby = g.IsStandby
 			entry.returnInterval = g.ReturnInterval
 			entry.returnEnabled = g.ReturnIsEnabled
 			entry.probe = g.Probe
@@ -884,6 +891,11 @@ func (s *selectorSettings) isProbeOnly(tag string) bool {
 
 func (s *selectorSettings) isLazy(tag string) bool {
 	return s.paths[tag] != nil && s.paths[tag].lazy
+}
+
+// isStandby tells whether the outbound has probePolicy standby.
+func (s *selectorSettings) isStandby(tag string) bool {
+	return s.paths[tag] != nil && s.paths[tag].standby
 }
 
 func matchesAny(tag string, prefixes []string) bool {

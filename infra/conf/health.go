@@ -72,6 +72,9 @@ type HealthProbeOnlyConfig struct {
 	KeepVerified    *int32             `json:"keepVerified"`
 	RecheckInterval *duration.Duration `json:"recheckInterval"`
 }
+type HealthStandbyConfig struct {
+	RecheckInterval *duration.Duration `json:"recheckInterval"`
+}
 type HealthHostProbesConfig struct {
 	HealthFeatureConfig
 	MaxOutbounds *int32             `json:"maxOutbounds"`
@@ -90,6 +93,7 @@ type HealthProbesConfig struct {
 	StepProfiles HealthFeatureConfig     `json:"stepProfiles"`
 	Limits       HealthProbeLimitsConfig `json:"limits"`
 	Candidates   HealthProbeOnlyConfig   `json:"candidates"`
+	Standby      HealthStandbyConfig     `json:"standby"`
 	Requests     HealthHostProbesConfig  `json:"requests"`
 	UDP          HealthUDPProbeConfig    `json:"udp"`
 }
@@ -583,7 +587,7 @@ func (c *HealthObservatoryConfig) Build() (proto.Message, error) {
 		lo, hi time.Duration
 	}{
 		{"evidence.dialTimeout.timeout", e.DialTimeout.Timeout, 1, 0}, {"evidence.firstReply.timeout", e.FirstReply.Timeout, 1, 0}, {"evidence.stalledRequests.timeout", e.StalledRequests.Timeout, 1, 0}, {"evidence.partialStalls.maxAge", e.PartialStalls.MaxAge, 1, 0}, {"evidence.udpReplies.timeout", e.UDPReplies.Timeout, 1, 0}, {"evidence.loneFailureProbe.after", e.LoneFailureProbe.After, 1, 0},
-		{"probes.candidates.recheckInterval", p.Candidates.RecheckInterval, 1, 0}, {"probes.requests.timeout", p.Requests.Timeout, 1, 10 * time.Minute}, {"probes.udp.interval", p.UDP.Interval, 1, 2 * time.Second}, {"probes.udp.timeout", p.UDP.Timeout, 1, 10 * time.Second},
+		{"probes.candidates.recheckInterval", p.Candidates.RecheckInterval, 1, 0}, {"probes.standby.recheckInterval", p.Standby.RecheckInterval, 1, 0}, {"probes.requests.timeout", p.Requests.Timeout, 1, 10 * time.Minute}, {"probes.udp.interval", p.UDP.Interval, 1, 2 * time.Second}, {"probes.udp.timeout", p.UDP.Timeout, 1, 10 * time.Second},
 		{"network.connectivity.timeout", n.Connectivity.Timeout, 1, 30 * time.Second}, {"network.labelRequest.timeout", n.LabelRequest.Timeout, 1, 30 * time.Second}, {"host.userPresent.freshness", h.UserPresent.Freshness, 1, 0}, {"host.userPresent.minInterval", h.UserPresent.MinInterval, 1, 0},
 		{"resources.tunnelSleep.afterLastUse", r.TunnelSleep.AfterLastUse, 10 * time.Second, 0}, {"resources.closeUnchosenIdle.after", r.CloseUnchosenIdle.After, 10 * time.Second, 10 * time.Minute}, {"telemetry.report.interval", t.Report.Interval, 1, 0},
 	} {
@@ -668,7 +672,7 @@ func (c *HealthObservatoryConfig) Build() (proto.Message, error) {
 		return nil, err
 	}
 	out.LabelRequest = &health.LabelRequestConfig{Outbound: lr.Outbound, Destinations: lr.Destinations, Labels: lr.Labels, Timeout: optionalDuration(lr.Timeout), RequestsPerHour: count(lr.RequestsPerHour)}
-	out.Schedule = &health.ScheduleConfig{MaxConcurrentProbes: count(p.Limits.MaxConcurrent), ProbesPerMinute: count(p.Limits.PerMinute), ProbesPerServerNamePerMinute: count(p.Limits.PerServerNamePerMinute), ProbeOnly: &health.ProbeOnlyConfig{KeepVerified: count(p.Candidates.KeepVerified), RecheckInterval: optionalDuration(p.Candidates.RecheckInterval)}, HostProbes: &health.HostProbesConfig{ProbesPerMinute: count(p.Limits.HostPerMinute), MaxOutbounds: count(p.Requests.MaxOutbounds), Timeout: optionalDuration(p.Requests.Timeout)}}
+	out.Schedule = &health.ScheduleConfig{MaxConcurrentProbes: count(p.Limits.MaxConcurrent), ProbesPerMinute: count(p.Limits.PerMinute), ProbesPerServerNamePerMinute: count(p.Limits.PerServerNamePerMinute), ProbeOnly: &health.ProbeOnlyConfig{KeepVerified: count(p.Candidates.KeepVerified), RecheckInterval: optionalDuration(p.Candidates.RecheckInterval)}, Standby: &health.StandbyConfig{RecheckInterval: optionalDuration(p.Standby.RecheckInterval)}, HostProbes: &health.HostProbesConfig{ProbesPerMinute: count(p.Limits.HostPerMinute), MaxOutbounds: count(p.Requests.MaxOutbounds), Timeout: optionalDuration(p.Requests.Timeout)}}
 	out.Network = &health.NetworkConfig{MaxNetworks: count(n.Memory.MaxNetworks)}
 	out.Wake = &health.WakeConfig{Freshness: optionalDuration(h.UserPresent.Freshness), MinInterval: optionalDuration(h.UserPresent.MinInterval)}
 	if enabled(h.View.IsEnabled, false) {
@@ -1015,14 +1019,19 @@ func derefString(v *string) string {
 	}
 	return *v
 }
-func probePolicy(where string, v *string) (bool, error) {
+
+// probePolicy returns whether the outbound is probed on demand and whether
+// it is kept checked while not chosen (standby, on demand too).
+func probePolicy(where string, v *string) (bool, bool, error) {
 	switch derefString(v) {
 	case "", "regular":
-		return false, nil
+		return false, false, nil
 	case "onDemand":
-		return true, nil
+		return true, false, nil
+	case "standby":
+		return true, true, nil
 	default:
-		return false, errors.New(where, ".probePolicy must be regular or onDemand")
+		return false, false, errors.New(where, ".probePolicy must be regular, onDemand or standby")
 	}
 }
 func selectionReturn(where string, v *SelectionReturnConfig, selectorEnabled bool) (*bool, int64, error) {
@@ -1116,7 +1125,7 @@ func (v *strategyLeastCostConfig) Build() (proto.Message, error) {
 		if err := positiveCost(where, g.Cost); err != nil {
 			return nil, err
 		}
-		lazy, err := probePolicy(where, g.ProbePolicy)
+		lazy, standby, err := probePolicy(where, g.ProbePolicy)
 		if err != nil {
 			return nil, err
 		}
@@ -1131,7 +1140,7 @@ func (v *strategyLeastCostConfig) Build() (proto.Message, error) {
 		if err := validateLabels(where+".labels", g.Labels, 6); err != nil {
 			return nil, err
 		}
-		out.Groups = append(out.Groups, &health.PathGroup{Name: g.Name, Cost: *g.Cost, IsLazy: lazy, ReturnIsEnabled: ret, ReturnInterval: interval, Probe: derefString(g.Probe), FailedInRowToLeave: limit, Labels: g.Labels})
+		out.Groups = append(out.Groups, &health.PathGroup{Name: g.Name, Cost: *g.Cost, IsLazy: lazy, IsStandby: standby, ReturnIsEnabled: ret, ReturnInterval: interval, Probe: derefString(g.Probe), FailedInRowToLeave: limit, Labels: g.Labels})
 	}
 	for _, p := range v.Paths {
 		if p.IsProbeOnly && (p.Tag == s.Outbound || (enabled(s.Pin.IsEnabled, false) && p.Tag == s.Pin.Outbound)) {
@@ -1262,7 +1271,7 @@ func checkLeastCost(c *Config) error {
 		if err := validateLabels(where+".labels", p.Labels, 6); err != nil {
 			return err
 		}
-		lazy, err := probePolicy(where, p.ProbePolicy)
+		lazy, standby, err := probePolicy(where, p.ProbePolicy)
 		if err != nil {
 			return err
 		}
@@ -1301,7 +1310,7 @@ func checkLeastCost(c *Config) error {
 				return errors.New(where, ".probe: unknown probe ", *p.Probe)
 			}
 		}
-		def := &health.PathDefinition{Tag: o.Tag, Balancer: p.Balancer, Protocol: strings.ToLower(o.Protocol), Group: group, Cost: floatValue(p.Cost), IsLazy: lazy, ReturnIsEnabled: ret, ReturnInterval: interval, Probe: derefString(p.Probe), IsProbeOnly: p.IsProbeOnly, Labels: p.Labels}
+		def := &health.PathDefinition{Tag: o.Tag, Balancer: p.Balancer, Protocol: strings.ToLower(o.Protocol), Group: group, Cost: floatValue(p.Cost), IsLazy: lazy, IsStandby: standby, ReturnIsEnabled: ret, ReturnInterval: interval, Probe: derefString(p.Probe), IsProbeOnly: p.IsProbeOnly, Labels: p.Labels}
 		if group != "" {
 			g := groups[p.Balancer][group]
 			def.Probe = derefString(g.Probe)
@@ -1501,12 +1510,12 @@ func validateCensusOnDemand(names []string, selectors map[string]*strategyLeastC
 			lazy := path.IsLazy
 			if path.Group != "" {
 				group := groups[balancer][path.Group]
-				lazy = group.ProbePolicy != nil && *group.ProbePolicy == "onDemand"
+				lazy = onDemand(group.ProbePolicy)
 			}
 			policies[path.Tag] = append(policies[path.Tag], lazy)
 		}
 		for name, group := range groups[balancer] {
-			policies[name] = append(policies[name], group.ProbePolicy != nil && *group.ProbePolicy == "onDemand")
+			policies[name] = append(policies[name], onDemand(group.ProbePolicy))
 		}
 	}
 	for i, name := range names {
@@ -1522,6 +1531,12 @@ func validateCensusOnDemand(names []string, selectors map[string]*strategyLeastC
 		}
 	}
 	return nil
+}
+
+// onDemand tells whether a probePolicy probes on demand: standby does
+// too, and checks the outbound only while it is not chosen.
+func onDemand(policy *string) bool {
+	return policy != nil && (*policy == "onDemand" || *policy == "standby")
 }
 
 func validateFallbackBalancers(balancers map[string]*BalancingRule, selectors map[string]*strategyLeastCostConfig) error {

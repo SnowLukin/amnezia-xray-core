@@ -119,6 +119,14 @@ message ScheduleConfig {
   // Probes the host asks for.
   HostProbesConfig host_probes = 9;
   ProbeOnlyConfig probe_only = 10;
+  StandbyConfig standby = 11;
+}
+
+// StandbyConfig sets how often an outbound with probePolicy standby is
+// checked while its balancer does not choose it.
+message StandbyConfig {
+  // Check it again this often, default 30 minutes.
+  int64 recheck_interval = 1;
 }
 
 message ProbeOnlyConfig {
@@ -191,6 +199,9 @@ message PathDefinition {
   reserved 11;
   // The proxy protocol of the outbound, as its config names it; only shown.
   string protocol = 12;
+  // probePolicy standby: probed on demand like is_lazy, and checked
+  // while its balancer does not choose it, see StandbyConfig.
+  bool is_standby = 13;
 }
 
 message PathGroup {
@@ -202,6 +213,8 @@ message PathGroup {
   int32 failed_in_row_to_leave = 6;
   optional bool return_is_enabled = 7;
   map<string, string> labels = 8;
+  // probePolicy standby, as in PathDefinition.
+  bool is_standby = 9;
 }
 
 message SelectorConfig {

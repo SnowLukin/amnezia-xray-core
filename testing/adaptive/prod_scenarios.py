@@ -935,9 +935,11 @@ def prod_lease_expiry(stand, xray, work, name):
 @prod
 def prod_awg_pair(stand, xray, work, name):
     """The entry of the slot carries Xray (-s, cost 1) and AmneziaWG (-a,
-    cost 2). Xray goes silent: auto moves to AmneziaWG without exhaustion.
-    Xray comes back: returnToCheaper moves auto back. The stand shortens the
-    return to 1 m with a hold of 20 s; production has 30 m and 2 m."""
+    cost 2, probePolicy standby). While auto has Xray the core checks
+    AmneziaWG by itself, once, with the reason standby. Xray goes silent:
+    auto moves to AmneziaWG without exhaustion. Xray comes back:
+    returnToCheaper moves auto back. The stand shortens the return to 1 m
+    with a hold of 20 s; production has 30 m and 2 m."""
     backend = stand.serve(strict_provider.Backend(awg=True))
     began = time.time()
     m = Marks()
@@ -962,9 +964,14 @@ def prod_awg_pair(stand, xray, work, name):
     back = first_switch_to(events, slot, m["back"])
     exhausted = [e for e in bench.events_of(events, "exhausted", m["fault"]) if e["ts"] / 1000 < m["back"]]
     returns = [f for f in fields(events, "probe_result", m["back"]) if f.get("reason") == "return"]
+    standby = [(strip(e["fields"]["outbound"])[-2:], e["fields"].get("is_ok"))
+               for e in bench.events_of(events, "probe_result")
+               if e["fields"].get("reason") == "standby" and e["ts"] / 1000 < m["fault"]]
     save(work, name, events=events, requests=backend.requests, violations=backend.violations,
          report=c.final_report, marks=m, traffic=sorted(tr.records))
     return [
+        check("standby checks before the fault (outbound, passed)", standby, standby == [("-a", True)],
+              "[(-a, True)]: once on arrival, the next one in 30 m"),
         check("switch to AmneziaWG after Xray died (reason)", away and away["fields"]["reason"],
               away is not None and away["fields"]["reason"] == "failover", "failover"),
         check("exhausted on the way", len(exhausted), not exhausted, "== 0"),

@@ -6,7 +6,8 @@ on them, so the core gets what a backend would send. The backend serves the set
 the way the real one does: a user slot (-s) on one entry, a probe credential
 (-p, isProbeOnly in the first balancer) on every entry and a road credential
 (-r, in the road balancer) on every entry without the slot; with awg, the entry
-of the slot carries an AmneziaWG outbound (-a) as well.
+of the slot carries an AmneziaWG outbound (-a) as well, with probePolicy
+standby: the core checks it while auto does not choose it.
 
 Answers follow Backend.script, one item per request, then Backend.default:
   ("auto",)          the slot moves to another live entry when the request says
@@ -446,7 +447,8 @@ class Backend:
         if role == "a":
             item = bench.awg_member(tag, entry)
             item["settings"]["remoteDNS"] = [bench.AWG_SERVER_ADDRESS]
-            selection = {"balancer": self.expect.balancers[0], "cost": cost, "probe": "full"}
+            selection = {"balancer": self.expect.balancers[0], "cost": cost, "probe": "full",
+                         "probePolicy": "standby"}
         else:
             item = bench.member(tag, "ws", entry, bench.PIN)
             name = bench.SERVER_NAMES["ws"]

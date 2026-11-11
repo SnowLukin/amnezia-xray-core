@@ -40,6 +40,9 @@ const (
 	reasonUDPSuspect
 	reasonCensus
 	reasonStartup
+	// An outbound with probePolicy standby, kept checked while its
+	// balancer does not choose it.
+	reasonStandby
 )
 
 func (r probeReason) priority() probeReason {
@@ -85,6 +88,8 @@ func (r probeReason) String() string {
 		return "census"
 	case reasonStartup:
 		return "startup"
+	case reasonStandby:
+		return "standby"
 	default:
 		return "unknown"
 	}
@@ -895,8 +900,11 @@ type selector struct {
 	inventory       []string
 	candidates      []string
 	probeOnlyActive bool
-	snapshot        atomic.Pointer[[]string]
-	active          atomic.Pointer[string]
+	// The outbounds with probePolicy standby in the inventory at the
+	// last turn: one that was not there is checked as soon as it may be.
+	standbySeen map[string]bool
+	snapshot    atomic.Pointer[[]string]
+	active      atomic.Pointer[string]
 
 	started bool
 	// A choice of the balancer was proven to work in this run, by a probe
@@ -1720,7 +1728,7 @@ func (e *engine) invalidateProbeJobs(tag string, now time.Time) {
 		}
 	}
 	for _, previous := range old {
-		if previous.reason == reasonAudit || previous.reason == reasonLone || previous.reason == reasonWake || previous.reason == reasonCandidate {
+		if previous.reason == reasonAudit || previous.reason == reasonLone || previous.reason == reasonWake || previous.reason == reasonCandidate || previous.reason == reasonStandby {
 			continue
 		}
 		if previous.reason == reasonConfirm && (p == nil || p.status != statusSuspect) {
@@ -1770,9 +1778,9 @@ func (e *engine) budgetWait(j *probeJob, now time.Time) time.Duration {
 			}
 		}
 	}
-	if j.reason == reasonCandidate {
+	if j.reason == reasonCandidate || j.reason == reasonStandby {
 		for _, r := range e.running {
-			if r.reason == reasonCandidate {
+			if r.reason == j.reason {
 				return -1
 			}
 		}
@@ -1896,6 +1904,7 @@ func (e *engine) tick(now time.Time) ([]*probeJob, time.Time) {
 
 	for _, s := range e.sortedSelectors() {
 		soonest(e.updateProbeOnly(s, now))
+		soonest(e.updateStandby(s, now))
 	}
 	if !e.networkDown {
 		for _, s := range e.sortedSelectors() {
@@ -1967,6 +1976,9 @@ func (e *engine) tick(now time.Time) ([]*probeJob, time.Time) {
 			continue
 		}
 		if j.reason == reasonCandidate && !e.candidateCurrent(j) {
+			continue
+		}
+		if j.reason == reasonStandby && !e.standbyCurrent(j) {
 			continue
 		}
 		if e.isProbeOnly(j.tag) && j.reason != reasonCandidate && j.reason != reasonHost && j.reason != reasonConnectivity && j.reason != reasonCensus {
@@ -2092,6 +2104,8 @@ func (e *engine) putOff(j *probeJob, idle bool) bool {
 		return idle || s == nil || s.pinned != "" || (e.memoryLow && !s.exhausted)
 	case reasonReturnToCheaper:
 		return e.memoryLow
+	case reasonStandby:
+		return idle || e.memoryLow
 	}
 	return false
 }
@@ -2352,6 +2366,7 @@ func (e *engine) onProbeResult(j *probeJob, r probeResult, now time.Time) {
 		p.lastProbeEnd = now
 		r.reason = j.reason.String()
 		p.lastProbeResult = r.snapshot()
+		p.standbyAt, p.standbyEpoch = now, j.candidateEpoch
 		if !r.ok {
 			p.lastError = r.err
 			p.lastClass = cmp.Or(r.class, "other")
@@ -2450,6 +2465,14 @@ func (e *engine) onProbeResult(j *probeJob, r probeResult, now time.Time) {
 		p.falseAlarms = 0
 		e.countDownEvidence(p, j.evidenceStrong, now)
 		e.markDown(p, "probe", now)
+	case reasonStandby:
+		// The balancer does not choose the outbound: the result only judges
+		// it, as a failure of any outbound it does not choose does.
+		if r.ok {
+			e.markProbeState(p, r, now)
+		} else {
+			e.markDown(p, "probe", now)
+		}
 	case reasonNetwork, reasonWake, reasonStartup:
 		if r.ok {
 			e.markProbeState(p, r, now)
