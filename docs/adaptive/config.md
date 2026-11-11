@@ -137,9 +137,9 @@ healthObservatory.telemetry.report.isEnabled is not supported; include the block
 |---|---|---|---|---|
 | `balancer` | string | обязателен | тег балансировщика `leastCost` | куда входит outbound |
 | `group` | string | нет | имя из `groups[]` этого балансировщика | член группы; запрещает `cost`, `probe`, `probePolicy`, `returnToCheaper` |
-| `cost` | number | обязателен без `group` | > 0, конечное | цена; меньшая предпочтительнее |
+| `cost` | number | обязателен без `group` | > 0, конечное | цена; меньшая предпочтительнее. Единственный канал, которым бэк влияет на выбор: [provider-protocol.md](provider-protocol.md), раздел 4, «Как ядро выбирает путь» |
 | `probe` | string | обязателен без `group` | имя из `probes.profiles[]` | профиль проверки пути |
-| `probePolicy` | string | `regular` | `regular`, `onDemand` | политика проб |
+| `probePolicy` | string | `regular` | `regular`, `onDemand`, `standby` | политика проб |
 | `returnToCheaper` | object | наследуется от балансировщика | `{}`, `{"interval": dur}`, `{"isEnabled": false}` | свой период возврата или выключение |
 | `returnToCheaper.interval` | dur | период балансировщика | > 0 | период проб возврата на этот путь |
 | `isProbeOnly` | bool | `false` | | проверочная учётка, пользовательский трафик не получает |
@@ -148,6 +148,8 @@ healthObservatory.telemetry.report.isEnabled is not supported; include the block
 Тег outbound с `selection` непустой, уникальный и не длиннее 128 байт.
 
 `probePolicy: onDemand` убирает путь из периодических проб возврата и из автоматического плана проб. Начальный выбор, переключение при отказе и явный запрос пробы хостом сохраняются. Путь с `onDemand` продолжает получать трафик и может быть выбран на старте, если он самый дешёвый.
+
+`probePolicy: standby` (ревизия 6) - это `onDemand` плюс проверка, пока путь не выбран. Так держат проверенным дорогой резерв, например AmneziaWG-двойника Xray-слота: пока балансировщик выбирает другой путь, ядро само проверяет этот пробой его профиля. Проверка идёт, когда путь появился в конфиге или в наборе провайдера, после смены сети и затем не чаще `probes.standby.recheckInterval` (умолчание 30 минут) после последней пробы этого пути по любой причине. Как у `probes.candidates`, проверки идут только пока пользователь активен, ждут при нехватке памяти, идут по одной и расходуют `probes.limits`. Причина пробы в событиях и в `outbounds[].probe` запроса провайдера - `standby`. Результат меняет состояние пути, как любая проба. Выбранный путь не проверяется: его проверяет трафик. Отказ резерва трафик не уводит и вызывает запрос набора так же, как отказ любого невыбранного пути. Ядро до `rev=6` отклоняет это значение: `probePolicy must be regular or onDemand`.
 
 `isProbeOnly: true` требует `probes.candidates` или `telemetry.census`. Такой путь не получает пользовательский трафик даже при исчерпании и не может быть `startup.outbound` или `startup.pin.outbound`.
 
@@ -220,7 +222,7 @@ healthObservatory.telemetry.report.isEnabled is not supported; include the block
 | `name` | string | обязателен | непустое, до 128 байт, уникальное в балансировщике | имя для `selection.group` |
 | `cost` | number | обязателен | > 0, конечное | цена группы |
 | `probe` | string | обязателен | имя из `probes.profiles[]` | профиль членов |
-| `probePolicy` | string | `regular` | `regular`, `onDemand` | как у `selection` |
+| `probePolicy` | string | `regular` | `regular`, `onDemand`, `standby` | как у `selection` |
 | `returnToCheaper` | object | наследуется | как у `selection` | свой возврат группы |
 | `failedInRowToLeave` | int | `3` | 1..16 | отказов подряд до перехода к следующему члену |
 | `labels` | map | нет | до 6 меток | метки группы, объединяются с метками членов |
@@ -254,7 +256,7 @@ healthObservatory.telemetry.report.isEnabled is not supported; include the block
 
 `startup.pin` требует `healthObservatory.host.pinning`. Закреплённый путь не покидается при отказе. Ядро сообщает хосту событие `pinned_down` и остаётся на пути, пока хост не вызовет `Release` или не истечёт `pin.timeout`. Без `timeout` закрепление бессрочное, и если приложение не обрабатывает `pinned_down`, пользователь остаётся на мёртвом пути до перезапуска. Задавайте конечный `timeout`.
 
-`startup.probe` нужен, когда приложение показывает «Подключено» по `View`. Его принимает ядро с `rev` от 5. Без блока ядро работает по требованию: балансировщик выбирает путь с первым соединением пользователя, а путь считается рабочим после первого удачного соединения. На устройстве без трафика этого не случится, и `View` останется в `connecting`. С блоком ядро сразу после запуска само делает то, что сделало бы первое соединение:
+`startup.probe` нужен, когда приложение показывает «Подключено» по `View`. Его принимает ядро с `rev` от 6. Без блока ядро работает по требованию: балансировщик выбирает путь с первым соединением пользователя, а путь считается рабочим после первого удачного соединения. На устройстве без трафика этого не случится, и `View` останется в `connecting`. С блоком ядро сразу после запуска само делает то, что сделало бы первое соединение:
 
 1. Узнаёт кандидатов балансировщика и выбирает путь по обычным правилам старта (`startup.pin`, память сетей, `startup.outbound`, самый дешёвый). Это считается спросом пользователя: `is_idle` в Status и `View` становится `false`, поводы провайдера работают.
 2. Тут же проверяет выбранный путь пробой его профиля (`selection.probe`). Причина пробы в событиях и в `View` - `startup`.
@@ -357,7 +359,7 @@ routing.balancers[udp].strategy.settings.fallbackBalancer: cycle udp -> main -> 
 
 Хосту достаётся не больше половины `perMinute`: остальное остаётся на поиск отказов. Явное значение выше половины отвергается (`hostPerMinute must not exceed half of perMinute`), умолчание следует той же формуле: при `perMinute: 6` оно равно 3.
 
-Все пробы, кроме проверки сети и запроса меток, проходят через эти лимиты, поэтому они и задают потолок нагрузки на серверы и адреса проб, какими бы короткими ни были интервалы `candidates.recheckInterval`, `returnToCheaper.interval` и `userPresent.minInterval`.
+Все пробы, кроме проверки сети и запроса меток, проходят через эти лимиты, поэтому они и задают потолок нагрузки на серверы и адреса проб, какими бы короткими ни были интервалы `candidates.recheckInterval`, `standby.recheckInterval`, `returnToCheaper.interval` и `userPresent.minInterval`.
 
 #### `candidates`
 
@@ -369,6 +371,16 @@ routing.balancers[udp].strategy.settings.fallbackBalancer: cycle udp -> main -> 
 | `recheckInterval` | dur | `15m` | > 0 | как часто перепроверять проверенный |
 
 Не прошедшая проверку учётка перепроверяется после паузы карантина (2, 4, 8, 16, 30 минут с разбросом). Учётки сверх `keepVerified` не проверяются: чтобы ядро следило за всеми, `keepVerified` должен быть не меньше их числа.
+
+#### `standby`
+
+Как часто проверять пути с `probePolicy: standby`, пока балансировщик их не выбрал (раздел 3.1). Блок не включает проверку, её включает `probePolicy`; без блока действует умолчание. Ревизия 6.
+
+| Ключ | Тип | Умолчание | Допустимые значения | Смысл |
+|---|---|---|---|---|
+| `recheckInterval` | dur | `30m` | > 0 | через сколько после последней пробы пути проверить его снова |
+
+Новый путь и путь после смены сети проверяются сразу, не дожидаясь интервала. Если путь недавно проверила другая проба, например `RequestProbe` хоста, следующая проверка отсчитывается от неё.
 
 #### `requests`
 
@@ -508,7 +520,7 @@ UDP-проба по STUN: измеряет доступность и задер�
 | `metrics` | | | | | экспорт в метрики Xray; требует верхний блок `metrics` |
 | `census` | `sampleFraction` | number | обязателен | (0, 1] | доля сессий с переписью путей |
 | `census` | `startAfter` | dur | `3m` | > 0 | сколько ждать в сети перед переписью |
-| `census` | `onDemand` | array | пусто | теги путей и имена групп с `probePolicy: onDemand` | какие `onDemand` пути включить в перепись |
+| `census` | `onDemand` | array | пусто | теги путей и имена групп с `probePolicy: onDemand` или `standby` | какие из этих путей включить в перепись |
 | `trace` | `maxBytes` | int, байты | `262144` | 65536..2097152 | размер кольца трассы |
 | `trace.connections` | | | вкл. | `{"isEnabled": false}` | записи о соединениях; без них только события |
 
@@ -628,7 +640,7 @@ UDP-проба по STUN: измеряет доступность и задер�
       "tag": "reserve",
       "protocol": "vless",
       "settings": {"address": "reserve.example.invalid", "port": 443, "id": "5783a3e7-e373-51cd-8642-c83782b807c5", "encryption": "none"},
-      "selection": {"balancer": "auto", "cost": 5, "probe": "basic", "probePolicy": "onDemand"}
+      "selection": {"balancer": "auto", "cost": 5, "probe": "basic", "probePolicy": "standby"}
     },
     {"tag": "direct", "protocol": "freedom"},
     {"tag": "block", "protocol": "blackhole"}
@@ -655,6 +667,7 @@ UDP-проба по STUN: измеряет доступность и задер�
   "healthObservatory": {
     "probes": {
       "stepProfiles": {},
+      "standby": {"recheckInterval": "30m"},
       "profiles": [
         {"name": "basic", "steps": [{"name": "transport", "destinations": ["https://probe.example.invalid/204"]}]},
         {
@@ -691,7 +704,7 @@ UDP-проба по STUN: измеряет доступность и задер�
 }
 ```
 
-Здесь включены группы, возврат к дешёвому раз в 30 минут, перепроверка выбора при смене сети, двухшаговый профиль, проверка сети со свидетелем, журнал, отчёт, качество, метки путей и провайдер с поводом `minHealthy`. `tagPrefix: "p-"` не совпадает с началом ни одного тега конфига (раздел 6).
+Здесь включены группы, дорогой резерв `reserve`, который ядро проверяет раз в 30 минут, пока он не выбран, возврат к дешёвому раз в 30 минут, перепроверка выбора при смене сети, двухшаговый профиль, проверка сети со свидетелем, журнал, отчёт, качество, метки путей и провайдер с поводом `minHealthy`. `tagPrefix: "p-"` не совпадает с началом ни одного тега конфига (раздел 6).
 
 ## 4. Зависимости и ошибки загрузки
 
@@ -737,7 +750,7 @@ UDP-проба по STUN: измеряет доступность и задер�
 | `telemetry.report.sessionLabels`, `quietSampleFraction` > 0 | `telemetry.report` | `healthObservatory.telemetry.report.sessionLabels requires telemetry.report` (для `quietSampleFraction` так же) |
 | `telemetry.census` | `telemetry.report` | `healthObservatory.telemetry.census requires telemetry.report` |
 | `telemetry.census` | `sampleFraction` | `healthObservatory.telemetry.census.sampleFraction is required and must be in (0, 1]` |
-| `telemetry.census.onDemand` | существующие пути или группы с `probePolicy: onDemand` | `healthObservatory.telemetry.census.onDemand[0]: reserve must use probePolicy:onDemand` |
+| `telemetry.census.onDemand` | существующие пути или группы с `probePolicy: onDemand` или `standby` | `healthObservatory.telemetry.census.onDemand[0]: reserve must use probePolicy:onDemand` |
 | `telemetry.metrics` | верхний блок `metrics` | `healthObservatory.telemetry.metrics requires metrics exporter` |
 | `providers[].apply.balancers` | балансировщики `leastCost` | `healthObservatory.providers[fresh].apply.balancers auto must use leastCost` |
 | `providers[].triggers.whenCostAbove` | `cost` | `healthObservatory.providers[fresh].triggers.whenCostAbove.cost is required` |
@@ -858,6 +871,7 @@ UDP-проба по STUN: измеряет доступность и задер�
 | `limits.hostPerMinute` | 1..max(`perMinute`/2, 1) |
 | `candidates.keepVerified` | 1..4 |
 | `candidates.recheckInterval` | > 0 |
+| `standby.recheckInterval` | > 0 |
 | `requests.maxOutbounds` | 1..16 |
 | `requests.timeout` | > 0, до 10m |
 | `udp.destinations` | 1..4 `host:port`, порт 1..65535 |
@@ -904,7 +918,7 @@ UDP-проба по STUN: измеряет доступность и задер�
 | `providers[].triggers.minHealthy.outbounds` | верхнего предела | значение больше размера набора держит повод включённым постоянно, в пределах `maxRefreshesPerHour` | не больше числа путей в наборе |
 | `providers[].timeout` | верхнего предела | долгий таймаут держит соединения к перегруженному бэку | 8s..10s |
 | `evidence.*.timeout`, `failover.closeSilent.after` | нижнего предела | `"1ms"` признаёт мёртвыми рабочие пути и рвёт живые соединения | не ниже умолчаний |
-| `candidates.recheckInterval`, `returnToCheaper.interval`, `userPresent.minInterval` | нижнего предела | пробы чаще нужного, в пределах `probes.limits` | не ниже умолчаний |
+| `candidates.recheckInterval`, `standby.recheckInterval`, `returnToCheaper.interval`, `userPresent.minInterval` | нижнего предела | пробы чаще нужного, в пределах `probes.limits` | не ниже умолчаний |
 | `providers[].headers` | предела числа заголовков и длины значений | большой запрос | только нужный токен |
 
 ## 6. Ловушки
@@ -938,7 +952,7 @@ UDP-проба по STUN: измеряет доступность и задер�
 Ядро ставит в каждый запрос провайдера заголовок-словарь RFC 8941:
 
 ```http
-Xray-Adaptive: xray="26.10.31", api=2, rev=5, provider=1
+Xray-Adaptive: xray="26.10.31", api=2, rev=6, provider=1
 ```
 
 | Поле | Смысл |
@@ -958,7 +972,8 @@ Xray-Adaptive: xray="26.10.31", api=2, rev=5, provider=1
 | 2 | `startup.outbound` и `startup.pin.outbound` с тегом провайдера этого балансировщика (с его `tagPrefix`) |
 | 3 | `healthObservatory.telemetry.trace` |
 | 4 | `outbounds[].speedLimit` в строгой форме; новые отказы при загрузке; ответ провайдера с неизвестными ключами и `null`; удержание пути при исчерпании. Подробно ниже |
-| 5 | `healthObservatory.host.view`: команда хоста `View`, снимок для экрана приложения (раздел 3.7); `strategy.settings.startup.probe`: проверка выбора пробой сразу после запуска (раздел 3.3) |
+| 5 | `healthObservatory.host.view`: команда хоста `View`, снимок для экрана приложения (раздел 3.7) |
+| 6 | `strategy.settings.startup.probe`: проверка выбора пробой сразу после запуска (раздел 3.3); `probePolicy: standby` у `selection` и `groups[]` и блок `healthObservatory.probes.standby`: проверка резерва, пока он не выбран (разделы 3.1 и 3.5) |
 
 Ревизия 4 для автора конфига:
 
@@ -973,9 +988,11 @@ Xray-Adaptive: xray="26.10.31", api=2, rev=5, provider=1
 - исчерпанный балансировщик сначала держит последний путь и переходит в `fallbackBalancer` или `fallbackTag` после проверки связи или через минуту (раздел 3.3, `fallbackBalancer`);
 - умолчание `telemetry.trace.maxBytes` - 256 КиБ.
 
-Для ручки провайдера ревизия 4 меняет разбор ответа и тело запроса, список в [provider-protocol.md](provider-protocol.md), раздел 14. Новые поля выходных данных: `Status.balancers[].outbound` и `outbound_labels` (имена действуют с ревизии 5), `ignored_keys` у `provider_apply`, `held` у `exhausted`, `evidence_ms` у подозрения `path_state`, классы вместо текстов в `provider_fetch.error`, хеш в `network_change.network` ([telemetry.md](telemetry.md)).
+Для ручки провайдера ревизия 4 меняет разбор ответа и тело запроса, список в [provider-protocol.md](provider-protocol.md), раздел 14. Новые поля выходных данных: `Status.balancers[].outbound` и `outbound_labels` (имена действуют с ревизии 6, в ревизиях 4 и 5 - `exit` и `exit_labels`), `ignored_keys` у `provider_apply`, `held` у `exhausted`, `evidence_ms` у подозрения `path_state`, классы вместо текстов в `provider_fetch.error`, хеш в `network_change.network` ([telemetry.md](telemetry.md)).
 
-Ревизия 5 добавляет два блока, `healthObservatory.host.view` и `strategy.settings.startup.probe` балансировщика `leastCost`, и больше ничего в конфиге не меняет: конфиг ревизии 4 загружается как раньше, ответ провайдера и запрос ядра прежние. В Status два поля получили новые имена, см. [changelog.md](changelog.md). Ядро до `rev=5` отклонит конфиг с любым из этих блоков (`healthObservatory.host.view: unknown key`, `leastCost.settings.startup.probe: unknown key`), поэтому их кладут только клиентам с `rev` от 5.
+Ревизия 5 добавляет один блок, `healthObservatory.host.view`, и больше ничего в конфиге не меняет: конфиг ревизии 4 загружается как раньше, ответ провайдера и запрос ядра прежние. Ядро до `rev=5` отклонит конфиг с этим блоком (`healthObservatory.host.view: unknown key`), поэтому его кладут только клиентам с `rev` от 5.
+
+Ревизия 6 добавляет блок `strategy.settings.startup.probe` балансировщика `leastCost`, значение `probePolicy: standby` и блок `healthObservatory.probes.standby`. Конфиг ревизии 5 загружается как раньше. Ядро ревизии 5 отклонит конфиг с любым из них (`leastCost.settings.startup.probe: unknown key`, `probePolicy must be regular or onDemand`, `healthObservatory.probes.standby: unknown key`), а ответ провайдера с `probePolicy: standby` - целиком. Поэтому всё это кладут только клиентам с `rev` от 6. В `View` и Status ревизия 6 переименовала поля и состояния, см. [changelog.md](changelog.md).
 
 Ядро отвергает конфиг с незнакомым ключом в строгих блоках целиком, поэтому бэк выбирает конфиг по заголовку клиента:
 

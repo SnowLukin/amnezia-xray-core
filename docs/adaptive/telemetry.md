@@ -71,7 +71,7 @@
 | `for_ms` | целое | Сколько путь в текущем состоянии. |
 | `failures` | целое | Накопленные неудачные соединения, ещё не превращённые в решение. |
 | `quarantine_ms`, `quarantine_level`, `is_provisional` | необязательные | Только у `down` в карантине: сколько осталось, уровень карантина, признак временного карантина (путь признан отказавшим, пока проверка связи не проходила). У проверочной учётки в `down` этих полей нет: она не в карантине, а ждёт перепроверки, см. `path_state` в разделе [Выбор и состояние путей](#выбор-и-состояние-путей). |
-| `rtt_ms` | целое, необязательное | Время последней успешной пробы. |
+| `rtt_ms` | целое, необязательное | Время до ответа в последней успешной пробе, включая новое соединение через путь. Не скорость канала, см. [provider-protocol.md](provider-protocol.md), раздел 4. |
 | `last_error` | строка, необязательная | Сырой текст ошибки последней неудачной пробы. Может содержать адрес. |
 | `server_name` | строка, необязательная | Имя сервера TLS или REALITY, без него адрес сервера. |
 | `conns_ok`, `conns_failed` | целое | Пользовательские соединения за жизнь пути. |
@@ -272,7 +272,7 @@
 
 Виды отказа пользовательского соединения (`kinds`, `failures_by_kind`, `evidence`): `dial_failed`, `dial_timeout`, `server_unverified`, `no_response`, `closed`, `stall`, `partial_stall`.
 
-Причины проб (`probe_start.reason`, `probe_result.reason`): `confirm`, `failover`, `wake`, `network_change`, `remembered`, `recheck`, `lone`, `candidate`, `audit`, `group_recheck`, `return`, `host`, `census`, `startup`. Причина `startup` - проверка выбора балансировщика с блоком `startup.probe`, пока в этом запуске у него не было подтверждённого пути; её результат обрабатывается как результат `network_change`. У UDP-проб свои причины: `udp_switch`, `udp_suspect`, `host`.
+Причины проб (`probe_start.reason`, `probe_result.reason`): `confirm`, `failover`, `wake`, `network_change`, `remembered`, `recheck`, `lone`, `candidate`, `audit`, `group_recheck`, `return`, `host`, `census`, `startup`, `standby`. Причина `startup` - проверка выбора балансировщика с блоком `startup.probe`, пока в этом запуске у него не было подтверждённого пути; её результат обрабатывается как результат `network_change`. Причина `standby` (ревизия 6) - проверка пути с `probePolicy: standby`, пока балансировщик его не выбрал ([config.md](config.md), раздел 3.1); результат меняет состояние пути, как у любой пробы, а отказ не уводит трафик: путь и так не выбран. У UDP-проб свои причины: `udp_switch`, `udp_suspect`, `host`.
 
 Классы ошибки пробы (`probe_result.error`, `steps[].error`, `connectivity.error`): `dial_failed`, `dial_timeout`, `server_unverified`, `no_progress`, `timeout`, `closed`, `status_<код HTTP>`, `short_body`, `other`. Текст ошибки в эти поля не попадает.
 
