@@ -9,6 +9,8 @@
 | | Ревизия 6 | Ревизия 7 |
 |---|---|---|
 | Заголовок | `xray="26.10.31", api=2, rev=6, provider=1` | `xray="26.10.31", api=2, rev=7, provider=1` |
+| Ядро `xray-core-adaptive` | `783c4616`, ветка `finalize/adaptive` | та же ветка. Мост закреплён на `332bb742`; более поздние коммиты меняют только документы |
+| Мост: libXray, кит | `2cfd866`, `cc27581` | `3deb3d4`, `e362d27`, ветка `finalize/adaptive`. `libXray.aar` 57 309 273 байта, SHA-256 `cd42679fb1f653e7c83b656f013a5a06f92fcfb4894de7216f1d226ab8b3104e`; `VpnFoundation.xcframework.zip` 70 382 611 байт, SHA-256 `251ddb31b2d1bf9a8b40399eb3c4156b203a698c4975d36c7dd1488829a05325` |
 | `RequestProviderRefresh` в libXray, C, Swift, Android | `bool` | Result, как в gRPC: `data` с `request_id`, `is_queued`, `reason`, `retry_in_ms`. Swift: `XrayHealthResult<XrayHealthProviderRefresh>?` |
 | `RequestProviderRefresh` в gRPC и CLI | `data`: `is_queued`, `reason`, `retry_in_ms` | ещё `request_id`. Поле `.proto` не менялось, `data` остаётся строкой JSON |
 | `RequestProviderRefresh` в Go API | `bool` | номер запроса, 0 - нет такого провайдера |
