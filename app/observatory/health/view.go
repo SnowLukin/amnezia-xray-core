@@ -74,6 +74,8 @@ type viewProvider struct {
 	State    string `json:"state"`
 	NextInMs *int64 `json:"next_in_ms,omitempty"`
 	SetAgeMs int64  `json:"set_age_ms"`
+	// The last refresh the host asked for, none before the first.
+	Request *viewRequest `json:"request,omitempty"`
 }
 
 type viewSwitch struct {
@@ -113,7 +115,13 @@ func (v ViewData) timeless() ViewData {
 	}
 	v.Providers = slices.Clone(v.Providers)
 	for i := range v.Providers {
-		v.Providers[i].NextInMs, v.Providers[i].SetAgeMs = nil, 0
+		p := &v.Providers[i]
+		p.NextInMs, p.SetAgeMs = nil, 0
+		if p.Request != nil {
+			r := *p.Request
+			r.AgoMs, r.WaitMs = 0, 0
+			p.Request = &r
+		}
 	}
 	if v.LastSwitch != nil {
 		s := *v.LastSwitch
@@ -240,6 +248,7 @@ func (e *engine) view(now time.Time) ViewData {
 			in := p.nextAt.Sub(now).Milliseconds()
 			pv.NextInMs = &in
 		}
+		pv.Request = e.requestView(p, now)
 		fetching, refused, rebased = fetching || p.fetching, refused || p.authFailed, rebased || p.baseReported != ""
 		v.Providers = append(v.Providers, pv)
 	}

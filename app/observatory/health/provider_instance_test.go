@@ -152,7 +152,7 @@ func TestProviderRefreshInRunningCore(t *testing.T) {
 	srv.set(`{"outbounds": [{"tag": "x1", "selection": {"balancer": "auto", "probe": "check", "cost": 1}, "protocol": "freedom"},
 	                        {"tag": "x2", "selection": {"balancer": "auto", "probe": "check", "cost": 1}, "protocol": "freedom", "settings": {"domainStrategy": "UseIP"}}, ` +
 		vlessOutbounds + `]}`)
-	if !obs.RequestProviderRefresh("fresh") {
+	if obs.RequestProviderRefresh("fresh") == 0 {
 		t.Fatal("provider not found")
 	}
 	ev := w.until("provider_apply", nil)

@@ -23,7 +23,7 @@ func TestProviderMirrorsTryInOrderBeforeNextVia(t *testing.T) {
 	defer second.Close()
 	obs := twoViaCore(t, first.URL, fmt.Sprintf(`,"urls":[%q,%q,%q,%q]`, first.URL+"/one", second.URL, first.URL+"/three", first.URL+"/four"))
 	w := &eventWaiter{t: t, o: obs}
-	if !obs.RequestProviderRefresh("fresh") {
+	if obs.RequestProviderRefresh("fresh") == 0 {
 		t.Fatal("manual refresh refused")
 	}
 	w.until("provider_apply", func(e health.Event) bool { return e.Fields["is_ok"] == true })
@@ -63,7 +63,7 @@ func TestProviderMirrorsRespectAuthoritativeRejection(t *testing.T) {
 			second := httptest.NewServer(working)
 			defer second.Close()
 			obs := twoViaCore(t, first.URL, fmt.Sprintf(`,"urls":[%q,%q]`, first.URL, second.URL))
-			if !obs.RequestProviderRefresh("fresh") {
+			if obs.RequestProviderRefresh("fresh") == 0 {
 				t.Fatal("manual refresh refused")
 			}
 			waitRefreshed(t, obs)
@@ -120,7 +120,7 @@ func TestProviderRetryAfterWithoutProtocolBodyTriesTheNextMirror(t *testing.T) {
 	defer second.Close()
 	obs := twoViaCore(t, first.URL, fmt.Sprintf(`,"urls":[%q,%q]`, first.URL, second.URL))
 	w := &eventWaiter{t: t, o: obs}
-	if !obs.RequestProviderRefresh("fresh") {
+	if obs.RequestProviderRefresh("fresh") == 0 {
 		t.Fatal("manual refresh refused")
 	}
 	w.until("provider_apply", func(e health.Event) bool { return e.Fields["is_ok"] == true })
@@ -152,7 +152,7 @@ func TestProviderServerThatDoesNotAnswerGetsTwoRequests(t *testing.T) {
 	defer close(hang.done)
 	u := srv.URL
 	obs := twoViaCore(t, u, fmt.Sprintf(`,"timeout":"500ms","urls":[%q,%q,%q,%q]`, u+"/1", u+"/2", u+"/3", u+"/4"))
-	if !obs.RequestProviderRefresh("fresh") {
+	if obs.RequestProviderRefresh("fresh") == 0 {
 		t.Fatal("manual refresh refused")
 	}
 	waitRefreshed(t, obs)
@@ -198,7 +198,7 @@ func TestProviderEveryViaGetsAnAttemptAfterDeadRoads(t *testing.T) {
 	health.ConfigureProviderLongCooldownForTest(obs)
 	selectProviderTraffic(t, obs)
 	w := &eventWaiter{t: t, o: obs}
-	if !obs.RequestProviderRefresh("fresh") {
+	if obs.RequestProviderRefresh("fresh") == 0 {
 		t.Fatal("manual refresh refused")
 	}
 	waitRefreshed(t, obs)
@@ -240,7 +240,7 @@ func TestProviderTimeoutsHaveACeiling(t *testing.T) {
 	u := "https://" + ln.Addr().String()
 	obs := twoViaCore(t, u, fmt.Sprintf(`,"timeout":"300ms","urls":[%q,%q,%q,%q]`, u+"/1", u+"/2", u+"/3", u+"/4"))
 	w := &eventWaiter{t: t, o: obs}
-	if !obs.RequestProviderRefresh("fresh") {
+	if obs.RequestProviderRefresh("fresh") == 0 {
 		t.Fatal("manual refresh refused")
 	}
 	waitRefreshed(t, obs)
@@ -264,7 +264,7 @@ func TestProviderTLSFailureIsOnlyAClass(t *testing.T) {
 	u := strings.Replace(srv.URL, "127.0.0.1", "localhost", 1)
 	obs := twoViaCore(t, u)
 	w := &eventWaiter{t: t, o: obs}
-	if !obs.RequestProviderRefresh("fresh") {
+	if obs.RequestProviderRefresh("fresh") == 0 {
 		t.Fatal("manual refresh refused")
 	}
 	waitRefreshed(t, obs)

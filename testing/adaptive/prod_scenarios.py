@@ -786,6 +786,99 @@ def prod_labels_change(stand, xray, work, name):
 
 
 @prod
+def prod_location_change(stand, xray, work, name):
+    """The host changes the country with a header and a refresh. The backend
+    gives a slot labelled with the new country: View says applied and the
+    outbound carries the country. Then the backend cannot give the next
+    country: 409 location_unavailable, View says failed with the code, the
+    set and the traffic stay. The host puts the header back, and the retry
+    the core makes by itself after the backoff goes with it and is answered."""
+    backend = stand.serve(strict_provider.Backend(slot_labels={"country": "nl"}, locations={"nl", "de"}))
+    provider = backend.expect.provider
+    began = time.time()
+    m, st = Marks(), {}
+    slot = full(backend, 0, "s")
+
+    def request(rid, done=True):
+        """The request of the host in View once it has the number, and is
+        no longer pending when done."""
+        def get():
+            v = c.api("view")
+            r = (v.get("providers") or [{}])[0].get("request") or {}
+            if r.get("id") == rid and (not done or r.get("state") != "pending"):
+                st.setdefault("views", []).append(v)
+                return v
+            return None
+        return wait_for(get, 60)
+
+    with bench.Client(xray, prod_config(backend), work, name) as c:
+        clock = Clock()
+        tr = bench.Traffic(rate=2, big=0.5, timeout=5).start()
+        clock.until(20)
+        m["de"] = time.time()
+        c.api("headers", provider, stdin=json.dumps({"X-Location": "country:de"}))
+        st["first"] = c.api("refresh", provider)
+        st["applied"] = request(st["first"].get("request_id"))
+        st["after_de"] = c.status()
+        m["xx"] = time.time()
+        c.api("headers", provider, stdin=json.dumps({"X-Location": "country:xx"}))
+        st["second"] = c.api("refresh", provider)
+        st["waiting"] = request(st["second"].get("request_id"), done=False)
+        st["failed"] = request(st["second"].get("request_id"))
+        m["failed"] = time.time()
+        st["after_xx"] = c.status()
+        c.api("headers", provider, stdin=json.dumps({"X-Location": "country:de"}))
+        wait_for(lambda: [r for r in backend.requests if r["at"] > m["failed"]], 60)
+        time.sleep(2)
+        st["end"] = c.status()
+        tr.stop()
+    events = c.events
+    first, second = st["first"] or {}, st["second"] or {}
+    applied, waiting, failed_view = st["applied"] or {}, st["waiting"] or {}, st["failed"] or {}
+
+    def req(v):
+        r = (v.get("providers") or [{}])[0].get("request") or {}
+        return r.get("id"), r.get("state"), r.get("code")
+
+    def version(status):
+        return (status.get("providers") or [{}])[0].get("version")
+    asked = [(r.get("location"), r["status"]) for r in backend.requests if r["at"] >= m["de"]]
+    retry = [(r.get("location"), r["status"], (r["body"] or {}).get("trigger")) for r in backend.requests
+             if r["at"] > m["failed"]]
+    closed = [(f.get("id"), f.get("state"), f.get("code")) for f in fields(events, "provider_request")]
+    save(work, name, events=events, statuses=st, requests=backend.requests, violations=backend.violations)
+    return [
+        check("request numbers", (first.get("request_id"), second.get("request_id")),
+              isinstance(first.get("request_id"), int) and second.get("request_id") == first.get("request_id", 0) + 1,
+              "n, n + 1"),
+        check("country de: request, outbound and its country in View", (req(applied), applied.get("outbound", {}).get("tag"),
+              (applied.get("outbound", {}).get("labels") or {}).get("country")),
+              req(applied) == (first.get("request_id"), "applied", None)
+              and applied.get("outbound", {}).get("tag") == slot
+              and (applied.get("outbound", {}).get("labels") or {}).get("country") == "de", "(applied), slot, de"),
+        check("country xx waits urgentMinInterval (state, wait_ms)",
+              (req(waiting)[1], (waiting.get("providers") or [{}])[0].get("request", {}).get("wait_ms")),
+              req(waiting)[1] == "pending", "pending"),
+        check("country xx: request in View", req(failed_view),
+              req(failed_view) == (second.get("request_id"), "failed", "location_unavailable"),
+              "(n + 1, failed, location_unavailable)"),
+        check("set and outbound after the refusal (version, outbound, country)",
+              (version(st["after_xx"]) == version(st["after_de"]), failed_view.get("outbound", {}).get("tag"),
+               (failed_view.get("outbound", {}).get("labels") or {}).get("country")),
+              version(st["after_xx"]) == version(st["after_de"]) and failed_view.get("outbound", {}).get("tag") == slot
+              and (failed_view.get("outbound", {}).get("labels") or {}).get("country") == "de", "(True, slot, de)"),
+        check("requests at the backend (X-Location, status)", asked,
+              asked[:2] == [("country:de", 200), ("country:xx", 409)], "[(de, 200), (xx, 409), ...]"),
+        check("retry of the core after the header came back (X-Location, status, trigger)", retry[:1],
+              retry[:1] == [("country:de", 200, "host")], "[(de, 200, host)]"),
+        check("provider_request events", closed,
+              closed[-2:] == [(first.get("request_id"), "applied", None),
+                              (second.get("request_id"), "failed", "location_unavailable")], "[applied, failed]"),
+        check("user requests failed", failed(tr, m["de"], time.time()), failed(tr, m["de"], time.time()) == 0, "== 0"),
+    ] + protocol_checks(stand, c, backend, began)
+
+
+@prod
 def prod_auth_refused(stand, xray, work, name):
     """The backend answers 401 with the error body: the host hears of it, the
     core holds every refresh, and new headers from the host end the pause."""

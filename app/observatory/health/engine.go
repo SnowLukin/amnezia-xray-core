@@ -173,6 +173,8 @@ type engine struct {
 
 	queue   []*probeJob
 	running map[uint64]*probeJob
+	// Numbers the refreshes the host asks for.
+	hostRequests uint64
 	nextID  uint64
 
 	// When the spacing after each recent probe start ends.

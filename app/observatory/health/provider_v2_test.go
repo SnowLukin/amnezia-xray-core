@@ -38,7 +38,7 @@ func TestProviderV2AbsentHasNoRuntimeOrBackgroundWork(t *testing.T) {
 		}); n != 0 {
 			t.Fatalf("disabled tick allocated %v", n)
 		}
-		if o.RequestProviderRefresh("fresh") {
+		if o.RequestProviderRefresh("fresh") != 0 {
 			t.Fatal("disabled refresh accepted")
 		}
 		_, err := o.ProviderRefreshInfo("fresh")
@@ -250,7 +250,7 @@ func TestProviderV2OversizedEssentialNeverFetchesOrChangesSet(t *testing.T) {
 	if seq != next || fmt.Sprint(saved) != fmt.Sprint(after) {
 		t.Fatal("overflow changed accepted provider set")
 	}
-	f.o.e.requestRefresh("fresh")
+	f.o.e.hostRefresh("fresh", now)
 	jobs, _ := f.o.e.tickProviders(now)
 	if len(jobs) != 0 {
 		t.Fatal("manual request bypassed overflow backoff")

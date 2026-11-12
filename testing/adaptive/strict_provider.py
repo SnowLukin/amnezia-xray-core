@@ -22,6 +22,12 @@ Answers follow Backend.script, one item per request, then Backend.default:
   ("base", v)        this and later answers name base config v
   ("version",)       the same outbounds under a new version
 
+With locations, a set of countries, the backend reads the header
+X-Location: country:<c> before the script. A country of the set labels the
+slot with it (a new version when it changes), any other country gets 409
+location_unavailable, a value without country: gets 400 location_unknown,
+both with an error body of the protocol.
+
 Importing the module opens no sockets.
 """
 import calendar
@@ -415,7 +421,7 @@ class Backend:
 
     def __init__(self, provider="api", balancers=("auto", "roads"), via=("auto", "roads", "direct"), prefix="p-",
                  base_version="base-4", slot=0, awg=False, leases=None, slot_labels=None, max_per_hour=6,
-                 next_refresh="2h"):
+                 next_refresh="2h", locations=None):
         self.lock = threading.Lock()
         self.expect = Expect(provider, balancers, via, prefix, base_version, max_per_hour)
         self.base = base_version
@@ -434,6 +440,7 @@ class Backend:
         self.runs = {}
         self.not_before = 0.0
         self.refused = None
+        self.locations = locations
 
     @staticmethod
     def tag(entry, role):
@@ -530,7 +537,24 @@ class Backend:
                      and o.get("tag") == self.tag(self.slot, "s")), {})
         return first.get("isExhausted") is True or slot.get("state") == "down" or self.slot not in self.alive
 
-    def respond(self, action, body, auth, now):
+    def locate(self, location):
+        """The answer to X-Location when it refuses one, else None."""
+        if self.locations is None or not location:
+            return None
+        if not location.startswith("country:"):
+            return 400, {}, {"protocol": 1, "code": "location_unknown", "message": location}
+        country = location.removeprefix("country:")
+        if country not in self.locations:
+            return 409, {}, {"protocol": 1, "code": "location_unavailable", "message": location}
+        if (self.slot_labels or {}).get("country") != country:
+            self.slot_labels = dict(self.slot_labels or {}, country=country)
+            self.generation += 1
+        return None
+
+    def respond(self, action, body, auth, now, location=None):
+        refusal = self.locate(location)
+        if refusal is not None:
+            return refusal
         kind = action[0]
         if kind == "busy":
             self.not_before = now + action[1]
@@ -586,8 +610,9 @@ class Backend:
             auth = headers.get("authorization")
             bad += self.session(body, raw, auth, now)
             action = self.script.pop(0) if self.script else self.default
-            status, extra, doc = self.respond(action, body, auth, now)
-            self.requests.append({"at": now, "method": method, "path": path, "auth": auth,
+            location = headers.get("x-location")
+            status, extra, doc = self.respond(action, body, auth, now, location)
+            self.requests.append({"at": now, "method": method, "path": path, "auth": auth, "location": location,
                                   "adaptive": headers.get("xray-adaptive"), "bytes": len(raw), "body": body,
                                   "action": list(action), "status": status, "version": doc.get("version")})
             for rule in bad:

@@ -20,6 +20,9 @@ type testEngine struct {
 	conn uint32
 }
 
+// requestRefresh is a request of the host at the start of the tests.
+func (te *testEngine) requestRefresh(tag string) bool { return te.hostRefresh(tag, t0) != 0 }
+
 func newTestEngine(t *testing.T, cfg *Config, sc *SelectorConfig, candidates ...string) *testEngine {
 	t.Helper()
 	return newSeededTestEngine(t, 1, cfg, sc, candidates...)

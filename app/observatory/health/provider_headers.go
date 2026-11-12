@@ -262,6 +262,11 @@ func (e *engine) setProviderHeaders(tag string, headers map[string]string, now t
 	if e.rotate(p, headers, "host", now) {
 		// The headers the host keeps with the set changed.
 		p.seq++
+		if p.req.state == requestPending && p.req.refresh != 0 {
+			// The refresh under way went with the old headers: another
+			// one answers the request.
+			p.req.refresh, p.host = 0, true
+		}
 	}
 	// The host vouches for the headers, changed or not.
 	p.authFailed, p.authRetryAt = false, time.Time{}

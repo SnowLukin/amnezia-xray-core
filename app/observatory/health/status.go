@@ -111,6 +111,8 @@ type providerStatusView struct {
 	Headers       []string `json:"headers,omitempty"`
 	IsAuthRefused bool     `json:"is_auth_refused,omitempty"`
 	AuthRetryInMs *int64   `json:"auth_retry_in_ms,omitempty"`
+	// The last refresh the host asked for, as in View.
+	Request *viewRequest `json:"request,omitempty"`
 	// The number ProviderSet returns with the set.
 	AnswerSeq uint64 `json:"answer_seq,omitempty"`
 	// The base config the core started with, the one the last answer named,
@@ -322,6 +324,7 @@ func (e *engine) status(now time.Time) statusView {
 			in := p.authRetryAt.Sub(now).Milliseconds()
 			pv.AuthRetryInMs = &in
 		}
+		pv.Request = e.requestView(p, now)
 		v.Providers = append(v.Providers, pv)
 	}
 	for _, r := range e.requests {

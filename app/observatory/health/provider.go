@@ -74,7 +74,9 @@ type provider struct {
 	nextAt      time.Time
 	nextTrigger refreshTrigger
 
-	host           bool
+	host bool
+	// The last refresh the host asked for.
+	req            hostRequest
 	networkPending bool
 	networkAt      time.Time
 	// The minHealthy trigger fires once when the balancer drops below the
@@ -501,15 +503,21 @@ func (p *provider) allowedAt(shortInterval bool, now time.Time) (time.Time, stri
 	// The backend asked for it: even the host and an exhausted balancer wait,
 	// since asking sooner only adds to the load that made it busy.
 	later(p.retryAfterUntil, "retry_after")
+	recent := p.attempts[p.attemptsBefore(now):]
+	if p.cfg.maxPerHour > 0 && len(recent) >= p.cfg.maxPerHour {
+		later(recent[0].Add(time.Hour), "max_per_hour")
+	}
+	return at, why
+}
+
+// attemptsBefore counts the attempts older than an hour, which no limit
+// counts any more.
+func (p *provider) attemptsBefore(now time.Time) int {
 	cut := 0
 	for cut < len(p.attempts) && now.Sub(p.attempts[cut]) >= time.Hour {
 		cut++
 	}
-	p.attempts = p.attempts[cut:]
-	if p.cfg.maxPerHour > 0 && len(p.attempts) >= p.cfg.maxPerHour {
-		later(p.attempts[0].Add(time.Hour), "max_per_hour")
-	}
-	return at, why
+	return cut
 }
 
 // skipRefresh reports a held back trigger once per reason, so a trigger that
@@ -529,13 +537,16 @@ func (e *engine) skipRefresh(p *provider, t refreshTrigger, why string, wait tim
 func (e *engine) beginRefresh(p *provider, t refreshTrigger, now time.Time) *refreshJob {
 	p.fetching = true
 	p.lastAttempt = now
-	p.attempts = append(p.attempts, now)
+	p.attempts = append(p.attempts[p.attemptsBefore(now):], now)
 	p.host = false
 	p.networkPending = false
 	p.minHealthyArmed = false
 	p.retrying = false
 	clear(p.skipped)
 	p.refreshSeq++
+	if p.req.state == requestPending {
+		p.req.refresh = p.refreshSeq
+	}
 	j := &refreshJob{p: p, trigger: t, retry: p.failures, refresh: p.refreshSeq, asked: p.askLeases(now),
 		headers: p.requestHeaders(), headersGen: p.headersGen}
 	if p.authFailed {
@@ -581,10 +592,11 @@ func (e *engine) onRefreshDone(j *refreshJob, r refreshOutcome, now time.Time) {
 		e.report.countRefresh(p.cfg.tag, p.lastRefresh)
 	}
 	p.answeredLeases(j.asked, r.ok)
+	e.answerRequest(j, r, now)
 	if r.ok {
 		p.setAt = now
-		// Host requests made while the refresh ran are answered by it.
-		p.host = false
+		// A host request made while the refresh ran stays: the refresh went
+		// with the headers before it, see hostRequest.
 		p.authFailed, p.authRetryAt = false, time.Time{}
 		p.lastError = ""
 		p.lastFailedAt, p.lastStatus, p.lastClass = time.Time{}, 0, ""
@@ -632,19 +644,6 @@ func (e *engine) onRefreshDone(j *refreshJob, r refreshOutcome, now time.Time) {
 	}
 	p.failures++
 	p.backoffUntil = now.Add(e.jitter(p.cfg.backoff.delay(p.failures-1), p.cfg.backoff.jitter))
-}
-
-// requestRefresh asks the provider with the tag, or every provider when the
-// tag is empty, to refresh as soon as the limits allow.
-func (e *engine) requestRefresh(tag string) bool {
-	found := false
-	for _, p := range e.providers {
-		if tag == "" || p.cfg.tag == tag {
-			p.host = true
-			found = true
-		}
-	}
-	return found
 }
 
 func (e *engine) providersOnNetworkChange(known bool, now time.Time) {

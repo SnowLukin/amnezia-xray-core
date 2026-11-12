@@ -32,7 +32,7 @@ func TestSetProviderURLsTakesTheNextRefresh(t *testing.T) {
 	if err := obs.SetProviderURLs("fresh", []string{second.URL + "/set"}); err != nil {
 		t.Fatal(err)
 	}
-	if !obs.RequestProviderRefresh("fresh") {
+	if obs.RequestProviderRefresh("fresh") == 0 {
 		t.Fatal("manual refresh refused")
 	}
 	waitRefreshed(t, obs)

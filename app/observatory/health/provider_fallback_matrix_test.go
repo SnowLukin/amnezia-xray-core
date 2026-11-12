@@ -108,7 +108,7 @@ func TestProviderFailuresKeepBaseUserRoute(t *testing.T) {
 				}
 			}
 			assertUserRoute()
-			accepted := observer.RequestProviderRefresh("fresh")
+			accepted := observer.RequestProviderRefresh("fresh") != 0
 			if accepted != (mode != "absent") {
 				t.Fatalf("refresh accepted = %v in %s mode", accepted, mode)
 			}

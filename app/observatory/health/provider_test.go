@@ -961,8 +961,11 @@ func TestRefreshWhileFetchingWaits(t *testing.T) {
 	te.requestRefresh("fresh")
 	expectNoRefresh(t, te, at(time.Minute))
 	te.onRefreshDone(j, refreshOutcome{ok: true}, at(time.Minute))
-	// A request made during a successful refresh is answered by it.
-	expectNoRefresh(t, te, at(2*time.Minute))
+	// A request made during a refresh is not answered by it: the refresh
+	// went with the headers before the request. It gets one of its own.
+	j = expectRefresh(t, te, at(2*time.Minute), "host")
+	te.onRefreshDone(j, refreshOutcome{ok: true}, at(3*time.Minute))
+	expectNoRefresh(t, te, at(4*time.Minute))
 }
 
 // 1000 clients started together with the same schedule must not come back

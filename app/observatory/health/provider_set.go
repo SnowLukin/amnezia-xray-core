@@ -1660,19 +1660,20 @@ func (o *Observer) closeProviders() {
 }
 
 // RequestProviderRefresh asks the provider with the tag, or every provider when the
-// tag is empty, to fetch its set as soon as its limits allow. It returns
-// false when there is no such provider.
-func (o *Observer) RequestProviderRefresh(provider string) bool {
-	var ok bool
+// tag is empty, to fetch its set as soon as its limits allow. It returns the
+// number of the request, which View follows in providers[].request, or 0
+// when there is no such provider.
+func (o *Observer) RequestProviderRefresh(provider string) uint64 {
+	var id uint64
 	func() {
 		o.mu.Lock()
 		defer o.mu.Unlock()
 
-		ok = o.e.requestRefresh(provider)
+		id = o.e.hostRefresh(provider, o.now())
 
 	}()
-	if ok {
+	if id != 0 {
 		o.wake()
 	}
-	return ok
+	return id
 }

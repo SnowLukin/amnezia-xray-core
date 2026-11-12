@@ -123,6 +123,8 @@ type ProviderSetData struct {
 // ProviderRefreshInfo queues the same work as RequestProviderRefresh and tells
 // the host why it will wait. Repeated host calls do not bypass any runtime gate.
 type RefreshData struct {
+	// The number of the request, as providers[].request of View names it.
+	RequestID uint64 `json:"request_id"`
 	IsQueued  bool   `json:"is_queued"`
 	Reason    string `json:"reason,omitempty"`
 	RetryInMs int64  `json:"retry_in_ms"`
@@ -146,9 +148,8 @@ func (o *Observer) queueProviderRefresh(tag string) (RefreshData, error) {
 	if tag != "" && o.e.provider(tag) == nil {
 		return RefreshData{}, NewCommandError("unknown_provider", "provider is unknown")
 	}
-	o.e.requestRefresh(tag)
 	now := o.now()
-	data := RefreshData{IsQueued: true}
+	data := RefreshData{RequestID: o.e.hostRefresh(tag, now), IsQueued: true}
 	for _, p := range o.e.providers {
 		if tag != "" && p.cfg.tag != tag {
 			continue
