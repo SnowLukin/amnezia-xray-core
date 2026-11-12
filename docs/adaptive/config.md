@@ -952,7 +952,7 @@ UDP-проба по STUN: измеряет доступность и задер�
 Ядро ставит в каждый запрос провайдера заголовок-словарь RFC 8941:
 
 ```http
-Xray-Adaptive: xray="26.10.31", api=2, rev=6, provider=1
+Xray-Adaptive: xray="26.10.31", api=2, rev=7, provider=1
 ```
 
 | Поле | Смысл |
@@ -974,6 +974,7 @@ Xray-Adaptive: xray="26.10.31", api=2, rev=6, provider=1
 | 4 | `outbounds[].speedLimit` в строгой форме; новые отказы при загрузке; ответ провайдера с неизвестными ключами и `null`; удержание пути при исчерпании. Подробно ниже |
 | 5 | `healthObservatory.host.view`: команда хоста `View`, снимок для экрана приложения (раздел 3.7) |
 | 6 | `strategy.settings.startup.probe`: проверка выбора пробой сразу после запуска (раздел 3.3); `probePolicy: standby` у `selection` и `groups[]` и блок `healthObservatory.probes.standby`: проверка резерва, пока он не выбран (разделы 3.1 и 3.5) |
+| 7 | Ключи конфига не менялись. `RequestProviderRefresh` возвращает номер запроса, `View` и Status показывают итог последнего запроса хоста в `providers[].request` ([host-api.md](host-api.md)) |
 
 Ревизия 4 для автора конфига:
 

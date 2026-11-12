@@ -121,6 +121,7 @@
 | `answer_seq` | Номер `seq`, который `ExportProviderSet` возвращает вместе с набором. |
 | `base_version`, `answer_base_version`, `is_base_changed` | Базовый конфиг при старте, базовый конфиг из последнего ответа, хосту сообщено о другом базовом конфиге. |
 | `urls_count`, `urls_generation` | Число зеркал и сколько раз хост их заменил. Адреса не выводятся. |
+| `request` | Последний запрос хоста (`RequestProviderRefresh`) с ревизии 7: `id`, `state` (`pending`, `applied`, `failed`), [`code`], `ago_ms`, [`wait_ms`]. То же, что `providers[].request` в `View`, см. [host-api.md](host-api.md). Нет до первого запроса. |
 
 Протокол и смысл этих величин описаны в [provider-protocol.md](provider-protocol.md).
 
@@ -370,6 +371,7 @@
 | `provider_skip` | `provider`, `trigger`, `reason`, [`wait_ms`] | Повод требует обновления, но начать его нельзя. `reason`: `min_interval`, `backoff`, `retry_after`, `max_per_hour`, `idle`, `network_down`, `pinned`, `memory`, `auth`. Пишется один раз на пару повод и причина до начала обновления. |
 | `provider_expired` | `provider`, `outbound`, `was_active`, `renewal` | Аренда пути кончилась. `was_active` - путь был выбран. `renewal` - почему не было продления: `refused` (бэкенд ответил без него), `failed` (последнее обновление с запросом не удалось), `off` (продление выключено: `providers[].triggers.leaseRenewal` задан как `{"isEnabled": false}`), `saved` (кончилась в сохранённом хостом наборе до старта), `pending` (обновление с запросом ещё не завершилось). |
 | `provider_auth_failed` | `provider`, `trigger`, `status`, `via`, `code` | Бэкенд отверг заголовки (`status` 401 или 403, `code` `unauthorized` или `forbidden`). Все поводы, включая хост, ждут новых заголовков или конца паузы. |
+| `provider_request` | `provider`, `id`, `state`, [`code`] | Закрыт запрос хоста `id` (ревизия 7): `state` `applied` или `failed`, у `failed` есть `code` - код тела ошибки протокола, `rejected` или `unreachable`. Запрос закрывает только обновление, начатое после него. |
 | `provider_headers` | `provider`, `by`, `names` | Изменились заголовки запросов: `by` = `answer`, `initial` или `host`. `names` - имена изменённых заголовков, значения не выводятся. |
 | `provider_base_changed` | `provider`, `from`, `to` | Применённый ответ назвал другой базовый конфиг `to`, ядро работает с `from`. Пишется один раз на значение. |
 | `provider_urls` | `provider`, `count`, `generation` | Хост заменил зеркала (`SetProviderURLs`). Адреса не выводятся. |

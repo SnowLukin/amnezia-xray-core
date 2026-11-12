@@ -38,9 +38,9 @@
 | закрыть окно отчёта | `TakeReport` | `TakeReport` | `report take`, `report final` | `HealthTakeReport` | `LibXrayHealthTakeReport` | `takeReport` |
 | трасса | `ExportTrace`, `ExportTraceUpTo` | `ExportTrace` | `trace [after] [--max-bytes=N]` | `HealthExportTrace`, `HealthExportTraceUpTo` | `LibXrayHealthExportTrace`, `LibXrayHealthExportTraceUpTo` | `exportTrace(after:)`, `exportTrace(after:maxBytes:)` |
 
-Типы результата на разных слоях разные. Сигнальные команды (смена и потеря сети, `UserPresent`, `SetMemoryLow`, `Pin`, `Release`, `RequestProviderRefresh`) в libXray возвращают `bool`, в C `int` (1 или 0), в Swift `Bool`. Остальные команды на этих слоях возвращают контейнер Result, описанный ниже. В gRPC Result возвращает каждая команда, включая сигнальные.
+Типы результата на разных слоях разные. Сигнальные команды (смена и потеря сети, `UserPresent`, `SetMemoryLow`, `Pin`, `Release`) в libXray возвращают `bool`, в C `int` (1 или 0), в Swift `Bool`. Остальные команды на этих слоях возвращают контейнер Result, описанный ниже. В gRPC Result возвращает каждая команда, включая сигнальные.
 
-`RequestProviderRefresh` расходится между слоями сильнее остальных. gRPC и CLI вызывают `ProviderRefreshInfo` и возвращают Result с причиной ожидания (`is_queued`, `reason`, `retry_in_ms`). libXray, C, Swift и Android вызывают `RequestProviderRefresh` и получают только `bool`: `true`, если провайдер с таким тегом есть. Причина ожидания (отказ в токене, простой, закрепление, лимиты) на этих слоях недоступна, её видно только в Status (`providers[]`) и в событии `provider_skip`.
+`RequestProviderRefresh` с ревизии 7 на всех слоях, кроме Go API, возвращает Result с номером запроса и причиной ожидания (`request_id`, `is_queued`, `reason`, `retry_in_ms`): gRPC, CLI и libXray вызывают `ProviderRefreshInfo`. В Go API `RequestProviderRefresh` возвращает только номер запроса, 0 значит, что такого провайдера нет. До ревизии 7 libXray, C, Swift и Android возвращали `bool`.
 
 `RequestProbe` в gRPC принимает лишнее поле `wait_ms`: вызов ждёт результата до этого срока и возвращает билет вместе с результатом. CLI передаёт туда свой таймаут. В libXray ожидания нет, результат читается отдельно через `ProbeResult`.
 
@@ -97,7 +97,6 @@
 | `SetMemoryLow` | ядро не запущено или нет `host.memoryPressure` |
 | `Pin` | нет `host.pinning`, нет балансировщика, outbound не его кандидат или проверочная учётка, `run` другого запуска |
 | `Release` | балансировщик не закреплён или не существует, `run` другого запуска |
-| `RequestProviderRefresh` | нет провайдера с таким тегом или провайдеров вообще |
 
 ### Жизненный цикл ядра
 
@@ -211,7 +210,7 @@
 Заголовок версии ядра для запросов приложения к бэку, тот же, что ядро ставит в свои запросы провайдера. В Go API и libXray работает без запущенного ядра, gRPC и CLI отвечают только у запущенного.
 
 ```json
-{"success": true, "data": {"name": "Xray-Adaptive", "value": "xray=\"26.10.31\", api=2, rev=6, provider=1"}}
+{"success": true, "data": {"name": "Xray-Adaptive", "value": "xray=\"26.10.31\", api=2, rev=7, provider=1"}}
 ```
 
 Значение - словарь RFC 8941: версия ядра, версия API конфига, ревизия конфига внутри API и версия протокола провайдера. Бэк выбирает по нему, какой конфиг отдать клиенту. Хост берёт пару до подключения и ставит её в запрос подключения. Имя `Xray-Adaptive` запрещено в заголовках конфига, ответа и хоста.
@@ -258,13 +257,15 @@
 | `busy` | запрос уже идёт |
 | `min_interval`, `backoff`, `retry_after`, `max_per_hour` | интервал, пауза после сбоев, `Retry-After` бэка, часовая квота |
 
-libXray, C, Swift и Android возвращают `bool`, причину ожидания там видно только в Status (`providers[]`: `next_trigger`, `backoff_ms`, `retry_after_ms`, `is_auth_refused`, `auth_retry_in_ms`) и в событии `provider_skip`. gRPC возвращает её в `data`:
+Ответ на всех слоях, кроме Go API:
 
 ```json
-{"success": true, "run": "232c4c611bfbaee9", "data": {"is_queued": true, "reason": "auth", "retry_in_ms": 1843000}}
+{"success": true, "run": "232c4c611bfbaee9", "data": {"request_id": 4, "is_queued": true, "reason": "auth", "retry_in_ms": 1843000}}
 ```
 
-`retry_in_ms` заполняется для `auth` и для интервальных причин; для `idle`, `pinned`, `memory` и `network_down` он 0, запрос уйдёт, когда условие исчезнет. Ошибки gRPC: `feature_disabled`, `unknown_provider`, `not_running`.
+`request_id` - номер запроса. Он растёт с каждым вызовом в пределах одного `run`, при пустом теге все провайдеры получают один номер. Итог запроса виден в `View.providers[].request` и в Status (`providers[].request`) под этим номером, см. сценарий [Смена страны](#смена-страны). `retry_in_ms` заполняется для `auth` и для интервальных причин; для `idle`, `pinned`, `memory` и `network_down` он 0, запрос уйдёт, когда условие исчезнет. Ошибки: `feature_disabled`, `unknown_provider`, `not_running`. Swift возвращает `XrayHealthResult<XrayHealthProviderRefresh>?`.
+
+Запрос хоста закрывает только обновление, которое началось после него. Если в момент вызова уже идёт обновление по другому поводу, оно ушло с прежними заголовками, и после него ядро отправит ещё одно. То же, если хост поменял заголовки, пока шло обновление по его запросу. Новый вызов, пока прежний запрос ждёт, не добавляет второго обновления: оба закроет одно, `View` покажет номер последнего.
 
 Запросы, которые приложение рассылает многим клиентам одновременно (по push, при массовом подключении), ядро не разносит по времени. Разброс по клиентам хост делает сам.
 
@@ -330,7 +331,7 @@ libXray, C, Swift и Android возвращают `bool`, причину ожи�
 
 <!-- example: view -->
 ```json
-{"success": true, "run": "232c4c611bfbaee9", "data": {"seq": 14, "run": "232c4c611bfbaee9", "state": "reconnecting", "phase": "searching", "since_ms": 2000, "needs": [], "doing": ["probing"], "balancer": "auto", "outbound": {"tag": "nl-1", "protocol": "vless", "labels": {"country": "nl"}, "is_held": false}, "network": {"is_up": true, "connectivity": "ok", "generation": 2}, "is_idle": false, "paths": [{"outbound": "de-1", "balancer": "auto", "protocol": "vless", "cost": 2, "is_probe_only": false, "state": "up", "for_ms": 754000, "is_current": false, "is_active": false, "rtt_ms": 148, "probing": {"reason": "failover", "for_ms": 800}, "labels": {"country": "de"}}, {"outbound": "nl-1", "balancer": "auto", "protocol": "vless", "cost": 1, "is_probe_only": false, "state": "down", "for_ms": 2100, "is_current": true, "is_active": true, "rtt_ms": 113, "quarantine_ms": 27900, "labels": {"country": "nl"}}, {"outbound": "p-fi-2", "balancer": "auto", "group": "pool", "protocol": "wireguard", "cost": 3, "is_probe_only": false, "state": "unknown", "for_ms": 0, "is_current": false, "is_active": false, "is_asleep": true, "expires_in_ms": 3540000, "labels": {"country": "fi"}}], "providers": [{"provider": "fresh", "state": "ok", "next_in_ms": 1620000, "set_age_ms": 180000}], "last_switch": {"from": "de-1", "to": "nl-1", "reason": "return", "ago_ms": 754000}}}
+{"success": true, "run": "232c4c611bfbaee9", "data": {"seq": 14, "run": "232c4c611bfbaee9", "state": "reconnecting", "phase": "searching", "since_ms": 2000, "needs": [], "doing": ["probing"], "balancer": "auto", "outbound": {"tag": "nl-1", "protocol": "vless", "labels": {"country": "nl"}, "is_held": false}, "network": {"is_up": true, "connectivity": "ok", "generation": 2}, "is_idle": false, "paths": [{"outbound": "de-1", "balancer": "auto", "protocol": "vless", "cost": 2, "is_probe_only": false, "state": "up", "for_ms": 754000, "is_current": false, "is_active": false, "rtt_ms": 148, "probing": {"reason": "failover", "for_ms": 800}, "labels": {"country": "de"}}, {"outbound": "nl-1", "balancer": "auto", "protocol": "vless", "cost": 1, "is_probe_only": false, "state": "down", "for_ms": 2100, "is_current": true, "is_active": true, "rtt_ms": 113, "quarantine_ms": 27900, "labels": {"country": "nl"}}, {"outbound": "p-fi-2", "balancer": "auto", "group": "pool", "protocol": "wireguard", "cost": 3, "is_probe_only": false, "state": "unknown", "for_ms": 0, "is_current": false, "is_active": false, "is_asleep": true, "expires_in_ms": 3540000, "labels": {"country": "fi"}}], "providers": [{"provider": "fresh", "state": "ok", "next_in_ms": 1620000, "set_age_ms": 180000, "request": {"id": 3, "state": "applied", "ago_ms": 179500}}], "last_switch": {"from": "de-1", "to": "nl-1", "reason": "return", "ago_ms": 754000}}}
 ```
 
 | Поле | Тип | Что значит |
@@ -402,9 +403,19 @@ libXray, C, Swift и Android возвращают `bool`, причину ожи�
 | `expires_in_ms` | целое, необязательное | Остаток аренды провайдера, ниже нуля после окончания |
 | `labels` | объект, необязательный | Метки пути |
 
-Поля провайдера в `providers`: `provider` (тег), `state` (`fetching` - запрос идёт; `refused` - бэк отверг токен; `waiting` - пауза после неудач или `Retry-After`; `ok` - остальное), `next_in_ms` (когда наступит ближайший повод обновления, необязательное, может быть отрицательным, если повод ждёт), `set_age_ms` (возраст набора).
+Поля провайдера в `providers`: `provider` (тег), `state` (`fetching` - запрос идёт; `refused` - бэк отверг токен; `waiting` - пауза после неудач или `Retry-After`; `ok` - остальное), `next_in_ms` (когда наступит ближайший повод обновления, необязательное, может быть отрицательным, если повод ждёт), `set_age_ms` (возраст набора), `request` (последний запрос хоста, необязательное, нет до первого `RequestProviderRefresh` в этом `run`).
 
-Что `View` не знает: переназначение балансировщика командой роутера (как и `balancers[].outbound` в Status) и трафик, который правила маршрутизации ведут мимо главного балансировщика. Причину ожидания запроса провайдера и квоты проб он не показывает, они остаются в Status.
+| Поле `request` | Тип | Значение |
+|---|---|---|
+| `id` | целое | номер из ответа `RequestProviderRefresh` |
+| `state` | строка | `pending` - запрос ждёт или идёт, в том числе ждёт интервала, паузы после отказа в токене, `Retry-After` или трафика; `applied` - обновление по этому запросу применило набор, в том числе тот же самый; `failed` - обновление не удалось |
+| `code` | строка, необязательное | только у `failed`: код из тела ошибки протокола (`location_unavailable`, `unauthorized`, `unavailable` и любой другой, который прислал бэк), `rejected` - ядро отклонило ответ или набор, `unreachable` - ни одна дорога не довела до бэка |
+| `ago_ms` | целое | сколько прошло с вызова, у `applied` и `failed` - с итога |
+| `wait_ms` | целое, необязательное | только у `pending`: сколько примерно осталось ждать паузы. Нет, если запрос уже идёт или ждёт условия без срока (трафика, снятия закрепления, сети) |
+
+Тексты ошибок и адреса в `request` не попадают. Смена `state`, `code` или `id` растит `seq`, а `ago_ms` и `wait_ms` нет.
+
+Что `View` не знает: переназначение балансировщика командой роутера (как и `balancers[].outbound` в Status) и трафик, который правила маршрутизации ведут мимо главного балансировщика. Причину ожидания запроса провайдера (кроме `request.wait_ms`) и квоты проб он не показывает, они остаются в Status.
 
 #### `Status()`
 
@@ -516,6 +527,19 @@ Status - локальная диагностика (`is_local_only: true`). В �
 3. `SetProviderHeaders(provider, {"Authorization": "Bearer ..."})`. Пауза снимается.
 4. `RequestProviderRefresh(provider)`.
 
+### Смена страны
+
+Страну выбирает бэк по заголовку, о котором он договорился с приложением. Ядро имя заголовка и его значения не знает и просто передаёт их. Ниже пример с заголовком `X-Location`.
+
+1. `SetProviderHeaders(provider, {"X-Location": "country:NL"})`.
+2. `RequestProviderRefresh(provider)`. Запомнить `run` и `data.request_id` из ответа.
+3. Читать `View` как обычно. Пока `providers[].request.id` тот же и `state` равен `pending`, смена идёт. Трафик при этом не останавливается: прежний набор работает, пока не применится новый.
+4. `state: applied` - бэк отдал набор, ядро его применило. Смена подтверждена, когда к тому же новая страна видна в `outbound.labels`: ядро ещё может проверять новый сервер или временно держаться за прежний.
+5. `state: failed` - смены не будет. По `code` показать причину: `location_unavailable` - страну сейчас не выдать, `location_unknown` - бэк не понял значение, `unreachable` - нет связи с бэком, `rejected` - бэк прислал набор, который ядро не приняло. Затем вернуть прежний заголовок: `SetProviderHeaders(provider, {"X-Location": "<прежнее значение>"})` или пустую строку, если заголовка раньше не было. Иначе следующие плановые запросы, в том числе продление аренд, уйдут с тем же заголовком и тоже получат отказ, а набор перестанет продлеваться. Вызывать `RequestProviderRefresh` после возврата не нужно, прежний набор продолжает работать.
+6. Если `run` в `View` сменился, ядро перезапустилось, и номер запроса больше ничего не значит. Заголовки хоста ядро сохраняет в наборе (`ExportProviderSet`), поэтому после перезапуска с сохранённым набором заголовок уже стоит; хост повторяет шаги 2-5.
+
+После отказа ядро повторит запрос само, когда пройдёт пауза после неудач (от 30 с, растёт до 30 мин), но итог этого повтора `request` уже не меняет. Отказ с телом протокола (кроме 401 и 403 с `unauthorized` или `forbidden`) ядро считает обычной неудачей: набор и аренды не трогает, пауза после неудач растёт, как после любого сбоя. Подробнее в [provider-protocol.md](provider-protocol.md), раздел 8.
+
 ### Бэк сменил `baseVersion`
 
 1. Применённый ответ провайдера назвал базовый конфиг, отличный от того, с которым работает ядро. Ядро пишет `provider_base_changed` с `from` и `to` один раз на значение и ставит `providers[].is_base_changed: true`. Набор этого ответа всё равно применяется.
@@ -564,6 +588,7 @@ Status - локальная диагностика (`is_local_only: true`). В �
 5. Схему рисовать по `paths`: путь с `is_current` - текущий outbound, `is_active` - выбор своего балансировщика, `probing` - путь, который проверяется прямо сейчас (таких может быть несколько, причина в `probing.reason`), `state: down` с `quarantine_ms` - путь в карантине, `is_probe_only` - проверочная учётка. Что ядро делает в целом, говорит `doing`.
 6. Каждое значение `needs` - действие хоста, а не надпись: `restart` - перезапустить ядро в ближайшую паузу, `session` - обновить токен (сценарий «Истёк токен провайдера»), `config` - скачать новый конфиг и перезапустить ядро (сценарий «Бэк сменил `baseVersion`»).
 7. Последнее переключение для строки истории брать из `last_switch`.
+8. Итог запроса хоста, например смены страны, брать из `providers[].request` (сценарий «Смена страны»).
 
 ### Через какой outbound идёт трафик
 
