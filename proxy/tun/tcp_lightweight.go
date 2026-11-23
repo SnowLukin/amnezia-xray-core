@@ -31,7 +31,7 @@ const (
 	tcpWindow = 256 << 10
 	// tcpLargeWindow is the same for a tun that takes and gives segments that are larger than its MTU: those are
 	// few, and a way with a longer round trip, as a router has to what is behind it, is not held back by it
-	tcpLargeWindow = 1 << 20
+	tcpLargeWindow = 256 << 10
 	// tcpWindowShift makes them fit the 16 bits of a window
 	tcpWindowShift = 5
 	// tcpHeld is how many segments wait for one that was lost before them,

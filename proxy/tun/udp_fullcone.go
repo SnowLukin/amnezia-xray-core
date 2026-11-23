@@ -165,7 +165,7 @@ func (c *udpConn) SetWriteDeadline(t time.Time) error {
 }
 
 // udpQueueLimit bounds the packets waiting for one UDP flow; more are dropped.
-const udpQueueLimit = 1024
+const udpQueueLimit = 128
 
 // packetQueue holds the packets waiting for one UDP flow. Unlike a buffered
 // channel of the same bound it only allocates for packets actually queued, so
